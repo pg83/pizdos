@@ -4,16 +4,30 @@
     fetch.py <url> <sha256> <output>
 """
 import hashlib
+import os
+import ssl
 import sys
 import time
 import urllib.request
 from pathlib import Path
 
 
+def tls():
+    """The system's trust store; an SSL_CERT_FILE naming no file is ignored (ix run sets it to `nowhere`)."""
+    named = os.environ.get("SSL_CERT_FILE")
+
+    if named is not None and not os.path.isfile(named):
+        return ssl.create_default_context(cafile=ssl.get_default_verify_paths().openssl_cafile)
+
+    return ssl.create_default_context()
+
+
 def download(url):
+    context = tls()
+
     for attempt in range(4):
         try:
-            with urllib.request.urlopen(url, timeout=120) as response:
+            with urllib.request.urlopen(url, timeout=120, context=context) as response:
                 return response.read()
         except OSError as error:
             if attempt == 3:

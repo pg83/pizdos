@@ -1,0 +1,185 @@
+# Every crate aot is built from, and how. A crate with `sha256` is fetched
+# from crates.io as a .crate archive and is never edited; a crate with `path`
+# lives in this repository (aot itself, and any third-party crate we patch,
+# kept whole under bin/aot/crates/); a crate with `rust-src` is a directory of
+# the Rust library sources of rustc's own release. The graph compiles each
+# crate with rustc directly: `features` is the full feature set the crate is
+# built with, `deps` and `build-deps` name the crates of this table it links
+# against. Versions follow wasmtime v50.0.0's Cargo.lock, the release
+# cranelift 0.137.0 ships in.
+#
+# Everything below aot-cli is no_std: the same crates build for the host and
+# for wasm32-unknown-unknown, where the library is core, compiler_builtins
+# and alloc compiled from source (`sysroot`) and there is no std at all.
+
+[aot-cli]
+path = "bin/aot/cli"
+deps = ["aot"]
+
+[aot-wasm]
+path = "bin/aot/wasm"
+deps = ["aot"]
+
+[aot]
+path = "bin/aot"
+deps = ["cranelift-codegen", "cranelift-frontend", "wasmparser"]
+
+[core]
+rust-src = "core"
+sysroot = true
+
+[compiler_builtins]
+rust-src = "compiler-builtins/compiler-builtins"
+sysroot = true
+features = ["compiler-builtins"]
+deps = ["core"]
+
+[alloc]
+rust-src = "alloc"
+sysroot = true
+deps = ["compiler_builtins", "core"]
+
+[wasmparser]
+version = "0.261.0"
+sha256 = "4f20f20e44f7e8aeb6744823ea9d869ede51e51be4fdaedede2852282e54d2d8"
+features = ["features", "validate"]
+deps = ["bitflags"]
+
+[bitflags]
+version = "2.11.1"
+sha256 = "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3"
+
+[cranelift-frontend]
+version = "0.137.0"
+sha256 = "b929f09b82a270e2aae062945cf86cd9db39c59ad9bead6986ea6b09fcf8a969"
+deps = ["cranelift-codegen", "hashbrown", "log", "smallvec", "target-lexicon"]
+
+# x86 is the only backend for now; arm64 is one more feature here.
+[cranelift-codegen]
+version = "0.137.0"
+sha256 = "a53dbec33ff86909e44be6f0ec2d17841aa38b931013707c9fc7279f1f0e5760"
+features = ["x86"]
+deps = [
+    "bumpalo",
+    "cranelift-assembler-x64",
+    "cranelift-bforest",
+    "cranelift-bitset",
+    "cranelift-codegen-shared",
+    "cranelift-control",
+    "cranelift-entity",
+    "hashbrown",
+    "libm",
+    "log",
+    "regalloc2",
+    "rustc-hash",
+    "smallvec",
+    "target-lexicon",
+    "wasmtime-internal-core",
+]
+build-deps = ["cranelift-codegen-meta", "cranelift-isle"]
+
+[cranelift-codegen-meta]
+version = "0.137.0"
+sha256 = "42295b38e9182954cb32a71812e3d64d66a90efc0a2ababb73e465ad4a1efccf"
+deps = ["cranelift-assembler-x64-meta", "cranelift-codegen-shared", "cranelift-srcgen", "heck"]
+
+[cranelift-isle]
+version = "0.137.0"
+sha256 = "b1c5809e8636a37e5a25ecc35242d33d6e7391c49b67488b83446e2898af2a2f"
+
+[cranelift-assembler-x64]
+version = "0.137.0"
+sha256 = "d3307701abcb90554ee72fdb0db36ee0334a4abe380c4d87a5b04a6942613c3a"
+build-deps = ["cranelift-assembler-x64-meta"]
+
+[cranelift-assembler-x64-meta]
+version = "0.137.0"
+sha256 = "e62d0e19f9f5fa0c4243236df1ffdf139d207600b4402ac41ceba8dbe7ca0f3d"
+deps = ["cranelift-srcgen"]
+
+[cranelift-srcgen]
+version = "0.137.0"
+sha256 = "d633ff621e7f31a943431da0d7dd37c4376766c60bd7171216de1c7ccabfb370"
+
+[cranelift-codegen-shared]
+version = "0.137.0"
+sha256 = "b5200fa877fb64cd30cabe0603f394333f88f69adf63e4db8d48a111d0c9d0dd"
+
+# Without `fuzz` (cargo's default) the control plane is a no-op and
+# arbitrary is not needed.
+[cranelift-control]
+version = "0.137.0"
+sha256 = "b86250e480795fbb4425ea703bca7b75282998458ce74f5360843a31949f2bbc"
+
+[cranelift-bforest]
+version = "0.137.0"
+sha256 = "47784bc3c4b57c0182bb8ff04aae5d5f5fc6bae8ba26b1212c9a659b90dab84e"
+deps = ["cranelift-entity", "wasmtime-internal-core"]
+
+[cranelift-entity]
+version = "0.137.0"
+sha256 = "903c6592c7d600c251d20929f143543b7303ac70b072ad3394d65b29caf56f69"
+deps = ["cranelift-bitset", "wasmtime-internal-core"]
+
+[cranelift-bitset]
+version = "0.137.0"
+sha256 = "e13d120406f713dbce1940751e77bbb14daad1261379b7200c19285953e79a1d"
+deps = ["wasmtime-internal-core"]
+
+[wasmtime-internal-core]
+version = "50.0.0"
+sha256 = "83d4ac46034b149aed44335595402503094a04e3b70d0cff8c169d83437318b8"
+deps = ["hashbrown", "libm"]
+
+[regalloc2]
+version = "0.15.2"
+sha256 = "757712e8e61590d6d4f5d563483755538b5aa13467837a3b41cd9832509a7f85"
+features = ["checker"]
+deps = ["allocator-api2", "bumpalo", "hashbrown", "log", "rustc-hash", "smallvec"]
+
+[bumpalo]
+version = "3.20.2"
+sha256 = "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"
+features = ["allocator-api2"]
+deps = ["allocator-api2"]
+
+[allocator-api2]
+version = "0.2.20"
+sha256 = "45862d1c77f2228b9e10bc609d5bc203d86ebc9b87ad8d5d5167a6c9abf739d9"
+features = ["alloc"]
+
+[hashbrown]
+version = "0.17.0"
+sha256 = "4f467dd6dccf739c208452f8014c75c18bb8301b050ad1cfb27153803edb0f51"
+features = ["default-hasher"]
+deps = ["foldhash"]
+
+[foldhash]
+version = "0.2.0"
+sha256 = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
+
+[libm]
+version = "0.2.16"
+sha256 = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
+features = ["arch"]
+
+[log]
+version = "0.4.28"
+sha256 = "34080505efa8e45a4b816c349525ebe327ceaa8559756f0356cba97ef3bf7432"
+
+[rustc-hash]
+version = "2.1.1"
+sha256 = "357703d41365b4b27c590e3ed91eabb1b663f07c4c084095e60cbed4362dff0d"
+
+[smallvec]
+version = "1.15.1"
+sha256 = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
+features = ["union"]
+
+[target-lexicon]
+version = "0.13.5"
+sha256 = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
+
+[heck]
+version = "0.5.0"
+sha256 = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"

@@ -8,6 +8,9 @@ hardware, not a different kernel.
 ## layout
 
 ```
+bin/aot/      wasm to native code ahead of time with Cranelift (Rust, no_std): module bytes in, artifact bytes out
+bin/aot/cli/  aot as a host tool: files, all cores
+bin/aot/wasm/ aot as a wasm module with no imports, for the kernel to run
 bin/busybox/  busybox for the system: our config and the generator that replaces kconfig
 bin/kernel/   the kernel (Go), not yet
 bin/rootfs/   the root filesystem service (Go, wasm), not yet
@@ -36,13 +39,29 @@ build.py      the build graph
 - Memory: the stack comes first (1 MiB, overflow traps), the heap starts at
   the exported `__heap_base` and is the kernel's to manage.
 
+## native code
+
+- `aot` compiles every defined function of a module with Cranelift for
+  x86-64-v2 into one artifact (`bin/aot/src/artifact.rs`): code, a function
+  table with frame sizes, and relocations to kernel imports and helpers.
+- Every function is called with the SystemV convention and the process
+  context as its first argument; the context's layout, the helpers and the
+  trap codes are in `bin/aot/src/abi.rs`. Memory accesses are bounds-checked
+  and code never traps by itself: a failed check calls the kernel's `trap`.
+- On entry and on every loop header the code compares its stack pointer with
+  a limit in the context and calls the kernel's `stack_check` below it.
+- `aot.wasm` exports `aot_input`, `aot_compile`, `aot_output` and
+  `aot_output_size` (`bin/aot/wasm/src/lib.rs`) and imports nothing; its
+  library is core, compiler_builtins and alloc, built from Rust's sources.
+
 ## building
 
 ```
-./build          # libc.a, busybox.wasm, busybox.links and the ABI busybox needs (abi.txt)
+./build          # libc.a, busybox.wasm, busybox.links, abi.txt, aot, aot.wasm and busybox.aot
 ./build test     # the tests in tst/
 ```
 
-Needs `clang` with the wasm32 target, `wasm-ld`, `llvm-ar` and `python3` on
-`PATH`. The musl and busybox tarballs are fetched by the graph and checked
-against their sha256.
+Needs `clang` with the wasm32 target, `wasm-ld`, `llvm-ar`, `rustc` and
+`python3` on `PATH`; here `ix run bld/rust/96 -- ./build` provides rustc. The
+musl and busybox tarballs, the crates of `bin/aot/crates.toml` and rust-src
+of rustc's release are fetched by the graph and checked against their sha256.
