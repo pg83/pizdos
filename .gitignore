@@ -9,6 +9,8 @@ __pycache__/
 /busybox_aot
 /aot
 /aot_wasm
+/rootfs
+/kernel
 /libc
 /musl_tarball
 /busybox_tarball

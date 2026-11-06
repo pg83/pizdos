@@ -28,6 +28,7 @@ CLANG = tool("clang")
 LLVM_AR = tool("llvm-ar")
 WASM_LD = tool("wasm-ld")
 RUSTC = tool("rustc")
+GO = tool("go")
 
 MUSL = "1.2.5"
 BUSYBOX = "1.36.1"
@@ -243,6 +244,61 @@ aot_ops = command(
     color="light-cyan",
 )
 
+# bin/rootfs: the Go module with the read-only layer: itself, aot.wasm and
+# busybox with its applet links.
+rootfs = command(
+    name="rootfs",
+    inputs=["$(S)/bin/rootfs/pack.py", "$(S)/bin/rootfs/go.mod", *build.glob("$(S)/bin/rootfs/*.go")],
+    outputs=["$(B)/bin/rootfs/rootfs.wasm"],
+    deps=[aot_wasm, busybox],
+    cmd=[
+        "python3", "$(S)/bin/rootfs/pack.py", GO, "$(S)/bin/rootfs", "$(B)/bin/rootfs/rootfs.wasm", "/bin/rootfs",
+        f"/bin/aot={aot_wasm.outputs[0]}",
+        f"/bin/busybox={busybox.outputs[0]}",
+        "--links", busybox.outputs[1], "/bin/busybox",
+    ],
+    descr="FS",
+    color="light-green",
+)
+
+# rootfs.wasm compiled by the host tool: what the kernel must compile it to.
+rootfs_aot = command(
+    name="rootfs_aot",
+    outputs=["$(B)/bin/rootfs/rootfs.aot"],
+    deps=[aot, rootfs],
+    cmd=[aot.outputs[0], rootfs.outputs[0], "$(B)/bin/rootfs/rootfs.aot"],
+    descr="AO",
+    color="light-cyan",
+)
+
+# bin/kernel: its Go modules, checked against go.sum, fetched once; the build
+# itself has no network.
+kernel_modules = command(
+    name="kernel_modules",
+    local=True,
+    inputs=["$(S)/bin/kernel/make.py", "$(S)/bin/kernel/go.mod", "$(S)/bin/kernel/go.sum"],
+    outputs=["$(B)/bin/kernel/modules.tar"],
+    cmd=[
+        "python3", "$(S)/bin/kernel/make.py", "download", GO,
+        "$(S)/bin/kernel/go.mod", "$(S)/bin/kernel/go.sum", "$(B)/bin/kernel/modules.tar",
+    ],
+    descr="FE",
+    color="blue",
+)
+
+kernel = command(
+    name="kernel",
+    inputs=["$(S)/bin/kernel/make.py", "$(S)/bin/kernel/go.mod", "$(S)/bin/kernel/go.sum", *build.glob("$(S)/bin/kernel/*.go")],
+    outputs=["$(B)/bin/kernel/kernel"],
+    deps=[kernel_modules, rootfs],
+    cmd=[
+        "python3", "$(S)/bin/kernel/make.py", "build", GO,
+        kernel_modules.outputs[0], "$(S)/bin/kernel", rootfs.outputs[0], "$(B)/bin/kernel/kernel",
+    ],
+    descr="GO",
+    color="light-blue",
+)
+
 # The kernel ABI busybox needs: every import and export of the module.
 busybox_abi = command(
     name="busybox_abi",
@@ -259,6 +315,7 @@ TESTED = {
     "busybox_abi": [busybox],
     "aot": [aot_ops],
     "aot_wasm": [aot_wasm, aot_self, aot_ops],
+    "kernel": [kernel, rootfs_aot, aot_self],
 }
 tests = []
 
@@ -280,5 +337,5 @@ for test in build.glob("$(S)/tst/test_*.py"):
         color="green",
     ))
 
-group("install", busybox, busybox_abi, busybox_aot, aot, aot_wasm)
+group("install", busybox, busybox_abi, busybox_aot, aot, aot_wasm, rootfs, kernel)
 group("test", *tests)
