@@ -7,8 +7,8 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
 
 - `./build` builds `libc.a`, `busybox.wasm`, `busybox.links`,
   `bin/busybox/abi.txt` (every kernel import busybox uses), `aot`,
-  `aot.wasm` and `busybox.aot`. rustc comes from `ix run bld/rust/96 --
-  ./build`.
+  `aot.wasm`, `busybox.aot`, `rootfs.wasm` and `kernel`. rustc comes from
+  `ix run bld/rust/96 -- ./build`.
 - `./build test` runs `tst/test_*.py`, each with the outputs of the node
   `TESTED` names for it in build.py.
 - A node that consumes another node's output names it in `deps=`: the engine
@@ -53,6 +53,17 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   in `tst/aot/ops.c` there. `tst/test_aot_wasm.py` runs aot.wasm as aot
   compiled it and checks it compiles ops.wasm and itself to the host tool's
   bytes (about two minutes).
+
+## bin/kernel, bin/rootfs
+
+- Go, each with its own `STYLE.md`; Rust is only for Cranelift in `bin/aot`.
+- The kernel is one `main.go`: a global `wireBoard` with the `Compiler` and
+  `FS` interfaces; the bootstrap that fills it stays local to `main.go`.
+- A generated file is never committed: `rootfs.wasm` reaches the kernel's
+  `//go:embed`, and `layer.bin` rootfs's, through a copy of the sources in
+  the node's temporary directory.
+- Go modules are pinned by `go.mod` and `go.sum`; `make.py download` fetches
+  them in a node of its own and the kernel builds from them offline.
 
 ## bin/busybox
 

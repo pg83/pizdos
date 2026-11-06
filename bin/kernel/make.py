@@ -39,6 +39,12 @@ def download(go, go_mod, go_sum, output, work):
     shutil.copy(go_mod, module / "go.mod")
     shutil.copy(go_sum, module / "go.sum")
     env = environment(work, GOPROXY="https://proxy.golang.org", GOSUMDB="sum.golang.org")
+
+    # Go trusts only SSL_CERT_FILE when it is set; one naming no file (ix run
+    # sets it to `nowhere`) is dropped, so the system's trust store is used.
+    if not os.path.isfile(env.get("SSL_CERT_FILE", "")):
+        env.pop("SSL_CERT_FILE", None)
+
     subprocess.run([go, "mod", "download"], cwd=module, env=env, check=True)
     cache = work / "mod" / "cache" / "download"
 

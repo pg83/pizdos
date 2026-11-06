@@ -12,8 +12,8 @@ bin/aot/      wasm to native code ahead of time with Cranelift (Rust, no_std): m
 bin/aot/cli/  aot as a host tool: files, all cores
 bin/aot/wasm/ aot as a wasm module with no imports, for the kernel to run
 bin/busybox/  busybox for the system: our config and the generator that replaces kconfig
-bin/kernel/   the kernel (Go), not yet
-bin/rootfs/   the root filesystem service (Go, wasm), not yet
+bin/kernel/   the kernel (Go): boots from the rootfs it embeds
+bin/rootfs/   the root filesystem service (Go, wasip1) with a read-only layer that holds itself
 lib/c/        the C library processes link: headers, the in-process part, the musl subset
 dev/          toolchain helpers shared by the graph
 tst/          tests
@@ -54,14 +54,28 @@ build.py      the build graph
   `aot_output_size` (`bin/aot/wasm/src/lib.rs`) and imports nothing; its
   library is core, compiler_builtins and alloc, built from Rust's sources.
 
+## boot
+
+- `rootfs.wasm` is a Go wasip1 reactor with a read-only layer embedded in it
+  (`bin/rootfs/main.go` has the format and the API): `/bin/rootfs`, the
+  module itself, `/bin/aot` and busybox with its applet links.
+- The kernel embeds `rootfs.wasm` and starts it under wazero, checks that
+  `/bin/rootfs` is the module it started, takes `/bin/aot` from it and
+  compiles rootfs and aot with it. wazero is only this first stage; running
+  the artifacts natively is the next one, not yet.
+- The rest of the kernel sees the system through `wireBoard`: a `Compiler`
+  and an `FS`.
+
 ## building
 
 ```
-./build          # libc.a, busybox.wasm, busybox.links, abi.txt, aot, aot.wasm and busybox.aot
+./build          # libc.a, busybox, aot, aot.wasm, the .aot artifacts, rootfs.wasm and the kernel
 ./build test     # the tests in tst/
 ```
 
-Needs `clang` with the wasm32 target, `wasm-ld`, `llvm-ar`, `rustc` and
+Needs `clang` with the wasm32 target, `wasm-ld`, `llvm-ar`, `rustc`, `go` and
 `python3` on `PATH`; here `ix run bld/rust/96 -- ./build` provides rustc. The
 musl and busybox tarballs, the crates of `bin/aot/crates.toml` and rust-src
-of rustc's release are fetched by the graph and checked against their sha256.
+of rustc's release are fetched by the graph and checked against their sha256;
+the kernel's Go modules come from `go mod download`, checked against
+`bin/kernel/go.sum`.
