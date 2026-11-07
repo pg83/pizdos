@@ -7,7 +7,9 @@ import (
 
 // The emitter turns allocated machine code into bytes of the module's text:
 // prologue and epilogue, blocks in the allocator's order, out-of-line slow
-// paths and trap stubs, jump tables.
+// paths and trap stubs, jump tables. A function is a code region with Go's
+// frame layout (goabi.go): the return address, the saved RBP, the
+// callee-saved registers it uses, its stack slots, the outgoing area.
 
 type jumpFixup struct {
 	at    int32
@@ -17,6 +19,8 @@ type jumpFixup struct {
 type trapFixup struct {
 	at   int32
 	code int64
+	// sp is the stack pointer's delta at the jump: the stub runs with it.
+	sp int32
 }
 
 type tableFixup struct {
@@ -26,12 +30,17 @@ type tableFixup struct {
 }
 
 type funcEmitter struct {
-	oc       *objCode
-	a        *asm
-	mf       *MFunc
-	al       *allocator
+	oc *objCode
+	a  *asm
+	mf *MFunc
+	al *allocator
+	// frame is the stack below the pushes; framed tells that the frame
+	// saves RBP, which any frame but an empty one does; body is the stack
+	// pointer's delta in the body.
 	frame    int32
 	pushes   []VReg
+	framed   bool
+	body     int32
 	blockAt  []int32
 	jumps    []jumpFixup
 	traps    []trapFixup
@@ -42,42 +51,37 @@ type funcEmitter struct {
 
 func (oc *objCode) emitFunction(index int, mf *MFunc, al *allocator) {
 	a := &oc.a
-
-	for len(a.buf)%16 != 0 {
-		a.b(0xcc)
-	}
-
-	oc.funcAt[index] = a.pos()
+	start := oc.beginRegion(oc.funcName(index))
+	oc.funcAt[index] = start
 	e := &funcEmitter{oc: oc, a: a, mf: mf, al: al}
 	e.pushes = al.calleeSavedUsed()
-	frame := int32(mf.stackArgs+mf.retArea) + 8*al.nslots
-	total := 8 + 8*int32(len(e.pushes)) + frame
+	e.frame = int32(mf.stackArgs) + 8*al.nslots
+	e.framed = mf.hasCalls || e.frame > 0 || len(e.pushes) > 0
+	e.body = 8*int32(len(e.pushes)) + e.frame
 
-	if total%16 != 0 {
-		frame += 8
-		total += 8
+	if e.framed {
+		e.body += 8
 	}
 
-	e.frame = frame
-	e.incoming = frame + 8*int32(len(e.pushes)) + 8
+	e.incoming = e.body + 8
+	slow := int32(-1)
 
-	if mf.hasCalls || total > 4096 {
-		if total > 4096 {
-			a.lea(8, RAX, rspAt(-total))
-			a.aluRM(aluCmp, 8, RAX, baseAt(ctxReg, offStackLimit))
-		} else {
-			a.aluRM(aluCmp, 8, RSP, baseAt(ctxReg, offStackLimit))
-		}
+	// RAX carries no argument.
+	if mf.hasCalls || e.body > leafFrame {
+		slow = oc.stackCheck(e.body, RAX)
+	}
 
-		e.trapJcc(ccB, trapStack)
+	if e.framed {
+		a.push(RBP)
+		a.movRR(8, RBP, RSP)
 	}
 
 	for _, r := range e.pushes {
 		a.push(r)
 	}
 
-	if frame > 0 {
-		a.aluRI(aluSub, 8, RSP, int64(frame))
+	if e.frame > 0 {
+		a.aluRI(aluSub, 8, RSP, int64(e.frame))
 	}
 
 	e.blockAt = make([]int32, len(mf.blocks))
@@ -93,29 +97,32 @@ func (oc *objCode) emitFunction(index int, mf *MFunc, al *allocator) {
 			next = al.order[i+1]
 		}
 
+		a.setSP(e.body)
 		e.blockAt[b] = a.pos()
 		e.block(&mf.blocks[b], next)
 	}
 
 	for i := 0; i < len(e.late); i++ {
+		a.setSP(e.body)
 		e.late[i]()
 	}
 
-	stubs := map[int64]int32{}
+	if slow >= 0 {
+		a.setSP(0)
+		oc.slowPath(slow, start)
+	}
+
+	stubs := map[[2]int64]int32{}
 
 	for _, t := range e.traps {
-		at, ok := stubs[t.code]
+		key := [2]int64{t.code, int64(t.sp)}
+		at, ok := stubs[key]
 
 		if !ok {
 			at = a.pos()
-			stubs[t.code] = at
-			// The stack may be misaligned in the prologue; the handler does
-			// not return.
-			a.aluRI(aluAnd, 8, RSP, -16)
-			a.movRR(8, RDI, ctxReg)
-			a.movImm(4, RSI, t.code)
-			oc.callHelper(helperTrap)
-			a.ud2()
+			stubs[key] = at
+			a.setSP(t.sp)
+			oc.trapCall(t.code)
 		}
 
 		a.patch32(t.at, at)
@@ -137,14 +144,16 @@ func (oc *objCode) emitFunction(index int, mf *MFunc, al *allocator) {
 			a.u32(uint32(e.blockAt[b] - base))
 		}
 	}
+
+	oc.endRegion(start)
 }
 
 func (e *funcEmitter) trapJcc(cc uint8, code int64) {
-	e.traps = append(e.traps, trapFixup{e.a.jccRel(cc), code})
+	e.traps = append(e.traps, trapFixup{e.a.jccRel(cc), code, e.a.sp})
 }
 
 func (e *funcEmitter) trapJmp(code int64) {
-	e.traps = append(e.traps, trapFixup{e.a.jmpRel(), code})
+	e.traps = append(e.traps, trapFixup{e.a.jmpRel(), code, e.a.sp})
 }
 
 func (e *funcEmitter) jumpTo(cc int, block int32) {
@@ -188,15 +197,11 @@ func (e *funcEmitter) block(blk *MBlock, next int32) {
 }
 
 func (e *funcEmitter) slotMem(slot int32) amem {
-	return rspAt(int32(e.mf.stackArgs+e.mf.retArea) + 8*slot)
+	return rspAt(int32(e.mf.stackArgs) + 8*slot)
 }
 
 func (e *funcEmitter) mem(m Mem) amem {
 	am := memOf(m)
-
-	if m.frame {
-		am.disp += int32(e.mf.stackArgs)
-	}
 
 	if m.label >= 0 {
 		am.label = m.label
@@ -326,13 +331,10 @@ func (e *funcEmitter) inst(in *MInst) {
 	case mSwitch:
 		e.switchTable(in)
 	case mCall:
-		switch in.aux {
-		case calleeFunc:
+		if in.aux == calleeStub {
+			e.oc.callStub(int(in.imm))
+		} else {
 			e.oc.callFunc(int(in.imm))
-		case calleeImport:
-			e.oc.callImport(int(in.imm))
-		default:
-			e.oc.callHelper(int(in.imm))
 		}
 	case mCallInd:
 		a.callReg(in.src)
@@ -345,7 +347,12 @@ func (e *funcEmitter) inst(in *MInst) {
 			a.pop(e.pushes[i])
 		}
 
+		if e.framed {
+			a.pop(RBP)
+		}
+
 		a.ret()
+		a.setSP(e.body)
 	case mTrap:
 		e.trapJmp(in.imm)
 	case mTrapIf:
@@ -367,6 +374,14 @@ func (e *funcEmitter) inst(in *MInst) {
 			a.fload(8, in.dst, m)
 		} else {
 			a.load(8, 8, false, in.dst, m)
+		}
+	case mStoreRet:
+		m := rspAt(e.incoming + int32(8*(int64(e.mf.incoming)+in.imm)))
+
+		if in.src.isXMM() {
+			a.fstore(8, in.src, m)
+		} else {
+			a.store(8, in.src, m)
 		}
 	case mDivOvf:
 		a.aluRI(aluCmp, in.size, in.src2, -1)

@@ -7,8 +7,7 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
 
 - `./build` builds `libc.a`, `busybox.wasm`, `busybox.links`,
   `bin/busybox/abi.txt` (every kernel import busybox uses), `wasm2o`,
-  `wasm2o.wasm`, `wasm2o.self` and the wazero runner. Run it as
-  `ix run lib/c bld/compiler -- ./build`: wasm2o.self links the host's libc.
+  `wasm2o.wasm`, `wasm2o.o` and the wazero runner.
 - `./build test` runs `tst/test_*.py`, each with the outputs of the nodes
   `TESTED` names for it in build.py.
 - A node that consumes another node's output names it in `deps=`: the engine
@@ -32,15 +31,18 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
 ## bin/wasm2o
 
 - The compiler is Go with no dependencies, one `package main`: a module's
-  bytes in, an ELF object and a C header out (`compileModule`); file access
-  stays in `main.go`. `rt/w2x.h` is the whole contract with the host.
-- `test_wasm2o` is the fixed point: wasm2o.self and wasm2o.wasm under
-  wazero compile wasm2o.wasm and busybox.wasm to the bytes of the native
-  `wasm2o`. A change to
-  the compiler keeps it.
-- The spec testsuite runner lives in `../wasm/tst/spec.py` and needs wabt
-  (`ix run lib/c bld/compiler bld/wabt`); its baseline is 27036 passed and
-  59 failed (memory64, multi-memory, table.grow in its driver).
+  bytes in, an ELF object out (`compileModule`); file access stays in
+  `main.go`. `meta.go` is the object's description for a loader, `goabi.go`
+  the contract with Go: code runs on a goroutine's stack under Go 1.25 amd64
+  ABIInternal, R14 is g, RBP the frame pointer, X15 untouched, and the stack
+  pointer table must be exact at every instruction, since Go preempts the
+  code by signals and copies its stack.
+- The loader (`load.go`, `gort.go`, `wasi.go`, `run.go`) is linux/amd64
+  only and pinned to Go 1.25's moduledata; the compiler alone builds for
+  wasip1 too. Code and its registration live as long as the process.
+- `test_wasm2o` is the fixed point: wasm2o.o under `wasm2o run` and
+  wasm2o.wasm under wazero compile wasm2o.wasm and busybox.wasm to the bytes
+  of the native `wasm2o`. A change to the compiler keeps it.
 - Go modules (the wazero runner's) are pinned by `go.mod` and `go.sum`;
   `dev/go.py download` fetches them in a node of its own and the build runs
   offline.

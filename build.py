@@ -26,11 +26,6 @@ LLVM_AR = tool("llvm-ar")
 WASM_LD = tool("wasm-ld")
 GO = tool("go")
 
-# Host C (the hosts that run compiled modules) links the host's libc, which
-# ix run lib/c bld/compiler passes in CPPFLAGS, CFLAGS and LDFLAGS.
-HOST_CFLAGS = [*build.cppflags, *build.cflags]
-HOST_LDFLAGS = [*build.ldflags]
-
 MUSL = "1.2.5"
 BUSYBOX = "1.36.1"
 
@@ -140,31 +135,15 @@ wasm2o_wasm = command(
     color="light-blue",
 )
 
-# wasm2o.wasm compiled by wasm2o, and linked with the WASI host of
-# bin/wasm2o/rt: the compiler as its own output.
-wasm2o_self_obj = command(
-    name="wasm2o_self_obj",
-    outputs=["$(B)/bin/wasm2o/self/prog.o", "$(B)/bin/wasm2o/self/prog.h"],
+# wasm2o.wasm compiled by wasm2o: the compiler as its own output, which
+# `wasm2o run` executes on a goroutine stack.
+wasm2o_o = command(
+    name="wasm2o_o",
+    outputs=["$(B)/bin/wasm2o/wasm2o.o"],
     deps=[wasm2o, wasm2o_wasm],
-    cmd=[
-        wasm2o.outputs[0], "-p", "prog", "-H", "$(B)/bin/wasm2o/self/prog.h", "-o", "$(B)/bin/wasm2o/self/prog.o",
-        wasm2o_wasm.outputs[0],
-    ],
+    cmd=[wasm2o.outputs[0], "-o", "$(B)/bin/wasm2o/wasm2o.o", wasm2o_wasm.outputs[0]],
     descr="AO",
     color="light-cyan",
-)
-
-wasm2o_self = command(
-    name="wasm2o_self",
-    inputs=build.glob("$(S)/bin/wasm2o/rt/*"),
-    outputs=["$(B)/bin/wasm2o/wasm2o.self"],
-    deps=[wasm2o_self_obj],
-    cmd=[
-        CLANG, *HOST_CFLAGS, "-O2", "-I$(S)/bin/wasm2o/rt", "-I$(B)/bin/wasm2o/self", "-o", "$(B)/bin/wasm2o/wasm2o.self",
-        "$(S)/bin/wasm2o/rt/host.c", "$(S)/bin/wasm2o/rt/wasi.c", wasm2o_self_obj.outputs[0], *HOST_LDFLAGS,
-    ],
-    descr="LD",
-    color="green",
 )
 
 # tst/wazero: a WASI runner on wazero, what wasm2o is measured against. Its
@@ -195,7 +174,7 @@ wazero = command(
 # What each test runs against: its arguments are the outputs of these nodes.
 TESTED = {
     "busybox_abi": [busybox],
-    "wasm2o": [wasm2o, wasm2o_wasm, wasm2o_self_obj, wasm2o_self, wazero, busybox],
+    "wasm2o": [wasm2o, wasm2o_wasm, wasm2o_o, wazero, busybox],
 }
 tests = []
 
@@ -217,5 +196,5 @@ for test in build.glob("$(S)/tst/test_*.py"):
         color="green",
     ))
 
-group("install", busybox, busybox_abi, wasm2o, wasm2o_wasm, wasm2o_self, wazero)
+group("install", busybox, busybox_abi, wasm2o, wasm2o_wasm, wasm2o_o, wazero)
 group("test", *tests)

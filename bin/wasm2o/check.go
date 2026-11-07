@@ -219,10 +219,8 @@ func (a *allocator) checkInst(s checkState, in *MInst, orig origInst, b int32, i
 		return
 	}
 
-	if in.clobbers() {
-		for _, r := range callerSaved {
-			s[r] = locSet{}
-		}
+	for _, r := range in.clobberSet() {
+		s[r] = locSet{}
 	}
 
 	for _, op := range orig.ops {

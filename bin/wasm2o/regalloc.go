@@ -458,7 +458,7 @@ func (a *allocator) interval(r VReg) *interval {
 
 // allocatable reports registers the allocator may hand out.
 func allocatable(r VReg) bool {
-	return r != RSP && r != ctxReg && r != memReg
+	return r != RSP && r != RBP && r != R14 && r != ctxReg && r != memReg && r != XMM0+15
 }
 
 func (a *allocator) buildIntervals() {
@@ -479,10 +479,8 @@ func (a *allocator) buildIntervals() {
 			in := &insts[j]
 			p := a.instPos[b][j]
 
-			if in.clobbers() {
-				for _, r := range callerSaved {
-					a.interval(r).addRange(p+1, p+2)
-				}
+			for _, r := range in.clobberSet() {
+				a.interval(r).addRange(p+1, p+2)
 			}
 
 			// Operands of a parallel move may live in stack slots.

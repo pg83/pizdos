@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"strings"
 )
 
 // dumpFunc names a function, by name or index, whose IR is printed at
@@ -13,26 +12,12 @@ import (
 var dumpFunc = os.Getenv("W2X_DUMP")
 var traceFuncs = os.Getenv("W2X_TRACE") != ""
 
-// compileModule compiles a module to an ELF relocatable object and the C
-// header that describes how to embed it.
+// compileModule compiles a module to an ELF relocatable object whose .w2o
+// section describes it to a loader (meta.go).
 
 type callFixup struct {
 	at int32
 	fn int32
-}
-
-type reloc struct {
-	at     int32
-	sym    int32
-	addend int64
-}
-
-type elfSym struct {
-	name   string
-	value  int32
-	size   int32
-	global bool
-	fn     bool
 }
 
 type blob struct {
@@ -40,32 +25,41 @@ type blob struct {
 	align int
 }
 
-type objCode struct {
-	m      *Module
-	lay    *Layout
-	prefix string
-	// imports prefixes the symbols of imported functions.
-	imports  string
-	a        asm
-	funcAt   []int32
-	calls    []callFixup
-	relocs   []reloc
-	externs  []string
-	externIx map[string]int32
-	blobs    []blob
-	blobAt   []int32
-	floatIx  map[[2]uint64]int32
-	syms     []elfSym
-	initFn   int
+// objSlot is eight bytes of the text the loader fills with a symbol's value.
+type objSlot struct {
+	label int32
+	sym   string
 }
 
-func compileModule(data []byte, prefix, imports string) ([]byte, []byte) {
+type objCode struct {
+	m          *Module
+	lay        *Layout
+	a          asm
+	funcAt     []int32
+	stubAt     [stubCount]int32
+	calls      []callFixup
+	stubCalls  []callFixup
+	blobs      []blob
+	blobAt     []int32
+	floatIx    map[[2]uint64]int32
+	slots      []objSlot
+	slotIx     map[string]int32
+	regions    []Region
+	regionName string
+	// importSyms names the Go function each imported function calls.
+	importSyms map[int]string
+	initFn     int
+}
+
+func compileModule(data []byte) []byte {
 	m := decodeModule(data)
-	oc := &objCode{m: m, prefix: prefix, imports: imports, externIx: map[string]int32{}, floatIx: map[[2]uint64]int32{}}
+	oc := &objCode{m: m, floatIx: map[[2]uint64]int32{}, slotIx: map[string]int32{}, importSyms: map[int]string{}}
 	oc.initFn = m.addInitFunction()
 	oc.lay = newLayout(m)
 	oc.funcAt = make([]int32, len(m.funcs))
 	oc.addFixedBlobs()
+	oc.stubs()
+	oc.importAdapters()
 
 	for i := m.importedFuncs; i < len(m.funcs); i++ {
 		var mf *MFunc
@@ -102,68 +96,27 @@ func compileModule(data []byte, prefix, imports string) ([]byte, []byte) {
 		}
 
 		oc.emitFunction(i, mf, al)
-		oc.syms = append(oc.syms, elfSym{name: oc.funcSymbol(i), value: oc.funcAt[i], size: oc.a.pos() - oc.funcAt[i], fn: true})
 	}
 
-	oc.importAdapters()
-	oc.exportThunks()
+	exports := oc.exportThunks()
 	oc.initThunk()
 	oc.placeBlobs()
 	oc.resolve()
 
-	return writeELF(oc), oc.header()
+	return writeELF(oc, encodeMeta(oc.meta(exports)))
 }
 
-func (oc *objCode) funcSymbol(i int) string {
-	name := fmt.Sprintf("%s_f%d", oc.prefix, i)
-
+// funcName names a function's region, which Go shows in tracebacks.
+func (oc *objCode) funcName(i int) string {
 	if n := oc.m.funcs[i].name; n != "" {
-		name += "_" + sanitize(n)
+		return fmt.Sprintf("f%d:%s", i, n)
 	}
 
-	return name
-}
-
-func (oc *objCode) extern(name string) int32 {
-	if i, ok := oc.externIx[name]; ok {
-		return i
-	}
-
-	i := int32(len(oc.externs))
-	oc.externs = append(oc.externs, name)
-	oc.externIx[name] = i
-
-	return i
-}
-
-func (oc *objCode) importSymbol(fn int) string {
-	for _, imp := range oc.m.imports {
-		if imp.kind == externFunc && int(imp.index) == fn {
-			return oc.imports + sanitize(imp.module) + "__" + sanitize(imp.name)
-		}
-	}
-
-	throwFmt("internal error: function %d is not imported", fn)
-
-	return ""
+	return fmt.Sprintf("f%d", i)
 }
 
 func (oc *objCode) callFunc(fn int) {
 	oc.calls = append(oc.calls, callFixup{oc.a.callRel(), int32(fn)})
-}
-
-func (oc *objCode) callImport(fn int) {
-	oc.relocs = append(oc.relocs, reloc{oc.a.callRel(), oc.extern(oc.importSymbol(fn)), -4})
-}
-
-func (oc *objCode) callHelper(h int) {
-	oc.relocs = append(oc.relocs, reloc{oc.a.callRel(), oc.extern(helperNames[h]), -4})
-}
-
-func (oc *objCode) jmpExtern(name string) {
-	oc.a.b(0xe9)
-	oc.relocs = append(oc.relocs, reloc{oc.a.pos(), oc.extern(name), -4})
-	oc.a.u32(0)
 }
 
 func (oc *objCode) addBlob(b []byte, align int) int32 {
@@ -248,6 +201,10 @@ func (oc *objCode) resolve() {
 	for _, c := range oc.calls {
 		a.patch32(c.at, oc.funcAt[c.fn])
 	}
+
+	for _, c := range oc.stubCalls {
+		a.patch32(c.at, oc.stubAt[c.fn])
+	}
 }
 
 func (oc *objCode) align16() {
@@ -257,154 +214,50 @@ func (oc *objCode) align16() {
 }
 
 // importAdapters give imported functions an entry in the internal
-// convention, for their descriptors: the host takes the instance first.
+// convention: an adapter calls the Go function value of the import's
+// symbol, its module and name, or with a type other than an earlier import
+// of the same name, those and its index.
 func (oc *objCode) importAdapters() {
-	for i := 0; i < oc.m.importedFuncs; i++ {
-		oc.align16()
-		oc.funcAt[i] = oc.a.pos()
-		oc.a.movRR(8, RDI, ctxReg)
-		oc.jmpExtern(oc.importSymbol(i))
+	m := oc.m
+	types := map[string]uint64{}
+
+	for _, imp := range m.imports {
+		if imp.kind != externFunc {
+			continue
+		}
+
+		t := m.funcType(imp.index)
+		sym := imp.module + "." + imp.name
+
+		if id, ok := types[sym]; ok && id != typeID(t) {
+			sym = fmt.Sprintf("%s#%d", sym, imp.index)
+		}
+
+		types[sym] = typeID(t)
+		oc.importSyms[int(imp.index)] = sym
+		oc.funcAt[imp.index] = oc.goCall("import:"+imp.module+"."+imp.name, t.params, t.results, sym)
 	}
 }
 
-// thunkEnter saves the registers the host expects preserved that generated
-// code changes, and sets up the instance and memory registers; frame is
-// the stack space below.
-func (oc *objCode) thunkEnter(frame int32) {
-	a := &oc.a
-	a.push(R14)
-	a.push(R15)
-	a.aluRI(aluSub, 8, RSP, int64(frame))
-	a.movRR(8, ctxReg, RDI)
-	a.load(8, 8, false, memReg, baseAt(ctxReg, offMem))
-}
-
-func (oc *objCode) thunkLeave(frame int32) {
-	a := &oc.a
-	a.aluRI(aluAdd, 8, RSP, int64(frame))
-	a.pop(R15)
-	a.pop(R14)
-	a.ret()
-}
-
-func (oc *objCode) exportThunks() {
+// exportThunks gives every exported function a thunk Go calls.
+func (oc *objCode) exportThunks() []ExportMeta {
 	m := oc.m
+	var out []ExportMeta
 
 	for _, e := range m.exports {
-		if e.kind != externFunc {
-			continue
+		x := ExportMeta{kind: e.kind, name: e.name, index: e.index}
+
+		if e.kind == externFunc {
+			t := m.funcType(e.index)
+			x.sym = "export:" + e.name
+			x.params, x.results = t.params, t.results
+			oc.thunk(x.sym, t.params, t.results, int(e.index), nil)
 		}
 
-		t := m.funcType(e.index)
-		oc.align16()
-		start := oc.a.pos()
-		oc.exportThunk(int(e.index), t)
-		oc.syms = append(oc.syms, elfSym{name: oc.prefix + "_" + sanitize(e.name), value: start, size: oc.a.pos() - start, global: true, fn: true})
-	}
-}
-
-// exportThunk calls function index from System V: the instance comes first,
-// then the arguments, then, for several results, a pointer they are stored
-// to, 8 bytes each.
-func (oc *objCode) exportThunk(index int, t *FuncType) {
-	a := &oc.a
-	gi, xi := 0, 0
-	var stack []ValType
-
-	for _, p := range t.params {
-		if isFloat(p) {
-			if xi < len(argXMMs) {
-				xi++
-
-				continue
-			}
-		} else if gi < len(argGPRs) {
-			gi++
-
-			continue
-		}
-
-		stack = append(stack, p)
+		out = append(out, x)
 	}
 
-	multi := len(t.results) > 1
-	resultsReg := VReg(noReg)
-	resultsStack := -1
-
-	if multi {
-		if gi < len(argGPRs) {
-			resultsReg = argGPRs[gi]
-		} else {
-			resultsStack = len(stack)
-		}
-	}
-
-	// the outgoing stack arguments, then the saved results pointer
-	slot := int32(8 * len(stack))
-	frame := slot + 8
-
-	if (frame+16+8)%16 != 0 {
-		frame += 8
-	}
-
-	incoming := frame + 16 + 8
-	oc.thunkEnter(frame)
-	gi = 0
-
-	for _, p := range t.params {
-		if !isFloat(p) && gi < len(argGPRs) {
-			if p == I32 {
-				a.movRR(4, argGPRs[gi], argGPRs[gi])
-			}
-
-			gi++
-		}
-	}
-
-	for k, p := range stack {
-		src := rspAt(incoming + int32(8*k))
-
-		switch {
-		case isFloat(p):
-			a.fload(8, XMM0+15, src)
-			a.fstore(8, XMM0+15, rspAt(int32(8*k)))
-		case p == I32:
-			a.load(4, 4, false, RAX, src)
-			a.store(8, RAX, rspAt(int32(8*k)))
-		default:
-			a.load(8, 8, false, RAX, src)
-			a.store(8, RAX, rspAt(int32(8*k)))
-		}
-	}
-
-	if multi {
-		if resultsReg != noReg {
-			a.movRR(8, RDI, resultsReg)
-		} else {
-			a.load(8, 8, false, RDI, rspAt(incoming+int32(8*resultsStack)))
-		}
-
-		a.store(8, RDI, rspAt(slot))
-	}
-
-	oc.callFunc(index)
-
-	if multi && !memResults(t.results) {
-		a.load(8, 8, false, RCX, rspAt(slot))
-		g, x := 0, 0
-
-		for i, r := range t.results {
-			if isFloat(r) {
-				a.fstore(8, resultXMMs[x], baseAt(RCX, int32(8*i)))
-				x++
-			} else {
-				a.store(8, resultGPRs[g], baseAt(RCX, int32(8*i)))
-				g++
-			}
-		}
-	}
-
-	oc.thunkLeave(frame)
+	return out
 }
 
 // constOffset evaluates a constant offset expression: i32.const or
@@ -427,99 +280,131 @@ func constOffset(expr []byte) (int64, bool) {
 	return v, r.byte() == 0x0b && r.eof()
 }
 
+// initThunk emits the thunk Go calls on a new instance, func(instance
+// uintptr): it fills the function descriptors, applies the active element
+// segments and calls the init function, which sets the globals, applies the
+// data segments and calls the start function.
 func (oc *objCode) initThunk() {
 	m := oc.m
 	lay := oc.lay
-	oc.align16()
-	start := oc.a.pos()
 	a := &oc.a
-	oc.thunkEnter(8)
 
-	for i := range m.funcs {
-		d := lay.desc(i)
-		a.b(0x48, 0x8d, 0x05)
-		a.fixups = append(a.fixups, ripFixup{at: a.pos(), end: a.pos() + 4, label: int32(i), kind: labelFunc})
-		a.u32(0)
-		a.store(8, RAX, baseAt(ctxReg, d))
-		a.movImm(8, RAX, int64(typeID(m.funcType(uint32(i)))))
-		a.store(8, RAX, baseAt(ctxReg, d+8))
-	}
+	oc.thunk("init", nil, nil, -1, func() {
+		for i := range m.funcs {
+			d := lay.desc(i)
+			a.b(0x48, 0x8d, 0x05)
+			a.fixups = append(a.fixups, ripFixup{at: a.pos(), end: a.pos() + 4, label: int32(i), kind: labelFunc})
+			a.u32(0)
+			a.store(8, RAX, baseAt(ctxReg, d))
+			a.movImm(8, RAX, int64(typeID(m.funcType(uint32(i)))))
+			a.store(8, RAX, baseAt(ctxReg, d+8))
+		}
 
-	var traps []int32
+		for i, e := range m.elems {
+			if e.mode == segmentActive {
+				off, ok := constOffset(e.offset)
 
-	for i, e := range m.elems {
-		if e.mode == segmentActive {
-			off, ok := constOffset(e.offset)
-
-			if !ok {
-				throwFmt("unsupported: element segment %d with a computed offset", i)
-			}
-
-			tb := lay.tables[e.table]
-			n := int64(len(e.exprs))
-			arr := make([]byte, 0, 4*n)
-
-			for _, x := range e.exprs {
-				var d int32
-
-				if x[0] == 0xd2 {
-					r := &reader{data: x[1:]}
-					d = lay.desc(int(r.u32()))
+				if !ok {
+					throwFmt("unsupported: element segment %d with a computed offset", i)
 				}
 
-				arr = binary.LittleEndian.AppendUint32(arr, uint32(d))
+				tb := lay.tables[e.table]
+				n := int64(len(e.exprs))
+				arr := make([]byte, 0, 4*n)
+
+				for _, x := range e.exprs {
+					var d int32
+
+					if x[0] == 0xd2 {
+						r := &reader{data: x[1:]}
+						d = lay.desc(int(r.u32()))
+					}
+
+					arr = binary.LittleEndian.AppendUint32(arr, uint32(d))
+				}
+
+				// off + n must fit the table
+				a.load(4, 4, false, RAX, baseAt(ctxReg, tb+tableSize))
+				a.movImm(8, RCX, off+n)
+				a.aluRR(aluCmp, 8, RAX, RCX)
+				fits := a.jcc8(ccAE)
+				oc.trapCall(trapTableOOB)
+				a.here8(fits)
+
+				if n > 0 {
+					label := oc.addBlob(arr, 4)
+					a.lea(8, RSI, amem{base: -1, index: -1, label: label, labelKind: labelModule})
+					a.load(8, 8, false, RDI, baseAt(ctxReg, tb+tableEntries))
+					a.movImm(8, RAX, 8*off)
+					a.aluRR(aluAdd, 8, RDI, RAX)
+					a.movImm(4, RCX, n)
+					loop := a.pos()
+					a.opRM(true, []byte{0x63}, int(RAX), baseAt(RSI, 0), 0, false)
+					a.test(8, RAX, RAX)
+					null := a.jcc8(ccE)
+					a.aluRR(aluAdd, 8, RAX, ctxReg)
+					a.here8(null)
+					a.store(8, RAX, baseAt(RDI, 0))
+					a.aluRI(aluAdd, 8, RSI, 4)
+					a.aluRI(aluAdd, 8, RDI, 8)
+					a.aluRI(aluSub, 4, RCX, 1)
+					a.patch32(a.jccRel(ccNE), loop)
+				}
 			}
 
-			// off + n must fit the table
-			a.load(4, 4, false, RAX, baseAt(ctxReg, tb+tableSize))
-			a.movImm(8, RCX, off+n)
-			a.aluRR(aluCmp, 8, RAX, RCX)
-			traps = append(traps, a.jccRel(ccB))
-
-			if n > 0 {
-				label := oc.addBlob(arr, 4)
-				a.lea(8, RSI, amem{base: -1, index: -1, label: label, labelKind: labelModule})
-				a.load(8, 8, false, RDI, baseAt(ctxReg, tb+tableEntries))
-				a.movImm(8, RAX, 8*off)
-				a.aluRR(aluAdd, 8, RDI, RAX)
-				a.movImm(4, RCX, n)
-				loop := a.pos()
-				a.opRM(true, []byte{0x63}, int(RAX), baseAt(RSI, 0), 0, false)
-				a.test(8, RAX, RAX)
-				null := a.jcc8(ccE)
-				a.aluRR(aluAdd, 8, RAX, ctxReg)
-				a.here8(null)
-				a.store(8, RAX, baseAt(RDI, 0))
-				a.aluRI(aluAdd, 8, RSI, 4)
-				a.aluRI(aluAdd, 8, RDI, 8)
-				a.aluRI(aluSub, 4, RCX, 1)
-				a.patch32(a.jccRel(ccNE), loop)
+			if e.mode != segmentPassive {
+				a.storeImm(1, baseAt(ctxReg, lay.elemDropped(m, i)), 1)
 			}
 		}
 
-		if e.mode != segmentPassive {
-			a.storeImm(1, baseAt(ctxReg, lay.elemDropped(m, i)), 1)
+		oc.callFunc(oc.initFn)
+	})
+}
+
+// meta describes the module to its loader.
+func (oc *objCode) meta(exports []ExportMeta) *Meta {
+	m := oc.m
+	lay := oc.lay
+	meta := &Meta{instanceSize: uint32(lay.size), exports: exports, init: "init", regions: oc.regions}
+
+	if len(m.mems) > 0 {
+		l := m.mems[0].limits
+		max := uint64(65536)
+
+		if l.hasMax {
+			max = l.max
 		}
+
+		meta.memory = &MemoryMeta{min: l.min, max: max, imported: m.mems[0].imported}
 	}
 
-	oc.callFunc(oc.initFn)
-	oc.thunkLeave(8)
+	for i, t := range m.tables {
+		max := uint64(math.MaxUint32)
 
-	if len(traps) > 0 {
-		at := a.pos()
-
-		for _, t := range traps {
-			a.patch32(t, at)
+		if t.limits.hasMax {
+			max = t.limits.max
 		}
 
-		a.aluRI(aluAnd, 8, RSP, -16)
-		a.movRR(8, RDI, ctxReg)
-		a.movImm(4, RSI, trapTableOOB)
-		oc.callHelper(helperTrap)
-		a.ud2()
+		meta.tables = append(meta.tables, TableMeta{offset: uint32(lay.tables[i]), min: t.limits.min, max: max, imported: t.imported})
 	}
 
-	oc.syms = append(oc.syms, elfSym{name: "w2x_init_" + oc.prefix, value: start, size: a.pos() - start, global: true, fn: true})
+	for i, g := range m.globals {
+		meta.globals = append(meta.globals, GlobalMeta{offset: uint32(lay.globals[i]), typ: g.typ, mutable: g.mutable, imported: g.imported})
+	}
+
+	for _, imp := range m.imports {
+		x := ImportMeta{kind: imp.kind, module: imp.module, name: imp.name, index: imp.index}
+
+		if imp.kind == externFunc {
+			t := m.funcType(imp.index)
+			x.sym = oc.importSyms[int(imp.index)]
+			x.params, x.results = t.params, t.results
+		}
+
+		meta.imports = append(meta.imports, x)
+	}
+
+	return meta
 }
 
 // addInitFunction appends a function that initializes the globals and
@@ -576,146 +461,4 @@ func (m *Module) addInitFunction() int {
 	m.funcs = append(m.funcs, Func{typ: uint32(typ), body: code, name: "init"})
 
 	return len(m.funcs) - 1
-}
-
-func cType(t ValType) string {
-	switch t {
-	case I32:
-		return "uint32_t"
-	case I64:
-		return "uint64_t"
-	case F32:
-		return "float"
-	case F64:
-		return "double"
-	}
-
-	return "void*"
-}
-
-func (oc *objCode) signature(name string, t *FuncType) string {
-	ret := "void"
-
-	if len(t.results) == 1 {
-		ret = cType(t.results[0])
-	}
-
-	params := []string{"void* instance"}
-
-	for i, p := range t.params {
-		params = append(params, fmt.Sprintf("%s a%d", cType(p), i))
-	}
-
-	if len(t.results) > 1 {
-		// every result is stored as 8 bytes, in order
-		ret = "void"
-		params = append(params, "uint64_t* results")
-	}
-
-	return fmt.Sprintf("%s %s(%s)", ret, name, strings.Join(params, ", "))
-}
-
-func (oc *objCode) header() []byte {
-	m := oc.m
-	lay := oc.lay
-	P := strings.ToUpper(oc.prefix)
-	var sb strings.Builder
-	sb.WriteString("// Generated by wasm2o: the embedding interface of one module.\n#pragma once\n\n#include \"w2x.h\"\n\n")
-	fmt.Fprintf(&sb, "#define %s_INSTANCE_SIZE %d\n", P, lay.size)
-
-	if len(m.mems) > 0 {
-		l := m.mems[0].limits
-		max := uint64(65536)
-
-		if l.hasMax {
-			max = l.max
-		}
-
-		fmt.Fprintf(&sb, "#define %s_MEMORY_PAGES %d\n#define %s_MEMORY_MAX_PAGES %d\n", P, l.min, P, max)
-	}
-
-	for i, t := range m.tables {
-		max := uint64(math.MaxUint32)
-
-		if t.limits.hasMax {
-			max = t.limits.max
-		}
-
-		fmt.Fprintf(&sb, "#define %s_TABLE%d_OFFSET %d\n#define %s_TABLE%d_SIZE %d\n#define %s_TABLE%d_MAX %d\n", P, i, lay.tables[i], P, i, t.limits.min, P, i, max)
-	}
-
-	for _, e := range m.exports {
-		if e.kind == externGlobal {
-			fmt.Fprintf(&sb, "#define %s_GLOBAL_%s_OFFSET %d\n", P, sanitize(e.name), lay.globals[e.index])
-		}
-	}
-
-	for i, g := range m.globals {
-		if g.imported {
-			fmt.Fprintf(&sb, "#define %s_IMPORTED_GLOBAL%d_OFFSET %d\n", P, i, lay.globals[i])
-		}
-	}
-
-	sb.WriteString("\n#ifdef __cplusplus\nextern \"C\" {\n#endif\n\n")
-	fmt.Fprintf(&sb, "void w2x_init_%s(void* instance);\n", oc.prefix)
-
-	for _, e := range m.exports {
-		if e.kind == externFunc {
-			fmt.Fprintf(&sb, "%s;\n", oc.signature(oc.prefix+"_"+sanitize(e.name), m.funcType(e.index)))
-		}
-	}
-
-	sb.WriteString("\n// imports\n")
-
-	for _, imp := range m.imports {
-		if imp.kind == externFunc {
-			fmt.Fprintf(&sb, "%s;\n", oc.signature(oc.imports+sanitize(imp.module)+"__"+sanitize(imp.name), m.funcType(imp.index)))
-		}
-	}
-
-	sb.WriteString("\n#ifdef __cplusplus\n}\n#endif\n")
-
-	// A description for tools: one line per import and export.
-	sb.WriteString("\n")
-
-	for _, imp := range m.imports {
-		switch imp.kind {
-		case externFunc:
-			fmt.Fprintf(&sb, "// import func =%s =%s %s\n", sanitize(imp.module), sanitize(imp.name), oc.imports+sanitize(imp.module)+"__"+sanitize(imp.name))
-		case externGlobal:
-			g := m.globals[imp.index]
-			fmt.Fprintf(&sb, "// import global =%s =%s %d %s %v\n", sanitize(imp.module), sanitize(imp.name), lay.globals[imp.index], typeName(g.typ), g.mutable)
-		case externMemory:
-			fmt.Fprintf(&sb, "// import memory =%s =%s\n", sanitize(imp.module), sanitize(imp.name))
-		case externTable:
-			fmt.Fprintf(&sb, "// import table =%s =%s %d\n", sanitize(imp.module), sanitize(imp.name), lay.tables[imp.index])
-		}
-	}
-
-	for _, e := range m.exports {
-		switch e.kind {
-		case externFunc:
-			t := m.funcType(e.index)
-			var ps, rs []string
-
-			for _, p := range t.params {
-				ps = append(ps, typeName(p))
-			}
-
-			for _, r := range t.results {
-				rs = append(rs, typeName(r))
-			}
-
-			fmt.Fprintf(&sb, "// export func =%s %s_%s (%s) (%s)\n", sanitize(e.name), oc.prefix, sanitize(e.name), strings.Join(ps, ","), strings.Join(rs, ","))
-		case externGlobal:
-			g := m.globals[e.index]
-			fmt.Fprintf(&sb, "// export global =%s %d %s %v %v\n", sanitize(e.name), lay.globals[e.index], typeName(g.typ), g.imported, g.mutable)
-		case externMemory:
-			fmt.Fprintf(&sb, "// export memory =%s\n", sanitize(e.name))
-		case externTable:
-			fmt.Fprintf(&sb, "// export table =%s %d\n", sanitize(e.name), lay.tables[e.index])
-		}
-	}
-
-	return []byte(sb.String())
 }

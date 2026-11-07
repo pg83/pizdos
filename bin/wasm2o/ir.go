@@ -404,7 +404,7 @@ func readsState(op Op) bool {
 	return hasEffect(op)
 }
 
-// Trap codes, shared with the host runtime.
+// Trap codes, the argument of the loader's trap.
 const (
 	trapUnreachable   = 1
 	trapMemoryOOB     = 2

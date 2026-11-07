@@ -9,22 +9,9 @@ import "math"
 
 // call targets
 const (
-	calleeFunc   = 0 // a defined function: target is its index
-	calleeImport = 1 // an imported function, called with System V
-	calleeHelper = 2 // a runtime symbol, called with System V
+	calleeFunc = 0 // a function by index: an imported one is its adapter
+	calleeStub = 1 // a stub of the module (stubs.go) by kind
 )
-
-// runtime helpers called by generated code
-const (
-	helperMemmove = iota
-	helperMemset
-	helperMemoryGrow
-	helperTableGrow
-	helperTrap
-	helperCount
-)
-
-var helperNames = [helperCount]string{"memmove", "memset", "w2x_memory_grow", "w2x_table_grow", "w2x_trap"}
 
 // float constants in the module constant pool
 const (
@@ -48,29 +35,10 @@ type lowerer struct {
 	cur      int32
 	// split maps an edge (block, edge index) to the block placed on it.
 	split map[[2]int32]int32
-	// retPtr holds where the function stores its results when they do not
-	// fit the result registers.
-	retPtr VReg
-}
-
-// memResults reports results that do not fit the result registers: all of
-// them are stored through a pointer the caller passes in rdi.
-func memResults(results []ValType) bool {
-	g, x := 0, 0
-
-	for _, t := range results {
-		if isFloat(t) {
-			x++
-		} else {
-			g++
-		}
-	}
-
-	return g > len(resultGPRs) || x > len(resultXMMs)
 }
 
 func lowerFunction(m *Module, lay *Layout, f *Function) *MFunc {
-	l := &lowerer{m: m, f: f, lay: lay, mf: &MFunc{}, split: map[[2]int32]int32{}, retPtr: noReg}
+	l := &lowerer{m: m, f: f, lay: lay, mf: &MFunc{}, split: map[[2]int32]int32{}}
 	l.ci = f.analyze()
 	l.vregs = make([]VReg, len(f.values))
 
@@ -359,11 +327,6 @@ func (l *lowerer) entry() {
 		stack++
 	}
 
-	if memResults(f.typ.results) {
-		l.retPtr = l.mf.newReg(classGPR)
-		pm.moves = append(pm.moves, Move{l.retPtr, RDI})
-	}
-
 	if len(pm.moves) > 0 {
 		l.emit(pm)
 	}
@@ -531,7 +494,7 @@ func (l *lowerer) lowerValue(v int32) {
 		sh.aux = shiftShr
 		l.emit(sh)
 	case OpMemGrow:
-		l.helperCall(helperMemoryGrow, []VReg{l.use(args[0])}, []Type{I32}, v, true)
+		l.stubCall(stubMemoryGrow, []VReg{l.use(args[0])}, []Type{I32}, v)
 	case OpMemCopy:
 		l.memCopy(args)
 	case OpMemFill:
@@ -584,7 +547,7 @@ func (l *lowerer) lowerValue(v int32) {
 		l.emit(in)
 	case OpTableGrow:
 		table := l.constReg(val.aux, 4)
-		l.helperCall(helperTableGrow, []VReg{table, l.use(args[1]), l.use(args[0])}, []Type{I32, I32, FuncRef}, v, false)
+		l.stubCall(stubTableGrow, []VReg{table, l.use(args[1]), l.use(args[0])}, []Type{I32, I32, FuncRef}, v)
 	default:
 		throwFmt("unsupported operator %s in function %d", val.op, l.f.index)
 	}
@@ -1249,8 +1212,8 @@ func (l *lowerer) globalSet(index int, value int32) {
 }
 
 // placeArgs moves call arguments to their registers and stack slots and
-// returns the registers the call reads.
-func (l *lowerer) placeArgs(args []int32) []VReg {
+// returns the registers the call reads and the number of stack slots.
+func (l *lowerer) placeArgs(args []int32) ([]VReg, int) {
 	regs := make([]VReg, len(args))
 	types := make([]Type, len(args))
 
@@ -1263,8 +1226,9 @@ func (l *lowerer) placeArgs(args []int32) []VReg {
 }
 
 // placeRegs moves argument registers to their argument registers and stack
-// slots and returns the fixed registers the call reads.
-func (l *lowerer) placeRegs(regs []VReg, types []Type) []VReg {
+// slots and returns the fixed registers the call reads and the number of
+// stack slots.
+func (l *lowerer) placeRegs(regs []VReg, types []Type) ([]VReg, int) {
 	var uses []VReg
 	gi, xi, stack := 0, 0, 0
 	pm := inst(mParMove)
@@ -1296,31 +1260,29 @@ func (l *lowerer) placeRegs(regs []VReg, types []Type) []VReg {
 		stack++
 	}
 
-	if stack*8 > l.mf.stackArgs {
-		l.mf.stackArgs = stack * 8
-	}
-
 	if len(pm.moves) > 0 {
 		l.emit(pm)
 	}
 
-	return uses
+	return uses, stack
 }
 
-func (l *lowerer) results(results []ValType) []VReg {
-	if memResults(results) {
-		return nil
-	}
-
+// resultRegs assigns results to the result registers in order; one that
+// does not fit gets noReg and the next stack result slot, which follows the
+// stack arguments in the caller's outgoing area.
+func resultRegs(results []ValType) []VReg {
 	gi, xi := 0, 0
-	var regs []VReg
+	regs := make([]VReg, len(results))
 
-	for _, t := range results {
-		if isFloat(t) {
-			regs = append(regs, resultXMMs[xi])
+	for i, t := range results {
+		regs[i] = noReg
+
+		switch {
+		case isFloat(t) && xi < len(resultXMMs):
+			regs[i] = resultXMMs[xi]
 			xi++
-		} else {
-			regs = append(regs, resultGPRs[gi])
+		case !isFloat(t) && gi < len(resultGPRs):
+			regs[i] = resultGPRs[gi]
 			gi++
 		}
 	}
@@ -1328,47 +1290,37 @@ func (l *lowerer) results(results []ValType) []VReg {
 	return regs
 }
 
-// retAreaArg points rdi at the frame's return value area for a call whose
-// results are stored in memory.
-func (l *lowerer) retAreaArg(results []ValType) []VReg {
-	if !memResults(results) {
-		return nil
+func assigned(regs []VReg) []VReg {
+	var out []VReg
+
+	for _, r := range regs {
+		if r != noReg {
+			out = append(out, r)
+		}
 	}
 
-	if n := 8 * len(results); n > l.mf.retArea {
-		l.mf.retArea = n
-	}
-
-	in := inst(mLea)
-	in.dst = RDI
-	in.mem = Mem{base: RSP, index: noReg, scale: 1, label: -1, frame: true}
-	in.size = 8
-	l.emit(in)
-
-	return []VReg{RDI}
+	return out
 }
 
-func (l *lowerer) takeResults(v int32, results []ValType, regs []VReg, zext bool) {
-	if len(results) == 0 {
-		return
+// outgoing makes room for a call's stack arguments and results.
+func (l *lowerer) outgoing(stackArgs int, regs []VReg) {
+	n := stackArgs
+
+	for _, r := range regs {
+		if r == noReg {
+			n++
+		}
 	}
 
-	if memResults(results) {
-		for _, user := range l.extracts(v) {
-			i := l.f.values[user].aux
-			in := inst(mLoad)
+	if 8*n > l.mf.stackArgs {
+		l.mf.stackArgs = 8 * n
+	}
+}
 
-			if isFloat(results[i]) {
-				in.op = mFLoad
-			}
-
-			in.dst = l.def(user)
-			in.mem = Mem{base: RSP, index: noReg, scale: 1, disp: int32(8 * i), label: -1, frame: true}
-			in.size = typeSize(results[i])
-			in.dsize = in.size
-			l.emit(in)
-		}
-
+// takeResults defines a call's results: from their registers, or from the
+// stack result slots after stackArgs argument slots.
+func (l *lowerer) takeResults(v int32, results []ValType, regs []VReg, stackArgs int) {
+	if len(results) == 0 {
 		return
 	}
 
@@ -1389,25 +1341,32 @@ func (l *lowerer) takeResults(v int32, results []ValType, regs []VReg, zext bool
 	}
 
 	pm := inst(mParMove)
+	slot := stackArgs
 
 	for i, d := range dsts {
-		if d == noReg {
+		if regs[i] == noReg {
+			if d != noReg {
+				in := inst(mLoad)
+
+				if isFloat(results[i]) {
+					in.op = mFLoad
+				}
+
+				in.dst = d
+				in.mem = memAt(RSP, int32(8*slot))
+				in.size = typeSize(results[i])
+				in.dsize = in.size
+				l.emit(in)
+			}
+
+			slot++
+
 			continue
 		}
 
-		if zext && results[i] == I32 {
-			// The host leaves the upper half of a 32-bit result undefined.
-			in := inst(mMov)
-			in.dst = d
-			in.src = regs[i]
-			in.size = 4
-			in.aux = 1
-			l.emit(in)
-
-			continue
+		if d != noReg {
+			pm.moves = append(pm.moves, Move{d, regs[i]})
 		}
-
-		pm.moves = append(pm.moves, Move{d, regs[i]})
 	}
 
 	if len(pm.moves) > 0 {
@@ -1439,56 +1398,22 @@ func (l *lowerer) extracts(call int32) []int32 {
 	return out
 }
 
-func (l *lowerer) callTarget(index int) (uint8, int64) {
-	if index < l.m.importedFuncs {
-		return calleeImport, int64(index)
-	}
-
-	return calleeFunc, int64(index)
-}
-
+// call calls a function of the module; an imported one through its
+// adapter, which keeps the internal convention, the memory register
+// included.
 func (l *lowerer) call(v int32, index int, args []int32) {
 	t := l.m.funcType(uint32(index))
-	uses := l.placeArgs(args)
-	kind, target := l.callTarget(index)
-
-	if kind == calleeImport && memResults(t.results) {
-		throwFmt("unsupported: imported function %d returns %d values", index, len(t.results))
-	}
-
-	uses = append(uses, l.retAreaArg(t.results)...)
+	uses, stack := l.placeArgs(args)
+	regs := resultRegs(t.results)
+	l.outgoing(stack, regs)
 	in := inst(mCall)
-	in.aux = kind
-	in.imm = target
-	regs := l.results(t.results)
+	in.aux = calleeFunc
+	in.imm = int64(index)
 	in.uses = uses
-	in.defs = regs
-
-	if kind == calleeImport {
-		// rdi carries the instance to the host
-		l.mov(RDI, ctxReg, 8)
-		in.uses = append(in.uses, RDI)
-	}
-
+	in.defs = assigned(regs)
 	l.mf.hasCalls = true
 	l.emit(in)
-
-	if kind == calleeImport {
-		l.reloadMemory()
-	}
-
-	l.takeResults(v, t.results, regs, kind == calleeImport)
-}
-
-// reloadMemory refreshes the memory base after the host ran: it may have
-// moved the memory.
-func (l *lowerer) reloadMemory() {
-	in := inst(mLoad)
-	in.dst = memReg
-	in.mem = memAt(ctxReg, offMem)
-	in.size = 8
-	in.dsize = 8
-	l.emit(in)
+	l.takeResults(v, t.results, regs, stack)
 }
 
 func (l *lowerer) callIndirect(v int32, typeIndex int, table int, args []int32) {
@@ -1529,19 +1454,16 @@ func (l *lowerer) callIndirect(v int32, typeIndex int, table int, args []int32) 
 
 	l.trapIf(ccNE, trapIndirectType)
 	code := l.load64(memAt(desc, 0))
-	uses := l.placeArgs(args)
-	uses = append(uses, l.retAreaArg(t.results)...)
+	uses, stack := l.placeArgs(args)
+	regs := resultRegs(t.results)
+	l.outgoing(stack, regs)
 	in := inst(mCallInd)
 	in.src = code
-	regs := l.results(t.results)
 	in.uses = uses
-	in.defs = regs
+	in.defs = assigned(regs)
 	l.mf.hasCalls = true
 	l.emit(in)
-	// The callee may be an imported function: the host may have moved the
-	// memory and left the upper half of a 32-bit result undefined.
-	l.reloadMemory()
-	l.takeResults(v, t.results, regs, true)
+	l.takeResults(v, t.results, regs, stack)
 }
 
 func (l *lowerer) load64(mem Mem) VReg {
@@ -1567,15 +1489,19 @@ func (l *lowerer) constReg(x int64, size uint8) VReg {
 	return r
 }
 
-// helperCall calls a runtime helper with the instance and the arguments,
-// System V style; result, when not negative, receives the i32 result.
-func (l *lowerer) helperCall(helper int, regs []VReg, types []Type, result int32, memory bool) {
-	uses := l.placeRegs(regs, types)
-	l.mov(RDI, ctxReg, 8)
+// stubCall calls a stub that goes into Go, in the internal convention;
+// result, when not negative, receives the i32 result.
+func (l *lowerer) stubCall(stub int, regs []VReg, types []Type, result int32) {
+	uses, stack := l.placeRegs(regs, types)
+
+	if stack != 0 {
+		throwFmt("internal error: stub %d takes stack arguments", stub)
+	}
+
 	in := inst(mCall)
-	in.aux = calleeHelper
-	in.imm = int64(helper)
-	in.uses = append(uses, RDI)
+	in.aux = calleeStub
+	in.imm = int64(stub)
+	in.uses = uses
 
 	if result >= 0 {
 		in.defs = []VReg{RAX}
@@ -1583,10 +1509,6 @@ func (l *lowerer) helperCall(helper int, regs []VReg, types []Type, result int32
 
 	l.mf.hasCalls = true
 	l.emit(in)
-
-	if memory {
-		l.reloadMemory()
-	}
 
 	if result >= 0 {
 		mv := inst(mMov)
@@ -1650,7 +1572,7 @@ func (l *lowerer) memCopy(args []int32) {
 	l.memAddr(dst, d)
 	src := l.mf.newReg(classGPR)
 	l.memAddr(src, s)
-	l.libcCall(helperMemmove, dst, src, n)
+	l.memStub(stubMemmove, dst, src, n)
 }
 
 func (l *lowerer) memFill(args []int32) {
@@ -1658,7 +1580,7 @@ func (l *lowerer) memFill(args []int32) {
 	l.checkRange(d, n, memAt(ctxReg, offMemSize), 8, trapMemoryOOB)
 	dst := l.mf.newReg(classGPR)
 	l.memAddr(dst, d)
-	l.libcCall(helperMemset, dst, val, n)
+	l.memStub(stubMemset, dst, val, n)
 }
 
 func (l *lowerer) memInit(seg int, args []int32) {
@@ -1713,18 +1635,26 @@ func (l *lowerer) memInit(seg int, args []int32) {
 	addS.size = 8
 	addS.aux = uint8(aluAdd)
 	l.emit(addS)
-	l.libcCall(helperMemmove, dst, src, n)
+	l.memStub(stubMemmove, dst, src, n)
 }
 
-// libcCall calls memmove or memset with three arguments.
-func (l *lowerer) libcCall(helper int, a, b, c VReg) {
+// memStub calls the memmove stub with the destination, source and length,
+// or the memset stub with the destination, byte and length, in the
+// registers of their string instructions.
+func (l *lowerer) memStub(stub int, a, b, c VReg) {
+	second := RSI
+
+	if stub == stubMemset {
+		second = RAX
+	}
+
 	pm := inst(mParMove)
-	pm.moves = []Move{{RDI, a}, {RSI, b}, {RDX, c}}
+	pm.moves = []Move{{RDI, a}, {second, b}, {RCX, c}}
 	l.emit(pm)
 	in := inst(mCall)
-	in.aux = calleeHelper
-	in.imm = int64(helper)
-	in.uses = []VReg{RDI, RSI, RDX}
+	in.aux = calleeStub
+	in.imm = int64(stub)
+	in.uses = []VReg{RDI, second, RCX}
 	l.mf.hasCalls = true
 	l.emit(in)
 }
@@ -1895,31 +1825,23 @@ func (l *lowerer) terminator(b int32) {
 		l.emit(in)
 	case TermReturn:
 		results := l.f.typ.results
-
-		if l.retPtr != noReg {
-			for i, v := range t.values {
-				in := inst(mStore)
-
-				if isFloat(results[i]) {
-					in.op = mFStore
-				}
-
-				in.mem = memAt(l.retPtr, int32(8*i))
-				in.src = l.use(v)
-				in.size = typeSize(results[i])
-				l.emit(in)
-			}
-
-			l.emit(inst(mRet))
-
-			return
-		}
-
-		regs := l.results(results)
+		regs := resultRegs(results)
 		pm := inst(mParMove)
+		slot := 0
 
 		for i, v := range t.values {
-			pm.moves = append(pm.moves, Move{regs[i], l.use(v)})
+			if regs[i] != noReg {
+				pm.moves = append(pm.moves, Move{regs[i], l.use(v)})
+
+				continue
+			}
+
+			in := inst(mStoreRet)
+			in.src = l.use(v)
+			in.imm = int64(slot)
+			in.size = typeSize(results[i])
+			l.emit(in)
+			slot++
 		}
 
 		if len(pm.moves) > 0 {
@@ -1927,7 +1849,7 @@ func (l *lowerer) terminator(b int32) {
 		}
 
 		in := inst(mRet)
-		in.uses = regs
+		in.uses = assigned(regs)
 		l.emit(in)
 	case TermTrap:
 		in := inst(mTrap)

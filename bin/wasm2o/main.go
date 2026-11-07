@@ -3,53 +3,50 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"runtime/pprof"
-	"strings"
 	"time"
 )
 
 func usage() {
-	throwFmt("usage: wasm2o [-p prefix] [-i import-prefix] [-H header.h] -o output.o input.wasm")
+	throwFmt("usage: wasm2o [-v] -o output.o input.wasm\n       wasm2o run object.o [-- arg...]")
 }
 
 func main() {
-	defer func() {
-		if e := recover(); e != nil {
-			if _, ok := e.(*Exception); !ok {
-				panic(e)
-			}
+	code := 0
 
-			fmt.Fprintln(os.Stderr, "wasm2o:", e)
-			os.Exit(1)
+	if e := try(func() {
+		args := os.Args[1:]
+
+		if len(args) > 0 && args[0] == "run" {
+			code = runCommand(args[1:])
+
+			return
 		}
-	}()
 
-	var input, output, header, prefix, imports string
+		compileCommand(args)
+	}); e != nil {
+		fmt.Fprintln(os.Stderr, "wasm2o:", e)
+		os.Exit(1)
+	}
+
+	os.Exit(code)
+}
+
+func compileCommand(args []string) {
+	var input, output string
 	verbose := false
-	args := os.Args[1:]
 
 	for len(args) > 0 {
 		arg := args[0]
 		args = args[1:]
 
 		switch arg {
-		case "-o", "-H", "-p", "-i":
+		case "-o":
 			if len(args) == 0 {
 				usage()
 			}
 
-			switch arg {
-			case "-o":
-				output = args[0]
-			case "-H":
-				header = args[0]
-			case "-i":
-				imports = args[0]
-			default:
-				prefix = args[0]
-			}
-
+			output = args[0]
 			args = args[1:]
 		case "-v":
 			verbose = true
@@ -66,10 +63,6 @@ func main() {
 		usage()
 	}
 
-	if prefix == "" {
-		prefix = sanitize(strings.TrimSuffix(filepath.Base(input), filepath.Ext(input)))
-	}
-
 	data := throw2(os.ReadFile(input))
 
 	if path := os.Getenv("W2X_PROFILE"); path != "" {
@@ -80,15 +73,27 @@ func main() {
 	}
 
 	start := time.Now()
-	obj, h := compileModule(data, prefix, imports)
+	obj := compileModule(data)
 	elapsed := time.Since(start)
 	throw(os.WriteFile(output, obj, 0o644))
-
-	if header != "" {
-		throw(os.WriteFile(header, h, 0o644))
-	}
 
 	if verbose {
 		fmt.Fprintf(os.Stderr, "wasm2o: %d bytes -> %d bytes in %s\n", len(data), len(obj), elapsed)
 	}
+}
+
+// runCommand runs object.o as a WASI command: its arguments are the object's
+// path and those after --.
+func runCommand(args []string) int {
+	if len(args) == 0 || len(args) > 1 && args[1] != "--" {
+		usage()
+	}
+
+	argv := []string{args[0]}
+
+	if len(args) > 1 {
+		argv = append(argv, args[2:]...)
+	}
+
+	return runObject(throw2(os.ReadFile(args[0])), argv)
 }

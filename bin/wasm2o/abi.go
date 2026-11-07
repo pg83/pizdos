@@ -1,14 +1,15 @@
 package main
 
-// The instance is one block of memory the host allocates. Its fixed header
-// comes first; the module's globals, tables, function descriptors and
-// segment flags follow at offsets the generated header names.
+// The instance is one block of memory the loader allocates, zeroed, of the
+// size the object's metadata names. Its fixed header comes first; the
+// module's globals, tables, function descriptors and segment flags follow at
+// the offsets of the metadata.
 const (
-	offMem        = 0  // uint8_t* base of linear memory
-	offMemSize    = 8  // uint64_t size of linear memory in bytes
-	offMemBound   = 16 // uint64_t size - boundSlack, at least 0: see mCheck
-	offStackLimit = 24 // the lowest stack address generated code may use
-	offHost       = 32 // void* for the host
+	offMem        = 0  // base of linear memory
+	offMemSize    = 8  // size of linear memory in bytes
+	offMemBound   = 16 // int64 size - boundSlack: see mCheck
+	offStackLimit = 24 // the most bytes of goroutine stack the code may use; beyond, it traps
+	offHost       = 32 // free for the loader
 	headerSize    = 48
 )
 

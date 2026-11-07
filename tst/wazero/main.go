@@ -4,7 +4,7 @@
 //	wazero [-interpreter] [-compile] [-reserve] module.wasm [args...]
 //
 // The command sees the host's root directory, environment and working
-// directory, as under the host of bin/wasm2o/rt. -interpreter runs the module
+// directory, as under `wasm2o run`. -interpreter runs the module
 // in wazero's interpreter instead of compiling it; -compile only compiles
 // it, so the module may import anything; -reserve gives memory its maximum
 // capacity up front, so growth never copies it. The last line on stderr is

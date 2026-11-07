@@ -8,7 +8,7 @@ __pycache__/
 /busybox_abi
 /wasm2o
 /wasm2o_wasm
-/wasm2o_self
+/wasm2o_o
 /wazero
 /libc
 /musl_tarball

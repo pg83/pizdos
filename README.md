@@ -8,8 +8,7 @@ hardware, not a different kernel.
 ## layout
 
 ```
-bin/wasm2o/   the compiler from wasm to x86-64 (Go): a module in, an ELF object and a C header out
-bin/wasm2o/rt/ the contract with the host of compiled code (w2x.h) and a WASI host
+bin/wasm2o/   wasm to x86-64 (Go): a module in, an ELF object out; `wasm2o run` loads one onto a goroutine
 bin/busybox/  busybox for the system: our config and the generator that replaces kconfig
 bin/kernel/   the kernel (Go), not yet
 bin/rootfs/   the root filesystem service (Go, wasm), not yet
@@ -41,27 +40,33 @@ build.py      the build graph
 
 ## native code
 
-- `wasm2o` compiles a module ahead of time to an ELF relocatable object and
-  a C header that tells the host how to embed it (`bin/wasm2o/rt/w2x.h`). The
-  code needs no signal handlers, guard pages or reserved address space:
-  memory accesses and the stack depth are checked explicitly, a trap calls
-  the host, and linear memory may move when it grows.
-- The build makes `wasm2o` natively, `wasm2o.wasm` (the same compiler for
-  wasip1) and `wasm2o.self`: wasm2o.wasm compiled by wasm2o and linked with
-  the WASI host of `bin/wasm2o/rt`. Both wasm2o.self and wasm2o.wasm under
-  wazero compile wasm2o.wasm and busybox.wasm to the bytes `wasm2o`
-  produces.
+- `wasm2o` compiles a module ahead of time to an ELF relocatable object:
+  code, absolute relocations to the symbols a loader defines, and a `.w2o`
+  section describing the module (`bin/wasm2o/meta.go`). The code needs no
+  signal handlers, guard pages or reserved address space: memory accesses
+  are checked explicitly, a trap calls Go, and linear memory may move when
+  it grows.
+- The code runs on a goroutine's stack under Go 1.25 amd64 ABIInternal
+  (`bin/wasm2o/goabi.go`): exports are functions Go calls, imports are Go
+  function values, prologues grow the stack through Go's morestack, and the
+  loader registers every code region with Go's runtime, so the garbage
+  collector, stack copying, panics, tracebacks and asynchronous preemption
+  go through the frames.
+- `wasm2o run object.o -- args` is that loader with WASI preview1 in Go. The
+  build makes `wasm2o` natively, `wasm2o.wasm` (the same compiler for wasip1)
+  and `wasm2o.o`, wasm2o.wasm compiled by wasm2o: run by `wasm2o run` and
+  under wazero, it compiles wasm2o.wasm and busybox.wasm to the bytes
+  `wasm2o` produces.
 
 ## building
 
 ```
-ix run lib/c bld/compiler -- ./build          # libc.a, busybox, wasm2o, wasm2o.wasm, wasm2o.self, the wazero runner
-ix run lib/c bld/compiler -- ./build test     # the tests in tst/
+./build          # libc.a, busybox, wasm2o, wasm2o.wasm, wasm2o.o, the wazero runner
+./build test     # the tests in tst/
 ```
 
-Needs `clang` with the wasm32 target, `wasm-ld`, `llvm-ar`, `go` and
-`python3` on `PATH`, and the host's libc in `CPPFLAGS`, `CFLAGS` and
-`LDFLAGS` for wasm2o.self; `ix run lib/c bld/compiler` provides all of it. The
-musl and busybox tarballs are fetched by the graph and checked against their
-sha256; the wazero runner's Go modules come from `go mod download`, checked
-against `tst/wazero/go.sum`.
+Needs `clang` with the wasm32 target, `wasm-ld`, `llvm-ar`, Go 1.25 and
+`python3` on `PATH`; `ix run bld/compiler` provides them. The musl and
+busybox tarballs are fetched by the graph and checked against their sha256;
+the wazero runner's Go modules come from `go mod download`, checked against
+`tst/wazero/go.sum`.

@@ -1,6 +1,9 @@
 package main
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"sort"
+)
 
 // asm encodes x86-64 instructions into a byte buffer. Registers are VReg
 // numbers of physical registers; xmm registers are encoded by their low four
@@ -32,9 +35,62 @@ type ripFixup struct {
 	kind    uint8
 }
 
+// spEntry records that from pc on the stack pointer is delta bytes below
+// its value at the entry of the code region around pc.
+type spEntry struct {
+	pc    int32
+	delta int32
+}
+
 type asm struct {
 	buf    []byte
 	fixups []ripFixup
+	// sp is the current delta; sps logs every change, for Go's unwinder,
+	// which must know the frame at each instruction.
+	sp  int32
+	sps []spEntry
+}
+
+// setSP declares the stack pointer's delta from here on: at the start of a
+// region and where control arrives from elsewhere.
+func (a *asm) setSP(delta int32) {
+	n := len(a.sps)
+
+	switch {
+	case n > 0 && a.sps[n-1].pc == a.pos():
+		a.sps[n-1].delta = delta
+	case n == 0 || a.sps[n-1].delta != delta:
+		a.sps = append(a.sps, spEntry{a.pos(), delta})
+	}
+
+	a.sp = delta
+}
+
+func (a *asm) moveSP(by int32) {
+	a.setSP(a.sp + by)
+}
+
+// spTable returns the deltas of the region [start, end): the one at its
+// start, then every change, at offsets from start.
+func (a *asm) spTable(start, end int32) []spEntry {
+	k := sort.Search(len(a.sps), func(i int) bool { return a.sps[i].pc > start })
+	out := []spEntry{{0, 0}}
+
+	if k > 0 {
+		out[0].delta = a.sps[k-1].delta
+	}
+
+	for _, e := range a.sps[k:] {
+		if e.pc >= end {
+			break
+		}
+
+		if e.delta != out[len(out)-1].delta {
+			out = append(out, spEntry{e.pc - start, e.delta})
+		}
+	}
+
+	return out
 }
 
 func (a *asm) pos() int32 {
@@ -330,6 +386,14 @@ func (a *asm) storeImm(width uint8, m amem, x int64) {
 
 func (a *asm) lea(size uint8, dst VReg, m amem) {
 	a.opRM(size == 8, []byte{0x8d}, int(dst), m, 0, false)
+
+	if dst == RSP {
+		if m.base != int(RSP) || m.index >= 0 || m.label >= 0 {
+			throwFmt("internal error: untracked change of rsp")
+		}
+
+		a.moveSP(-m.disp)
+	}
 }
 
 // aluRR emits "op dst, src" for add, or, adc, sbb, and, sub, xor, cmp.
@@ -344,6 +408,22 @@ func (a *asm) aluRR(op aluOp, size uint8, dst, src VReg) {
 }
 
 func (a *asm) aluRI(op aluOp, size uint8, dst VReg, x int64) {
+	a.aluRIRaw(op, size, dst, x)
+
+	if dst == RSP {
+		switch op {
+		case aluSub:
+			a.moveSP(int32(x))
+		case aluAdd:
+			a.moveSP(-int32(x))
+		case aluCmp:
+		default:
+			throwFmt("internal error: untracked change of rsp")
+		}
+	}
+}
+
+func (a *asm) aluRIRaw(op aluOp, size uint8, dst VReg, x int64) {
 	d := int(dst)
 
 	if x == int64(int8(x)) {
@@ -591,19 +671,36 @@ func (a *asm) div(signed bool, size uint8, src VReg) {
 func (a *asm) push(r VReg) {
 	a.rex(false, -1, -1, int(r), false)
 	a.b(0x50 + lo3(int(r)))
+	a.moveSP(8)
 }
 
 func (a *asm) pop(r VReg) {
 	a.rex(false, -1, -1, int(r), false)
 	a.b(0x58 + lo3(int(r)))
+	a.moveSP(-8)
 }
 
 func (a *asm) pushMem(m amem) {
 	a.opRM(false, []byte{0xff}, 6, m, 0, false)
+	a.moveSP(8)
 }
 
 func (a *asm) popMem(m amem) {
 	a.opRM(false, []byte{0x8f}, 0, m, 0, false)
+	a.moveSP(-8)
+}
+
+// callMem calls the address stored at m.
+func (a *asm) callMem(m amem) {
+	a.opRM(false, []byte{0xff}, 2, m, 0, false)
+}
+
+func (a *asm) repMovsb() {
+	a.b(0xf3, 0xa4)
+}
+
+func (a *asm) repStosb() {
+	a.b(0xf3, 0xaa)
 }
 
 func (a *asm) xchg(x, y VReg) {
@@ -681,6 +778,17 @@ func (a *asm) here8(at int32) {
 	}
 
 	a.buf[at] = byte(d)
+}
+
+// patch8 points the short jump whose displacement is at at to target.
+func (a *asm) patch8(at int32, target int32) {
+	d := target - (at + 1)
+
+	if d != int32(int8(d)) {
+		throwFmt("internal error: short jump too far")
+	}
+
+	a.buf[at] = byte(int8(d))
 }
 
 // floating point

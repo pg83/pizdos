@@ -33,8 +33,9 @@ const (
 	noReg        VReg = -1
 	firstVirtual VReg = 32
 	// ctxReg holds the instance, memReg the base of linear memory; neither
-	// is ever allocated.
-	ctxReg = R14
+	// is ever allocated. Code runs on a goroutine's stack: R14 is Go's g and
+	// RBP the frame pointer, both left alone.
+	ctxReg = R13
 	memReg = R15
 )
 
@@ -69,25 +70,36 @@ const (
 	classXMM = 1
 )
 
-// The internal calling convention is System V's without the first integer
-// argument register, which carries the instance in System V and is free
-// here: a call to the host needs no shuffling.
-var argGPRs = []VReg{RSI, RDX, RCX, R8, R9}
-var argXMMs = []VReg{XMM0, XMM0 + 1, XMM0 + 2, XMM0 + 3, XMM0 + 4, XMM0 + 5, XMM0 + 6, XMM0 + 7}
-var resultGPRs = []VReg{RAX, RDX}
-var resultXMMs = []VReg{XMM0, XMM0 + 1}
+// The internal calling convention takes Go ABIInternal's register
+// sequences, without RAX for arguments: a call into Go puts the instance in
+// RAX ahead of them and moves nothing else. Values that do not fit go to the
+// stack, arguments then results, in eight-byte slots of the caller's
+// outgoing area. R10, R11 and R12 are callee-saved, the instance and memory
+// registers are preserved, everything else is clobbered. X15 is Go's zero
+// register and never written.
+var argGPRs = []VReg{RBX, RCX, RDI, RSI, R8, R9}
+var argXMMs = xmmRange(15)
+var resultGPRs = []VReg{RAX, RBX, RCX, RDI, RSI, R8, R9}
+var resultXMMs = xmmRange(15)
 
 // callerSaved are clobbered by every call.
-var callerSaved = []VReg{RAX, RCX, RDX, RSI, RDI, R8, R9, R10, R11,
-	XMM0, XMM0 + 1, XMM0 + 2, XMM0 + 3, XMM0 + 4, XMM0 + 5, XMM0 + 6, XMM0 + 7,
-	XMM0 + 8, XMM0 + 9, XMM0 + 10, XMM0 + 11, XMM0 + 12, XMM0 + 13, XMM0 + 14, XMM0 + 15}
+var callerSaved = append([]VReg{RAX, RBX, RCX, RDX, RSI, RDI, R8, R9}, xmmRange(15)...)
 
-var calleeSaved = []VReg{RBX, RBP, R12, R13}
+var calleeSaved = []VReg{R10, R11, R12}
 
 // allocation order: caller-saved first, so short values do not cost a save
-var allocGPRs = []VReg{RAX, RCX, RDX, RSI, RDI, R8, R9, R10, R11, RBX, RBP, R12, R13}
-var allocXMMs = []VReg{XMM0, XMM0 + 1, XMM0 + 2, XMM0 + 3, XMM0 + 4, XMM0 + 5, XMM0 + 6, XMM0 + 7,
-	XMM0 + 8, XMM0 + 9, XMM0 + 10, XMM0 + 11, XMM0 + 12, XMM0 + 13, XMM0 + 14, XMM0 + 15}
+var allocGPRs = []VReg{RAX, RCX, RDX, RSI, RDI, R8, R9, RBX, R10, R11, R12}
+var allocXMMs = xmmRange(15)
+
+func xmmRange(n int) []VReg {
+	out := make([]VReg, n)
+
+	for i := range out {
+		out[i] = XMM0 + VReg(i)
+	}
+
+	return out
+}
 
 type MOp uint8
 
@@ -144,6 +156,7 @@ const (
 	mParMove  // parallel moves
 	mStackArg // store src to the outgoing argument slot imm
 	mLoadArg  // dst = incoming stack argument imm
+	mStoreRet // store src to the stack result slot imm of the caller
 	mGrowMem  // memory.grow: src pages -> dst
 	mMemCopy  // memory.copy dst=src, src2... see lowering
 	mMemFill
@@ -236,9 +249,6 @@ type Mem struct {
 	// label, when not negative, makes the operand RIP-relative to a
 	// constant of the function or module.
 	label int32
-	// frame makes disp relative to the return value area of the frame,
-	// above the outgoing arguments: the base is rsp.
-	frame bool
 }
 
 func memAt(base VReg, disp int32) Mem {
@@ -290,10 +300,9 @@ type MFunc struct {
 	blocks []MBlock
 	nregs  int
 	class  []uint8
-	// stackArgs is the size of the outgoing argument area.
+	// stackArgs is the size of the outgoing area: stack arguments and
+	// results of calls.
 	stackArgs int
-	// retArea is the size of the area callees store multiple results in.
-	retArea int
 	// incoming is the number of stack-passed parameters.
 	incoming int
 	// hasCalls reports a non-leaf function.
@@ -375,7 +384,7 @@ func (in *MInst) forEachOperand(cb func(r *VReg, role int)) {
 	case mCmp, mTest, mFCmp:
 		cb(&in.src, roleUse)
 		cb(&in.src2, roleUse)
-	case mCmpImm, mTestImm, mCheck, mSwitch, mCallInd, mStackArg:
+	case mCmpImm, mTestImm, mCheck, mSwitch, mCallInd, mStackArg, mStoreRet:
 		cb(&in.src, roleUse)
 	case mCmpMem:
 		mem()
@@ -435,10 +444,27 @@ func (in *MInst) forEachOperand(cb func(r *VReg, role int)) {
 	}
 }
 
-// clobbers reports whether an instruction destroys every caller-saved
-// register.
-func (in *MInst) clobbers() bool {
-	return in.op == mCall || in.op == mCallInd || in.op == mGrowMem
+// clobberSet lists the registers an instruction destroys besides its
+// definitions: a call every caller-saved register, a call of a bulk memory
+// stub only the registers its string instruction uses.
+func (in *MInst) clobberSet() []VReg {
+	switch in.op {
+	case mCall:
+		if in.aux == calleeStub {
+			switch in.imm {
+			case stubMemmove:
+				return memmoveClobbers
+			case stubMemset:
+				return memsetClobbers
+			}
+		}
+
+		return callerSaved
+	case mCallInd, mGrowMem:
+		return callerSaved
+	}
+
+	return nil
 }
 
 func (mf *MFunc) dump() string {
@@ -465,7 +491,7 @@ var mopNames = map[MOp]string{
 	mFUnary: "funary", mFCmp: "fcmp", mCvtIF: "cvtif", mCvtFI: "cvtfi", mCvtFF: "cvtff", mMovGX: "movgx",
 	mMovXG: "movxg", mJmp: "jmp", mJcc: "jcc", mSwitch: "switch", mCall: "call", mCallInd: "callind",
 	mRet: "ret", mTrap: "trap", mTrapIf: "trapif", mCheck: "check", mParMove: "pmov", mStackArg: "stackarg",
-	mLoadArg: "loadarg", mGrowMem: "growmem", mSpillStore: "spill", mSpillLoad: "reload",
+	mLoadArg: "loadarg", mStoreRet: "storeret", mGrowMem: "growmem", mSpillStore: "spill", mSpillLoad: "reload",
 	mDivOvf: "divovf", mTruncF: "truncf", mFMinMax: "fminmax", mCvtU64F: "cvtu64f", mFAluMem: "falum",
 	mFSelect: "fselect", mMemOp: "memop",
 }
