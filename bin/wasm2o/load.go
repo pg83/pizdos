@@ -161,6 +161,19 @@ func helperMemoryGrow(ctx uintptr, delta uint32) uint32 {
 	return instanceAt(ctx).memory.grow(delta)
 }
 
+// interruptible is a host whose code Go interrupts (lib/goruntime).
+type interruptible interface {
+	interrupt()
+}
+
+// helperInterrupt is the call Go injects into interrupted code: the host
+// does what it asked the interruption for.
+func helperInterrupt(ctx uintptr) {
+	if h, ok := instanceAt(ctx).host.(interruptible); ok {
+		h.interrupt()
+	}
+}
+
 // Tables do not grow.
 func helperTableGrow(ctx uintptr, table, delta uint32, init uintptr) uint32 {
 	return math.MaxUint32
@@ -230,6 +243,8 @@ func (c *Code) resolve(sym string, imports Imports) uintptr {
 		return c.keepFunc(helperMemoryGrow)
 	case symTableGrow:
 		return c.keepFunc(helperTableGrow)
+	case symInterrupt:
+		return c.keepFunc(helperInterrupt)
 	}
 
 	for k := range c.obj.meta.imports {

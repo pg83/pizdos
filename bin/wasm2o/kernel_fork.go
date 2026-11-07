@@ -37,6 +37,7 @@ type vforkFrame struct {
 func (v *vforkFrame) resume(pid int32) {
 	p := v.parent
 	p.inst.host = p
+	p.raiseInterrupt()
 	binary.LittleEndian.PutUint32(p.inst.block[p.stackPointer():], v.stack)
 	p.inst.longjmp(&v.jump, uint32(pid))
 	p.fatal("vfork: the function that called vfork has returned")
@@ -51,9 +52,11 @@ func (p *Process) startVfork() uint32 {
 
 	v.stack = binary.LittleEndian.Uint32(p.inst.block[p.stackPointer():])
 	c := p.k.newProcess(p)
-	c.inst, c.image, c.vfork = p.inst, p.image, v
+	c.setInstance(p.inst)
+	c.image, c.vfork = p.image, v
 	c.heap, c.static, c.env, c.errnoAt, c.environAt, c.siginfo = p.heap, p.static, p.env, p.errnoAt, p.environAt, p.siginfo
 	c.regexes, c.nextRegex, c.zoneNames, c.jumps, c.stackAt = p.regexes, p.nextRegex, p.zoneNames, p.jumps, p.stackAt
+	c.token.Store(p.token.Load())
 	c.inherit(p)
 	p.inst.host = c
 
@@ -142,7 +145,7 @@ func (p *Process) execImage(img *execImage) {
 
 	p.vfork = nil
 	p.execReset()
-	p.inst = nil
+	p.setInstance(nil)
 	go p.run(img)
 	v.resume(p.pid)
 }

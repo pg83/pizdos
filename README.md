@@ -13,6 +13,7 @@ bin/busybox/  busybox for the system: our config and the generator that replaces
 bin/kernel/   the kernel (Go), not yet
 bin/rootfs/   the root filesystem service (Go, wasm), not yet
 lib/c/        the C library processes link: headers, the in-process part, the musl subset
+lib/goruntime/ our fork of Go's runtime: what wasm2o adds to it, as an overlay
 dev/          toolchain helpers shared by the graph
 tst/          tests
 tst/wazero/   a WASI runner on wazero, what wasm2o is measured against
@@ -59,7 +60,9 @@ build.py      the build graph
   function values, prologues grow the stack through Go's morestack, and the
   loader registers every code region with Go's runtime, so the garbage
   collector, stack copying, panics, tracebacks and asynchronous preemption
-  go through the frames.
+  go through the frames. Our fork of the runtime (`lib/goruntime`) lets the
+  kernel interrupt that code the way Go preempts it, for the processes'
+  signals.
 - `wasm2o run [--root dir] [-a argv0] object.o -- args` is that loader: a
   WASI preview1 command, or, for an object importing `kernel`, a program of
   lib/c run by a kernel in Go (`bin/wasm2o/kernel*.go`). Its processes are

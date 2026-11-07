@@ -7,8 +7,10 @@ import (
 	"math"
 	"reflect"
 	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 // Modules built here run on the test's goroutines through the loader, with
@@ -878,6 +880,140 @@ func TestForkUnderCollection(t *testing.T) {
 		if got := <-done; got != base+5 {
 			t.Fatalf("child %d: %d, want %d", k, got, base+5)
 		}
+	}
+
+	runtime.KeepAlive(i)
+}
+
+// interruptHost counts the interruptions of its instance's code.
+type interruptHost struct {
+	calls atomic.Int64
+}
+
+func (h *interruptHost) interrupt() {
+	h.calls.Add(1)
+}
+
+// A loop without calls, interrupted over and over while Go collects, keeps
+// its registers and flags: the interrupt stub restores them, the host runs
+// in between.
+func TestInterrupt(t *testing.T) {
+	const opI64Xor, opI64Sub, opI64GtU, opBrIfLoop = 0x85, 0x7d, 0x56, 0x0d
+	m := &testModule{
+		funcs: []testFunc{{
+			params: []ValType{I64}, results: []ValType{I64}, locals: []ValType{I64, I64}, export: "mix",
+			// acc = acc*31 ^ i, i from n down to 1
+			code: cat([]byte{opLoop, blockEmpty},
+				get(1), i64c(31), []byte{opI64Mul}, get(0), []byte{opI64Xor}, put(1),
+				get(0), i64c(1), []byte{opI64Sub}, []byte{opLocalTee, 0}, i64c(0), []byte{opI64GtU, opBrIfLoop, 0, 0x0b},
+				get(1)),
+		}},
+	}
+	i := load(t, m, nil)
+	host := &interruptHost{}
+	i.host = host
+	funcs, _ := i.functionCode()
+	mix, _ := i.export("mix")
+	const n = 300_000_000
+	want := uint64(0)
+
+	for k := uint64(n); k > 0; k-- {
+		want = want*31 ^ k
+	}
+
+	stop := make(chan bool)
+	defer close(stop)
+
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				runtime.GC()
+			}
+		}
+	}()
+
+	tokens := make(chan uintptr)
+	result := make(chan uint64)
+
+	go func() {
+		tokens <- runtime.SetInterrupt(uintptr(funcs[0]), uintptr(funcs[1]), i.symbol(symInterruptCall))
+		result <- mix.Interface().(func(uintptr, uint64) uint64)(i.ctx(), n)
+		runtime.SetInterrupt(0, 0, 0)
+	}()
+
+	token := <-tokens
+
+	for {
+		select {
+		case got := <-result:
+			if got != want {
+				t.Fatalf("mix = %#x, want %#x", got, want)
+			}
+
+			if host.calls.Load() == 0 {
+				t.Fatal("the loop was never interrupted")
+			}
+
+			runtime.KeepAlive(i)
+
+			return
+		default:
+			runtime.Interrupt(token)
+			time.Sleep(50 * time.Microsecond)
+		}
+	}
+}
+
+// returnHost is interrupted on the way out of imports: it collects and
+// grows the stack through the adapter's frame, then clears the word.
+type returnHost struct {
+	i     *Instance
+	calls int
+}
+
+func (h *returnHost) interrupt() {
+	h.calls++
+	runtime.GC()
+	growGo(200)
+	atomic.StoreUint32((*uint32)(unsafe.Pointer(&h.i.block[offInterrupt])), 0)
+}
+
+// Every 7th call of an import asks for an interruption, which runs on the
+// way out of the import, its result kept.
+func TestInterruptOnReturn(t *testing.T) {
+	const opBrIfLoop = 0x0d
+	host := &returnHost{}
+	ticks := uint32(0)
+	m := &testModule{
+		imports: []testImport{{"env", "tick", nil, i32}},
+		funcs: []testFunc{{
+			params: i32, results: i32, locals: i32, export: "count",
+			code: cat([]byte{opLoop, blockEmpty}, get(1), call(0), []byte{opI32Add}, put(1),
+				get(0), i32c(1), []byte{opI32Sub, opLocalTee, 0, opBrIfLoop, 0, 0x0b}, get(1)),
+		}},
+	}
+	i := load(t, m, testImports{"env.tick": func(ctx uintptr) uint32 {
+		ticks++
+
+		if ticks%7 == 0 {
+			atomic.StoreUint32((*uint32)(unsafe.Pointer(&instanceAt(ctx).block[offInterrupt])), 1)
+		}
+
+		return ticks
+	}})
+	host.i = i
+	i.host = host
+	count, _ := i.export("count")
+
+	if got, want := count.Interface().(func(uintptr, uint32) uint32)(i.ctx(), 1000), uint32(1000*1001/2); got != want {
+		t.Fatalf("count = %d, want %d", got, want)
+	}
+
+	if host.calls != 1000/7 {
+		t.Fatalf("%d interruptions, want %d", host.calls, 1000/7)
 	}
 
 	runtime.KeepAlive(i)

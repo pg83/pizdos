@@ -19,18 +19,21 @@ import (
 // Names are spelled by symbolPart, types by a letter each: i i32, I i64,
 // f f32, F f64, v v128, r funcref, e externref. The code also calls Go's
 // runtime.morestack_noctxt and the Go function values w2o.trap,
-// w2o.memory_grow and w2o.table_grow, through the GOT.
+// w2o.memory_grow, w2o.table_grow and w2o.interrupt, through the GOT;
+// Go's runtime injects calls of w2o.interrupt_call (goabi.go).
 const (
-	symInit       = "w2o.init"
-	symLand       = "w2o.land"
-	symFrames     = "w2o.frames"
-	symResume     = "w2o.resume"
-	symImport     = "w2o.import."
-	symExport     = "w2o.export."
-	symMorestack  = "runtime.morestack_noctxt"
-	symTrap       = "w2o.trap"
-	symMemoryGrow = "w2o.memory_grow"
-	symTableGrow  = "w2o.table_grow"
+	symInit          = "w2o.init"
+	symLand          = "w2o.land"
+	symFrames        = "w2o.frames"
+	symResume        = "w2o.resume"
+	symImport        = "w2o.import."
+	symExport        = "w2o.export."
+	symMorestack     = "runtime.morestack_noctxt"
+	symTrap          = "w2o.trap"
+	symMemoryGrow    = "w2o.memory_grow"
+	symTableGrow     = "w2o.table_grow"
+	symInterrupt     = "w2o.interrupt"
+	symInterruptCall = "w2o.interrupt_call"
 )
 
 var typeLetters = map[ValType]byte{I32: 'i', I64: 'I', F32: 'f', F64: 'F', V128: 'v', FuncRef: 'r', ExternRef: 'e'}

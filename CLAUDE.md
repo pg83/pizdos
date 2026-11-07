@@ -55,6 +55,16 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
 - The loader (`load.go`, `gort.go`, `wasi.go`, `run.go`, `jump.go`) is linux/amd64
   only and pinned to Go 1.25's moduledata; the compiler alone builds for
   wasip1 too. Code and its registration live as long as the process.
+- `lib/goruntime` is our fork of Go's runtime, an overlay of files and
+  anchored edits (`edits.py`) that `dev/go.py --runtime` applies to the
+  native builds of wasm2o: `runtime.SetInterrupt` and `runtime.Interrupt`
+  make the next preemption signal that finds a goroutine in the module's
+  functions inject a call of `w2o.interrupt_call` there, as Go injects
+  asyncPreempt. The stub saves every register and flag and calls Go; the
+  same stub runs on the way out of any import while the instance's
+  interrupt word is set. The kernel delivers signals there, below the
+  shadow stack's 128-byte red zone, and repeats Interrupt every
+  millisecond until they are taken.
 - `wasm2o run` runs an object importing module `kernel` in the kernel of
   lib/c (`kernel*.go`): a process is a goroutine with its own pid, group,
   descriptors (host descriptors the kernel owns), cwd, umask, limits and
@@ -77,7 +87,8 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   wide signatures cross both boundaries on the stack; longjmp lands across a
   copied stack, through Go frames and under collection, and refuses a frame
   that returned; fork copies 10000 frames and memory, and the child's
-  longjmp to the parent's setjmp lands.
+  longjmp to the parent's setjmp lands; a call-free loop interrupted
+  thousands of times under collection keeps its registers and flags.
 - `test_wasm2o_spec` runs the spec testsuite (pinned in build.py) through
   `wasm2o spec`, which loads every module in its own process; wast2json
   comes from `ix run bld/wabt`. `KNOWN` in `tst/wasm2o_spec.py` lists the

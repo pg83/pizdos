@@ -2,8 +2,8 @@
 """Fetch a Go program's modules, or build the program.
 
     go.py download <go> <source dir> <modules.tar>
-    go.py build <go> <source dir> <output> [--wasip1] [--modules <modules.tar>]
-    go.py test <go> <source dir> <stamp>
+    go.py build <go> <source dir> <output> [--wasip1] [--modules <modules.tar>] [--runtime <dir>]
+    go.py test <go> <source dir> <stamp> [--runtime <dir>]
 
 download runs `go mod download` on the directory's go.mod and go.sum, which
 checks every module against go.sum, and keeps the module cache's download
@@ -11,9 +11,13 @@ directory as a deterministic tarball. build compiles a copy of the
 directory's .go files, go.mod and go.sum, natively or with --wasip1 as a
 WASI module; its modules come from that tarball as the module proxy, with no
 network. test runs the directory's tests, its _test.go files included, and
-touches the stamp when they pass.
+touches the stamp when they pass. --runtime builds with a fork of package
+runtime: the directory's .go files join it and its edits.py edits its
+files, as an overlay.
 """
+import json
 import os
+import runpy
 import shutil
 import subprocess
 import sys
@@ -74,21 +78,65 @@ def download(go, source, output, work):
                 archive.add(path, arcname=path.relative_to(cache).as_posix(), recursive=False, filter=reset)
 
 
+def runtime_overlay(go, fork, work, env):
+    """The overlay of a runtime fork: its files and its edits of $GOROOT's."""
+    goroot = Path(subprocess.run([go, "env", "GOROOT"], env=env, capture_output=True, text=True, check=True).stdout.strip())
+    runtime = goroot / "src" / "runtime"
+    edited = work / "runtime"
+    edited.mkdir()
+    texts = {}
+
+    for name, anchor, text in runpy.run_path(str(Path(fork) / "edits.py"))["EDITS"]:
+        code = texts.get(name) or (runtime / name).read_text()
+
+        if code.count(anchor) != 1:
+            raise SystemExit(f"{runtime / name}: the anchor of an edit is not there exactly once")
+
+        texts[name] = code.replace(anchor, text)
+
+    replace = {}
+
+    for name, code in texts.items():
+        (edited / name).write_text(code)
+        replace[str(runtime / name)] = str(edited / name)
+
+    for path in sorted(Path(fork).glob("*.go")):
+        replace[str(runtime / path.name)] = str(path.resolve())
+
+    overlay = work / "overlay.json"
+    overlay.write_text(json.dumps({"Replace": replace}))
+
+    return f"-overlay={overlay}"
+
+
+def take(flags, name):
+    """Removes an option and its value from flags and returns the value."""
+    if name not in flags:
+        return None
+
+    at = flags.index(name)
+    value = flags[at + 1]
+    del flags[at:at + 2]
+
+    return value
+
+
 def build(go, source, output, *flags, work):
     flags = list(flags)
     tree = work / "src"
     copy(source, tree)
     env = environment(work)
+    fork = take(flags, "--runtime")
 
-    if "--modules" in flags:
-        at = flags.index("--modules")
+    modules = take(flags, "--modules")
+
+    if modules:
         proxy = work / "proxy"
 
-        with tarfile.open(flags[at + 1]) as archive:
+        with tarfile.open(modules) as archive:
             archive.extractall(proxy, filter="data")
 
         env["GOPROXY"] = f"file://{proxy}"
-        del flags[at:at + 2]
 
     if "--wasip1" in flags:
         env.update(GOOS="wasip1", GOARCH="wasm")
@@ -97,14 +145,23 @@ def build(go, source, output, *flags, work):
     if flags:
         raise SystemExit(f"unknown arguments {flags}")
 
+    overlay = [runtime_overlay(go, fork, work, env)] if fork else []
     output = Path(output).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run([go, "build", "-trimpath", "-o", str(output), "."], cwd=tree, env=env, check=True)
+    subprocess.run([go, "build", "-trimpath", *overlay, "-o", str(output), "."], cwd=tree, env=env, check=True)
 
 
-def test(go, source, stamp, work):
+def test(go, source, stamp, *flags, work):
+    flags = list(flags)
+    fork = take(flags, "--runtime")
+
+    if flags:
+        raise SystemExit(f"unknown arguments {flags}")
+
     copy(source, work / "src", tests=True)
-    subprocess.run([go, "test", "-count=1", "-timeout=300s", "."], cwd=work / "src", env=environment(work), check=True)
+    env = environment(work)
+    overlay = [runtime_overlay(go, fork, work, env)] if fork else []
+    subprocess.run([go, "test", "-count=1", "-timeout=300s", *overlay, "."], cwd=work / "src", env=env, check=True)
     Path(stamp).parent.mkdir(parents=True, exist_ok=True)
     Path(stamp).touch()
 
@@ -120,7 +177,7 @@ def main():
     elif mode == "build":
         build(*args, work=work)
     elif mode == "test":
-        test(*args, work)
+        test(*args, work=work)
     else:
         raise SystemExit(f"unknown mode {mode}")
 

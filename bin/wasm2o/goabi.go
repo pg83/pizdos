@@ -30,6 +30,7 @@ const (
 	stubMemset
 	stubMemoryGrow
 	stubTableGrow
+	stubInterrupt
 	stubCount
 )
 
@@ -329,6 +330,58 @@ func (oc *objCode) stubs() {
 
 	oc.stubAt[stubMemoryGrow] = oc.goCall("w2o.memory_grow_call", []ValType{I32}, []ValType{I32}, symMemoryGrow, false)
 	oc.stubAt[stubTableGrow] = oc.goCall("w2o.table_grow_call", []ValType{I32, I32, FuncRef}, []ValType{I32}, symTableGrow, false)
+	oc.stubAt[stubInterrupt] = oc.interruptStub()
+}
+
+// interruptStub emits what Go's runtime injects a call of, from a
+// preemption signal, at an instruction of a function of the module when
+// Go was asked to interrupt the code (lib/goruntime): it calls the Go
+// function value of w2o.interrupt with the instance and returns to that
+// instruction with every register and flag as it was, but the memory
+// register, read again. The frame below its saved RBP is a frame of
+// registers, which hold no stack address and no Go pointer of their own.
+func (oc *objCode) interruptStub() int32 {
+	a := &oc.a
+	saved := []VReg{RAX, RBX, RCX, RDX, RSI, RDI, R8, R9, R10, R11, R12, R13}
+	xmms := int32(8 * 15)
+	spill := goAssign(nil, nil).size
+
+	start := oc.beginRegion(symInterruptCall)
+	oc.globals[symInterruptCall] = true
+	a.push(RBP)
+	a.movRR(8, RBP, RSP)
+	a.pushf()
+
+	for _, r := range saved {
+		a.push(r)
+	}
+
+	a.aluRI(aluSub, 8, RSP, int64(xmms+spill))
+
+	for i := range 15 {
+		a.fstore(8, XMM0+VReg(i), rspAt(spill+int32(8*i)))
+	}
+
+	a.movRR(8, RAX, ctxReg)
+	oc.callGo(symInterrupt)
+
+	for i := range 15 {
+		a.fload(8, XMM0+VReg(i), rspAt(spill+int32(8*i)))
+	}
+
+	a.aluRI(aluAdd, 8, RSP, int64(xmms+spill))
+
+	for i := len(saved) - 1; i >= 0; i-- {
+		a.pop(saved[i])
+	}
+
+	a.load(8, 8, false, memReg, baseAt(ctxReg, offMem))
+	a.popf()
+	a.pop(RBP)
+	a.ret()
+	oc.endRegion(start)
+
+	return start
 }
 
 // returnsTwice tells the imports that return twice by their names, as C
@@ -344,7 +397,9 @@ func returnsTwice(name string) bool {
 
 // goCall emits a function of the internal convention that calls the Go
 // function value of sym with the instance and its parameters, and returns
-// its results; with record it writes the jump frame first.
+// its results; with record it writes the jump frame first. When the
+// instance asks, by its interrupt word, it calls the interrupt stub on the
+// way out, as Go's runtime would inject a call of it there.
 func (oc *objCode) goCall(name string, params, results []ValType, sym string, record bool) int32 {
 	a := &oc.a
 	g := goAssign(params, results)
@@ -417,6 +472,14 @@ func (oc *objCode) goCall(name string, params, results []ValType, sym string, re
 	}
 
 	a.load(8, 8, false, memReg, baseAt(ctxReg, offMem))
+	a.aluMI(aluCmp, 4, baseAt(ctxReg, offInterrupt), 0)
+	interrupt := a.jcc8(ccNE)
+	framed := a.sp
+	a.pop(RBP)
+	a.ret()
+	a.setSP(framed)
+	a.here8(interrupt)
+	oc.callStub(stubInterrupt)
 	a.pop(RBP)
 	a.ret()
 	a.setSP(0)

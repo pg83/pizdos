@@ -97,6 +97,11 @@ type Process struct {
 	report int
 	// childEvents counts the changes of the children, for a blocked wait.
 	childEvents atomic.Uint64
+	// token is the goroutine running the process's code, for Go to
+	// interrupt it, chasing set while a goroutine repeats that
+	// (kernel_signal.go).
+	token   atomic.Uintptr
+	chasing atomic.Bool
 	// wake is an eventfd a blocking call polls with its descriptors: a
 	// signal sent to the process makes it readable.
 	wake int
@@ -292,9 +297,17 @@ func (p *Process) runImage(img *execImage, i *Instance, enter func()) (next *exe
 		}
 	}
 
-	p.inst, p.image = i, img
+	p.setInstance(i)
+	p.image = img
+	funcs, ok := i.functionCode()
+
+	if ok {
+		p.token.Store(runtime.SetInterrupt(uintptr(funcs[0]), uintptr(funcs[1]), i.symbol(symInterruptCall)))
+	}
 
 	defer func() {
+		runtime.SetInterrupt(0, 0, 0)
+		p.token.Store(0)
 		e := recover()
 		who := i.host.(*Process)
 		p.endBorrowers(i, e)
@@ -313,7 +326,7 @@ func (p *Process) runImage(img *execImage, i *Instance, enter func()) (next *exe
 		}
 
 		runtime.KeepAlive(i)
-		p.inst = nil
+		p.setInstance(nil)
 		i.release()
 	}()
 

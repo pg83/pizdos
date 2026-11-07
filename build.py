@@ -115,14 +115,16 @@ busybox_abi = command(
 )
 
 # bin/wasm2o: the compiler, a Go program with no dependencies, built
-# natively and as a WASI module.
+# natively, its loader and kernel with our fork of Go's runtime
+# (lib/goruntime), and as a WASI module.
 WASM2O_SOURCES = [*build.glob("$(S)/bin/wasm2o/*.go"), "$(S)/bin/wasm2o/go.mod", "$(S)/dev/go.py"]
+GO_RUNTIME = [*build.glob("$(S)/lib/goruntime/*.go"), "$(S)/lib/goruntime/edits.py"]
 
 wasm2o = command(
     name="wasm2o",
-    inputs=WASM2O_SOURCES,
+    inputs=[*WASM2O_SOURCES, *GO_RUNTIME],
     outputs=["$(B)/bin/wasm2o/wasm2o"],
-    cmd=["python3", "$(S)/dev/go.py", "build", GO, "$(S)/bin/wasm2o", "$(B)/bin/wasm2o/wasm2o"],
+    cmd=["python3", "$(S)/dev/go.py", "build", GO, "$(S)/bin/wasm2o", "$(B)/bin/wasm2o/wasm2o", "--runtime", "$(S)/lib/goruntime"],
     descr="GO",
     color="light-blue",
 )
@@ -172,9 +174,9 @@ wasm2o_relinked = command(
 # wasm2o's own tests: the loader drives Go's runtime through native frames.
 wasm2o_go_test = command(
     name="test_wasm2o_go",
-    inputs=[*build.glob("$(S)/bin/wasm2o/*.go"), "$(S)/bin/wasm2o/go.mod", "$(S)/dev/go.py"],
+    inputs=[*build.glob("$(S)/bin/wasm2o/*.go"), "$(S)/bin/wasm2o/go.mod", "$(S)/dev/go.py", *GO_RUNTIME],
     outputs=["$(B)/tst/wasm2o_go.stamp"],
-    cmd=["python3", "$(S)/dev/go.py", "test", GO, "$(S)/bin/wasm2o", "$(B)/tst/wasm2o_go.stamp"],
+    cmd=["python3", "$(S)/dev/go.py", "test", GO, "$(S)/bin/wasm2o", "$(B)/tst/wasm2o_go.stamp", "--runtime", "$(S)/lib/goruntime"],
     descr="TS",
     color="green",
 )

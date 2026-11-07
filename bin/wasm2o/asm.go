@@ -681,6 +681,16 @@ func (a *asm) pop(r VReg) {
 	a.moveSP(-8)
 }
 
+func (a *asm) pushf() {
+	a.b(0x9c)
+	a.moveSP(8)
+}
+
+func (a *asm) popf() {
+	a.b(0x9d)
+	a.moveSP(-8)
+}
+
 func (a *asm) pushMem(m amem) {
 	a.opRM(false, []byte{0xff}, 6, m, 0, false)
 	a.moveSP(8)

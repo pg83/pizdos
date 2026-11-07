@@ -13,7 +13,8 @@ const (
 	offTokens     = 40 // the last invocation token handed out: see jumpFrame
 	offJump       = 48 // the jump frame, jumpWords words
 	offBase       = offJump + 8*jumpWords
-	headerSize    = offBase + 8
+	offInterrupt  = offBase + 8 // non-zero: a return from an import calls the interrupt stub (goabi.go)
+	headerSize    = offInterrupt + 8
 )
 
 // The jump frame is what the adapter of an import that returns twice

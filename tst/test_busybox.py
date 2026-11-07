@@ -4,7 +4,8 @@ root made like the system's, /bin/busybox the object and every path of
 busybox.links a symbolic link to it. The shell's errors, exit and SIGINT
 are longjmps, one of them out of a signal handler; its commands, pipes,
 substitutions and jobs are forks, which a terminal stops and continues;
-xargs, find -exec and awk's pipes are vforks.
+xargs, find -exec and awk's pipes are vforks; a loop without system calls
+is interrupted for its signals.
 
     test_busybox.py <wasm2o> <busybox.o> <busybox.wasm> <busybox.links>
 """
@@ -76,6 +77,10 @@ CASES = [
     (["sh", "-c", "cat /tmp/script.sh > /tmp/bg.out & wait $!; echo rc=$?; cat /tmp/bg.out"], "", "rc=0\n#!/bin/echo from\n", 0),
     (["sh", "-c", "sleep 2 & p=$!; kill -STOP $p; kill -TERM $p; kill -CONT $p; wait $p; echo rc=$?"], "", "rc=143\n", 0),
     (["sh", "-c", "trap 'echo chld' CHLD; true & wait; echo done"], "", "chld\ndone\n", 0),
+    # a loop without system calls takes its signals: Go interrupts it
+    (["sh", "-c", "while :; do :; done & p=$!; sleep 1; kill $p; wait $p; echo rc=$?"], "", "rc=143\n", 0),
+    (["sh", "-c", "(trap 'echo usr1; exit 3' USR1; while :; do :; done) & p=$!; sleep 1; kill -USR1 $p; wait $p; echo rc=$?"], "",
+     "usr1\nrc=3\n", 0),
     # vfork
     (["xargs", "-n1", "echo", "one"], "a b\n", "one a\none b\n", 0),
     (["xargs", "missing"], "x\n", "", 127),

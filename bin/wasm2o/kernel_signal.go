@@ -3,19 +3,25 @@
 package main
 
 import (
+	"encoding/binary"
 	"math/bits"
 	"os"
 	"os/signal"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"syscall"
+	"time"
+	"unsafe"
 )
 
 // Signals are the kernel's: a process has its actions, blocked mask and
 // pending set; sending one sets it pending and wakes the process, which
-// takes it on its way out of a system call or in a blocking wait. A
-// handler is a function of the guest's table, called through the exports
-// of the crt. Signals of the host's terminal go to its foreground group,
-// the host's others to the first process.
+// takes it on its way out of a system call, in a blocking wait, or, when
+// it runs its own code, as Go interrupts that (lib/goruntime). A handler
+// is a function of the guest's table, called through the exports of the
+// crt. Signals of the host's terminal go to its foreground group, the
+// host's others to the first process.
 
 const (
 	sigDfl      = 0
@@ -127,8 +133,111 @@ func (p *Process) send(sig int) {
 	}
 
 	p.sig.pending |= sigBit(sig)
+	token := p.token.Load()
+
+	if p.sig.dead || blocked {
+		token = 0
+	} else {
+		p.setInterrupt(1)
+	}
+
 	p.sig.mu.Unlock()
 	p.wakeUp()
+
+	if token != 0 {
+		runtime.Interrupt(token)
+		p.chase()
+	}
+}
+
+// chase interrupts the process again until it takes its deliverable
+// signals: Go's signal may find it outside its own code, in a stub, or in a
+// long call of the kernel. It gives up when the process stops or leaves its
+// image, and after 32 ms it tries every 10 ms.
+func (p *Process) chase() {
+	if !p.chasing.CompareAndSwap(false, true) {
+		return
+	}
+
+	go func() {
+		for k := 0; ; k++ {
+			wait := time.Millisecond
+
+			if k >= 32 {
+				wait = 10 * time.Millisecond
+			}
+
+			time.Sleep(wait)
+			token := p.token.Load()
+			p.k.mu.Lock()
+			halted := p.halted
+			p.k.mu.Unlock()
+
+			if token != 0 && !halted && p.sig.deliverable() != 0 {
+				runtime.Interrupt(token)
+
+				continue
+			}
+
+			p.chasing.Store(false)
+
+			// a signal sent meanwhile found the flag set
+			if token == 0 || halted || p.sig.deliverable() == 0 || !p.chasing.CompareAndSwap(false, true) {
+				return
+			}
+		}
+	}()
+}
+
+// setInstance sets the instance the process runs, under the lock of its
+// signals, which write the instance's interrupt word.
+func (p *Process) setInstance(i *Instance) {
+	p.sig.mu.Lock()
+	p.inst = i
+	p.sig.mu.Unlock()
+}
+
+// setInterrupt sets the interrupt word of the process's instance: while it
+// is not zero, every return from an import interrupts the code. The caller
+// holds the lock of the signals.
+func (p *Process) setInterrupt(v uint32) {
+	if p.inst != nil && !p.sig.dead {
+		atomic.StoreUint32((*uint32)(unsafe.Pointer(&p.inst.block[offInterrupt])), v)
+	}
+}
+
+// raiseInterrupt sets the interrupt word when a signal is deliverable.
+func (p *Process) raiseInterrupt() {
+	p.sig.mu.Lock()
+
+	if p.sig.pending&^p.sig.blocked != 0 {
+		p.setInterrupt(1)
+	}
+
+	p.sig.mu.Unlock()
+}
+
+// redZone is how far below __stack_pointer a leaf function keeps its frame
+// without moving it, as LLVM's wasm code does.
+const redZone = 128
+
+// interrupt takes the deliverable signals where the process's own code was
+// interrupted, by Go or on its way out of an import: a handler's frames on
+// the shadow stack go below the red zone of the function interrupted.
+// Taking them all clears the interrupt word.
+func (p *Process) interrupt() {
+	at, ok := p.inst.globalAt("__stack_pointer")
+
+	if !ok {
+		p.deliver()
+
+		return
+	}
+
+	sp := binary.LittleEndian.Uint32(p.inst.block[at:])
+	binary.LittleEndian.PutUint32(p.inst.block[at:], sp-redZone)
+	p.deliver()
+	binary.LittleEndian.PutUint32(p.inst.block[at:], sp)
 }
 
 // wakeUp makes a blocking call of the process look again: for a signal, or
@@ -167,6 +276,8 @@ func (p *Process) take() (int, sigAction) {
 	ready := p.sig.pending &^ p.sig.blocked
 
 	if ready == 0 {
+		p.setInterrupt(0)
+
 		return 0, sigAction{}
 	}
 
