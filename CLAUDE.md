@@ -39,6 +39,19 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   ABIInternal, R14 is g, RBP the frame pointer, X15 untouched, and the stack
   pointer table must be exact at every instruction, since Go preempts the
   code by signals and copies its stack.
+- The pipeline: SSA from the locals (`frontend.go`), the SSA optimizer
+  (`opt.go`: folding, jump threading with SSA repair, which turns the
+  dispatch loop of a Go function into direct jumps, trivial parameters,
+  dead code), lowering (`lower.go`), copy coalescing (`coalesce.go`),
+  linear scan (`regalloc.go`), emission (`emit.go`). `W2X_DUMP=<function>`
+  prints each stage, `W2X_CHECK=1` verifies the SSA after the optimizer and
+  every allocation, `W2X_OPT_FUNCS=lo-hi` optimizes only those functions,
+  for bisecting a miscompilation; `W2O_PERFMAP=<dir>` makes the loader
+  write perf-<pid>.map for perf.
+- Speed is measured against wasm2c in its bounds-checked mode (clang -O3,
+  `WASM_RT_MEMCHECK_BOUNDS_CHECK`, memory on mmap, counted call depth):
+  both run wasm2o.wasm compiling busybox.wasm and wasm2o.wasm, to the bytes
+  of the native wasm2o.
 - An import named setjmp, _setjmp, sigsetjmp, vfork or fork returns twice:
   its direct calls go through an adapter that writes the caller's frame to
   the instance header (`abi.go`), and the caller keeps an invocation token

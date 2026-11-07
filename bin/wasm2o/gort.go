@@ -3,8 +3,11 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/binary"
+	"fmt"
+	"os"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -104,6 +107,38 @@ func init() {
 			close(r.done)
 		}
 	}()
+}
+
+// perfMap, with W2O_PERFMAP set, names the regions for perf in
+// perf-<pid>.map, as JITs do: in /tmp, where perf looks, or in the
+// directory W2O_PERFMAP names.
+var perfMap = os.Getenv("W2O_PERFMAP")
+
+func writePerfMap(base uintptr, regions []Region) {
+	if perfMap == "" {
+		return
+	}
+
+	dir := "/tmp"
+
+	if strings.HasPrefix(perfMap, "/") {
+		dir = perfMap
+	}
+
+	f, err := os.OpenFile(fmt.Sprintf("%s/perf-%d.map", dir, os.Getpid()), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+
+	if err != nil {
+		return
+	}
+
+	defer f.Close()
+	w := bufio.NewWriter(f)
+
+	for _, r := range regions {
+		fmt.Fprintf(w, "%x %x %s\n", base+uintptr(r.start), r.end-r.start, r.name)
+	}
+
+	w.Flush()
 }
 
 func checkGo() {
@@ -227,6 +262,7 @@ func registerCode(name string, base uintptr, size uintptr, regions []Region) {
 	}
 
 	m.findfunctab = uintptr(unsafe.Pointer(unsafe.SliceData(img.buckets)))
+	writePerfMap(base, regions)
 	r := registration{img, make(chan struct{})}
 	registrations <- r
 	<-r.done

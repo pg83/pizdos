@@ -261,3 +261,80 @@ func sortedSet(s locSet) []VReg {
 
 	return out
 }
+
+// checkSSA verifies a function after the SSA optimizer, with W2X_CHECK:
+// every edge passes a value for each parameter of its block, a parameter
+// is its block's, and every use is dominated by its definition, an edge's
+// arguments being used at the end of the block it leaves.
+func checkSSA(f *Function) {
+	ci := f.analyze()
+
+	type site struct {
+		block int32
+		at    int
+	}
+
+	defs := map[int32]site{}
+
+	for _, b := range ci.order {
+		blk := &f.blocks[b]
+
+		for i, p := range blk.params {
+			if v := &f.values[p]; v.op != OpParam || v.block != b || v.aux != int64(i) {
+				throwFmt("internal error: SSA: v%d is not parameter %d of block %d", p, i, b)
+			}
+
+			defs[p] = site{b, -1}
+		}
+
+		for i, v := range blk.instrs {
+			defs[v] = site{b, i}
+		}
+	}
+
+	use := func(v, b int32, at int) {
+		if f.values[v].block < 0 {
+			return
+		}
+
+		d, ok := defs[v]
+
+		switch {
+		case !ok:
+			throwFmt("internal error: SSA: v%d used in block %d is defined in no reachable block", v, b)
+		case d.block == b && d.at >= at, d.block != b && !ci.dominates(d.block, b):
+			throwFmt("internal error: SSA: v%d of block %d does not dominate its use in block %d", v, d.block, b)
+		}
+	}
+
+	for _, b := range ci.order {
+		blk := &f.blocks[b]
+
+		for i, v := range blk.instrs {
+			for _, a := range f.args(v) {
+				use(a, b, i)
+			}
+		}
+
+		t := &blk.term
+		end := len(blk.instrs)
+
+		if t.kind == TermIf || t.kind == TermSwitch {
+			use(t.value, b, end)
+		}
+
+		for _, v := range t.values {
+			use(v, b, end)
+		}
+
+		for _, e := range t.edges {
+			if f.blocks[e.block].dead || len(e.args) != len(f.blocks[e.block].params) {
+				throwFmt("internal error: SSA: block %d passes %d arguments to block %d of %d parameters", b, len(e.args), e.block, len(f.blocks[e.block].params))
+			}
+
+			for _, a := range e.args {
+				use(a, b, end)
+			}
+		}
+	}
+}

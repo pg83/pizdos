@@ -1018,3 +1018,39 @@ func TestInterruptOnReturn(t *testing.T) {
 
 	runtime.KeepAlive(i)
 }
+
+// A state machine as Go compiles to wasm: a loop that dispatches on a
+// local, every case setting the next state and the locals, one as a copy
+// of another. Threading sends each case straight to the next, and repair
+// gives the cases the locals as parameters.
+func TestThreadedStateMachine(t *testing.T) {
+	const opBrTable, opBr, opI32LtS, opI32Ne = 0x0e, 0x0c, 0x48, 0x47
+	// params: n; locals: state 1, a 2, b 3, i 4, t 5
+	// t = a; a = b; b = t + b, then case 0 again while i < n, as Go does:
+	// a constant state on each branch
+	case0 := cat(get(2), put(5), get(3), put(2), get(5), get(3), []byte{opI32Add}, put(3),
+		get(4), i32c(1), []byte{opI32Add, opLocalTee, 4}, get(0), []byte{opI32LtS, opIf, blockEmpty}, i32c(0), put(1), []byte{opBr, 3, 0x0b},
+		i32c(1), put(1), []byte{opBr, 2})
+	case1 := cat(get(2), get(3), []byte{opI32Ne}, []byte{opIf, blockEmpty}, get(3), put(2), []byte{0x0b}, i32c(2), put(1), []byte{opBr, 1})
+	code := cat(i32c(0), put(2), i32c(1), put(3),
+		[]byte{opLoop, blockEmpty, 0x02, blockEmpty, 0x02, blockEmpty, 0x02, blockEmpty},
+		get(1), []byte{opBrTable, 2, 0, 1, 2, 0x0b}, case0, []byte{0x0b}, case1, []byte{0x0b},
+		get(2), []byte{opReturn, 0x0b}, []byte{opUnreachable})
+	m := &testModule{funcs: []testFunc{{params: i32, results: i32, locals: []ValType{I32, I32, I32, I32, I32}, export: "fib", code: code}}}
+	i := load(t, m, nil)
+	fib, _ := i.export("fib")
+
+	for _, n := range []uint32{1, 2, 10, 30} {
+		a, b := uint32(0), uint32(1)
+
+		for k := uint32(0); k < n; k++ {
+			a, b = b, a+b
+		}
+
+		if got := fib.Interface().(func(uintptr, uint32) uint32)(i.ctx(), n); got != b {
+			t.Fatalf("fib(%d) = %d, want %d", n, got, b)
+		}
+	}
+
+	runtime.KeepAlive(i)
+}

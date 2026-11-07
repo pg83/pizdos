@@ -8,9 +8,22 @@ import (
 )
 
 // dumpFunc names a function, by name or index, whose IR is printed at
-// each stage; traceFuncs prints every function as it is compiled.
+// each stage; traceFuncs prints every function as it is compiled;
+// optRange, lo-hi, limits the SSA optimizer to those functions.
 var dumpFunc = os.Getenv("W2X_DUMP")
 var traceFuncs = os.Getenv("W2X_TRACE") != ""
+var optRange = os.Getenv("W2X_OPT_FUNCS")
+
+func optEnabled(i int) bool {
+	if optRange == "" {
+		return true
+	}
+
+	var lo, hi int
+	fmt.Sscanf(optRange, "%d-%d", &lo, &hi)
+
+	return i >= lo && i <= hi
+}
 
 // compileModule compiles a module to an ordinary ELF relocatable object
 // (elf.go) of the ABI of goabi.go.
@@ -84,6 +97,18 @@ func compileModule(data []byte) []byte {
 
 			if dump {
 				fmt.Fprintf(os.Stderr, "== ssa %d %s\n%s", i, m.funcs[i].name, f.dump())
+			}
+
+			if optEnabled(i) {
+				optimize(f)
+
+				if checkAlloc {
+					checkSSA(f)
+				}
+			}
+
+			if dump {
+				fmt.Fprintf(os.Stderr, "== optimized\n%s", f.dump())
 			}
 
 			mf = lowerFunction(m, oc.lay, f)

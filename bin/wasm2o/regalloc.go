@@ -278,6 +278,14 @@ func allocate(mf *MFunc) *allocator {
 	a.linearize()
 	a.liveness()
 	a.buildIntervals()
+
+	if a.coalesce() {
+		a = &allocator{mf: mf}
+		a.linearize()
+		a.liveness()
+		a.buildIntervals()
+	}
+
 	a.scan()
 
 	if dumpIntervals && dumping {
@@ -914,15 +922,32 @@ func (a *allocator) allocateBlocked(cur *interval) {
 		}
 
 		at := a.splitPos(lo, x)
+		split := at >= 0 && at > it.start()
 
-		if at < 0 || at <= it.start() {
-			a.evict(it, start)
+		if split && a.canEvict(it, it.covered(at)) || !split && a.canEvict(it, start) {
+			if split {
+				child := it.split(at)
+				a.evict(child, child.start())
+			} else {
+				a.evict(it, start)
+
+				continue
+			}
+
+			inactive = append(inactive, it)
 
 			continue
 		}
 
-		child := it.split(at)
-		a.evict(child, child.start())
+		// It needs the register where cur would hold it, as a definition
+		// does: cur gives the register up before.
+		cut := a.splitPos(start+1, x)
+
+		if cut < 0 {
+			throwFmt("internal error: no split position for %s before %d", cur.vreg, x)
+		}
+
+		a.addUnhandled(cur.split(cut))
 		inactive = append(inactive, it)
 	}
 
@@ -980,6 +1005,60 @@ func (a *allocator) evict(it *interval, pos int32) {
 	}
 
 	a.addUnhandled(tail.split(at))
+}
+
+// covered is the first position from p on that it covers.
+func (it *interval) covered(p int32) int32 {
+	k := sort.Search(len(it.ranges), func(i int) bool { return it.ranges[i].to > p })
+
+	if k == len(it.ranges) || it.ranges[k].from <= p {
+		return p
+	}
+
+	return it.ranges[k].from
+}
+
+// canEvict tells whether evict can take the register from it at pos.
+func (a *allocator) canEvict(it *interval, pos int32) bool {
+	start := it.start()
+
+	if start < pos {
+		var at int32
+
+		if pos&1 != 0 && it.prevUse(pos) == pos-1 {
+			at = pos
+		} else {
+			lo := it.prevUse(pos) + 1
+
+			if lo <= start {
+				lo = start + 1
+			}
+
+			at = a.splitPos(lo, pos)
+		}
+
+		if at < 0 || at <= start {
+			return false
+		}
+
+		start = at
+	}
+
+	u := it.nextUse(pos)
+
+	if u == maxPos {
+		return true
+	}
+
+	lo := pos
+
+	if lo <= start {
+		lo = start + 1
+	}
+
+	at := a.splitPos(lo, u)
+
+	return at >= 0 && at > start
 }
 
 func (a *allocator) spill(it *interval) {
