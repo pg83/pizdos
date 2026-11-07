@@ -9,3 +9,9 @@ func runObject(data []byte, argv []string) int {
 
 	return 1
 }
+
+func specCommand(args []string) int {
+	throwFmt("spec needs linux/amd64")
+
+	return 1
+}

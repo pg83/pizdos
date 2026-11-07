@@ -109,7 +109,7 @@ func compileModule(data []byte) []byte {
 // funcName names a function's region, which Go shows in tracebacks.
 func (oc *objCode) funcName(i int) string {
 	if n := oc.m.funcs[i].name; n != "" {
-		return fmt.Sprintf("f%d:%s", i, n)
+		return fmt.Sprintf("f%d:%s", i, displayName(n))
 	}
 
 	return fmt.Sprintf("f%d", i)
@@ -215,8 +215,8 @@ func (oc *objCode) align16() {
 
 // importAdapters give imported functions an entry in the internal
 // convention: an adapter calls the Go function value of the import's
-// symbol, its module and name, or with a type other than an earlier import
-// of the same name, those and its index.
+// symbol, its module and name joined by a dot, or with a type other than an
+// earlier import of the same name, those and ":" and its index.
 func (oc *objCode) importAdapters() {
 	m := oc.m
 	types := map[string]uint64{}
@@ -227,15 +227,15 @@ func (oc *objCode) importAdapters() {
 		}
 
 		t := m.funcType(imp.index)
-		sym := imp.module + "." + imp.name
+		sym := symbolPart(imp.module) + "." + symbolPart(imp.name)
 
 		if id, ok := types[sym]; ok && id != typeID(t) {
-			sym = fmt.Sprintf("%s#%d", sym, imp.index)
+			sym = fmt.Sprintf("%s:%d", sym, imp.index)
 		}
 
 		types[sym] = typeID(t)
 		oc.importSyms[int(imp.index)] = sym
-		oc.funcAt[imp.index] = oc.goCall("import:"+imp.module+"."+imp.name, t.params, t.results, sym)
+		oc.funcAt[imp.index] = oc.goCall("import:"+sym, t.params, t.results, sym)
 	}
 }
 
@@ -249,7 +249,7 @@ func (oc *objCode) exportThunks() []ExportMeta {
 
 		if e.kind == externFunc {
 			t := m.funcType(e.index)
-			x.sym = "export:" + e.name
+			x.sym = "export:" + symbolPart(e.name)
 			x.params, x.results = t.params, t.results
 			oc.thunk(x.sym, t.params, t.results, int(e.index), nil)
 		}
