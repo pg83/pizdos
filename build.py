@@ -24,6 +24,12 @@ def touch(path):
 CLANG = tool("clang")
 LLVM_AR = tool("llvm-ar")
 WASM_LD = tool("wasm-ld")
+GO = tool("go")
+
+# Host C (the hosts that run compiled modules) links the host's libc, which
+# ix run lib/c bld/compiler passes in CPPFLAGS, CFLAGS and LDFLAGS.
+HOST_CFLAGS = [*build.cppflags, *build.cflags]
+HOST_LDFLAGS = [*build.ldflags]
 
 MUSL = "1.2.5"
 BUSYBOX = "1.36.1"
@@ -112,18 +118,95 @@ busybox_abi = command(
     color="magenta",
 )
 
+# bin/aot: the compiler, a Go program with no dependencies, built natively
+# and as a WASI module.
+AOT_SOURCES = [*build.glob("$(S)/bin/aot/*.go"), "$(S)/bin/aot/go.mod", "$(S)/dev/go.py"]
+
+aot = command(
+    name="aot",
+    inputs=AOT_SOURCES,
+    outputs=["$(B)/bin/aot/aot"],
+    cmd=["python3", "$(S)/dev/go.py", "build", GO, "$(S)/bin/aot", "$(B)/bin/aot/aot"],
+    descr="GO",
+    color="light-blue",
+)
+
+aot_wasm = command(
+    name="aot_wasm",
+    inputs=AOT_SOURCES,
+    outputs=["$(B)/bin/aot/aot.wasm"],
+    cmd=["python3", "$(S)/dev/go.py", "build", GO, "$(S)/bin/aot", "$(B)/bin/aot/aot.wasm", "--wasip1"],
+    descr="GO",
+    color="light-blue",
+)
+
+# aot.wasm compiled by aot, and linked with the WASI host of bin/aot/rt: the
+# compiler as its own output.
+aot_self_obj = command(
+    name="aot_self_obj",
+    outputs=["$(B)/bin/aot/self/prog.o", "$(B)/bin/aot/self/prog.h"],
+    deps=[aot, aot_wasm],
+    cmd=[aot.outputs[0], "-p", "prog", "-H", "$(B)/bin/aot/self/prog.h", "-o", "$(B)/bin/aot/self/prog.o", aot_wasm.outputs[0]],
+    descr="AO",
+    color="light-cyan",
+)
+
+aot_self = command(
+    name="aot_self",
+    inputs=build.glob("$(S)/bin/aot/rt/*"),
+    outputs=["$(B)/bin/aot/aot.self"],
+    deps=[aot_self_obj],
+    cmd=[
+        CLANG, *HOST_CFLAGS, "-O2", "-I$(S)/bin/aot/rt", "-I$(B)/bin/aot/self", "-o", "$(B)/bin/aot/aot.self",
+        "$(S)/bin/aot/rt/host.c", "$(S)/bin/aot/rt/wasi.c", aot_self_obj.outputs[0], *HOST_LDFLAGS,
+    ],
+    descr="LD",
+    color="green",
+)
+
+# tst/wazero: a WASI runner on wazero, what aot is measured against. Its
+# modules, checked against go.sum, are fetched once; the build has no network.
+wazero_modules = command(
+    name="wazero_modules",
+    local=True,
+    inputs=["$(S)/dev/go.py", "$(S)/tst/wazero/go.mod", "$(S)/tst/wazero/go.sum"],
+    outputs=["$(B)/tst/wazero/modules.tar"],
+    cmd=["python3", "$(S)/dev/go.py", "download", GO, "$(S)/tst/wazero", "$(B)/tst/wazero/modules.tar"],
+    descr="FE",
+    color="blue",
+)
+
+wazero = command(
+    name="wazero",
+    inputs=[*build.glob("$(S)/tst/wazero/*.go"), "$(S)/tst/wazero/go.mod", "$(S)/tst/wazero/go.sum", "$(S)/dev/go.py"],
+    outputs=["$(B)/tst/wazero/wazero"],
+    deps=[wazero_modules],
+    cmd=[
+        "python3", "$(S)/dev/go.py", "build", GO, "$(S)/tst/wazero", "$(B)/tst/wazero/wazero",
+        "--modules", wazero_modules.outputs[0],
+    ],
+    descr="GO",
+    color="light-blue",
+)
+
+# What each test runs against: its arguments are the outputs of these nodes.
+TESTED = {
+    "busybox_abi": [busybox],
+    "aot": [aot, aot_wasm, aot_self_obj, aot_self, wazero, busybox],
+}
 tests = []
 
 for test in build.glob("$(S)/tst/test_*.py"):
     name = test.rsplit("/", 1)[-1][len("test_"):-len(".py")]
     stamp = f"$(B)/tst/{name}.stamp"
+    tested = TESTED[name]
     tests.append(command(
         name=f"test_{name}",
         inputs=[test, "$(S)/dev/wasm_info.py"],
         outputs=[stamp],
-        deps=[busybox],
+        deps=tested,
         cmd=[
-            ["python3", test, busybox.outputs[0], busybox.outputs[1]],
+            ["python3", test, *(output for node in tested for output in node.outputs)],
             touch(stamp),
         ],
         env={"PYTHONDONTWRITEBYTECODE": "1"},
@@ -131,5 +214,5 @@ for test in build.glob("$(S)/tst/test_*.py"):
         color="green",
     ))
 
-group("install", busybox, busybox_abi)
+group("install", busybox, busybox_abi, aot, aot_wasm, aot_self, wazero)
 group("test", *tests)
