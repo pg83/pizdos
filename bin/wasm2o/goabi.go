@@ -1,5 +1,7 @@
 package main
 
+import "encoding/binary"
+
 // Generated code runs on a goroutine's stack and keeps Go's rules there:
 // R14 is g and RBP the frame pointer, a frame saves RBP right below its
 // return address, every instruction's stack pointer is known (asm.sps), and
@@ -333,7 +335,7 @@ func (oc *objCode) stubs() {
 // compilers do.
 func returnsTwice(name string) bool {
 	switch name {
-	case "setjmp", "_setjmp", "sigsetjmp":
+	case "setjmp", "_setjmp", "sigsetjmp", "vfork", "fork":
 		return true
 	}
 
@@ -437,11 +439,13 @@ func (oc *objCode) recordFrame() {
 	a.load(8, 8, false, RAX, baseAt(RBP, 8))
 	a.store(8, RAX, word(jumpPC))
 	a.load(8, 8, false, RAX, baseAt(R14, gStackHi))
+	a.aluRM(aluSub, 8, RAX, baseAt(ctxReg, offBase))
 	a.aluRR(aluSub, 8, RAX, RBP)
 	a.aluRI(aluSub, 8, RAX, 16)
 	a.store(8, RAX, word(jumpSP))
 	a.load(8, 8, false, RDX, baseAt(RBP, 0))
 	a.load(8, 8, false, RAX, baseAt(R14, gStackHi))
+	a.aluRM(aluSub, 8, RAX, baseAt(ctxReg, offBase))
 	a.aluRR(aluSub, 8, RAX, RDX)
 	a.store(8, RAX, word(jumpBP))
 	a.store(8, R10, word(jumpR10))
@@ -478,7 +482,9 @@ func (oc *objCode) landStub() {
 	start := oc.beginRegion(symLand)
 	oc.globals[symLand] = true
 	a.load(8, 8, false, RDX, baseAt(R14, gStackHi))
-	a.movRR(8, RSI, RDX)
+	a.movRR(8, R9, RDX)
+	a.aluRM(aluSub, 8, R9, baseAt(RCX, offBase))
+	a.movRR(8, RSI, R9)
 	a.aluRM(aluSub, 8, RSI, word(jumpBP))
 	a.movRR(8, RDI, RBP)
 	walk := a.pos()
@@ -505,10 +511,10 @@ func (oc *objCode) landStub() {
 	a.load(8, 8, false, R10, word(jumpR10))
 	a.load(8, 8, false, R11, word(jumpR11))
 	a.load(8, 8, false, R12, word(jumpR12))
-	a.load(8, 8, false, R9, word(jumpPC))
-	a.movRR(8, R8, RDX)
+	a.movRR(8, R8, R9)
 	a.aluRM(aluSub, 8, R8, word(jumpSP))
 	a.aluRI(aluSub, 8, R8, 8)
+	a.load(8, 8, false, R9, word(jumpPC))
 	a.store(8, R9, baseAt(R8, 0))
 	a.movRR(8, RBP, RSI)
 	a.movRR(4, RAX, RBX)
@@ -521,6 +527,199 @@ func (oc *objCode) landStub() {
 
 	a.aluRR(aluXor, 4, RAX, RAX)
 	a.ret()
+	oc.endRegion(start)
+}
+
+// The requests of the fork stubs, words at these offsets: Go's
+// framesRequest and resumeRequest (jump.go).
+const (
+	framesCtx    = 0
+	framesSP     = 8  // the jump frame's
+	framesBP     = 16 // the jump frame's
+	framesFuncs  = 24 // the code of the module's functions, [start, end)
+	framesEntry  = 40 // the code of the thunk the process entered by
+	framesResume = 56 // the code of the resume stub, which a child of fork entered by
+	framesBuf    = 72
+	framesCap    = 80
+	framesSize   = 88 // out: the bytes of the frames, 0 when they do not end in an entry
+	framesTop    = 96 // out: the offset of the top frame's saved RBP
+	resumeCtx    = 0
+	resumeBuf    = 8
+	resumeSize   = 16
+	resumeTop    = 24
+	resumeBP     = 32 // the offset of the caller's saved RBP
+	resumeSP     = 40 // the jump frame's
+	resumePC     = 48
+	resumeR10    = 56
+	resumeSlack  = 512
+)
+
+// indexed is [base+index].
+func indexed(base, index VReg) amem {
+	return amem{base: int(base), index: int(index), scale: 1, label: -1}
+}
+
+// framesStub emits the stub fork calls first, func(request uintptr), on a
+// framesRequest: it walks the frame pointers from the jump frame's caller up
+// while each returns into a function of the module, to the frame that
+// returns into the entry thunk or the resume stub, and copies those
+// frames, from the caller's
+// stack pointer to that return address, when they fit the buffer. In the
+// copy each saved RBP is an offset from its start, the top one 0. A leaf
+// that only reads the stack, it may be preempted anywhere.
+func (oc *objCode) framesStub() {
+	a := &oc.a
+	word := func(k int32) amem {
+		return baseAt(RAX, k)
+	}
+
+	start := oc.beginRegion(symFrames)
+	oc.globals[symFrames] = true
+	a.load(8, 8, false, RDX, baseAt(R14, gStackHi))
+	a.load(8, 8, false, R10, word(framesCtx))
+	a.movRR(8, R9, RDX)
+	a.aluRM(aluSub, 8, R9, baseAt(R10, offBase))
+	a.movRR(8, RSI, R9)
+	a.aluRM(aluSub, 8, RSI, word(framesSP))
+	a.movRR(8, RDI, R9)
+	a.aluRM(aluSub, 8, RDI, word(framesBP))
+	walk := a.pos()
+	a.load(8, 8, false, R8, baseAt(RDI, 8))
+	var top, fail []int32
+
+	for _, entry := range []int32{framesEntry, framesResume} {
+		a.aluRM(aluCmp, 8, R8, word(entry))
+		below := a.jcc8(ccB)
+		a.aluRM(aluCmp, 8, R8, word(entry+8))
+		top = append(top, a.jccRel(ccB))
+		a.here8(below)
+	}
+
+	a.aluRM(aluCmp, 8, R8, word(framesFuncs))
+	fail = append(fail, a.jccRel(ccB))
+	a.aluRM(aluCmp, 8, R8, word(framesFuncs+8))
+	fail = append(fail, a.jccRel(ccAE))
+	a.load(8, 8, false, R8, baseAt(RDI, 0))
+	a.aluRR(aluCmp, 8, R8, RDI)
+	fail = append(fail, a.jccRel(ccBE))
+	a.aluRR(aluCmp, 8, R8, RDX)
+	fail = append(fail, a.jccRel(ccAE))
+	a.movRR(8, RDI, R8)
+	a.patch32(a.jmpRel(), walk)
+
+	for _, at := range top {
+		a.patch32(at, a.pos())
+	}
+
+	a.lea(8, RCX, baseAt(RDI, 16))
+	a.aluRR(aluSub, 8, RCX, RSI)
+	a.store(8, RCX, word(framesSize))
+	a.movRR(8, R11, RDI)
+	a.aluRR(aluSub, 8, R11, RSI)
+	a.store(8, R11, word(framesTop))
+	a.aluRM(aluCmp, 8, RCX, word(framesCap))
+	small := a.jccRel(ccA)
+	a.movRR(8, RBX, RSI)
+	a.load(8, 8, false, R10, word(framesBuf))
+	a.movRR(8, RDI, R10)
+	a.repMovsb()
+	a.load(8, 8, false, R8, word(framesSP))
+	a.aluRM(aluSub, 8, R8, word(framesBP))
+	relink := a.pos()
+	a.aluRR(aluCmp, 8, R8, R11)
+	last := a.jcc8(ccE)
+	a.load(8, 8, false, RCX, indexed(R10, R8))
+	a.aluRR(aluSub, 8, RCX, RBX)
+	a.store(8, RCX, indexed(R10, R8))
+	a.movRR(8, R8, RCX)
+	a.patch8(a.jmp8(), relink)
+	a.here8(last)
+	a.storeImm(8, indexed(R10, R11), 0)
+	a.patch32(small, a.pos())
+	a.ret()
+
+	for _, at := range fail {
+		a.patch32(at, a.pos())
+	}
+
+	a.storeImm(8, word(framesSize), 0)
+	a.ret()
+	oc.endRegion(start)
+}
+
+// resumeStub emits the stub a child of fork enters by, func(request
+// uintptr), on a resumeRequest: with a frame of its own, it places the
+// frames below its stack pointer, links them to its frame and returns from
+// the call of the jump frame with 0, the instance's base set so that the
+// parent's offsets hold. The top frame returns into the stub, which
+// returns to Go. Writing below its stack pointer, it must not be preempted
+// (gort.go); first it grows the stack until the frames fit.
+func (oc *objCode) resumeStub() {
+	a := &oc.a
+	word := func(k int32) amem {
+		return baseAt(RAX, k)
+	}
+
+	start := oc.beginRegion(symResume)
+	oc.globals[symResume] = true
+	a.load(8, 8, false, ctxReg, word(resumeCtx))
+	a.lea(8, RDX, rspAt(-resumeSlack))
+	a.aluRM(aluSub, 8, RDX, word(resumeSize))
+	a.aluRM(aluCmp, 8, RDX, baseAt(R14, gStackguard0))
+	grow := a.jccRel(ccBE)
+	a.push(RBP)
+	a.movRR(8, RBP, RSP)
+	a.movRR(8, RDI, RSP)
+	a.aluRM(aluSub, 8, RDI, word(resumeSize))
+	a.movRR(8, RBX, RDI)
+	a.load(8, 8, false, RSI, word(resumeBuf))
+	a.load(8, 8, false, RCX, word(resumeSize))
+	a.repMovsb()
+	a.load(8, 8, false, R8, word(resumeBP))
+	a.load(8, 8, false, R11, word(resumeTop))
+	relink := a.pos()
+	a.aluRR(aluCmp, 8, R8, R11)
+	last := a.jcc8(ccE)
+	a.load(8, 8, false, RCX, indexed(RBX, R8))
+	a.lea(8, R9, indexed(RBX, RCX))
+	a.store(8, R9, indexed(RBX, R8))
+	a.movRR(8, R8, RCX)
+	a.patch8(a.jmp8(), relink)
+	a.here8(last)
+	a.store(8, RBP, indexed(RBX, R11))
+	// lea r9, [rip+cont], the displacement patched below
+	a.rex(true, int(R9), -1, -1, false)
+	a.b(0x8d, lo3(int(R9))<<3|5)
+	contAt := a.pos()
+	a.u32(0)
+	a.lea(8, RCX, indexed(RBX, R11))
+	a.store(8, R9, baseAt(RCX, 8))
+	a.load(8, 8, false, R9, baseAt(R14, gStackHi))
+	a.aluRR(aluSub, 8, R9, RBX)
+	a.aluRM(aluSub, 8, R9, word(resumeSP))
+	a.store(8, R9, baseAt(ctxReg, offBase))
+	a.load(8, 8, false, memReg, baseAt(ctxReg, offMem))
+
+	for k, r := range []VReg{R10, R11, R12} {
+		a.load(8, 8, false, r, word(resumeR10+8*int32(k)))
+	}
+
+	a.load(8, 8, false, R9, word(resumePC))
+	a.movRR(8, RBP, RBX)
+	a.aluRM(aluAdd, 8, RBP, word(resumeBP))
+	a.lea(8, R8, baseAt(RBX, -8))
+	a.store(8, R9, baseAt(R8, 0))
+	a.aluRR(aluXor, 4, RAX, RAX)
+	a.movRR(8, RSP, R8)
+	a.ret()
+	cont := a.pos()
+	binary.LittleEndian.PutUint32(a.buf[contAt:], uint32(cont-(contAt+4)))
+	a.pop(RBP)
+	a.ret()
+	a.setSP(0)
+	a.patch32(grow, a.pos())
+	oc.callStub(stubMorestack)
+	a.patch32(a.jmpRel(), start)
 	oc.endRegion(start)
 }
 

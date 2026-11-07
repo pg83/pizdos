@@ -153,7 +153,7 @@ func (p *Process) exec(path string, argv, envp []string) error {
 			return err
 		}
 
-		panic(&execImage{code: code, argv: argv, envp: envp})
+		p.execImage(&execImage{code: code, argv: argv, envp: envp})
 	}
 
 	return syscall.ELOOP
@@ -304,10 +304,18 @@ func (k *Kernel) procFunctions() map[string]any {
 			return uint32(proc(ctx).pid)
 		},
 		"getppid": func(ctx uintptr) uint32 {
-			return uint32(proc(ctx).ppid)
+			p := proc(ctx)
+			k.mu.Lock()
+			defer k.mu.Unlock()
+
+			return uint32(p.ppid)
 		},
 		"getpgrp": func(ctx uintptr) uint32 {
-			return uint32(proc(ctx).pgid)
+			p := proc(ctx)
+			k.mu.Lock()
+			defer k.mu.Unlock()
+
+			return uint32(p.pgid)
 		},
 		"setpgid":   k.setpgid,
 		"tcgetpgrp": k.tcgetpgrp,
@@ -480,18 +488,6 @@ func (k *Kernel) procFunctions() map[string]any {
 
 			return p.result(0, p.execPath(p.str(file), p.argList(arg0, va), p.environment()))
 		},
-		"fork": func(ctx uintptr) uint32 {
-			return proc(ctx).result(0, syscall.ENOSYS)
-		},
-		"vfork": func(ctx uintptr) uint32 {
-			return proc(ctx).result(0, syscall.ENOSYS)
-		},
-		"waitpid": func(ctx uintptr, pid, status, options uint32) uint32 {
-			return proc(ctx).result(0, syscall.ECHILD)
-		},
-		"wait": func(ctx uintptr, status uint32) uint32 {
-			return proc(ctx).result(0, syscall.ECHILD)
-		},
 		"_exit": func(ctx uintptr, code uint32) {
 			proc(ctx).exitWith(int(code&0xff) << 8)
 		},
@@ -541,9 +537,10 @@ func (k *Kernel) setpgid(ctx uintptr, pid, pgid uint32) uint32 {
 	if pid != 0 && int32(pid) != p.pid {
 		k.mu.Lock()
 		q, ok := k.procs[int32(pid)]
+		ok = ok && q.ppid == p.pid
 		k.mu.Unlock()
 
-		if !ok || q.ppid != p.pid {
+		if !ok {
 			return p.result(0, syscall.ESRCH)
 		}
 
@@ -560,7 +557,9 @@ func (k *Kernel) setpgid(ctx uintptr, pid, pgid uint32) uint32 {
 		return p.result(0, syscall.EPERM)
 	}
 
+	k.mu.Lock()
 	target.pgid = group
+	k.mu.Unlock()
 
 	return p.result(0, nil)
 }

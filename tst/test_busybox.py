@@ -2,13 +2,17 @@
 """busybox under `wasm2o run`: the kernel of lib/c runs its applets inside a
 root made like the system's, /bin/busybox the object and every path of
 busybox.links a symbolic link to it. The shell's errors, exit and SIGINT
-are longjmps, one of them out of a signal handler.
+are longjmps, one of them out of a signal handler; its commands, pipes,
+substitutions and jobs are forks, which a terminal stops and continues;
+xargs, find -exec and awk's pipes are vforks.
 
     test_busybox.py <wasm2o> <busybox.o> <busybox.wasm> <busybox.links>
 """
 import gzip
 import hashlib
 import os
+import pty
+import select
 import shutil
 import signal
 import subprocess
@@ -60,6 +64,24 @@ CASES = [
     (["sh", "-c", "for i in 1 2 3; do [ $i = 2 ] && continue; echo $i; done"], "", "1\n3\n", 0),
     (["sh", "-s"], "x=4\necho $((x * x))\nexit 3\n", "16\n", 3),
     (["env", "/tmp/shell.sh", "a", "b"], "", "2 a b\n", 2),
+    # fork: commands, pipes, substitutions, subshells, jobs
+    (["sh", "-c", "echo $(echo sub) $(echo $(echo deep))"], "", "sub deep\n", 0),
+    (["sh", "-c", "x=$(seq 3 | wc -l); echo x=$x"], "", "x=3\n", 0),
+    (["sh", "-c", "echo a b c | tr a-z A-Z | sed s/B/-/"], "", "A - C\n", 0),
+    (["sh", "-c", "seq 1 20000 | sort -rn | head -2; seq 1 100 | md5sum"], "",
+     "20000\n19999\n" + hashlib.md5("".join(f"{i}\n" for i in range(1, 101)).encode()).hexdigest() + "  -\n", 0),
+    (["sh", "-c", "(cd /bin && pwd); pwd"], "", "/bin\n/tmp\n", 0),
+    (["sh", "-c", "f() { echo $1 | sed s/a/b/; }; for i in a aa; do f $i; done | sort"], "", "b\nba\n", 0),
+    (["sh", "-c", "sh -c 'exit 4'; echo $?; (exit 3); echo $?"], "", "4\n3\n", 0),
+    (["sh", "-c", "cat /tmp/script.sh > /tmp/bg.out & wait $!; echo rc=$?; cat /tmp/bg.out"], "", "rc=0\n#!/bin/echo from\n", 0),
+    (["sh", "-c", "sleep 2 & p=$!; kill -STOP $p; kill -TERM $p; kill -CONT $p; wait $p; echo rc=$?"], "", "rc=143\n", 0),
+    (["sh", "-c", "trap 'echo chld' CHLD; true & wait; echo done"], "", "chld\ndone\n", 0),
+    # vfork
+    (["xargs", "-n1", "echo", "one"], "a b\n", "one a\none b\n", 0),
+    (["xargs", "missing"], "x\n", "", 127),
+    (["find", "/tmp", "-maxdepth", "1", "-name", "shell.sh", "-exec", "echo", "found", "{}", ";"], "", "found /tmp/shell.sh\n", 0),
+    (["awk", "{ print $0 | \"sort -r\" }"], "a\nc\nb\n", "c\nb\na\n", 0),
+    (["awk", "BEGIN { while ((\"echo x; echo y\" | getline l) > 0) print \"l=\" l }"], "", "l=x\nl=y\n", 0),
 ]
 
 # An interactive shell gets SIGINT while it reads a line, and while a loop
@@ -125,6 +147,41 @@ def interrupt(wasm2o, root, first):
     return out.decode(errors="replace"), p.returncode
 
 
+def job_control(wasm2o, root):
+    """Ctrl-Z stops a command on a terminal, jobs lists it, fg continues it
+    and Ctrl-C ends it."""
+    pid, fd = pty.fork()
+
+    if pid == 0:
+        os.chdir(root / "tmp")
+        os.execve(wasm2o, [wasm2o, "run", "--root", str(root), "-a", "sh", str(root / "bin" / "busybox"), "--", "-i"],
+                  {"PATH": "/bin:/usr/bin", "PS1": "$ ", "TERM": "dumb"})
+
+    out = b""
+
+    def pump(seconds):
+        nonlocal out
+        end = time.time() + seconds
+
+        while time.time() < end:
+            if select.select([fd], [], [], 0.05)[0]:
+                try:
+                    out += os.read(fd, 4096)
+                except OSError:
+                    return
+
+    pump(0.8)
+
+    for keys in [b"cat\r", b"\x1a", b"jobs\r", b"fg\r", b"\x03", b"echo after $?\r", b"exit 6\r"]:
+        os.write(fd, keys)
+        pump(0.6)
+
+    _, status = os.waitpid(pid, 0)
+    os.close(fd)
+
+    return out.decode(errors="replace").replace("\r", ""), os.waitstatus_to_exitcode(status)
+
+
 def main():
     wasm2o, obj, _, links = sys.argv[1:5]
     failed = []
@@ -183,11 +240,16 @@ def main():
             if not out.endswith(tail) or code != 5:
                 failed.append(f"SIGINT to sh -i after {first!r}: exit {code}, stdout ends {out[-60:]!r}; want exit 5, {tail!r}")
 
+        out, code = job_control(wasm2o, root)
+
+        if out.count("Stopped") != 2 or "after 130" not in out or code != 6:
+            failed.append(f"job control: exit {code}, terminal {out!r}")
+
     for f in failed:
         print(f)
 
     assert not failed, f"{len(failed)} of the busybox cases failed"
-    print(f"{len(CASES) + len(steps) + 3 + len(INTERRUPTS)} cases passed")
+    print(f"{len(CASES) + len(steps) + 4 + len(INTERRUPTS)} cases passed")
 
 
 if __name__ == "__main__":

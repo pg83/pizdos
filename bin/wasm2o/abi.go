@@ -12,15 +12,19 @@ const (
 	offHost       = 32 // free for the loader
 	offTokens     = 40 // the last invocation token handed out: see jumpFrame
 	offJump       = 48 // the jump frame, jumpWords words
-	headerSize    = offJump + 8*jumpWords + 8
+	offBase       = offJump + 8*jumpWords
+	headerSize    = offBase + 8
 )
 
 // The jump frame is what the adapter of an import that returns twice
 // (goabi.go) writes before it calls Go: the caller's frame as a later
-// landing restores it. Stack addresses are offsets below g.stack.hi, which
-// stack copies keep. The token tells the caller's invocation from a later
-// one in the same place: a function calling such an import keeps it in the
-// word below its saved RBP, zero from its prologue until the first call.
+// landing restores it. Stack addresses are offsets below g.stack.hi less
+// the base, which stack copies keep; the base is 0 but in a child of fork,
+// whose frames are the parent's in another place: there it keeps the
+// parent's offsets right. The token tells the caller's invocation from a
+// later one in the same place: a function calling such an import keeps it
+// in the word below its saved RBP, zero from its prologue until the first
+// call.
 const (
 	jumpPC    = 0 // the return address
 	jumpSP    = 1 // the stack pointer after the return

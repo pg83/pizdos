@@ -252,6 +252,8 @@ func (oc *objCode) importAdapters() {
 
 	if len(oc.jumpAt) > 0 {
 		oc.landStub()
+		oc.framesStub()
+		oc.resumeStub()
 	}
 }
 

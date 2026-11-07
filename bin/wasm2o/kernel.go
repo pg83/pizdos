@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 )
 
@@ -83,6 +84,19 @@ type Process struct {
 	jumps   map[uint32]*jump
 	stackAt uint32
 	sig     signalState
+	// vfork is set while the process runs on its parent's frames, from vfork
+	// until it execs or ends (kernel_fork.go).
+	vfork *vforkFrame
+	// zombie tells an ended process its parent has not reaped, status its
+	// wait status; ppid, zombie and status are the kernel's lock's.
+	zombie bool
+	status int
+	// halted is set while the process is stopped; report is the wait status
+	// of a stop or continue its parent has not seen, under the same lock.
+	halted bool
+	report int
+	// childEvents counts the changes of the children, for a blocked wait.
+	childEvents atomic.Uint64
 	// wake is an eventfd a blocking call polls with its descriptors: a
 	// signal sent to the process makes it readable.
 	wake int
@@ -145,7 +159,7 @@ func (k *Kernel) functionTable() map[string]any {
 	t := map[string]any{"__kernel_start": k.kernelStart}
 
 	for _, part := range []map[string]any{k.fileFunctions(), k.pathFunctions(), k.heapFunctions(), k.stringFunctions(),
-		k.timeFunctions(), k.regexFunctions(), k.signalFunctions(), k.procFunctions(), k.jumpFunctions()} {
+		k.timeFunctions(), k.regexFunctions(), k.signalFunctions(), k.procFunctions(), k.jumpFunctions(), k.forkFunctions()} {
 		for name, f := range part {
 			t[name] = f
 		}
@@ -244,10 +258,17 @@ func (k *Kernel) guestPath(host string) string {
 // run runs the process's programs, one after another as it execs, then
 // ends it.
 func (p *Process) run(img *execImage) {
+	p.runFrom(img, nil, nil)
+}
+
+// runFrom is run with the first program already in i, entered by enter:
+// in a child of fork.
+func (p *Process) runFrom(img *execImage, i *Instance, enter func()) {
 	status := 0
 
 	for img != nil {
-		img, status = p.runImage(img)
+		img, status = p.runImage(img, i, enter)
+		i, enter = nil, nil
 
 		if img != nil {
 			p.execReset()
@@ -257,23 +278,35 @@ func (p *Process) run(img *execImage) {
 	p.terminate(status)
 }
 
-func (p *Process) runImage(img *execImage) (next *execImage, status int) {
-	i := newInstance(img.code, p.k, runStack)
-	i.host = p
+func (p *Process) runImage(img *execImage, i *Instance, enter func()) (next *execImage, status int) {
+	if i == nil {
+		i = newInstance(img.code, p.k, runStack)
+		i.host = p
+		p.heap, p.static, p.env, p.errnoAt, p.environAt, p.siginfo = 0, 0, 0, 0, 0, 0
+		p.regexes, p.zoneNames = map[uint32]*posixRegex{}, map[string]uint32{}
+		p.jumps, p.stackAt = map[uint32]*jump{}, 0
+		enter = func() {
+			i.start()
+			start, _ := i.export("_start")
+			start.Interface().(func(uintptr))(i.ctx())
+		}
+	}
+
 	p.inst, p.image = i, img
-	p.heap, p.static, p.env, p.errnoAt, p.environAt, p.siginfo = 0, 0, 0, 0, 0, 0
-	p.regexes, p.zoneNames = map[uint32]*posixRegex{}, map[string]uint32{}
-	p.jumps, p.stackAt = map[uint32]*jump{}, 0
 
 	defer func() {
-		switch e := recover().(type) {
+		e := recover()
+		who := i.host.(*Process)
+		p.endBorrowers(i, e)
+
+		switch e := e.(type) {
 		case nil:
 		case *procExit:
 			status = e.status
 		case *execImage:
 			next = e
 		case *Trap:
-			fmt.Fprintf(os.Stderr, "%s[%d]: %s\n", img.argv[0], p.pid, e.message())
+			fmt.Fprintf(os.Stderr, "%s[%d]: %s\n", img.argv[0], who.pid, e.message())
 			status = trapSignal(e.code)
 		default:
 			panic(e)
@@ -284,9 +317,7 @@ func (p *Process) runImage(img *execImage) (next *execImage, status int) {
 		i.release()
 	}()
 
-	i.start()
-	start, _ := i.export("_start")
-	start.Interface().(func(uintptr))(i.ctx())
+	enter()
 
 	return nil, 0
 }
@@ -303,21 +334,75 @@ func trapSignal(code uint32) int {
 	return int(syscall.SIGILL)
 }
 
-// terminate ends the process with a wait status: its descriptors close, it
-// becomes a zombie for its parent, and with the first process wasm2o ends.
+// terminate ends the process with a wait status: its descriptors close, its
+// children go to the first process, it becomes a zombie its parent reaps,
+// or nothing when the parent ignores SIGCHLD; with the first process
+// wasm2o ends.
 func (p *Process) terminate(status int) {
 	for fd := range p.files {
 		p.closeFd(fd)
 	}
 
+	p.sig.mu.Lock()
+	p.sig.dead = true
 	syscall.Close(p.wake)
-	p.k.mu.Lock()
-	delete(p.k.procs, p.pid)
-	p.k.mu.Unlock()
+	p.sig.mu.Unlock()
+	k := p.k
+	k.mu.Lock()
+	parent := k.procs[p.ppid]
+	adopted := false
 
-	if p == p.k.first {
-		p.k.exit <- hostCode(status)
+	for _, q := range k.procs {
+		if q.ppid == p.pid {
+			q.ppid = k.first.pid
+			adopted = adopted || q.zombie
+		}
 	}
+
+	notify := parent != nil && !parent.discardsChildren()
+
+	if notify {
+		p.zombie, p.status = true, status
+	} else {
+		delete(k.procs, p.pid)
+	}
+
+	k.mu.Unlock()
+
+	if adopted && p != k.first {
+		k.first.childChanged(int(syscall.SIGCHLD))
+	}
+
+	if notify {
+		parent.childChanged(int(syscall.SIGCHLD))
+	}
+
+	if p == k.first {
+		k.exit <- hostCode(status)
+	}
+}
+
+// discardsChildren tells that the process's ended children are not kept for
+// it: it ignores SIGCHLD, or asked so with SA_NOCLDWAIT.
+func (p *Process) discardsChildren() bool {
+	p.sig.mu.Lock()
+	defer p.sig.mu.Unlock()
+
+	act := p.sig.actions[syscall.SIGCHLD]
+
+	return act.handler == sigIgn || act.flags&saNocldwait != 0
+}
+
+// childChanged tells the process that a child changed, with a signal or
+// none.
+func (p *Process) childChanged(sig int) {
+	p.childEvents.Add(1)
+
+	if sig != 0 {
+		p.send(sig)
+	}
+
+	p.wakeUp()
 }
 
 // hostCode is wasm2o's exit code for a wait status.
@@ -329,8 +414,15 @@ func hostCode(status int) int {
 	return status >> 8 & 0xff
 }
 
-// exitWith ends the process from inside one of its calls.
+// exitWith ends the process from inside one of its calls. A child of vfork
+// gives its parent's frames back.
 func (p *Process) exitWith(status int) {
+	if v := p.vfork; v != nil {
+		p.vfork = nil
+		p.terminate(status)
+		v.resume(p.pid)
+	}
+
 	panic(&procExit{status})
 }
 

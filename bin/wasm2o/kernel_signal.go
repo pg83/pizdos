@@ -20,6 +20,8 @@ import (
 const (
 	sigDfl      = 0
 	sigIgn      = 1
+	saNocldstop = 1
+	saNocldwait = 2
 	saSiginfo   = 4
 	saRestart   = 0x10000000
 	saNodefer   = 0x40000000
@@ -55,6 +57,21 @@ func sigBit(sig int) uint64 {
 	return 1 << (sig - 1)
 }
 
+// stopSignals stop a process by default; SIGCONT and they discard each
+// other when sent.
+const stopSignals = 1<<(syscall.SIGSTOP-1) | 1<<(syscall.SIGTSTP-1) | 1<<(syscall.SIGTTIN-1) | 1<<(syscall.SIGTTOU-1)
+
+// sent discards what a signal sent cancels: SIGCONT the pending stops, a
+// stop a pending SIGCONT; the caller holds the lock.
+func (s *signalState) sent(sig int) {
+	switch {
+	case sig == int(syscall.SIGCONT):
+		s.pending &^= stopSignals
+	case sigBit(sig)&stopSignals != 0:
+		s.pending &^= sigBit(int(syscall.SIGCONT))
+	}
+}
+
 // unblockable is what no mask holds: SIGKILL and SIGSTOP.
 const unblockable = 1<<(syscall.SIGKILL-1) | 1<<(syscall.SIGSTOP-1)
 
@@ -69,6 +86,8 @@ type signalState struct {
 	actions [nsig]sigAction
 	blocked uint64
 	pending uint64
+	// dead is set when the process ended and closed its wake descriptor.
+	dead bool
 }
 
 func (s *signalState) deliverable() uint64 {
@@ -85,9 +104,15 @@ func (a sigAction) ignored(sig int) bool {
 
 // send makes a signal pending for the process and wakes it. A fatal signal
 // for the first process ends wasm2o at once: the process may be running
-// code that takes no signals.
+// code that takes no signals. SIGCONT continues a stopped process even
+// when it ignores it.
 func (p *Process) send(sig int) {
+	if sig == int(syscall.SIGCONT) {
+		p.cont()
+	}
+
 	p.sig.mu.Lock()
+	p.sig.sent(sig)
 	act := p.sig.actions[sig]
 	blocked := p.sig.blocked&sigBit(sig) != 0
 
@@ -103,14 +128,27 @@ func (p *Process) send(sig int) {
 
 	p.sig.pending |= sigBit(sig)
 	p.sig.mu.Unlock()
-	var one = [8]byte{1}
-	syscall.Write(p.wake, one[:])
+	p.wakeUp()
+}
+
+// wakeUp makes a blocking call of the process look again: for a signal, or
+// a change of its children.
+func (p *Process) wakeUp() {
+	p.sig.mu.Lock()
+
+	if !p.sig.dead {
+		var one = [8]byte{1}
+		syscall.Write(p.wake, one[:])
+	}
+
+	p.sig.mu.Unlock()
 }
 
 // sendSelf sends a signal the process raised itself; it takes it on its
 // way out of the call.
 func (p *Process) sendSelf(sig int) {
 	p.sig.mu.Lock()
+	p.sig.sent(sig)
 	act := p.sig.actions[sig]
 
 	if !act.ignored(sig) || p.sig.blocked&sigBit(sig) != 0 {
@@ -172,7 +210,7 @@ func (p *Process) handleSignals() bool {
 			case actTerminate:
 				p.exitWith(sig)
 			case actStop:
-				p.stop()
+				p.stop(sig)
 			}
 		default:
 			if act.flags&saRestart == 0 {
@@ -184,12 +222,16 @@ func (p *Process) handleSignals() bool {
 	}
 }
 
-// stop stops the process. The first process stops wasm2o, so the host's
-// shell gets the terminal back.
-func (p *Process) stop() {
+// stop stops the process until SIGCONT or SIGKILL (kernel_fork.go). The
+// first process stops wasm2o, so the host's shell gets the terminal back.
+func (p *Process) stop(sig int) {
 	if p == p.k.first {
 		syscall.Kill(os.Getpid(), syscall.SIGSTOP)
+
+		return
 	}
+
+	p.stopped(sig)
 }
 
 // runHandler calls a handler with the action's mask added for its time;
@@ -267,7 +309,7 @@ func validSignal(sig uint32) bool {
 }
 
 // signalTargets are the processes kill sends to: one pid, a group (pid 0
-// is the sender's, -1 every process).
+// is the sender's, -1 every process but the first and the sender).
 func (k *Kernel) signalTargets(from *Process, pid int32) []*Process {
 	return k.processes(func(q *Process) bool {
 		switch {
@@ -276,7 +318,7 @@ func (k *Kernel) signalTargets(from *Process, pid int32) []*Process {
 		case pid == 0:
 			return q.pgid == from.pgid
 		case pid == -1:
-			return q.pid != 1
+			return q.pid != 1 && q != from
 		}
 
 		return q.pgid == -pid

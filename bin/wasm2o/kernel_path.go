@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -48,12 +49,28 @@ func (p *Process) full(path string) (string, error) {
 	return p.cwd + "/" + path, nil
 }
 
+// hostDevices are the host's devices every root has: no other path leaves
+// it.
+var hostDevices = map[string]bool{
+	"/dev/null": true, "/dev/zero": true, "/dev/full": true, "/dev/random": true, "/dev/urandom": true, "/dev/tty": true,
+}
+
 // openat2 opens a guest path; the host descriptor is close-on-exec.
 func (p *Process) openat2(path string, flags int, mode uint32) (int, error) {
 	full, err := p.full(path)
 
 	if err != nil {
 		return -1, err
+	}
+
+	if clean := filepath.Clean(full); hostDevices[clean] {
+		for {
+			fd, err := syscall.Open(clean, flags|syscall.O_CLOEXEC, mode)
+
+			if err != syscall.EINTR {
+				return fd, err
+			}
+		}
 	}
 
 	name := throw2(syscall.BytePtrFromString(full))

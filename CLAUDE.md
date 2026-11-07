@@ -39,33 +39,45 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   ABIInternal, R14 is g, RBP the frame pointer, X15 untouched, and the stack
   pointer table must be exact at every instruction, since Go preempts the
   code by signals and copies its stack.
-- An import named setjmp, _setjmp or sigsetjmp returns twice: its direct
-  calls go through an adapter that writes the caller's frame to the
-  instance header (`abi.go`), and the caller keeps an invocation token
+- An import named setjmp, _setjmp, sigsetjmp, vfork or fork returns twice:
+  its direct calls go through an adapter that writes the caller's frame to
+  the instance header (`abi.go`), and the caller keeps an invocation token
   below its saved RBP. `jump.go` returns from such a call again through the
   `w2o.land` stub, which checks the frame on the RBP chain and switches
-  stacks with a `ret`, dropping the frames between, Go's too. The register
-  allocator needs nothing for it: values living across a call are in
-  R10-R12, which the frame keeps, or in their vreg's own spill slot.
+  stacks with a `ret`, dropping the frames between, Go's too. For fork,
+  `w2o.frames` copies the frames up to the entry thunk (they hold no stack
+  address but the saved RBPs) and `w2o.resume` places them on another
+  goroutine's stack; it writes below its stack pointer, so the loader marks
+  it assembly, which Go never preempts, and the header's base keeps jump
+  frames valid in the child. The register allocator needs nothing for it:
+  values living across a call are in R10-R12, which the frame keeps, or in
+  their vreg's own spill slot.
 - The loader (`load.go`, `gort.go`, `wasi.go`, `run.go`, `jump.go`) is linux/amd64
   only and pinned to Go 1.25's moduledata; the compiler alone builds for
   wasip1 too. Code and its registration live as long as the process.
 - `wasm2o run` runs an object importing module `kernel` in the kernel of
   lib/c (`kernel*.go`): a process is a goroutine with its own pid, group,
   descriptors (host descriptors the kernel owns), cwd, umask, limits and
-  signals; paths resolve inside `--root` through openat2 `RESOLVE_IN_ROOT`;
-  exec runs only objects of wasm2o and `#!` scripts; wasm2o exits with the
-  first process. The heap, environ, DIRs and libc's static results live in
-  the guest's memory, so a fork can copy them. A longjmp may leave a signal
-  handler through the kernel's Go frames: the code that runs handlers holds
-  no lock and defers nothing. `test_busybox` builds a root from
-  busybox.links and runs applets and the shell in it, SIGINT included.
+  signals; paths resolve inside `--root` through openat2 `RESOLVE_IN_ROOT`,
+  but for a few host devices (/dev/null and kin); exec runs only objects of
+  wasm2o and `#!` scripts; wasm2o exits with the first process, which
+  adopts orphans. The heap, environ, DIRs and libc's static results live in
+  the guest's memory: fork copies it from the stack pointer to the heap's
+  top, the instance and the frames, into a goroutine of its own; a child of
+  vfork runs on its parent's goroutine and frames until it execs or exits,
+  then the parent returns from vfork again. A stopped process blocks its
+  goroutine until SIGCONT; the terminal's foreground group is the
+  kernel's. A longjmp may leave a signal handler through the kernel's Go
+  frames: the code that runs handlers holds no lock and defers nothing.
+  `test_busybox` builds a root from busybox.links and runs applets and the
+  shell in it: pipes, jobs, SIGINT, and Ctrl-Z, jobs and fg on a pty.
 - `test_wasm2o_go` runs `bin/wasm2o/*_test.go`: modules built in the test
   run through the loader while Go collects, copies stacks, parks, preempts a
   call-free loop on one processor and unwinds traps through native frames;
   wide signatures cross both boundaries on the stack; longjmp lands across a
   copied stack, through Go frames and under collection, and refuses a frame
-  that returned.
+  that returned; fork copies 10000 frames and memory, and the child's
+  longjmp to the parent's setjmp lands.
 - `test_wasm2o_spec` runs the spec testsuite (pinned in build.py) through
   `wasm2o spec`, which loads every module in its own process; wast2json
   comes from `ix run bld/wabt`. `KNOWN` in `tst/wasm2o_spec.py` lists the

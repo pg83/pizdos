@@ -414,6 +414,42 @@ func newInstance(c *Code, imports Imports, stack uint64) *Instance {
 	return i
 }
 
+// clone makes an instance of i's code that is a copy of i: its block, the
+// tables' entries moved to its own, its globals, and of linear memory the
+// bytes [from, to), the rest zero.
+func (i *Instance) clone(imports Imports, stack uint64, from, to uint64) *Instance {
+	c := newInstance(i.code, imports, stack)
+
+	if i.memory != nil {
+		c.memory.grow(uint32(i.memory.pages - c.memory.pages))
+		copy(c.memory.data[from:to], i.memory.data[from:to])
+	}
+
+	copy(c.block[headerSize:], i.block[headerSize:])
+	c.put64(offTokens, binary.LittleEndian.Uint64(i.block[offTokens:]))
+	moved := c.ctx() - i.ctx()
+	k := 0
+
+	for _, t := range i.obj.meta.tables {
+		if t.imported {
+			continue
+		}
+
+		entries := c.tables[k]
+
+		for e, v := range i.tables[k] {
+			if v != 0 {
+				entries[e] = v + moved
+			}
+		}
+
+		c.put64(t.offset+tableEntries, uint64(uintptr(unsafe.Pointer(unsafe.SliceData(entries)))))
+		k++
+	}
+
+	return c
+}
+
 // release unmaps the instance block and the memory the instance made; the
 // instance is not used again.
 func (i *Instance) release() {

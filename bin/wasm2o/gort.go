@@ -17,7 +17,9 @@ import (
 // region. Stack maps say no frame holds a pointer: values are wasm values,
 // and the instance stays alive in its Go caller. The stack pointer table is
 // exact at every instruction and there is no unsafe-point table, so Go may
-// preempt the code anywhere by a signal, as it does its own.
+// preempt the code anywhere by a signal, as it does its own; but for the
+// resume stub of fork, which writes below its stack pointer: it is marked
+// assembly, which Go never preempts.
 
 type goPCHeader struct {
 	magic                                                            uint32
@@ -27,6 +29,9 @@ type goPCHeader struct {
 	textStart                                                        uintptr
 	funcnameOffset, cuOffset, filetabOffset, pctabOffset, pclnOffset uintptr
 }
+
+// funcFlagAsm is abi.FuncFlagAsm.
+const funcFlagAsm = 1 << 2
 
 type goFuncTab struct {
 	entry, offset uint32
@@ -191,6 +196,12 @@ func registerCode(name string, base uintptr, size uintptr, regions []Region) {
 		}
 
 		line := uint32(index + 1)
+		flag := uint32(0)
+
+		if r.name == symResume {
+			flag = funcFlagAsm
+		}
+
 		pcsp := m.pcTable(r.sp, size)
 		pcfile := m.pcTable([]spEntry{{0, 0}}, size)
 		pcln := m.pcTable([]spEntry{{0, int32(line)}}, size)
@@ -198,7 +209,7 @@ func registerCode(name string, base uintptr, size uintptr, regions []Region) {
 		// _func: entry, name, args, deferreturn, pcsp, pcfile, pcln,
 		// npcdata, cu, start line, funcID 0, flag 0, pad, two funcdata;
 		// then the funcdata offsets in gofunc, both the stack map.
-		m.pcln = append32(m.pcln, r.start, uint32(len(m.names)), 0, 0, pcsp, pcfile, pcln, 0, 0, line, 2<<24, 0, 0)
+		m.pcln = append32(m.pcln, r.start, uint32(len(m.names)), 0, 0, pcsp, pcfile, pcln, 0, 0, line, 2<<24|flag<<8, 0, 0)
 		m.names = append(m.names, r.name...)
 		m.names = append(m.names, 0)
 	}

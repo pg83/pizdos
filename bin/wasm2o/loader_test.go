@@ -746,3 +746,139 @@ func TestStaleJump(t *testing.T) {
 
 	runtime.KeepAlive(jt.i)
 }
+
+const opReturn = 0x0f
+
+// forkTest runs main(n, depth) of a module whose imports are setjmp,
+// longjmp and fork: main keeps six values across setjmp and goes depth
+// frames down to fork, the child stores 42 at 0 and longjmps to main's
+// setjmp with 5. fork returns 77 to the parent and runs the child on a
+// goroutine of its own, in a clone.
+func forkTest(t *testing.T, imports testImports, done chan uint64) *Instance {
+	main := jumpRun
+	main.code = nil
+
+	for k := range 6 {
+		main.code = cat(main.code, get(0), i64c(int64(k+3)), []byte{opI64Mul}, i64c(int64(k*1000+1)), []byte{opI64Add}, put(2+k))
+	}
+
+	sum := cat(get(2), get(3), []byte{opI64Add}, get(4), []byte{opI64Add}, get(5), []byte{opI64Add}, get(6), []byte{opI64Add}, get(7), []byte{opI64Add})
+	main.code = cat(main.code, i32c(jumpTestBuf), call(0), put(8),
+		get(8), []byte{opIf, blockEmpty}, sum, get(8), []byte{opI64ExtendU, opI64Add, opReturn, 0x0b},
+		sum, get(1), call(4), []byte{opI64ExtendU, opI64Add})
+	main.export = "main"
+	down := testFunc{
+		params: i32, results: i32, locals: []ValType{I32, I32, I32, I32},
+		code: cat(get(0), []byte{opI32Eqz, opIf, byte(I32)},
+			call(2), []byte{opLocalTee, 4, opI32Eqz, opIf, blockEmpty}, i32c(0), i32c(42), []byte{opI32Store, 2, 0},
+			i32c(jumpTestBuf), i32c(5), call(1), []byte{opUnreachable, 0x0b}, get(4),
+			[]byte{opElse}, get(0), i32c(7), []byte{opI32Add}, put(1), get(0), i32c(11), []byte{opI32Add}, put(2), get(0), i32c(13), []byte{opI32Add}, put(3),
+			get(0), i32c(1), []byte{opI32Sub}, call(4), get(1), []byte{opI32Add}, get(2), []byte{opI32Add}, get(3), []byte{opI32Add}, []byte{0x0b}),
+	}
+	jumps := map[uint32]*Jump{}
+	imports["env.setjmp"] = func(ctx uintptr, buf uint32) uint32 {
+		j := new(Jump)
+		instanceAt(ctx).setjmp(j)
+		jumps[buf] = j
+
+		return 0
+	}
+	imports["env.longjmp"] = func(ctx uintptr, buf, val uint32) {
+		instanceAt(ctx).longjmp(jumps[buf], val)
+		t.Error("the jump failed")
+	}
+	imports["env.fork"] = func(ctx uintptr) uint32 {
+		i := instanceAt(ctx)
+		j := new(Jump)
+		i.setjmp(j)
+		f, ok := i.frames(j, "main")
+
+		if !ok {
+			t.Error("no frames to fork")
+
+			return 0
+		}
+
+		c := i.clone(imports, 64<<20, 0, i.memory.pages*pageSize)
+		c.host = c
+
+		go func() {
+			done <- c.resume(f)
+			c.release()
+		}()
+
+		return 77
+	}
+
+	return load(t, &testModule{
+		imports: []testImport{{"env", "setjmp", i32, i32}, {"env", "longjmp", []ValType{I32, I32}, nil}, {"env", "fork", nil, i32}},
+		funcs:   []testFunc{main, down}, memMin: 1, memMax: 1,
+	}, imports)
+}
+
+// fork from 10000 frames down: the child's frames are copies, its memory
+// too, and its jump to a setjmp of the parent's lands.
+func TestFork(t *testing.T) {
+	done := make(chan uint64, 1)
+	i := forkTest(t, testImports{}, done)
+	run, _ := i.export("main")
+
+	for _, depth := range []uint32{0, 3, 10000} {
+		n := uint64(depth) + 9
+		base := jumpWant(n) - jumpTestValue
+		want := base + 77
+
+		for d := uint64(1); d <= uint64(depth); d++ {
+			want += 3*d + 31
+		}
+
+		if got := run.Interface().(func(uintptr, uint64, uint32) uint64)(i.ctx(), n, depth); got != want {
+			t.Fatalf("parent at depth %d: %d, want %d", depth, got, want)
+		}
+
+		if got := <-done; got != base+5 {
+			t.Fatalf("child at depth %d: %d, want %d", depth, got, base+5)
+		}
+
+		if got := binary.LittleEndian.Uint32(i.memory.bytes()); got != 0 {
+			t.Fatalf("the child wrote %d to the parent's memory", got)
+		}
+	}
+
+	runtime.KeepAlive(i)
+}
+
+// Forks while other goroutines collect, the children landing as the
+// parents go on.
+func TestForkUnderCollection(t *testing.T) {
+	done := make(chan uint64, 1)
+	i := forkTest(t, testImports{}, done)
+	run, _ := i.export("main")
+	stop := make(chan bool)
+	defer close(stop)
+
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				runtime.GC()
+			}
+		}
+	}()
+
+	end := time.Now().Add(300 * time.Millisecond)
+
+	for k := uint32(0); time.Now().Before(end); k++ {
+		n := uint64(k)
+		base := jumpWant(n) - jumpTestValue
+		run.Interface().(func(uintptr, uint64, uint32) uint64)(i.ctx(), n, k%40)
+
+		if got := <-done; got != base+5 {
+			t.Fatalf("child %d: %d, want %d", k, got, base+5)
+		}
+	}
+
+	runtime.KeepAlive(i)
+}

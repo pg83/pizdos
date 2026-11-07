@@ -38,9 +38,10 @@ build.py      the build graph
 - Memory: the stack comes first (1 MiB, overflow traps), the heap starts at
   the exported `__heap_base` and is the kernel's to manage. `__stack_pointer`
   is exported too: `longjmp` restores it.
-- `setjmp` and its kin are imports that return twice; `wasm2o` recognizes
-  them by name, and `longjmp` returns from them again, out of a signal
-  handler too.
+- `setjmp` and its kin, `vfork` and `fork` are imports that return twice;
+  `wasm2o` recognizes them by name, and `longjmp` returns from them again,
+  out of a signal handler too. `fork` copies memory from the stack pointer
+  to the top of the heap, so the stack must come first.
 
 ## native code
 
@@ -63,7 +64,8 @@ build.py      the build graph
   WASI preview1 command, or, for an object importing `kernel`, a program of
   lib/c run by a kernel in Go (`bin/wasm2o/kernel*.go`). Its processes are
   goroutines, paths resolve inside the root, exec runs objects of wasm2o and
-  `#!` scripts; `fork` is not there yet. The
+  `#!` scripts; `fork` copies a process into a goroutine of its own, a child
+  of `vfork` borrows its parent's. The
   build makes `wasm2o` natively, `wasm2o.wasm` (the same compiler for wasip1)
   and `wasm2o.o`, wasm2o.wasm compiled by wasm2o: run by `wasm2o run` and
   under wazero, it compiles wasm2o.wasm and busybox.wasm to the bytes
