@@ -156,6 +156,28 @@ wasm2o_go_test = command(
     color="green",
 )
 
+# The WebAssembly spec testsuite through `wasm2o spec`; wast2json comes from
+# wabt, under ix run bld/wabt.
+TESTSUITE = "9b9fbf8260507169066bf3e8de7b01fb8c145e55"
+WAST2JSON = shutil.which("wast2json") or ""
+
+testsuite_tarball = fetch(
+    "testsuite_tarball",
+    f"https://github.com/WebAssembly/testsuite/archive/{TESTSUITE}.tar.gz",
+    "0d0ed50f55f17f25b5db9e28d3d84d4a0a9feb5e97fd9a718f6d7017b16eb2e4",
+    f"$(B)/ext/testsuite-{TESTSUITE}.tar.gz",
+)
+
+wasm2o_spec_test = command(
+    name="test_wasm2o_spec",
+    inputs=["$(S)/tst/wasm2o_spec.py"],
+    outputs=["$(B)/tst/wasm2o_spec.stamp"],
+    deps=[wasm2o, testsuite_tarball],
+    cmd=["python3", "$(S)/tst/wasm2o_spec.py", wasm2o.outputs[0], WAST2JSON, testsuite_tarball.outputs[0], "$(B)/tst/wasm2o_spec.stamp"],
+    descr="TS",
+    color="green",
+)
+
 # tst/wazero: a WASI runner on wazero, what wasm2o is measured against. Its
 # modules, checked against go.sum, are fetched once; the build has no network.
 wazero_modules = command(
@@ -207,4 +229,4 @@ for test in build.glob("$(S)/tst/test_*.py"):
     ))
 
 group("install", busybox, busybox_abi, wasm2o, wasm2o_wasm, wasm2o_o, wazero)
-group("test", *tests, wasm2o_go_test)
+group("test", *tests, wasm2o_go_test, wasm2o_spec_test)

@@ -44,6 +44,13 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   run through the loader while Go collects, copies stacks, parks, preempts a
   call-free loop on one processor and unwinds traps through native frames;
   wide signatures cross both boundaries on the stack.
+- `test_wasm2o_spec` runs the spec testsuite (pinned in build.py) through
+  `wasm2o spec`, which loads every module in its own process; wast2json
+  comes from `ix run bld/wabt`. `KNOWN` in `tst/wasm2o_spec.py` lists the
+  failures of what is not implemented (table.grow, more than one memory); a
+  file failing more, or crashing, fails the test. Unsupported features are
+  refused at decoding, never compiled approximately: memory64 and multiple
+  memories are refused because the bounds checks assume one 32-bit memory.
 - `test_wasm2o` is the fixed point: wasm2o.o under `wasm2o run` and
   wasm2o.wasm under wazero compile wasm2o.wasm and busybox.wasm to the bytes
   of the native `wasm2o`. A change to the compiler keeps it.

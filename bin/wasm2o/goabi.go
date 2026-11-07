@@ -192,14 +192,17 @@ func (oc *objCode) callGo(sym string) {
 }
 
 // trapCall calls Go's trap with the instance and code; it does not return.
-// Like any Go call it leaves the callee room to spill its arguments.
+// Like any Go call it leaves the callee room to spill its arguments. Code
+// after it is reached by jumps, with the stack pointer of before.
 func (oc *objCode) trapCall(code int64) {
 	a := &oc.a
+	sp := a.sp
 	a.aluRI(aluSub, 8, RSP, int64(goAssign([]ValType{I32}, nil).size))
 	a.movRR(8, RAX, ctxReg)
 	a.movImm(4, RBX, code)
 	oc.callGo(symTrap)
 	a.ud2()
+	a.setSP(sp)
 }
 
 // stackCheck compares the stack pointer, less total-stackSmall for a large

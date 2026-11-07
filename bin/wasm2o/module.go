@@ -294,6 +294,12 @@ func (r *reader) limits(memory bool) Limits {
 	l.hasMax = flags&1 != 0
 	l.shared = flags&2 != 0
 	l.is64 = flags&4 != 0
+
+	// Bounds checks compare 32-bit addresses: a 64-bit one could pass them.
+	if l.is64 {
+		throwFmt("unsupported: memory64")
+	}
+
 	bits := uint(32)
 
 	if l.is64 {
@@ -455,6 +461,17 @@ func decodeModule(data []byte) *Module {
 	for i := range m.funcs {
 		if int(m.funcs[i].typ) >= len(m.types) {
 			throwFmt("unknown type %d", m.funcs[i].typ)
+		}
+	}
+
+	// The instance has one memory: its base is the memory register.
+	if len(m.mems) > 1 {
+		throwFmt("unsupported: %d memories", len(m.mems))
+	}
+
+	for i, d := range m.datas {
+		if d.memory != 0 {
+			throwFmt("unsupported: data segment %d of memory %d", i, d.memory)
 		}
 	}
 

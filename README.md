@@ -62,11 +62,12 @@ build.py      the build graph
 
 ```
 ./build          # libc.a, busybox, wasm2o, wasm2o.wasm, wasm2o.o, the wazero runner
-./build test     # the tests in tst/
+./build test     # the tests in tst/, the spec testsuite included
 ```
 
 Needs `clang` with the wasm32 target, `wasm-ld`, `llvm-ar`, Go 1.25 and
-`python3` on `PATH`; `ix run bld/compiler` provides them. The musl and
+`python3` on `PATH`, and `wast2json` for the spec testsuite;
+`ix run bld/compiler bld/wabt` provides them. The musl and
 busybox tarballs are fetched by the graph and checked against their sha256;
 the wazero runner's Go modules come from `go mod download`, checked against
 `tst/wazero/go.sum`.
