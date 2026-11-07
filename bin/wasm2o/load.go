@@ -245,20 +245,83 @@ func (i *Instance) resolve(sym string, imports Imports) uintptr {
 	return 0
 }
 
-// load maps the text, fills the slots and registers the code with Go.
+// load links the object in place: the text, executable, then on pages of
+// their own .rodata and a GOT entry per external symbol, read-only. It
+// registers the code with Go.
 func (i *Instance) load(imports Imports) {
 	obj := i.obj
-	size := (len(obj.text) + 4095) &^ 4095
-	i.text = mmap(max(size, 4096), syscall.PROT_READ|syscall.PROT_WRITE)
-	copy(i.text, obj.text)
-	i.base = uintptr(unsafe.Pointer(unsafe.SliceData(i.text)))
-
-	for _, r := range obj.relocs {
-		binary.LittleEndian.PutUint64(i.text[r.at:], uint64(i.resolve(r.sym, imports)))
+	page := func(n int) int {
+		return (n + 4095) &^ 4095
 	}
 
-	throw(syscall.Mprotect(i.text, syscall.PROT_READ|syscall.PROT_EXEC))
+	got := map[string]int{}
+
+	for _, r := range obj.relocs {
+		if r.in == inExternal {
+			if _, ok := got[r.sym]; !ok {
+				got[r.sym] = len(got)
+			}
+		}
+	}
+
+	textSize := page(max(len(obj.text), 1))
+	gotAt := textSize + int(alignTo(int32(len(obj.rodata)), 16))
+	i.text = mmap(textSize+page(gotAt-textSize+8*len(got)), syscall.PROT_READ|syscall.PROT_WRITE)
+	copy(i.text, obj.text)
+	copy(i.text[textSize:], obj.rodata)
+	i.base = uintptr(unsafe.Pointer(unsafe.SliceData(i.text)))
+
+	for sym, k := range got {
+		binary.LittleEndian.PutUint64(i.text[gotAt+8*k:], uint64(i.resolve(sym, imports)))
+	}
+
+	for _, r := range obj.relocs {
+		var target uint64
+
+		switch r.in {
+		case inText:
+			target = uint64(i.base) + r.value
+		case inRodata:
+			target = uint64(i.base) + uint64(textSize) + r.value
+		}
+
+		place := uint64(i.base) + uint64(r.at)
+
+		switch r.typ {
+		case rX86_64_PC32:
+			if r.in == inExternal {
+				throwFmt("pc-relative relocation to external %s", r.sym)
+			}
+
+			put32rel(i.text[r.at:], int64(target)+r.addend-int64(place))
+		case rX86_64_GOTPCREL, rX86_64_GOTPCRELX, rX86_64_REX_GOTPCRELX:
+			if r.in != inExternal {
+				throwFmt("GOT relocation to a symbol of the object at %#x", r.at)
+			}
+
+			put32rel(i.text[r.at:], int64(i.base)+int64(gotAt+8*got[r.sym])+r.addend-int64(place))
+		case rX86_64_64:
+			if r.in == inExternal {
+				target = uint64(i.resolve(r.sym, imports))
+			}
+
+			binary.LittleEndian.PutUint64(i.text[r.at:], target+uint64(r.addend))
+		default:
+			throwFmt("unsupported relocation type %d at %#x", r.typ, r.at)
+		}
+	}
+
+	throw(syscall.Mprotect(i.text[:textSize], syscall.PROT_READ|syscall.PROT_EXEC))
+	throw(syscall.Mprotect(i.text[textSize:], syscall.PROT_READ))
 	registerCode(i.name, i.base, uintptr(len(obj.text)), obj.meta.regions)
+}
+
+func put32rel(at []byte, v int64) {
+	if v != int64(int32(v)) {
+		throwFmt("relocation out of range")
+	}
+
+	binary.LittleEndian.PutUint32(at, uint32(v))
 }
 
 // instantiate makes an instance of an object that may take stack bytes of

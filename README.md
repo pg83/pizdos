@@ -40,12 +40,15 @@ build.py      the build graph
 
 ## native code
 
-- `wasm2o` compiles a module ahead of time to an ELF relocatable object:
-  code, absolute relocations to the symbols a loader defines, and a `.w2o`
-  section describing the module (`bin/wasm2o/meta.go`). The code needs no
-  signal handlers, guard pages or reserved address space: memory accesses
-  are checked explicitly, a trap calls Go, and linear memory may move when
-  it grows.
+- `wasm2o` compiles a module ahead of time to an ordinary x86-64 ELF
+  relocatable object (`bin/wasm2o/elf.go`): code in `.text`, constants and
+  segments in `.rodata`, stack pointer tables as `.eh_frame`, calls of Go
+  through the GOT, imports and exports of functions as symbols that carry
+  their wasm types (`bin/wasm2o/symbols.go`), and the rest of the module's
+  description in a `.note.wasm2o`. `ld.lld -r` relinks it and the loader
+  runs the result. The code needs no signal handlers, guard pages or
+  reserved address space: memory accesses are checked explicitly, a trap
+  calls Go, and linear memory may move when it grows.
 - The code runs on a goroutine's stack under Go 1.25 amd64 ABIInternal
   (`bin/wasm2o/goabi.go`): exports are functions Go calls, imports are Go
   function values, prologues grow the stack through Go's morestack, and the

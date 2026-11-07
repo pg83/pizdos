@@ -1,9 +1,6 @@
 package main
 
-import (
-	"fmt"
-	"math"
-)
+import "math"
 
 // The emitter turns allocated machine code into bytes of the module's text:
 // prologue and epilogue, blocks in the allocator's order, out-of-line slow
@@ -767,40 +764,4 @@ func (e *funcEmitter) cvtU64F(in *MInst) {
 	a.cvtIF(8, in.dsize, d, t1)
 	a.falu(fAdd, in.dsize, d, d, d)
 	a.here8(done)
-}
-
-// symbolPart spells a wasm name in a symbol: letters and digits as they
-// are, every other byte, underscores too, as _XX. The spelling is one to
-// one and leaves "." and ":" to join parts.
-func symbolPart(s string) string {
-	b := make([]byte, 0, len(s))
-
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-
-		switch {
-		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
-			b = append(b, c)
-		default:
-			b = append(b, fmt.Sprintf("_%02X", c)...)
-		}
-	}
-
-	return string(b)
-}
-
-// displayName keeps a name readable in tracebacks: only control bytes,
-// which a symbol table cannot hold or show, become _XX.
-func displayName(s string) string {
-	b := make([]byte, 0, len(s))
-
-	for i := 0; i < len(s); i++ {
-		if c := s[i]; c < 0x20 || c == 0x7f {
-			b = append(b, fmt.Sprintf("_%02X", c)...)
-		} else {
-			b = append(b, c)
-		}
-	}
-
-	return string(b)
 }

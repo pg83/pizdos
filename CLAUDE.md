@@ -32,8 +32,10 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
 
 - The compiler is Go with no dependencies, one `package main`: a module's
   bytes in, an ELF object out (`compileModule`); file access stays in
-  `main.go`. `meta.go` is the object's description for a loader, `goabi.go`
-  the contract with Go: code runs on a goroutine's stack under Go 1.25 amd64
+  `main.go`. The object is ordinary ELF a linker can take (`elf.go`):
+  symbols name imports and exports with their types (`symbols.go`),
+  `.eh_frame` holds the stack pointer tables, `.note.wasm2o` only what ELF
+  cannot say (`meta.go`). `goabi.go` is the contract with Go: code runs on a goroutine's stack under Go 1.25 amd64
   ABIInternal, R14 is g, RBP the frame pointer, X15 untouched, and the stack
   pointer table must be exact at every instruction, since Go preempts the
   code by signals and copies its stack.
@@ -51,9 +53,9 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   file failing more, or crashing, fails the test. Unsupported features are
   refused at decoding, never compiled approximately: memory64 and multiple
   memories are refused because the bounds checks assume one 32-bit memory.
-- `test_wasm2o` is the fixed point: wasm2o.o under `wasm2o run` and
-  wasm2o.wasm under wazero compile wasm2o.wasm and busybox.wasm to the bytes
-  of the native `wasm2o`. A change to the compiler keeps it.
+- `test_wasm2o` is the fixed point: wasm2o.o under `wasm2o run`, the same
+  object relinked by `ld.lld -r`, and wasm2o.wasm under wazero compile
+  wasm2o.wasm and busybox.wasm to the bytes of the native `wasm2o`. A change to the compiler keeps it.
 - Go modules (the wazero runner's) are pinned by `go.mod` and `go.sum`;
   `dev/go.py download` fetches them in a node of its own and the build runs
   offline.

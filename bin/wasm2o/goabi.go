@@ -9,7 +9,7 @@ package main
 //
 // Go is entered only through the code here. Exports and the init function
 // are thunks Go calls with ABIInternal; imports, memory.grow and table.grow
-// are adapters that call a Go function value from a slot the loader fills.
+// are adapters that call a Go function value whose address is in the GOT.
 // A Go call clobbers everything, so an adapter saves what the internal
 // convention preserves; traps call Go and never return.
 
@@ -26,15 +26,6 @@ const (
 // The bulk memory stubs clobber only what their string instructions use.
 var memmoveClobbers = []VReg{RAX, RCX, RSI, RDI}
 var memsetClobbers = []VReg{RCX, RDI}
-
-// Symbols a loader defines: Go's stack growth, and Go function values for
-// traps and growth. An import's symbol is its module and name.
-const (
-	symMorestack  = "runtime.morestack_noctxt"
-	symTrap       = "wasm2o.trap"
-	symMemoryGrow = "wasm2o.memory_grow"
-	symTableGrow  = "wasm2o.table_grow"
-)
 
 // g's fields read by generated code (Go 1.25, runtime/runtime2.go).
 const (
@@ -166,28 +157,28 @@ func (oc *objCode) endRegion(start int32) {
 	oc.regions = append(oc.regions, Region{name: oc.regionName, start: uint32(start), end: uint32(end), sp: oc.a.spTable(start, end)})
 }
 
-// slot returns the label of the eight bytes the loader fills with the
-// symbol's value.
-func (oc *objCode) slot(sym string) int32 {
-	if label, ok := oc.slotIx[sym]; ok {
-		return label
+// extern returns the index of an external symbol.
+func (oc *objCode) extern(sym string) int32 {
+	if i, ok := oc.externIx[sym]; ok {
+		return i
 	}
 
-	label := oc.addBlob(make([]byte, 8), 8)
-	oc.slotIx[sym] = label
-	oc.slots = append(oc.slots, objSlot{label, sym})
+	i := int32(len(oc.externs))
+	oc.externs = append(oc.externs, sym)
+	oc.externIx[sym] = i
 
-	return label
+	return i
 }
 
-func (oc *objCode) slotMem(sym string) amem {
-	return amem{base: -1, index: -1, label: oc.slot(sym), labelKind: labelModule}
+// gotMem is the GOT entry of a symbol: it holds the symbol's address.
+func (oc *objCode) gotMem(sym string) amem {
+	return amem{base: -1, index: -1, label: oc.extern(sym), labelKind: labelGot}
 }
 
-// callGo calls the Go function value in the symbol's slot: the closure
-// context goes in RDX, the code is its first word.
+// callGo calls the Go function value sym names: the closure context goes in
+// RDX, the code is its first word.
 func (oc *objCode) callGo(sym string) {
-	oc.a.load(8, 8, false, RDX, oc.slotMem(sym))
+	oc.a.load(8, 8, false, RDX, oc.gotMem(sym))
 	oc.a.callMem(baseAt(RDX, 0))
 }
 
@@ -239,7 +230,7 @@ func (oc *objCode) callStub(kind int) {
 func (oc *objCode) stubs() {
 	a := &oc.a
 
-	start := oc.beginRegion("stub:morestack")
+	start := oc.beginRegion("w2o.morestack")
 	oc.stubAt[stubMorestack] = start
 	saved := []VReg{RAX, RBX, RCX, RDX, RSI, RDI, R8, R9, R10, R11, R12, R13, R15}
 	a.push(RBP)
@@ -261,7 +252,7 @@ func (oc *objCode) stubs() {
 	a.aluRR(aluSub, 8, RAX, RSP)
 	a.aluRM(aluCmp, 8, RAX, baseAt(ctxReg, offStackLimit))
 	overflow := a.jccRel(ccA)
-	a.callMem(oc.slotMem(symMorestack))
+	a.callMem(oc.gotMem(symMorestack))
 
 	for i, x := range goFloatRegs {
 		a.fload(8, x, rspAt(int32(8*i)))
@@ -283,7 +274,7 @@ func (oc *objCode) stubs() {
 	// memmove(rdi dst, rsi src, rcx n): forward unless the destination
 	// starts inside the source, then backward by words and bytes. Never std:
 	// Go runs with the direction flag clear, preempted here or not.
-	start = oc.beginRegion("stub:memmove")
+	start = oc.beginRegion("w2o.memmove")
 	oc.stubAt[stubMemmove] = start
 	a.movRR(8, RAX, RDI)
 	a.aluRR(aluSub, 8, RAX, RSI)
@@ -320,14 +311,14 @@ func (oc *objCode) stubs() {
 	oc.endRegion(start)
 
 	// memset(rdi dst, al byte, rcx n)
-	start = oc.beginRegion("stub:memset")
+	start = oc.beginRegion("w2o.memset")
 	oc.stubAt[stubMemset] = start
 	a.repStosb()
 	a.ret()
 	oc.endRegion(start)
 
-	oc.stubAt[stubMemoryGrow] = oc.goCall("stub:memory_grow", []ValType{I32}, []ValType{I32}, symMemoryGrow)
-	oc.stubAt[stubTableGrow] = oc.goCall("stub:table_grow", []ValType{I32, I32, FuncRef}, []ValType{I32}, symTableGrow)
+	oc.stubAt[stubMemoryGrow] = oc.goCall("w2o.memory_grow_call", []ValType{I32}, []ValType{I32}, symMemoryGrow)
+	oc.stubAt[stubTableGrow] = oc.goCall("w2o.table_grow_call", []ValType{I32, I32, FuncRef}, []ValType{I32}, symTableGrow)
 }
 
 // goCall emits a function of the internal convention that calls the Go

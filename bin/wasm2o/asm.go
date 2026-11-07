@@ -23,8 +23,9 @@ type amem struct {
 
 const (
 	labelLocal  = 0 // a position in the current function
-	labelModule = 1 // a module constant or data segment
+	labelModule = 1 // a constant or data segment in .rodata
 	labelFunc   = 2 // the start of a function
+	labelGot    = 3 // the GOT entry of an external symbol
 )
 
 type ripFixup struct {

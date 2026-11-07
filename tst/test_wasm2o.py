@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """wasm2o's fixed point: wasm2o.wasm, run as wasm2o compiled it by `wasm2o
-run` and run under wazero, compiles wasm2o.wasm and busybox.wasm to the bytes
-the native wasm2o produces.
+run`, as ld.lld -r relinked that, and under wazero, compiles wasm2o.wasm and
+busybox.wasm to the bytes the native wasm2o produces.
 
-    test_wasm2o.py <wasm2o> <wasm2o.wasm> <wasm2o.o> <wazero> <busybox.wasm> <busybox.links>
+    test_wasm2o.py <wasm2o> <wasm2o.wasm> <wasm2o.o> <relinked.o> <wazero> <busybox.wasm> <busybox.links>
 
 wasm2o.o is wasm2o(wasm2o.wasm).
 """
@@ -22,9 +22,10 @@ def compile_(command, wasm, work):
 
 
 def main():
-    wasm2o, wasm2o_wasm, wasm2o_o, wazero, busybox = sys.argv[1:6]
+    wasm2o, wasm2o_wasm, wasm2o_o, relinked, wazero, busybox = sys.argv[1:7]
     compilers = {
         "wasm2o run wasm2o.o": [wasm2o, "run", wasm2o_o, "--"],
+        "wasm2o run relinked.o": [wasm2o, "run", relinked, "--"],
         "wazero wasm2o.wasm": [wazero, wasm2o_wasm],
     }
 

@@ -24,6 +24,7 @@ def touch(path):
 CLANG = tool("clang")
 LLVM_AR = tool("llvm-ar")
 WASM_LD = tool("wasm-ld")
+LD_LLD = tool("ld.lld")
 GO = tool("go")
 
 MUSL = "1.2.5"
@@ -146,6 +147,17 @@ wasm2o_o = command(
     color="light-cyan",
 )
 
+# wasm2o.o through an ordinary linker: ld.lld -r combines and relocates it
+# again, and the loader runs what comes out.
+wasm2o_relinked = command(
+    name="wasm2o_relinked",
+    outputs=["$(B)/bin/wasm2o/wasm2o.relinked.o"],
+    deps=[wasm2o_o],
+    cmd=[LD_LLD, "-r", wasm2o_o.outputs[0], "-o", "$(B)/bin/wasm2o/wasm2o.relinked.o"],
+    descr="LD",
+    color="green",
+)
+
 # wasm2o's own tests: the loader drives Go's runtime through native frames.
 wasm2o_go_test = command(
     name="test_wasm2o_go",
@@ -206,7 +218,7 @@ wazero = command(
 # What each test runs against: its arguments are the outputs of these nodes.
 TESTED = {
     "busybox_abi": [busybox],
-    "wasm2o": [wasm2o, wasm2o_wasm, wasm2o_o, wazero, busybox],
+    "wasm2o": [wasm2o, wasm2o_wasm, wasm2o_o, wasm2o_relinked, wazero, busybox],
 }
 tests = []
 

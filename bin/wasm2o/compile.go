@@ -12,8 +12,8 @@ import (
 var dumpFunc = os.Getenv("W2X_DUMP")
 var traceFuncs = os.Getenv("W2X_TRACE") != ""
 
-// compileModule compiles a module to an ELF relocatable object whose .w2o
-// section describes it to a loader (meta.go).
+// compileModule compiles a module to an ordinary ELF relocatable object
+// (elf.go) of the ABI of goabi.go.
 
 type callFixup struct {
 	at int32
@@ -25,10 +25,12 @@ type blob struct {
 	align int
 }
 
-// objSlot is eight bytes of the text the loader fills with a symbol's value.
-type objSlot struct {
-	label int32
-	sym   string
+// textReloc is a relocation of the text: R_X86_64_PC32 to .rodata when sym
+// is negative, else R_X86_64_GOTPCREL to the external symbol sym.
+type textReloc struct {
+	at     int32
+	sym    int32
+	addend int64
 }
 
 type objCode struct {
@@ -41,19 +43,21 @@ type objCode struct {
 	stubCalls  []callFixup
 	blobs      []blob
 	blobAt     []int32
+	rodata     []byte
 	floatIx    map[[2]uint64]int32
-	slots      []objSlot
-	slotIx     map[string]int32
+	externs    []string
+	externIx   map[string]int32
+	relocs     []textReloc
 	regions    []Region
 	regionName string
-	// importSyms names the Go function each imported function calls.
-	importSyms map[int]string
-	initFn     int
+	// globals are the regions whose symbols are global: thunks Go calls.
+	globals map[string]bool
+	initFn  int
 }
 
 func compileModule(data []byte) []byte {
 	m := decodeModule(data)
-	oc := &objCode{m: m, floatIx: map[[2]uint64]int32{}, slotIx: map[string]int32{}, importSyms: map[int]string{}}
+	oc := &objCode{m: m, floatIx: map[[2]uint64]int32{}, externIx: map[string]int32{}, globals: map[string]bool{}}
 	oc.initFn = m.addInitFunction()
 	oc.lay = newLayout(m)
 	oc.funcAt = make([]int32, len(m.funcs))
@@ -98,12 +102,12 @@ func compileModule(data []byte) []byte {
 		oc.emitFunction(i, mf, al)
 	}
 
-	exports := oc.exportThunks()
+	oc.exportThunks()
 	oc.initThunk()
 	oc.placeBlobs()
 	oc.resolve()
 
-	return writeELF(oc, encodeMeta(oc.meta(exports)))
+	return writeELF(oc, encodeNote(oc.description()))
 }
 
 // funcName names a function's region, which Go shows in tracebacks.
@@ -166,36 +170,37 @@ func (oc *objCode) floatConst(bits uint64, size uint8) amem {
 	return amem{base: -1, index: -1, label: label, labelKind: labelModule}
 }
 
+// placeBlobs lays the constants and data segments out in .rodata.
 func (oc *objCode) placeBlobs() {
-	a := &oc.a
 	oc.blobAt = make([]int32, len(oc.blobs))
 
 	for i, b := range oc.blobs {
-		for len(a.buf)%b.align != 0 {
-			a.b(0)
+		for len(oc.rodata)%b.align != 0 {
+			oc.rodata = append(oc.rodata, 0)
 		}
 
-		oc.blobAt[i] = a.pos()
-		a.b(b.bytes...)
+		oc.blobAt[i] = int32(len(oc.rodata))
+		oc.rodata = append(oc.rodata, b.bytes...)
 	}
 }
 
+// resolve fills the displacements within the text and turns the others
+// into relocations: a displacement is relative to the end of its
+// instruction, so the addend takes that distance off.
 func (oc *objCode) resolve() {
 	a := &oc.a
 
 	for _, f := range a.fixups {
-		var target int32
-
 		switch f.kind {
 		case labelModule:
-			target = oc.blobAt[f.label]
+			oc.relocs = append(oc.relocs, textReloc{f.at, -1, int64(oc.blobAt[f.label]) - int64(f.end-f.at)})
+		case labelGot:
+			oc.relocs = append(oc.relocs, textReloc{f.at, f.label, -int64(f.end - f.at)})
 		case labelFunc:
-			target = oc.funcAt[f.label]
+			binary.LittleEndian.PutUint32(a.buf[f.at:], uint32(oc.funcAt[f.label]-f.end))
 		default:
 			throwFmt("internal error: unresolved local label")
 		}
-
-		binary.LittleEndian.PutUint32(a.buf[f.at:], uint32(target-f.end))
 	}
 
 	for _, c := range oc.calls {
@@ -215,11 +220,9 @@ func (oc *objCode) align16() {
 
 // importAdapters give imported functions an entry in the internal
 // convention: an adapter calls the Go function value of the import's
-// symbol, its module and name joined by a dot, or with a type other than an
-// earlier import of the same name, those and ":" and its index.
+// symbol, which names it with its type.
 func (oc *objCode) importAdapters() {
 	m := oc.m
-	types := map[string]uint64{}
 
 	for _, imp := range m.imports {
 		if imp.kind != externFunc {
@@ -227,37 +230,23 @@ func (oc *objCode) importAdapters() {
 		}
 
 		t := m.funcType(imp.index)
-		sym := symbolPart(imp.module) + "." + symbolPart(imp.name)
-
-		if id, ok := types[sym]; ok && id != typeID(t) {
-			sym = fmt.Sprintf("%s:%d", sym, imp.index)
-		}
-
-		types[sym] = typeID(t)
-		oc.importSyms[int(imp.index)] = sym
-		oc.funcAt[imp.index] = oc.goCall("import:"+sym, t.params, t.results, sym)
+		sym := importSymbol(imp.module, imp.name, t)
+		oc.funcAt[imp.index] = oc.goCall("w2o.adapter."+symbolPart(imp.module)+"."+symbolPart(imp.name), t.params, t.results, sym)
 	}
 }
 
-// exportThunks gives every exported function a thunk Go calls.
-func (oc *objCode) exportThunks() []ExportMeta {
+// exportThunks gives every exported function a thunk Go calls, global.
+func (oc *objCode) exportThunks() {
 	m := oc.m
-	var out []ExportMeta
 
 	for _, e := range m.exports {
-		x := ExportMeta{kind: e.kind, name: e.name, index: e.index}
-
 		if e.kind == externFunc {
 			t := m.funcType(e.index)
-			x.sym = "export:" + symbolPart(e.name)
-			x.params, x.results = t.params, t.results
-			oc.thunk(x.sym, t.params, t.results, int(e.index), nil)
+			sym := exportSymbol(e.name, t)
+			oc.globals[sym] = true
+			oc.thunk(sym, t.params, t.results, int(e.index), nil)
 		}
-
-		out = append(out, x)
 	}
-
-	return out
 }
 
 // constOffset evaluates a constant offset expression: i32.const or
@@ -289,7 +278,8 @@ func (oc *objCode) initThunk() {
 	lay := oc.lay
 	a := &oc.a
 
-	oc.thunk("init", nil, nil, -1, func() {
+	oc.globals[symInit] = true
+	oc.thunk(symInit, nil, nil, -1, func() {
 		for i := range m.funcs {
 			d := lay.desc(i)
 			a.b(0x48, 0x8d, 0x05)
@@ -361,11 +351,12 @@ func (oc *objCode) initThunk() {
 	})
 }
 
-// meta describes the module to its loader.
-func (oc *objCode) meta(exports []ExportMeta) *Meta {
+// description is what the symbols do not tell a loader: the instance, its
+// memory, tables and globals, the imports and exports of those.
+func (oc *objCode) description() *Meta {
 	m := oc.m
 	lay := oc.lay
-	meta := &Meta{instanceSize: uint32(lay.size), exports: exports, init: "init", regions: oc.regions}
+	meta := &Meta{instanceSize: uint32(lay.size)}
 
 	if len(m.mems) > 0 {
 		l := m.mems[0].limits
@@ -393,15 +384,15 @@ func (oc *objCode) meta(exports []ExportMeta) *Meta {
 	}
 
 	for _, imp := range m.imports {
-		x := ImportMeta{kind: imp.kind, module: imp.module, name: imp.name, index: imp.index}
-
-		if imp.kind == externFunc {
-			t := m.funcType(imp.index)
-			x.sym = oc.importSyms[int(imp.index)]
-			x.params, x.results = t.params, t.results
+		if imp.kind != externFunc {
+			meta.imports = append(meta.imports, ImportMeta{kind: imp.kind, module: imp.module, name: imp.name, index: imp.index})
 		}
+	}
 
-		meta.imports = append(meta.imports, x)
+	for _, e := range m.exports {
+		if e.kind != externFunc {
+			meta.exports = append(meta.exports, ExportMeta{kind: e.kind, name: e.name, index: e.index})
+		}
 	}
 
 	return meta

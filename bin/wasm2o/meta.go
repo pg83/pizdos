@@ -2,14 +2,14 @@ package main
 
 import "encoding/binary"
 
-// The .w2o section of an object describes the module to its loader, which
-// never needs the source wasm: the instance's size and layout, the memory,
-// tables and globals, the imports and exports with their symbols and types,
-// and the code regions with their stack pointer tables. Integers are
-// unsigned LEB128, stack pointer deltas signed; a string or a list is its
-// length, then its bytes or elements, in the order of the fields below.
-
-const metaMagic = "W2O1"
+// Meta is what a loader knows of a module. An object tells it in ordinary
+// ELF (elf.go): functions are symbols, imports and exports of functions
+// symbols with their types (symbols.go), stack pointer tables .eh_frame.
+// The rest has no word in ELF and is the descriptor of a note, owner
+// "wasm2o", type 1: the instance's size, the memory, tables and globals,
+// the imports and exports of those. Its integers are unsigned LEB128; a
+// string or a list is its length, then its bytes or elements, in the order
+// of the fields below.
 
 type MemoryMeta struct {
 	// min and max are in pages of 64 KiB.
@@ -81,10 +81,6 @@ func (w *metaWriter) u(x uint64) {
 	w.out = binary.AppendUvarint(w.out, x)
 }
 
-func (w *metaWriter) s(x int64) {
-	w.out = binary.AppendVarint(w.out, x)
-}
-
 func (w *metaWriter) flag(b bool) {
 	if b {
 		w.u(1)
@@ -98,17 +94,10 @@ func (w *metaWriter) str(s string) {
 	w.out = append(w.out, s...)
 }
 
-func (w *metaWriter) types(ts []ValType) {
-	w.u(uint64(len(ts)))
-
-	for _, t := range ts {
-		w.u(uint64(t))
-	}
-}
-
-func encodeMeta(m *Meta) []byte {
+// encodeNote writes the descriptor: imports and exports of functions, the
+// init symbol and the regions are not in it.
+func encodeNote(m *Meta) []byte {
 	w := &metaWriter{}
-	w.out = append(w.out, metaMagic...)
 	w.u(uint64(m.instanceSize))
 	w.flag(m.memory != nil)
 
@@ -143,9 +132,6 @@ func encodeMeta(m *Meta) []byte {
 		w.str(i.module)
 		w.str(i.name)
 		w.u(uint64(i.index))
-		w.str(i.sym)
-		w.types(i.params)
-		w.types(i.results)
 	}
 
 	w.u(uint64(len(m.exports)))
@@ -154,24 +140,6 @@ func encodeMeta(m *Meta) []byte {
 		w.u(uint64(e.kind))
 		w.str(e.name)
 		w.u(uint64(e.index))
-		w.str(e.sym)
-		w.types(e.params)
-		w.types(e.results)
-	}
-
-	w.str(m.init)
-	w.u(uint64(len(m.regions)))
-
-	for _, r := range m.regions {
-		w.str(r.name)
-		w.u(uint64(r.start))
-		w.u(uint64(r.end))
-		w.u(uint64(len(r.sp)))
-
-		for _, e := range r.sp {
-			w.u(uint64(e.pc))
-			w.s(int64(e.delta))
-		}
 	}
 
 	return w.out
@@ -183,18 +151,6 @@ type metaReader struct {
 
 func (r *metaReader) u() uint64 {
 	x, n := binary.Uvarint(r.data)
-
-	if n <= 0 {
-		throwFmt("malformed object metadata")
-	}
-
-	r.data = r.data[n:]
-
-	return x
-}
-
-func (r *metaReader) s() int64 {
-	x, n := binary.Varint(r.data)
 
 	if n <= 0 {
 		throwFmt("malformed object metadata")
@@ -238,22 +194,8 @@ func (r *metaReader) str() string {
 	return s
 }
 
-func (r *metaReader) types() []ValType {
-	ts := make([]ValType, r.count())
-
-	for i := range ts {
-		ts[i] = ValType(r.u())
-	}
-
-	return ts
-}
-
-func decodeMeta(data []byte) *Meta {
-	if len(data) < len(metaMagic) || string(data[:len(metaMagic)]) != metaMagic {
-		throwFmt("object metadata is not %s", metaMagic)
-	}
-
-	r := &metaReader{data: data[len(metaMagic):]}
+func decodeNote(data []byte) *Meta {
+	r := &metaReader{data: data}
 	m := &Meta{instanceSize: r.u32()}
 
 	if r.flag() {
@@ -275,27 +217,13 @@ func decodeMeta(data []byte) *Meta {
 	m.imports = make([]ImportMeta, r.count())
 
 	for i := range m.imports {
-		m.imports[i] = ImportMeta{kind: byte(r.u()), module: r.str(), name: r.str(), index: r.u32(), sym: r.str(), params: r.types(), results: r.types()}
+		m.imports[i] = ImportMeta{kind: byte(r.u()), module: r.str(), name: r.str(), index: r.u32()}
 	}
 
 	m.exports = make([]ExportMeta, r.count())
 
 	for i := range m.exports {
-		m.exports[i] = ExportMeta{kind: byte(r.u()), name: r.str(), index: r.u32(), sym: r.str(), params: r.types(), results: r.types()}
-	}
-
-	m.init = r.str()
-	m.regions = make([]Region, r.count())
-
-	for i := range m.regions {
-		reg := Region{name: r.str(), start: r.u32(), end: r.u32()}
-		reg.sp = make([]spEntry, r.count())
-
-		for k := range reg.sp {
-			reg.sp[k] = spEntry{pc: int32(r.u32()), delta: int32(r.s())}
-		}
-
-		m.regions[i] = reg
+		m.exports[i] = ExportMeta{kind: byte(r.u()), name: r.str(), index: r.u32()}
 	}
 
 	if len(r.data) != 0 {
