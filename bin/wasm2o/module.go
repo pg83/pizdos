@@ -55,7 +55,9 @@ type Import struct {
 type Func struct {
 	typ      uint32
 	imported bool
-	name     string
+	// returnsTwice marks an import that returns twice (goabi.go).
+	returnsTwice bool
+	name         string
 	// body holds the local declarations and the code, without the size.
 	body []byte
 	// offset is the body's position in the module, for diagnostics.
@@ -571,7 +573,7 @@ func (m *Module) importSection(r *reader) {
 		switch imp.kind {
 		case externFunc:
 			imp.index = uint32(len(m.funcs))
-			m.funcs = append(m.funcs, Func{typ: r.u32(), imported: true})
+			m.funcs = append(m.funcs, Func{typ: r.u32(), imported: true, returnsTwice: returnsTwice(imp.name)})
 			m.importedFuncs++
 		case externTable:
 			imp.index = uint32(len(m.tables))

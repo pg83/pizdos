@@ -11,6 +11,7 @@ import "math"
 const (
 	calleeFunc = 0 // a function by index: an imported one is its adapter
 	calleeStub = 1 // a stub of the module (stubs.go) by kind
+	calleeJump = 2 // an import that returns twice by index: its adapter of direct calls
 )
 
 // float constants in the module constant pool
@@ -1412,6 +1413,11 @@ func (l *lowerer) call(v int32, index int, args []int32) {
 	in.uses = uses
 	in.defs = assigned(regs)
 	l.mf.hasCalls = true
+
+	if l.m.funcs[index].returnsTwice {
+		in.aux = calleeJump
+		l.mf.returnsTwice = true
+	}
 	l.emit(in)
 	l.takeResults(v, t.results, regs, stack)
 }

@@ -193,7 +193,9 @@ func (p *Process) stop() {
 }
 
 // runHandler calls a handler with the action's mask added for its time;
-// errno is the interrupted code's again after it.
+// errno is the interrupted code's again after it. A handler may leave by
+// longjmp (kernel_jump.go), and then nothing after the call runs: here,
+// nor in the kernel's frames above.
 func (p *Process) runHandler(sig int, act sigAction) {
 	p.sig.mu.Lock()
 	saved := p.sig.blocked
@@ -267,17 +269,29 @@ func validSignal(sig uint32) bool {
 // signalTargets are the processes kill sends to: one pid, a group (pid 0
 // is the sender's, -1 every process).
 func (k *Kernel) signalTargets(from *Process, pid int32) []*Process {
+	return k.processes(func(q *Process) bool {
+		switch {
+		case pid > 0:
+			return q.pid == pid
+		case pid == 0:
+			return q.pgid == from.pgid
+		case pid == -1:
+			return q.pid != 1
+		}
+
+		return q.pgid == -pid
+	})
+}
+
+// processes are those that match.
+func (k *Kernel) processes(match func(*Process) bool) []*Process {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 
 	var out []*Process
 
 	for _, q := range k.procs {
-		switch {
-		case pid > 0 && q.pid == pid,
-			pid == 0 && q.pgid == from.pgid,
-			pid == -1 && q.pid != 1,
-			pid < -1 && q.pgid == -pid:
+		if match(q) {
 			out = append(out, q)
 		}
 	}
@@ -446,7 +460,7 @@ func (k *Kernel) routeSignals() {
 				fg := k.fg
 				k.mu.Unlock()
 
-				for _, q := range k.signalTargets(k.first, -fg) {
+				for _, q := range k.processes(func(q *Process) bool { return q.pgid == fg }) {
 					q.send(sig)
 				}
 			default:

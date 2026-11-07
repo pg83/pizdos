@@ -5,7 +5,8 @@ import "math"
 // The emitter turns allocated machine code into bytes of the module's text:
 // prologue and epilogue, blocks in the allocator's order, out-of-line slow
 // paths and trap stubs, jump tables. A function is a code region with Go's
-// frame layout (goabi.go): the return address, the saved RBP, the
+// frame layout (goabi.go): the return address, the saved RBP, the token of
+// a function calling an import that returns twice (abi.go), the
 // callee-saved registers it uses, its stack slots, the outgoing area.
 
 type jumpFixup struct {
@@ -60,6 +61,10 @@ func (oc *objCode) emitFunction(index int, mf *MFunc, al *allocator) {
 		e.body += 8
 	}
 
+	if mf.returnsTwice {
+		e.body += 8
+	}
+
 	e.incoming = e.body + 8
 	slow := int32(-1)
 
@@ -71,6 +76,11 @@ func (oc *objCode) emitFunction(index int, mf *MFunc, al *allocator) {
 	if e.framed {
 		a.push(RBP)
 		a.movRR(8, RBP, RSP)
+	}
+
+	if mf.returnsTwice {
+		a.aluRR(aluXor, 4, RAX, RAX)
+		a.push(RAX)
 	}
 
 	for _, r := range e.pushes {
@@ -328,9 +338,12 @@ func (e *funcEmitter) inst(in *MInst) {
 	case mSwitch:
 		e.switchTable(in)
 	case mCall:
-		if in.aux == calleeStub {
+		switch in.aux {
+		case calleeStub:
 			e.oc.callStub(int(in.imm))
-		} else {
+		case calleeJump:
+			e.oc.jumpCalls = append(e.oc.jumpCalls, callFixup{a.callRel(), int32(in.imm)})
+		default:
 			e.oc.callFunc(int(in.imm))
 		}
 	case mCallInd:
@@ -342,6 +355,10 @@ func (e *funcEmitter) inst(in *MInst) {
 
 		for i := len(e.pushes) - 1; i >= 0; i-- {
 			a.pop(e.pushes[i])
+		}
+
+		if e.mf.returnsTwice {
+			a.lea(8, RSP, rspAt(8))
 		}
 
 		if e.framed {

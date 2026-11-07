@@ -49,15 +49,27 @@ func align16(x uint64) uint64 {
 	return (x + 15) &^ 15
 }
 
-// globalExport is the value of an exported i32 global.
-func (i *Instance) globalExport(name string) (uint32, bool) {
+// globalAt is where an exported global of the module keeps its value in
+// the instance block.
+func (i *Instance) globalAt(name string) (uint32, bool) {
 	for _, e := range i.obj.meta.exports {
-		if e.kind == externGlobal && e.name == name {
-			return binary.LittleEndian.Uint32(i.block[i.obj.meta.globals[e.index].offset:]), true
+		if e.kind == externGlobal && e.name == name && !i.obj.meta.globals[e.index].imported {
+			return i.obj.meta.globals[e.index].offset, true
 		}
 	}
 
 	return 0, false
+}
+
+// globalExport is the value of an exported i32 global.
+func (i *Instance) globalExport(name string) (uint32, bool) {
+	at, ok := i.globalAt(name)
+
+	if !ok {
+		return 0, false
+	}
+
+	return binary.LittleEndian.Uint32(i.block[at:]), true
 }
 
 // ensure grows memory to hold end bytes.

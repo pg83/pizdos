@@ -34,13 +34,17 @@ type textReloc struct {
 }
 
 type objCode struct {
-	m          *Module
-	lay        *Layout
-	a          asm
-	funcAt     []int32
-	stubAt     [stubCount]int32
-	calls      []callFixup
-	stubCalls  []callFixup
+	m         *Module
+	lay       *Layout
+	a         asm
+	funcAt    []int32
+	stubAt    [stubCount]int32
+	calls     []callFixup
+	stubCalls []callFixup
+	// jumpAt holds the adapters of direct calls of the imports that return
+	// twice, by function.
+	jumpAt     map[int32]int32
+	jumpCalls  []callFixup
 	blobs      []blob
 	blobAt     []int32
 	rodata     []byte
@@ -57,7 +61,7 @@ type objCode struct {
 
 func compileModule(data []byte) []byte {
 	m := decodeModule(data)
-	oc := &objCode{m: m, floatIx: map[[2]uint64]int32{}, externIx: map[string]int32{}, globals: map[string]bool{}}
+	oc := &objCode{m: m, floatIx: map[[2]uint64]int32{}, externIx: map[string]int32{}, globals: map[string]bool{}, jumpAt: map[int32]int32{}}
 	oc.initFn = m.addInitFunction()
 	oc.lay = newLayout(m)
 	oc.funcAt = make([]int32, len(m.funcs))
@@ -210,6 +214,10 @@ func (oc *objCode) resolve() {
 	for _, c := range oc.stubCalls {
 		a.patch32(c.at, oc.stubAt[c.fn])
 	}
+
+	for _, c := range oc.jumpCalls {
+		a.patch32(c.at, oc.jumpAt[c.fn])
+	}
 }
 
 func (oc *objCode) align16() {
@@ -220,7 +228,10 @@ func (oc *objCode) align16() {
 
 // importAdapters give imported functions an entry in the internal
 // convention: an adapter calls the Go function value of the import's
-// symbol, which names it with its type.
+// symbol, which names it with its type. One that returns twice has a second
+// adapter, for its direct calls, which writes the jump frame; the module
+// then has the land stub (goabi.go). Tables and exports take the first,
+// as their callers keep no token.
 func (oc *objCode) importAdapters() {
 	m := oc.m
 
@@ -231,7 +242,16 @@ func (oc *objCode) importAdapters() {
 
 		t := m.funcType(imp.index)
 		sym := importSymbol(imp.module, imp.name, t)
-		oc.funcAt[imp.index] = oc.goCall("w2o.adapter."+symbolPart(imp.module)+"."+symbolPart(imp.name), t.params, t.results, sym)
+		name := "w2o.adapter." + symbolPart(imp.module) + "." + symbolPart(imp.name)
+		oc.funcAt[imp.index] = oc.goCall(name, t.params, t.results, sym, false)
+
+		if m.funcs[imp.index].returnsTwice {
+			oc.jumpAt[int32(imp.index)] = oc.goCall(name+".jump", t.params, t.results, sym, true)
+		}
+	}
+
+	if len(oc.jumpAt) > 0 {
+		oc.landStub()
 	}
 }
 

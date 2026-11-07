@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """busybox under `wasm2o run`: the kernel of lib/c runs its applets inside a
 root made like the system's, /bin/busybox the object and every path of
-busybox.links a symbolic link to it.
+busybox.links a symbolic link to it. The shell's errors, exit and SIGINT
+are longjmps, one of them out of a signal handler.
 
     test_busybox.py <wasm2o> <busybox.o> <busybox.wasm> <busybox.links>
 """
@@ -9,9 +10,11 @@ import gzip
 import hashlib
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 DATA = "banana\napple\ncherry\napple\n10\n9\n"
@@ -48,6 +51,23 @@ CASES = [
     # a symbolic link to / is the root's
     (["ls", "/tmp/up/bin/busybox"], "", "/tmp/up/bin/busybox\n", 0),
     (["readlink", "-f", "/tmp/up/.."], "", "/\n", 0),
+    # the shell raises its errors and exit by longjmp
+    (["sh", "-c", "echo ${u?unset}; echo no"], "", "", 2),
+    (["sh", "-c", "echo $((1 / 0)); echo no"], "", "", 2),
+    (["sh", "-c", "cd /missing || echo failed; echo next"], "", "failed\nnext\n", 0),
+    (["sh", "-c", "set -e; false; echo no"], "", "", 1),
+    (["sh", "-c", "f() { echo in $1; exit 7; }; f a; echo no"], "", "in a\n", 7),
+    (["sh", "-c", "for i in 1 2 3; do [ $i = 2 ] && continue; echo $i; done"], "", "1\n3\n", 0),
+    (["sh", "-s"], "x=4\necho $((x * x))\nexit 3\n", "16\n", 3),
+    (["env", "/tmp/shell.sh", "a", "b"], "", "2 a b\n", 2),
+]
+
+# An interactive shell gets SIGINT while it reads a line, and while a loop
+# of builtins blocks writing to a full pipe: there the handler longjmps out
+# of the write. Each time it takes the next line after a new prompt.
+INTERRUPTS = [
+    ("", "$ ^C\n$ after\n"),
+    ("while :; do echo 0123456789; done", "0123456789\n$ after\n"),
 ]
 
 
@@ -68,6 +88,9 @@ def make_root(root, obj, links):
     script = tmp / "script.sh"
     script.write_text("#!/bin/echo from\n")
     script.chmod(0o755)
+    shell = tmp / "shell.sh"
+    shell.write_text('#!/bin/sh\necho $# "$@"\n${missing?gone}\necho no\n')
+    shell.chmod(0o755)
     (tmp / "up").symlink_to("/")
 
 
@@ -76,6 +99,30 @@ def run(wasm2o, root, argv, stdin, env=None):
     environment = {"PATH": "/bin:/usr/bin", "TZ": "UTC", **(env or {})}
 
     return subprocess.run(command, input=stdin.encode(), capture_output=True, cwd=root / "tmp", env=environment, timeout=60)
+
+
+def interrupt(wasm2o, root, first):
+    command = [wasm2o, "run", "--root", str(root), "-a", "sh", str(root / "bin" / "busybox"), "--", "-i"]
+    p = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=root / "tmp",
+                         env={"PATH": "/bin:/usr/bin", "PS1": "$ "})
+
+    if first:
+        p.stdin.write(first.encode() + b"\n")
+        p.stdin.flush()
+
+    time.sleep(0.5)
+    p.send_signal(signal.SIGINT)
+    time.sleep(0.3)
+    p.stdin.write(b"echo after; exit 5\n")
+    p.stdin.flush()
+
+    try:
+        out, _ = p.communicate(timeout=60)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        out, _ = p.communicate()
+
+    return out.decode(errors="replace"), p.returncode
 
 
 def main():
@@ -130,11 +177,17 @@ def main():
         if r.returncode != 1 or b"No such file or directory" not in r.stderr:
             failed.append(f"cat of a missing file: exit {r.returncode}, stderr {r.stderr!r}")
 
+        for first, tail in INTERRUPTS:
+            out, code = interrupt(wasm2o, root, first)
+
+            if not out.endswith(tail) or code != 5:
+                failed.append(f"SIGINT to sh -i after {first!r}: exit {code}, stdout ends {out[-60:]!r}; want exit 5, {tail!r}")
+
     for f in failed:
         print(f)
 
     assert not failed, f"{len(failed)} of the busybox cases failed"
-    print(f"{len(CASES) + len(steps) + 3} cases passed")
+    print(f"{len(CASES) + len(steps) + 3 + len(INTERRUPTS)} cases passed")
 
 
 if __name__ == "__main__":

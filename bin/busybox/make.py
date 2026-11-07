@@ -44,6 +44,7 @@ LINK = [
     "-z", "stack-size=1048576",
     "--max-memory=4294967296",
     "--export=__heap_base",
+    "--export=__stack_pointer",
     "--gc-sections",
     "--error-limit=0",
 ]

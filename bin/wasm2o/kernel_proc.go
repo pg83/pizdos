@@ -498,12 +498,6 @@ func (k *Kernel) procFunctions() map[string]any {
 		"_Exit": func(ctx uintptr, code uint32) {
 			proc(ctx).exitWith(int(code&0xff) << 8)
 		},
-		"setjmp": func(ctx uintptr, buf uint32) uint32 {
-			return 0
-		},
-		"longjmp": func(ctx uintptr, buf, value uint32) {
-			proc(ctx).fatal("longjmp: not supported yet")
-		},
 	}
 }
 

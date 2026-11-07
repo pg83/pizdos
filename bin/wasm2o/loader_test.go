@@ -523,3 +523,226 @@ func TestMemoryGrow(t *testing.T) {
 
 	runtime.KeepAlive(i)
 }
+
+const (
+	opDrop        = 0x1a
+	opI64ExtendU  = 0xad
+	jumpTestBuf   = 16
+	jumpTestValue = 7
+)
+
+func put(i int) []byte {
+	return leb([]byte{opLocalSet}, uint64(i))
+}
+
+// jumpTest is a module whose imports are setjmp, longjmp, bottom and
+// callback, functions 0 to 3, with jumps keyed by the buffer address.
+type jumpTest struct {
+	t      *testing.T
+	jumps  map[uint32]*Jump
+	failed int
+	i      *Instance
+}
+
+var jumpImports = []testImport{
+	{"env", "setjmp", i32, i32},
+	{"env", "longjmp", []ValType{I32, I32}, nil},
+	{"env", "bottom", nil, nil},
+	{"env", "callback", nil, nil},
+}
+
+func loadJumps(t *testing.T, funcs []testFunc, bottom, callback func()) *jumpTest {
+	jt := &jumpTest{t: t, jumps: map[uint32]*Jump{}}
+	jt.i = load(t, &testModule{imports: jumpImports, funcs: funcs}, testImports{
+		"env.setjmp": func(ctx uintptr, buf uint32) uint32 {
+			j := new(Jump)
+
+			if !instanceAt(ctx).setjmp(j) {
+				t.Error("setjmp without a jump frame")
+			}
+
+			jt.jumps[buf] = j
+
+			return 0
+		},
+		"env.longjmp": func(ctx uintptr, buf, val uint32) {
+			instanceAt(ctx).longjmp(jt.jumps[buf], val)
+			jt.failed++
+		},
+		"env.bottom":   func(uintptr) { bottom() },
+		"env.callback": func(uintptr) { callback() },
+	})
+
+	return jt
+}
+
+func (jt *jumpTest) export(name string) reflect.Value {
+	f, _ := jt.i.export(name)
+
+	return f
+}
+
+// run(n, depth) keeps six values of n across setjmp, more than R10-R12
+// hold, and goes depth frames down, each keeping three values across its
+// call, before bottom runs and longjmp returns from setjmp again with 7.
+var jumpRun = func() testFunc {
+	var code []byte
+
+	for k := range 6 {
+		code = cat(code, get(0), i64c(int64(k+3)), []byte{opI64Mul}, i64c(int64(k*1000+1)), []byte{opI64Add}, put(2+k))
+	}
+
+	code = cat(code, i32c(jumpTestBuf), call(0), put(8),
+		get(8), []byte{opI32Eqz, opIf, blockEmpty}, get(1), call(5), []byte{opDrop, opUnreachable, 0x0b},
+		get(2), get(3), []byte{opI64Add}, get(4), []byte{opI64Add}, get(5), []byte{opI64Add}, get(6), []byte{opI64Add},
+		get(7), []byte{opI64Add}, get(8), []byte{opI64ExtendU, opI64Add})
+
+	return testFunc{params: []ValType{I64, I32}, results: []ValType{I64}, export: "run",
+		locals: []ValType{I64, I64, I64, I64, I64, I64, I32}, code: code}
+}()
+
+var jumpDeep = testFunc{
+	params: i32, results: i32, locals: []ValType{I32, I32, I32},
+	code: cat(get(0), []byte{opI32Eqz, opIf, blockEmpty}, call(2), i32c(jumpTestBuf), i32c(jumpTestValue), call(1), []byte{opUnreachable, 0x0b},
+		get(0), i32c(7), []byte{opI32Add}, put(1), get(0), i32c(11), []byte{opI32Add}, put(2), get(0), i32c(13), []byte{opI32Add}, put(3),
+		get(0), i32c(1), []byte{opI32Sub}, call(5), get(1), []byte{opI32Add}, get(2), []byte{opI32Add}, get(3), []byte{opI32Add}),
+}
+
+func jumpWant(n uint64) uint64 {
+	sum := uint64(jumpTestValue)
+
+	for k := range uint64(6) {
+		sum += n*(k+3) + k*1000 + 1
+	}
+
+	return sum
+}
+
+// longjmp from 100000 frames down, after Go collected, grew its own stack
+// and parked: the stack was copied between setjmp and longjmp, and the
+// values setjmp's caller kept come back.
+func TestLongjmp(t *testing.T) {
+	jt := loadJumps(t, []testFunc{jumpRun, jumpDeep}, func() {
+		runtime.GC()
+		growGo(2000)
+		done := make(chan bool)
+
+		go func() {
+			time.Sleep(time.Millisecond)
+			done <- true
+		}()
+
+		<-done
+	}, nil)
+	run := jt.export("run").Interface().(func(uintptr, uint64, uint32) uint64)
+
+	for _, depth := range []uint32{0, 1, 10, 100000} {
+		n := uint64(depth)*977 + 5
+
+		if got := run(jt.i.ctx(), n, depth); got != jumpWant(n) {
+			t.Fatalf("run(%d, %d) = %d, want %d", n, depth, got, jumpWant(n))
+		}
+	}
+
+	if jt.failed != 0 {
+		t.Fatalf("%d jumps failed", jt.failed)
+	}
+
+	runtime.KeepAlive(jt.i)
+}
+
+// Jumps while other goroutines collect: Go preempts the code anywhere, the
+// land stub included, and scans the stack it is on.
+func TestLongjmpUnderCollection(t *testing.T) {
+	jt := loadJumps(t, []testFunc{jumpRun, jumpDeep}, func() {}, nil)
+	run := jt.export("run").Interface().(func(uintptr, uint64, uint32) uint64)
+	stop := make(chan bool)
+	defer close(stop)
+
+	for range 2 {
+		go func() {
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					runtime.GC()
+				}
+			}
+		}()
+	}
+
+	var stats runtime.MemStats
+	runtime.ReadMemStats(&stats)
+	collections := stats.NumGC
+	end := time.Now().Add(300 * time.Millisecond)
+
+	for k := uint32(0); time.Now().Before(end); k++ {
+		n := uint64(k)
+
+		if got := run(jt.i.ctx(), n, k%50); got != jumpWant(n) {
+			t.Fatalf("run(%d, %d) = %d, want %d", n, k%50, got, jumpWant(n))
+		}
+	}
+
+	runtime.ReadMemStats(&stats)
+
+	if stats.NumGC-collections < 10 {
+		t.Fatalf("only %d collections", stats.NumGC-collections)
+	}
+
+	runtime.KeepAlive(jt.i)
+}
+
+// longjmp from native code Go called from native code, as from a signal
+// handler: the jump drops the Go frames between.
+func TestLongjmpThroughGo(t *testing.T) {
+	var jt *jumpTest
+	jt = loadJumps(t, []testFunc{
+		{results: i32, locals: i32, export: "run",
+			code: cat(i32c(32), call(0), []byte{opLocalTee, 0, opI32Eqz, opIf, blockEmpty}, call(3), []byte{opUnreachable, 0x0b}, get(0))},
+		{export: "inner", code: cat(i32c(32), i32c(9), call(1))},
+	}, nil, func() {
+		inner := jt.export("inner").Interface().(func(uintptr))
+		growGo(100)
+		inner(jt.i.ctx())
+		t.Error("inner returned")
+	})
+	run := jt.export("run").Interface().(func(uintptr) uint32)
+
+	for range 3 {
+		if got := run(jt.i.ctx()); got != 9 {
+			t.Fatalf("run = %d", got)
+		}
+
+		runtime.GC()
+	}
+
+	runtime.KeepAlive(jt.i)
+}
+
+// A jmp_buf whose frame returned lands nowhere, though a frame of the same
+// function, then of another, takes its place.
+func TestStaleJump(t *testing.T) {
+	jt := loadJumps(t, []testFunc{
+		{params: i32, results: i32, export: "arm",
+			code: cat(get(0), []byte{opI32Eqz, opIf, byte(I32)}, i32c(48), call(0), []byte{opElse}, i32c(48), i32c(5), call(1), i32c(1), []byte{0x0b})},
+		{results: i32, export: "other", code: cat(i32c(48), i32c(5), call(1), i32c(2))},
+	}, nil, nil)
+	arm := jt.export("arm").Interface().(func(uintptr, uint32) uint32)
+	other := jt.export("other").Interface().(func(uintptr) uint32)
+
+	if got := arm(jt.i.ctx(), 0); got != 0 {
+		t.Fatalf("arm(0) = %d", got)
+	}
+
+	if got := arm(jt.i.ctx(), 1); got != 1 || jt.failed != 1 {
+		t.Fatalf("arm(1) = %d, %d failed", got, jt.failed)
+	}
+
+	if got := other(jt.i.ctx()); got != 2 || jt.failed != 2 {
+		t.Fatalf("other() = %d, %d failed", got, jt.failed)
+	}
+
+	runtime.KeepAlive(jt.i)
+}

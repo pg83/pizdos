@@ -305,8 +305,10 @@ type MFunc struct {
 	stackArgs int
 	// incoming is the number of stack-passed parameters.
 	incoming int
-	// hasCalls reports a non-leaf function.
-	hasCalls bool
+	// hasCalls reports a non-leaf function; returnsTwice one that calls an
+	// import that returns twice, whose frame keeps a token (abi.go).
+	hasCalls     bool
+	returnsTwice bool
 	// consts are 16-byte aligned float constants referenced by label.
 	consts []uint64
 }

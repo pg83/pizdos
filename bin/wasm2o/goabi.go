@@ -12,6 +12,14 @@ package main
 // are adapters that call a Go function value whose address is in the GOT.
 // A Go call clobbers everything, so an adapter saves what the internal
 // convention preserves; traps call Go and never return.
+//
+// An import that returns twice, as setjmp does, is called directly through
+// an adapter of its own, which first writes the caller's frame to the jump
+// frame (abi.go). Go may later return from that call again through the land
+// stub, from deeper on the same stack, dropping the frames in between, Go's
+// included. The caller's values survive: what lives across a call is in
+// R10-R12, which the jump frame keeps, or in the vreg's own spill slot,
+// which nothing else writes.
 
 // stubs: the module's code besides its functions and their boundaries
 const (
@@ -317,14 +325,25 @@ func (oc *objCode) stubs() {
 	a.ret()
 	oc.endRegion(start)
 
-	oc.stubAt[stubMemoryGrow] = oc.goCall("w2o.memory_grow_call", []ValType{I32}, []ValType{I32}, symMemoryGrow)
-	oc.stubAt[stubTableGrow] = oc.goCall("w2o.table_grow_call", []ValType{I32, I32, FuncRef}, []ValType{I32}, symTableGrow)
+	oc.stubAt[stubMemoryGrow] = oc.goCall("w2o.memory_grow_call", []ValType{I32}, []ValType{I32}, symMemoryGrow, false)
+	oc.stubAt[stubTableGrow] = oc.goCall("w2o.table_grow_call", []ValType{I32, I32, FuncRef}, []ValType{I32}, symTableGrow, false)
+}
+
+// returnsTwice tells the imports that return twice by their names, as C
+// compilers do.
+func returnsTwice(name string) bool {
+	switch name {
+	case "setjmp", "_setjmp", "sigsetjmp":
+		return true
+	}
+
+	return false
 }
 
 // goCall emits a function of the internal convention that calls the Go
 // function value of sym with the instance and its parameters, and returns
-// its results.
-func (oc *objCode) goCall(name string, params, results []ValType, sym string) int32 {
+// its results; with record it writes the jump frame first.
+func (oc *objCode) goCall(name string, params, results []ValType, sym string, record bool) int32 {
 	a := &oc.a
 	g := goAssign(params, results)
 	pregs, pslots, nslots := internalLocs(params, argGPRs, argXMMs, 0)
@@ -346,6 +365,10 @@ func (oc *objCode) goCall(name string, params, results []ValType, sym string) in
 	}
 
 	incoming := total + 8
+
+	if record {
+		oc.recordFrame()
+	}
 
 	for i, t := range params {
 		dst := g.params[i]
@@ -399,6 +422,106 @@ func (oc *objCode) goCall(name string, params, results []ValType, sym string) in
 	oc.endRegion(start)
 
 	return start
+}
+
+// recordFrame writes the jump frame in an adapter, whose RBP is set while
+// the caller's registers are still in theirs; RAX and RDX carry nothing.
+// The caller's token is handed out from the instance's count when the slot
+// is still zero.
+func (oc *objCode) recordFrame() {
+	a := &oc.a
+	word := func(k int32) amem {
+		return baseAt(ctxReg, offJump+8*k)
+	}
+
+	a.load(8, 8, false, RAX, baseAt(RBP, 8))
+	a.store(8, RAX, word(jumpPC))
+	a.load(8, 8, false, RAX, baseAt(R14, gStackHi))
+	a.aluRR(aluSub, 8, RAX, RBP)
+	a.aluRI(aluSub, 8, RAX, 16)
+	a.store(8, RAX, word(jumpSP))
+	a.load(8, 8, false, RDX, baseAt(RBP, 0))
+	a.load(8, 8, false, RAX, baseAt(R14, gStackHi))
+	a.aluRR(aluSub, 8, RAX, RDX)
+	a.store(8, RAX, word(jumpBP))
+	a.store(8, R10, word(jumpR10))
+	a.store(8, R11, word(jumpR11))
+	a.store(8, R12, word(jumpR12))
+	a.load(8, 8, false, RAX, baseAt(RDX, -8))
+	a.test(8, RAX, RAX)
+	have := a.jcc8(ccNE)
+	a.load(8, 8, false, RAX, baseAt(ctxReg, offTokens))
+	a.aluRI(aluAdd, 8, RAX, 1)
+	a.store(8, RAX, baseAt(ctxReg, offTokens))
+	a.store(8, RAX, baseAt(RDX, -8))
+	a.here8(have)
+	a.store(8, RAX, word(jumpToken))
+}
+
+// landStub emits the stub longjmp calls, func(jump uintptr, val uint32,
+// ctx uintptr) uint32, jump a Jump (jump.go): its jump frame, then the code
+// of the caller's function, [start, end). It returns from the call that
+// wrote the frame again, with val, when the caller's RBP is on the chain of
+// frame pointers from its own caller, the frame below returns into that
+// code and the token is the frame's: the invocation is the one that made
+// the call. Else it returns 0.
+//
+// The switch is a ret, so the stack pointer table says 0 throughout:
+// before it the stub is a leaf of its Go caller, after it a leaf called
+// from the landing site, whose return address it stores at the new top.
+func (oc *objCode) landStub() {
+	a := &oc.a
+	word := func(k int32) amem {
+		return baseAt(RAX, 8*k)
+	}
+
+	start := oc.beginRegion(symLand)
+	oc.globals[symLand] = true
+	a.load(8, 8, false, RDX, baseAt(R14, gStackHi))
+	a.movRR(8, RSI, RDX)
+	a.aluRM(aluSub, 8, RSI, word(jumpBP))
+	a.movRR(8, RDI, RBP)
+	walk := a.pos()
+	a.load(8, 8, false, R8, baseAt(RDI, 0))
+	a.aluRR(aluCmp, 8, R8, RSI)
+	found := a.jcc8(ccE)
+	a.aluRR(aluCmp, 8, R8, RDI)
+	down := a.jccRel(ccBE)
+	a.aluRR(aluCmp, 8, R8, RDX)
+	above := a.jccRel(ccAE)
+	a.movRR(8, RDI, R8)
+	a.patch8(a.jmp8(), walk)
+	a.here8(found)
+	a.load(8, 8, false, R8, baseAt(RDI, 8))
+	a.aluRM(aluCmp, 8, R8, word(jumpWords))
+	before := a.jccRel(ccB)
+	a.aluRM(aluCmp, 8, R8, word(jumpWords+1))
+	after := a.jccRel(ccAE)
+	a.load(8, 8, false, R8, baseAt(RSI, -8))
+	a.aluRM(aluCmp, 8, R8, word(jumpToken))
+	other := a.jccRel(ccNE)
+	a.movRR(8, ctxReg, RCX)
+	a.load(8, 8, false, memReg, baseAt(ctxReg, offMem))
+	a.load(8, 8, false, R10, word(jumpR10))
+	a.load(8, 8, false, R11, word(jumpR11))
+	a.load(8, 8, false, R12, word(jumpR12))
+	a.load(8, 8, false, R9, word(jumpPC))
+	a.movRR(8, R8, RDX)
+	a.aluRM(aluSub, 8, R8, word(jumpSP))
+	a.aluRI(aluSub, 8, R8, 8)
+	a.store(8, R9, baseAt(R8, 0))
+	a.movRR(8, RBP, RSI)
+	a.movRR(4, RAX, RBX)
+	a.movRR(8, RSP, R8)
+	a.ret()
+
+	for _, at := range []int32{down, above, before, after, other} {
+		a.patch32(at, a.pos())
+	}
+
+	a.aluRR(aluXor, 4, RAX, RAX)
+	a.ret()
+	oc.endRegion(start)
 }
 
 // thunk emits a function Go calls with ABIInternal, func(ctx uintptr,

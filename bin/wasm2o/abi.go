@@ -10,7 +10,26 @@ const (
 	offMemBound   = 16 // int64 size - boundSlack: see mCheck
 	offStackLimit = 24 // the most bytes of goroutine stack the code may use; beyond, it traps
 	offHost       = 32 // free for the loader
-	headerSize    = 48
+	offTokens     = 40 // the last invocation token handed out: see jumpFrame
+	offJump       = 48 // the jump frame, jumpWords words
+	headerSize    = offJump + 8*jumpWords + 8
+)
+
+// The jump frame is what the adapter of an import that returns twice
+// (goabi.go) writes before it calls Go: the caller's frame as a later
+// landing restores it. Stack addresses are offsets below g.stack.hi, which
+// stack copies keep. The token tells the caller's invocation from a later
+// one in the same place: a function calling such an import keeps it in the
+// word below its saved RBP, zero from its prologue until the first call.
+const (
+	jumpPC    = 0 // the return address
+	jumpSP    = 1 // the stack pointer after the return
+	jumpBP    = 2 // the caller's RBP
+	jumpR10   = 3 // the callee-saved registers
+	jumpR11   = 4
+	jumpR12   = 5
+	jumpToken = 6
+	jumpWords = 7
 )
 
 // boundSlack is how far past a checked address an access may reach without

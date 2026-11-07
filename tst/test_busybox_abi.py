@@ -15,6 +15,7 @@ EXPORTS = {
     ("__call_signal_handler", "func"),
     ("__call_signal_action", "func"),
     ("__heap_base", "global"),
+    ("__stack_pointer", "global"),
     ("memory", "memory"),
 }
 

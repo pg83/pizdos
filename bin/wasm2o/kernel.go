@@ -78,7 +78,11 @@ type Process struct {
 	// the siginfo_t of handlers.
 	zoneNames map[string]uint32
 	siginfo   uint32
-	sig       signalState
+	// jumps are the setjmps of the image by their jmp_buf, stackAt where
+	// the instance keeps __stack_pointer.
+	jumps   map[uint32]*jump
+	stackAt uint32
+	sig     signalState
 	// wake is an eventfd a blocking call polls with its descriptors: a
 	// signal sent to the process makes it readable.
 	wake int
@@ -141,7 +145,7 @@ func (k *Kernel) functionTable() map[string]any {
 	t := map[string]any{"__kernel_start": k.kernelStart}
 
 	for _, part := range []map[string]any{k.fileFunctions(), k.pathFunctions(), k.heapFunctions(), k.stringFunctions(),
-		k.timeFunctions(), k.regexFunctions(), k.signalFunctions(), k.procFunctions()} {
+		k.timeFunctions(), k.regexFunctions(), k.signalFunctions(), k.procFunctions(), k.jumpFunctions()} {
 		for name, f := range part {
 			t[name] = f
 		}
@@ -259,6 +263,7 @@ func (p *Process) runImage(img *execImage) (next *execImage, status int) {
 	p.inst, p.image = i, img
 	p.heap, p.static, p.env, p.errnoAt, p.environAt, p.siginfo = 0, 0, 0, 0, 0, 0
 	p.regexes, p.zoneNames = map[uint32]*posixRegex{}, map[string]uint32{}
+	p.jumps, p.stackAt = map[uint32]*jump{}, 0
 
 	defer func() {
 		switch e := recover().(type) {

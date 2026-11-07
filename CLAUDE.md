@@ -39,7 +39,15 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   ABIInternal, R14 is g, RBP the frame pointer, X15 untouched, and the stack
   pointer table must be exact at every instruction, since Go preempts the
   code by signals and copies its stack.
-- The loader (`load.go`, `gort.go`, `wasi.go`, `run.go`) is linux/amd64
+- An import named setjmp, _setjmp or sigsetjmp returns twice: its direct
+  calls go through an adapter that writes the caller's frame to the
+  instance header (`abi.go`), and the caller keeps an invocation token
+  below its saved RBP. `jump.go` returns from such a call again through the
+  `w2o.land` stub, which checks the frame on the RBP chain and switches
+  stacks with a `ret`, dropping the frames between, Go's too. The register
+  allocator needs nothing for it: values living across a call are in
+  R10-R12, which the frame keeps, or in their vreg's own spill slot.
+- The loader (`load.go`, `gort.go`, `wasi.go`, `run.go`, `jump.go`) is linux/amd64
   only and pinned to Go 1.25's moduledata; the compiler alone builds for
   wasip1 too. Code and its registration live as long as the process.
 - `wasm2o run` runs an object importing module `kernel` in the kernel of
@@ -48,12 +56,16 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   signals; paths resolve inside `--root` through openat2 `RESOLVE_IN_ROOT`;
   exec runs only objects of wasm2o and `#!` scripts; wasm2o exits with the
   first process. The heap, environ, DIRs and libc's static results live in
-  the guest's memory, so a fork can copy them. `test_busybox` builds a root
-  from busybox.links and runs applets in it.
+  the guest's memory, so a fork can copy them. A longjmp may leave a signal
+  handler through the kernel's Go frames: the code that runs handlers holds
+  no lock and defers nothing. `test_busybox` builds a root from
+  busybox.links and runs applets and the shell in it, SIGINT included.
 - `test_wasm2o_go` runs `bin/wasm2o/*_test.go`: modules built in the test
   run through the loader while Go collects, copies stacks, parks, preempts a
   call-free loop on one processor and unwinds traps through native frames;
-  wide signatures cross both boundaries on the stack.
+  wide signatures cross both boundaries on the stack; longjmp lands across a
+  copied stack, through Go frames and under collection, and refuses a frame
+  that returned.
 - `test_wasm2o_spec` runs the spec testsuite (pinned in build.py) through
   `wasm2o spec`, which loads every module in its own process; wast2json
   comes from `ix run bld/wabt`. `KNOWN` in `tst/wasm2o_spec.py` lists the

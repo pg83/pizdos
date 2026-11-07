@@ -36,7 +36,11 @@ build.py      the build graph
   current. Signal handlers are called through the exported
   `__call_signal_handler` and `__call_signal_action`.
 - Memory: the stack comes first (1 MiB, overflow traps), the heap starts at
-  the exported `__heap_base` and is the kernel's to manage.
+  the exported `__heap_base` and is the kernel's to manage. `__stack_pointer`
+  is exported too: `longjmp` restores it.
+- `setjmp` and its kin are imports that return twice; `wasm2o` recognizes
+  them by name, and `longjmp` returns from them again, out of a signal
+  handler too.
 
 ## native code
 
@@ -59,7 +63,7 @@ build.py      the build graph
   WASI preview1 command, or, for an object importing `kernel`, a program of
   lib/c run by a kernel in Go (`bin/wasm2o/kernel*.go`). Its processes are
   goroutines, paths resolve inside the root, exec runs objects of wasm2o and
-  `#!` scripts; `fork` and `setjmp`/`longjmp` are not there yet. The
+  `#!` scripts; `fork` is not there yet. The
   build makes `wasm2o` natively, `wasm2o.wasm` (the same compiler for wasip1)
   and `wasm2o.o`, wasm2o.wasm compiled by wasm2o: run by `wasm2o run` and
   under wazero, it compiles wasm2o.wasm and busybox.wasm to the bytes

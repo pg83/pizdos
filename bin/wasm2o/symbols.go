@@ -13,6 +13,7 @@ import (
 //	w2o.import.<module>.<name>.<params>.<results>  a Go function value the code calls
 //	w2o.export.<name>.<params>.<results>           a thunk Go calls
 //	w2o.init                                       the thunk that starts an instance
+//	w2o.land                                       the stub longjmp calls (goabi.go)
 //
 // Names are spelled by symbolPart, types by a letter each: i i32, I i64,
 // f f32, F f64, v v128, r funcref, e externref. The code also calls Go's
@@ -20,6 +21,7 @@ import (
 // w2o.memory_grow and w2o.table_grow, through the GOT.
 const (
 	symInit       = "w2o.init"
+	symLand       = "w2o.land"
 	symImport     = "w2o.import."
 	symExport     = "w2o.export."
 	symMorestack  = "runtime.morestack_noctxt"
