@@ -6,6 +6,7 @@ __pycache__/
 # convenience root symlinks the build engine publishes for built targets
 /busybox
 /busybox_abi
+/busybox_o
 /wasm2o
 /wasm2o_wasm
 /wasm2o_o

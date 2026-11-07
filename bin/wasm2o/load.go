@@ -11,11 +11,11 @@ import (
 	"unsafe"
 )
 
-// The loader maps an object's text executable, fills its slots, tells Go
-// about its code and makes an instance of it: the instance block, linear
-// memory and tables, then the init thunk. An export is a Go function value
-// whose code is its thunk: calling it runs the module on the caller's
-// goroutine stack.
+// The loader links an object's code once, executable, with its GOT filled,
+// and tells Go about it; instances of the object share that code. An
+// instance is the instance block, linear memory and tables, filled by the
+// init thunk. An export is a Go function value whose code is its thunk:
+// calling it runs the module on the caller's goroutine stack.
 
 // runStack is how much goroutine stack a command may take; deeper, it
 // traps, before Go's own limit of 1 GiB would end the program.
@@ -36,16 +36,28 @@ type Imports interface {
 	table(imp *ImportMeta) uintptr
 }
 
+// Code is an object linked in memory: the text, then .rodata and the GOT.
+// The code reaches its instance through the context, and the Go functions
+// of the GOT take the instance first, so every instance of the object runs
+// the same code.
+type Code struct {
+	name string
+	obj  *Object
+	text []byte
+	base uintptr
+	// keep holds the Go function values the code calls.
+	keep []any
+}
+
 type Instance struct {
 	name   string
 	obj    *Object
-	text   []byte
-	base   uintptr
+	code   *Code
 	block  []byte
 	memory *LinearMemory
 	tables [][]uintptr
-	// keep holds the Go function values the code calls.
-	keep []any
+	// host is what the embedder attaches: the kernel's process.
+	host any
 }
 
 // LinearMemory is reserved at its maximum: it grows in place.
@@ -202,26 +214,26 @@ func goFuncType(params, results []ValType) reflect.Type {
 	return reflect.FuncOf(in, out, false)
 }
 
-func (i *Instance) keepFunc(f any) uintptr {
-	i.keep = append(i.keep, f)
+func (c *Code) keepFunc(f any) uintptr {
+	c.keep = append(c.keep, f)
 
 	return funcval(f)
 }
 
-func (i *Instance) resolve(sym string, imports Imports) uintptr {
+func (c *Code) resolve(sym string, imports Imports) uintptr {
 	switch sym {
 	case symMorestack:
 		return goSymbol("runtime.morestack_noctxt")
 	case symTrap:
-		return i.keepFunc(helperTrap)
+		return c.keepFunc(helperTrap)
 	case symMemoryGrow:
-		return i.keepFunc(helperMemoryGrow)
+		return c.keepFunc(helperMemoryGrow)
 	case symTableGrow:
-		return i.keepFunc(helperTableGrow)
+		return c.keepFunc(helperTableGrow)
 	}
 
-	for k := range i.obj.meta.imports {
-		imp := &i.obj.meta.imports[k]
+	for k := range c.obj.meta.imports {
+		imp := &c.obj.meta.imports[k]
 
 		if imp.kind != externFunc || imp.sym != sym {
 			continue
@@ -237,7 +249,7 @@ func (i *Instance) resolve(sym string, imports Imports) uintptr {
 			throwFmt("import %s.%s is %T, not %s", imp.module, imp.name, f, want)
 		}
 
-		return i.keepFunc(f)
+		return c.keepFunc(f)
 	}
 
 	throwFmt("unresolved symbol %s", sym)
@@ -245,11 +257,11 @@ func (i *Instance) resolve(sym string, imports Imports) uintptr {
 	return 0
 }
 
-// load links the object in place: the text, executable, then on pages of
+// link links an object in place: the text, executable, then on pages of
 // their own .rodata and a GOT entry per external symbol, read-only. It
-// registers the code with Go.
-func (i *Instance) load(imports Imports) {
-	obj := i.obj
+// registers the code with Go; code lives as long as the process.
+func link(name string, obj *Object, imports Imports) *Code {
+	c := &Code{name: name, obj: obj}
 	page := func(n int) int {
 		return (n + 4095) &^ 4095
 	}
@@ -266,13 +278,13 @@ func (i *Instance) load(imports Imports) {
 
 	textSize := page(max(len(obj.text), 1))
 	gotAt := textSize + int(alignTo(int32(len(obj.rodata)), 16))
-	i.text = mmap(textSize+page(gotAt-textSize+8*len(got)), syscall.PROT_READ|syscall.PROT_WRITE)
-	copy(i.text, obj.text)
-	copy(i.text[textSize:], obj.rodata)
-	i.base = uintptr(unsafe.Pointer(unsafe.SliceData(i.text)))
+	c.text = mmap(textSize+page(gotAt-textSize+8*len(got)), syscall.PROT_READ|syscall.PROT_WRITE)
+	copy(c.text, obj.text)
+	copy(c.text[textSize:], obj.rodata)
+	c.base = uintptr(unsafe.Pointer(unsafe.SliceData(c.text)))
 
 	for sym, k := range got {
-		binary.LittleEndian.PutUint64(i.text[gotAt+8*k:], uint64(i.resolve(sym, imports)))
+		binary.LittleEndian.PutUint64(c.text[gotAt+8*k:], uint64(c.resolve(sym, imports)))
 	}
 
 	for _, r := range obj.relocs {
@@ -280,12 +292,12 @@ func (i *Instance) load(imports Imports) {
 
 		switch r.in {
 		case inText:
-			target = uint64(i.base) + r.value
+			target = uint64(c.base) + r.value
 		case inRodata:
-			target = uint64(i.base) + uint64(textSize) + r.value
+			target = uint64(c.base) + uint64(textSize) + r.value
 		}
 
-		place := uint64(i.base) + uint64(r.at)
+		place := uint64(c.base) + uint64(r.at)
 
 		switch r.typ {
 		case rX86_64_PC32:
@@ -293,27 +305,29 @@ func (i *Instance) load(imports Imports) {
 				throwFmt("pc-relative relocation to external %s", r.sym)
 			}
 
-			put32rel(i.text[r.at:], int64(target)+r.addend-int64(place))
+			put32rel(c.text[r.at:], int64(target)+r.addend-int64(place))
 		case rX86_64_GOTPCREL, rX86_64_GOTPCRELX, rX86_64_REX_GOTPCRELX:
 			if r.in != inExternal {
 				throwFmt("GOT relocation to a symbol of the object at %#x", r.at)
 			}
 
-			put32rel(i.text[r.at:], int64(i.base)+int64(gotAt+8*got[r.sym])+r.addend-int64(place))
+			put32rel(c.text[r.at:], int64(c.base)+int64(gotAt+8*got[r.sym])+r.addend-int64(place))
 		case rX86_64_64:
 			if r.in == inExternal {
-				target = uint64(i.resolve(r.sym, imports))
+				target = uint64(c.resolve(r.sym, imports))
 			}
 
-			binary.LittleEndian.PutUint64(i.text[r.at:], target+uint64(r.addend))
+			binary.LittleEndian.PutUint64(c.text[r.at:], target+uint64(r.addend))
 		default:
 			throwFmt("unsupported relocation type %d at %#x", r.typ, r.at)
 		}
 	}
 
-	throw(syscall.Mprotect(i.text[:textSize], syscall.PROT_READ|syscall.PROT_EXEC))
-	throw(syscall.Mprotect(i.text[textSize:], syscall.PROT_READ))
-	registerCode(i.name, i.base, uintptr(len(obj.text)), obj.meta.regions)
+	throw(syscall.Mprotect(c.text[:textSize], syscall.PROT_READ|syscall.PROT_EXEC))
+	throw(syscall.Mprotect(c.text[textSize:], syscall.PROT_READ))
+	registerCode(name, c.base, uintptr(len(obj.text)), obj.meta.regions)
+
+	return c
 }
 
 func put32rel(at []byte, v int64) {
@@ -324,11 +338,17 @@ func put32rel(at []byte, v int64) {
 	binary.LittleEndian.PutUint32(at, uint32(v))
 }
 
-// instantiate makes an instance of an object that may take stack bytes of
-// goroutine stack; start runs its init.
+// instantiate links an object and makes an instance of it that may take
+// stack bytes of goroutine stack; start runs its init.
 func instantiate(name string, obj *Object, imports Imports, stack uint64) *Instance {
-	meta := obj.meta
-	i := &Instance{name: name, obj: obj, block: mmap(int(max(meta.instanceSize, headerSize)), syscall.PROT_READ|syscall.PROT_WRITE)}
+	return newInstance(link(name, obj, imports), imports, stack)
+}
+
+// newInstance makes an instance of linked code: its imports other than
+// functions come from imports.
+func newInstance(c *Code, imports Imports, stack uint64) *Instance {
+	meta := c.obj.meta
+	i := &Instance{name: c.name, obj: c.obj, code: c, block: mmap(int(max(meta.instanceSize, headerSize)), syscall.PROT_READ|syscall.PROT_WRITE)}
 
 	if uint64(meta.instanceSize) > uint64(len(i.block)) {
 		throwFmt("instance of %d bytes", meta.instanceSize)
@@ -391,9 +411,18 @@ func instantiate(name string, obj *Object, imports Imports, stack uint64) *Insta
 		binary.LittleEndian.PutUint32(i.block[t.offset+tableMax:], uint32(min(t.max, math.MaxUint32)))
 	}
 
-	i.load(imports)
-
 	return i
+}
+
+// release unmaps the instance block and the memory the instance made; the
+// instance is not used again.
+func (i *Instance) release() {
+	if i.memory != nil && !i.obj.meta.memory.imported && len(i.memory.users) == 1 {
+		throw(syscall.Munmap(i.memory.data))
+	}
+
+	throw(syscall.Munmap(i.block))
+	i.block, i.memory, i.tables = nil, nil, nil
 }
 
 // nativeFunc is a Go function value of type typ whose code is at code.
@@ -411,7 +440,7 @@ func (i *Instance) symbol(name string) uintptr {
 		throwFmt("no symbol %s", name)
 	}
 
-	return i.base + uintptr(at)
+	return i.code.base + uintptr(at)
 }
 
 // start runs the init thunk: the segments and the start function.

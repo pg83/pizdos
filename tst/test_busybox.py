@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+"""busybox under `wasm2o run`: the kernel of lib/c runs its applets inside a
+root made like the system's, /bin/busybox the object and every path of
+busybox.links a symbolic link to it.
+
+    test_busybox.py <wasm2o> <busybox.o> <busybox.wasm> <busybox.links>
+"""
+import gzip
+import hashlib
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+DATA = "banana\napple\ncherry\napple\n10\n9\n"
+
+# argv, standard input, expected standard output, expected exit code
+CASES = [
+    (["echo", "hello", "world"], "", "hello world\n", 0),
+    (["sort"], DATA, "10\n9\napple\napple\nbanana\ncherry\n", 0),
+    # lines that are not numbers are all equal as numbers
+    (["sort", "-n", "-u"], DATA, "apple\n9\n10\n", 0),
+    (["uniq", "-c"], "a\na\nb\n", "      2 a\n      1 b\n", 0),
+    (["grep", "-n", "apple"], DATA, "2:apple\n4:apple\n", 0),
+    (["grep", "-E", "^(ch|ba)"], DATA, "banana\ncherry\n", 0),
+    (["grep", "-c", "kiwi"], DATA, "0\n", 1),
+    (["sed", "-e", "s/a\\(p*\\)/[\\1]/g", "-e", "3d"], DATA, "b[]n[]n[]\n[pp]le\n[pp]le\n10\n9\n", 0),
+    (["awk", "{n += length($0)} END {printf \"%d %d %.2f\\n\", NR, n, n / NR}"], DATA, "6 25 4.17\n", 0),
+    (["tr", "a-z", "A-Z"], "abc\n", "ABC\n", 0),
+    (["cut", "-d", "a", "-f", "2"], "xay\n", "y\n", 0),
+    (["wc", "-l"], DATA, "6\n", 0),
+    (["md5sum"], DATA, hashlib.md5(DATA.encode()).hexdigest() + "  -\n", 0),
+    (["sha256sum"], DATA, hashlib.sha256(DATA.encode()).hexdigest() + "  -\n", 0),
+    (["seq", "2", "4"], "", "2\n3\n4\n", 0),
+    (["expr", "3", "*", "4", "+", "1"], "", "13\n", 0),
+    (["printf", "%s-%03d\\n", "a", "7"], "", "a-007\n", 0),
+    (["date", "-u", "-d", "@1700000000", "+%F %T %z %j %a"], "", "2023-11-14 22:13:20 +0000 318 Tue\n", 0),
+    (["date", "-d", "@0", "+%H"], "", "03\n", 0, {"TZ": "Europe/Moscow"}),
+    (["basename", "/a/b/c.txt", ".txt"], "", "c\n", 0),
+    (["dirname", "/a/b/c.txt"], "", "/a/b\n", 0),
+    (["false"], "", "", 1),
+    # exec inside the root: env runs /usr/bin/env, a link to the object
+    (["env", "-i", "A=1", "env"], "", "A=1\n", 0),
+    # a #! script runs its interpreter
+    (["env", "/tmp/script.sh", "x"], "", "from /tmp/script.sh x\n", 0),
+    # a symbolic link to / is the root's
+    (["ls", "/tmp/up/bin/busybox"], "", "/tmp/up/bin/busybox\n", 0),
+    (["readlink", "-f", "/tmp/up/.."], "", "/\n", 0),
+]
+
+
+def make_root(root, obj, links):
+    (root / "bin").mkdir(parents=True)
+    shutil.copy(obj, root / "bin" / "busybox")
+    (root / "bin" / "busybox").chmod(0o755)
+
+    for link in links.split():
+        path = root / link.lstrip("/")
+
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.symlink_to("/bin/busybox")
+
+    tmp = root / "tmp"
+    tmp.mkdir()
+    script = tmp / "script.sh"
+    script.write_text("#!/bin/echo from\n")
+    script.chmod(0o755)
+    (tmp / "up").symlink_to("/")
+
+
+def run(wasm2o, root, argv, stdin, env=None):
+    command = [wasm2o, "run", "--root", str(root), "-a", argv[0], str(root / "bin" / "busybox"), "--", *argv[1:]]
+    environment = {"PATH": "/bin:/usr/bin", "TZ": "UTC", **(env or {})}
+
+    return subprocess.run(command, input=stdin.encode(), capture_output=True, cwd=root / "tmp", env=environment, timeout=60)
+
+
+def main():
+    wasm2o, obj, _, links = sys.argv[1:5]
+    failed = []
+
+    with tempfile.TemporaryDirectory(prefix="busybox-") as work:
+        root = Path(work) / "root"
+        make_root(root, obj, Path(links).read_text())
+
+        for case in CASES:
+            argv, stdin, want, code = case[:4]
+            env = case[4] if len(case) > 4 else None
+            r = run(wasm2o, root, argv, stdin, env)
+            got = r.stdout.decode(errors="replace")
+
+            if got != want or r.returncode != code:
+                failed.append(f"{argv}: exit {r.returncode}, stdout {got!r}, stderr {r.stderr.decode(errors='replace')!r}; want exit {code}, stdout {want!r}")
+
+        # files: a tree made, archived, compressed and read back
+        steps = [
+            ["mkdir", "-p", "/tmp/d/e"],
+            ["cp", "/tmp/script.sh", "/tmp/d/e/copy"],
+            ["ln", "-s", "e/copy", "/tmp/d/link"],
+            ["tar", "cf", "/tmp/d.tar", "-C", "/tmp", "d"],
+            ["gzip", "-k", "/tmp/d.tar"],
+            ["mv", "/tmp/d", "/tmp/old"],
+            ["tar", "xf", "/tmp/d.tar", "-C", "/tmp"],
+        ]
+
+        for argv in steps:
+            r = run(wasm2o, root, argv, "")
+
+            if r.returncode != 0:
+                failed.append(f"{argv}: exit {r.returncode}, stderr {r.stderr.decode(errors='replace')!r}")
+
+        tmp = root / "tmp"
+
+        if gzip.decompress((tmp / "d.tar.gz").read_bytes()) != (tmp / "d.tar").read_bytes():
+            failed.append("gzip -k: the .gz does not decompress to the tar")
+
+        if os.readlink(tmp / "d" / "link") != "e/copy" or (tmp / "d" / "e" / "copy").read_text() != "#!/bin/echo from\n":
+            failed.append("tar xf: the tree differs")
+
+        r = run(wasm2o, root, ["find", "/tmp/d", "-type", "f"], "")
+
+        if r.stdout.decode() != "/tmp/d/e/copy\n":
+            failed.append(f"find: {r.stdout!r}")
+
+        r = run(wasm2o, root, ["cat", "/tmp/missing"], "")
+
+        if r.returncode != 1 or b"No such file or directory" not in r.stderr:
+            failed.append(f"cat of a missing file: exit {r.returncode}, stderr {r.stderr!r}")
+
+    for f in failed:
+        print(f)
+
+    assert not failed, f"{len(failed)} of the busybox cases failed"
+    print(f"{len(CASES) + len(steps) + 3} cases passed")
+
+
+if __name__ == "__main__":
+    main()

@@ -147,6 +147,17 @@ wasm2o_o = command(
     color="light-cyan",
 )
 
+# busybox.wasm compiled by wasm2o: what `wasm2o run` runs in the kernel's
+# processes.
+busybox_o = command(
+    name="busybox_o",
+    outputs=["$(B)/bin/busybox/busybox.o"],
+    deps=[wasm2o, busybox],
+    cmd=[wasm2o.outputs[0], "-o", "$(B)/bin/busybox/busybox.o", busybox.outputs[0]],
+    descr="AO",
+    color="light-cyan",
+)
+
 # wasm2o.o through an ordinary linker: ld.lld -r combines and relocates it
 # again, and the loader runs what comes out.
 wasm2o_relinked = command(
@@ -218,6 +229,7 @@ wazero = command(
 # What each test runs against: its arguments are the outputs of these nodes.
 TESTED = {
     "busybox_abi": [busybox],
+    "busybox": [wasm2o, busybox_o, busybox],
     "wasm2o": [wasm2o, wasm2o_wasm, wasm2o_o, wasm2o_relinked, wazero, busybox],
 }
 tests = []
@@ -240,5 +252,5 @@ for test in build.glob("$(S)/tst/test_*.py"):
         color="green",
     ))
 
-group("install", busybox, busybox_abi, wasm2o, wasm2o_wasm, wasm2o_o, wazero)
+group("install", busybox, busybox_abi, busybox_o, wasm2o, wasm2o_wasm, wasm2o_o, wazero)
 group("test", *tests, wasm2o_go_test, wasm2o_spec_test)

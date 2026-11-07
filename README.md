@@ -8,7 +8,7 @@ hardware, not a different kernel.
 ## layout
 
 ```
-bin/wasm2o/   wasm to x86-64 (Go): a module in, an ELF object out; `wasm2o run` loads one onto a goroutine
+bin/wasm2o/   wasm to x86-64 (Go): a module in, an ELF object out; `wasm2o run` loads one onto a goroutine, a program of lib/c into its kernel
 bin/busybox/  busybox for the system: our config and the generator that replaces kconfig
 bin/kernel/   the kernel (Go), not yet
 bin/rootfs/   the root filesystem service (Go, wasm), not yet
@@ -55,7 +55,11 @@ build.py      the build graph
   loader registers every code region with Go's runtime, so the garbage
   collector, stack copying, panics, tracebacks and asynchronous preemption
   go through the frames.
-- `wasm2o run object.o -- args` is that loader with WASI preview1 in Go. The
+- `wasm2o run [--root dir] [-a argv0] object.o -- args` is that loader: a
+  WASI preview1 command, or, for an object importing `kernel`, a program of
+  lib/c run by a kernel in Go (`bin/wasm2o/kernel*.go`). Its processes are
+  goroutines, paths resolve inside the root, exec runs objects of wasm2o and
+  `#!` scripts; `fork` and `setjmp`/`longjmp` are not there yet. The
   build makes `wasm2o` natively, `wasm2o.wasm` (the same compiler for wasip1)
   and `wasm2o.o`, wasm2o.wasm compiled by wasm2o: run by `wasm2o run` and
   under wazero, it compiles wasm2o.wasm and busybox.wasm to the bytes

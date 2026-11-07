@@ -8,7 +8,7 @@ import (
 )
 
 func usage() {
-	throwFmt("usage: wasm2o [-v] -o output.o input.wasm\n       wasm2o run object.o [-- arg...]\n       wasm2o spec test.json")
+	throwFmt("usage: wasm2o [-v] -o output.o input.wasm\n       wasm2o run [--root dir] [-a argv0] object.o [-- arg...]\n       wasm2o spec test.json")
 }
 
 func main() {
@@ -88,18 +88,35 @@ func compileCommand(args []string) {
 	}
 }
 
-// runCommand runs object.o as a WASI command: its arguments are the object's
-// path and those after --.
+// runCommand runs object.o, a program of the kernel inside the root
+// directory, by default /, or a WASI command. Its arguments are argv0, by
+// default the object's path, and those after --.
 func runCommand(args []string) int {
+	root, argv0 := "/", ""
+
+	for len(args) > 1 && (args[0] == "--root" || args[0] == "-a") {
+		if args[0] == "--root" {
+			root = args[1]
+		} else {
+			argv0 = args[1]
+		}
+
+		args = args[2:]
+	}
+
 	if len(args) == 0 || len(args) > 1 && args[1] != "--" {
 		usage()
 	}
 
-	argv := []string{args[0]}
+	if argv0 == "" {
+		argv0 = args[0]
+	}
+
+	argv := []string{argv0}
 
 	if len(args) > 1 {
 		argv = append(argv, args[2:]...)
 	}
 
-	return runObject(throw2(os.ReadFile(args[0])), argv)
+	return runObject(args[0], root, argv)
 }

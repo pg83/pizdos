@@ -42,6 +42,14 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
 - The loader (`load.go`, `gort.go`, `wasi.go`, `run.go`) is linux/amd64
   only and pinned to Go 1.25's moduledata; the compiler alone builds for
   wasip1 too. Code and its registration live as long as the process.
+- `wasm2o run` runs an object importing module `kernel` in the kernel of
+  lib/c (`kernel*.go`): a process is a goroutine with its own pid, group,
+  descriptors (host descriptors the kernel owns), cwd, umask, limits and
+  signals; paths resolve inside `--root` through openat2 `RESOLVE_IN_ROOT`;
+  exec runs only objects of wasm2o and `#!` scripts; wasm2o exits with the
+  first process. The heap, environ, DIRs and libc's static results live in
+  the guest's memory, so a fork can copy them. `test_busybox` builds a root
+  from busybox.links and runs applets in it.
 - `test_wasm2o_go` runs `bin/wasm2o/*_test.go`: modules built in the test
   run through the loader while Go collects, copies stacks, parks, preempts a
   call-free loop on one processor and unwinds traps through native frames;

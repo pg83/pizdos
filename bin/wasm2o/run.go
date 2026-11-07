@@ -8,10 +8,17 @@ import (
 	"runtime"
 )
 
-// runObject runs an object as a WASI command on this goroutine and returns
-// its exit code: proc_exit's, or 128 and the trap code after a trap.
-func runObject(data []byte, argv []string) (code int) {
-	obj := readObject(data)
+// runObject runs an object and returns the exit code of wasm2o: a program
+// of the kernel as its first process, inside root, or a WASI command on
+// this goroutine, whose code is proc_exit's, or 128 and the trap code after
+// a trap.
+func runObject(path, root string, argv []string) (code int) {
+	obj := readObject(throw2(os.ReadFile(path)))
+
+	if importsKernel(obj) {
+		return runKernel(path, root, argv)
+	}
+
 	i := instantiate(argv[0], obj, newWASI(argv), runStack)
 
 	defer func() {
