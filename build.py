@@ -1,4 +1,5 @@
 import build
+import os
 import shutil
 
 
@@ -228,6 +229,57 @@ wazero = command(
     color="light-blue",
 )
 
+# The stand: wasm2o.wasm as wasm2c and clang make it, in the mode that
+# matches wasm2o's code (explicit bounds checks, memory reserved with mmap
+# and grown in place, a counted call depth) and at its best otherwise: -O3,
+# ThinLTO across the parts, no frame pointer. Its host is dev/stand. It
+# takes a host C library, `ix run lib/c bld/compiler bld/wabt -- ./build
+# stand`; dev/stand.py times wasm2o.wasm under `wasm2o run` against it.
+WASM2C = shutil.which("wasm2c") or ""
+WASM2C_RT = os.path.join(os.path.dirname(WASM2C), "../share/wabt/wasm2c") if WASM2C else ""
+STAND_PARTS = 16
+STAND_HOST = ["$(S)/dev/stand/host_w2c.c", "$(S)/dev/stand/wasi.c", "$(S)/dev/stand/wasi.h"]
+STAND_RT = [f"{WASM2C_RT}/wasm-rt-impl.c", f"{WASM2C_RT}/wasm-rt-mem-impl.c", f"{WASM2C_RT}/wasm-rt-exceptions-impl.c"]
+STAND_FLAGS = [
+    *build.cppflags, *build.cflags,
+    "-O3", "-march=x86-64-v3", "-fomit-frame-pointer", "-flto=thin",
+    "-DWASM_RT_MEMCHECK_BOUNDS_CHECK=1", "-DWASM_RT_USE_MMAP=1",
+    "-DWASM_RT_STACK_DEPTH_COUNT=1", "-DWASM_RT_MAX_CALL_STACK_DEPTH=100000000",
+    "-I" + WASM2C_RT, "-I$(B)/stand",
+]
+
+stand_src = command(
+    name="stand_src",
+    deps=[wasm2o_wasm],
+    outputs=["$(B)/stand/prog.h", "$(B)/stand/prog-impl.h", *[f"$(B)/stand/prog_{i}.c" for i in range(STAND_PARTS)]],
+    cmd=[WASM2C, "--num-outputs", str(STAND_PARTS), "-n", "prog", "-o", "$(B)/stand/prog.c", wasm2o_wasm.outputs[0]],
+    descr="WC",
+    color="magenta",
+)
+
+stand_parts = [
+    command(
+        name=f"stand_part{i}",
+        deps=[stand_src],
+        outputs=[f"$(B)/stand/prog_{i}.o"],
+        cmd=[CLANG, *STAND_FLAGS, "-w", "-c", f"$(B)/stand/prog_{i}.c", "-o", f"$(B)/stand/prog_{i}.o"],
+        descr="CC",
+        color="green",
+    )
+    for i in range(STAND_PARTS)
+]
+
+stand = command(
+    name="stand_bin",
+    deps=[stand_src, *stand_parts],
+    inputs=STAND_HOST,
+    outputs=["$(B)/stand/wasm2o"],
+    cmd=[CLANG, *STAND_FLAGS, "-I$(S)/dev/stand", "-o", "$(B)/stand/wasm2o", "$(S)/dev/stand/host_w2c.c", "$(S)/dev/stand/wasi.c",
+         *STAND_RT, *[p.outputs[0] for p in stand_parts], *build.ldflags],
+    descr="LD",
+    color="green",
+)
+
 # What each test runs against: its arguments are the outputs of these nodes.
 TESTED = {
     "busybox_abi": [busybox],
@@ -256,3 +308,4 @@ for test in build.glob("$(S)/tst/test_*.py"):
 
 group("install", busybox, busybox_abi, busybox_o, wasm2o, wasm2o_wasm, wasm2o_o, wazero)
 group("test", *tests, wasm2o_go_test, wasm2o_spec_test)
+group("stand", stand)

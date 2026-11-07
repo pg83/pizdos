@@ -79,11 +79,17 @@ build.py      the build graph
 ```
 ./build          # libc.a, busybox, wasm2o, wasm2o.wasm, wasm2o.o, the wazero runner
 ./build test     # the tests in tst/, the spec testsuite included
+ix run lib/c bld/compiler bld/wabt -- ./build stand
+                 # wasm2o.wasm through wasm2c and clang -O3, bounds-checked
+dev/stand.py .build/bin/wasm2o/wasm2o .build/bin/wasm2o/wasm2o.o .build/stand/wasm2o \
+    .build/bin/busybox/busybox.wasm .build/bin/wasm2o/wasm2o.wasm
+                 # wasm2o's code against wasm2c's: the goal is C/R <= 1
 ```
 
 Needs `clang` with the wasm32 target, `wasm-ld`, `llvm-ar`, Go 1.25 and
 `python3` on `PATH`, and `wast2json` for the spec testsuite;
-`ix run bld/compiler bld/wabt` provides them. The musl and
+`ix run bld/compiler bld/wabt` provides them; the stand also needs `wasm2c`
+and a host C library, `lib/c`. The musl and
 busybox tarballs are fetched by the graph and checked against their sha256;
 the wazero runner's Go modules come from `go mod download`, checked against
 `tst/wazero/go.sum`.

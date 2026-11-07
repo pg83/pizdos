@@ -10,6 +10,11 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   `wasm2o.wasm`, `wasm2o.o` and the wazero runner.
 - `./build test` runs `tst/test_*.py`, each with the outputs of the nodes
   `TESTED` names for it in build.py.
+- `./build stand`, under `ix run lib/c bld/compiler bld/wabt`, builds the
+  reference: wasm2o.wasm through wasm2c and clang (dev/stand is its WASI
+  host). `dev/stand.py` times it against wasm2o.o under `wasm2o run`, both
+  compiling inputs to the bytes of the native wasm2o; wasm2o's code must not
+  be the slower.
 - A node that consumes another node's output names it in `deps=`: the engine
   restores only dependency outputs into a node's work directory.
 - Commit messages in English.
@@ -49,9 +54,8 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   for bisecting a miscompilation; `W2O_PERFMAP=<dir>` makes the loader
   write perf-<pid>.map for perf.
 - Speed is measured against wasm2c in its bounds-checked mode (clang -O3,
-  `WASM_RT_MEMCHECK_BOUNDS_CHECK`, memory on mmap, counted call depth):
-  both run wasm2o.wasm compiling busybox.wasm and wasm2o.wasm, to the bytes
-  of the native wasm2o.
+  `WASM_RT_MEMCHECK_BOUNDS_CHECK`, memory on mmap, counted call depth) by
+  the stand: both run wasm2o.wasm compiling busybox.wasm and wasm2o.wasm.
 - An import named setjmp, _setjmp, sigsetjmp, vfork or fork returns twice:
   its direct calls go through an adapter that writes the caller's frame to
   the instance header (`abi.go`), and the caller keeps an invocation token
