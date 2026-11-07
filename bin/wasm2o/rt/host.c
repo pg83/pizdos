@@ -1,4 +1,4 @@
-// Runs a WASI command compiled by wasm2x with prefix "prog".
+// Runs a WASI command compiled by wasm2o with prefix "prog".
 #include "prog.h"
 #include "w2x.h"
 #include "wasi.h"

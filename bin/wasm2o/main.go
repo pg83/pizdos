@@ -10,7 +10,7 @@ import (
 )
 
 func usage() {
-	throwFmt("usage: wasm2x [-p prefix] [-i import-prefix] [-H header.h] -o output.o input.wasm")
+	throwFmt("usage: wasm2o [-p prefix] [-i import-prefix] [-H header.h] -o output.o input.wasm")
 }
 
 func main() {
@@ -20,7 +20,7 @@ func main() {
 				panic(e)
 			}
 
-			fmt.Fprintln(os.Stderr, "wasm2x:", e)
+			fmt.Fprintln(os.Stderr, "wasm2o:", e)
 			os.Exit(1)
 		}
 	}()
@@ -89,6 +89,6 @@ func main() {
 	}
 
 	if verbose {
-		fmt.Fprintf(os.Stderr, "wasm2x: %d bytes -> %d bytes in %s\n", len(data), len(obj), elapsed)
+		fmt.Fprintf(os.Stderr, "wasm2o: %d bytes -> %d bytes in %s\n", len(data), len(obj), elapsed)
 	}
 }

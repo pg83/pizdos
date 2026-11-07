@@ -118,53 +118,56 @@ busybox_abi = command(
     color="magenta",
 )
 
-# bin/aot: the compiler, a Go program with no dependencies, built natively
-# and as a WASI module.
-AOT_SOURCES = [*build.glob("$(S)/bin/aot/*.go"), "$(S)/bin/aot/go.mod", "$(S)/dev/go.py"]
+# bin/wasm2o: the compiler, a Go program with no dependencies, built
+# natively and as a WASI module.
+WASM2O_SOURCES = [*build.glob("$(S)/bin/wasm2o/*.go"), "$(S)/bin/wasm2o/go.mod", "$(S)/dev/go.py"]
 
-aot = command(
-    name="aot",
-    inputs=AOT_SOURCES,
-    outputs=["$(B)/bin/aot/aot"],
-    cmd=["python3", "$(S)/dev/go.py", "build", GO, "$(S)/bin/aot", "$(B)/bin/aot/aot"],
+wasm2o = command(
+    name="wasm2o",
+    inputs=WASM2O_SOURCES,
+    outputs=["$(B)/bin/wasm2o/wasm2o"],
+    cmd=["python3", "$(S)/dev/go.py", "build", GO, "$(S)/bin/wasm2o", "$(B)/bin/wasm2o/wasm2o"],
     descr="GO",
     color="light-blue",
 )
 
-aot_wasm = command(
-    name="aot_wasm",
-    inputs=AOT_SOURCES,
-    outputs=["$(B)/bin/aot/aot.wasm"],
-    cmd=["python3", "$(S)/dev/go.py", "build", GO, "$(S)/bin/aot", "$(B)/bin/aot/aot.wasm", "--wasip1"],
+wasm2o_wasm = command(
+    name="wasm2o_wasm",
+    inputs=WASM2O_SOURCES,
+    outputs=["$(B)/bin/wasm2o/wasm2o.wasm"],
+    cmd=["python3", "$(S)/dev/go.py", "build", GO, "$(S)/bin/wasm2o", "$(B)/bin/wasm2o/wasm2o.wasm", "--wasip1"],
     descr="GO",
     color="light-blue",
 )
 
-# aot.wasm compiled by aot, and linked with the WASI host of bin/aot/rt: the
-# compiler as its own output.
-aot_self_obj = command(
-    name="aot_self_obj",
-    outputs=["$(B)/bin/aot/self/prog.o", "$(B)/bin/aot/self/prog.h"],
-    deps=[aot, aot_wasm],
-    cmd=[aot.outputs[0], "-p", "prog", "-H", "$(B)/bin/aot/self/prog.h", "-o", "$(B)/bin/aot/self/prog.o", aot_wasm.outputs[0]],
+# wasm2o.wasm compiled by wasm2o, and linked with the WASI host of
+# bin/wasm2o/rt: the compiler as its own output.
+wasm2o_self_obj = command(
+    name="wasm2o_self_obj",
+    outputs=["$(B)/bin/wasm2o/self/prog.o", "$(B)/bin/wasm2o/self/prog.h"],
+    deps=[wasm2o, wasm2o_wasm],
+    cmd=[
+        wasm2o.outputs[0], "-p", "prog", "-H", "$(B)/bin/wasm2o/self/prog.h", "-o", "$(B)/bin/wasm2o/self/prog.o",
+        wasm2o_wasm.outputs[0],
+    ],
     descr="AO",
     color="light-cyan",
 )
 
-aot_self = command(
-    name="aot_self",
-    inputs=build.glob("$(S)/bin/aot/rt/*"),
-    outputs=["$(B)/bin/aot/aot.self"],
-    deps=[aot_self_obj],
+wasm2o_self = command(
+    name="wasm2o_self",
+    inputs=build.glob("$(S)/bin/wasm2o/rt/*"),
+    outputs=["$(B)/bin/wasm2o/wasm2o.self"],
+    deps=[wasm2o_self_obj],
     cmd=[
-        CLANG, *HOST_CFLAGS, "-O2", "-I$(S)/bin/aot/rt", "-I$(B)/bin/aot/self", "-o", "$(B)/bin/aot/aot.self",
-        "$(S)/bin/aot/rt/host.c", "$(S)/bin/aot/rt/wasi.c", aot_self_obj.outputs[0], *HOST_LDFLAGS,
+        CLANG, *HOST_CFLAGS, "-O2", "-I$(S)/bin/wasm2o/rt", "-I$(B)/bin/wasm2o/self", "-o", "$(B)/bin/wasm2o/wasm2o.self",
+        "$(S)/bin/wasm2o/rt/host.c", "$(S)/bin/wasm2o/rt/wasi.c", wasm2o_self_obj.outputs[0], *HOST_LDFLAGS,
     ],
     descr="LD",
     color="green",
 )
 
-# tst/wazero: a WASI runner on wazero, what aot is measured against. Its
+# tst/wazero: a WASI runner on wazero, what wasm2o is measured against. Its
 # modules, checked against go.sum, are fetched once; the build has no network.
 wazero_modules = command(
     name="wazero_modules",
@@ -192,7 +195,7 @@ wazero = command(
 # What each test runs against: its arguments are the outputs of these nodes.
 TESTED = {
     "busybox_abi": [busybox],
-    "aot": [aot, aot_wasm, aot_self_obj, aot_self, wazero, busybox],
+    "wasm2o": [wasm2o, wasm2o_wasm, wasm2o_self_obj, wasm2o_self, wazero, busybox],
 }
 tests = []
 
@@ -214,5 +217,5 @@ for test in build.glob("$(S)/tst/test_*.py"):
         color="green",
     ))
 
-group("install", busybox, busybox_abi, aot, aot_wasm, aot_self, wazero)
+group("install", busybox, busybox_abi, wasm2o, wasm2o_wasm, wasm2o_self, wazero)
 group("test", *tests)

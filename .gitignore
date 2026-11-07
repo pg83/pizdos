@@ -6,9 +6,9 @@ __pycache__/
 # convenience root symlinks the build engine publishes for built targets
 /busybox
 /busybox_abi
-/aot
-/aot_wasm
-/aot_self
+/wasm2o
+/wasm2o_wasm
+/wasm2o_self
 /wazero
 /libc
 /musl_tarball

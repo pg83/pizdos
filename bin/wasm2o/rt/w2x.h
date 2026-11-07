@@ -1,4 +1,4 @@
-// The contract between wasm2x-compiled code and its host.
+// The contract between wasm2o-compiled code and its host.
 #pragma once
 
 #include <stddef.h>

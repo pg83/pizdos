@@ -2,7 +2,7 @@
 
 Per-project settings that the shared [STYLE.md](STYLE.md) delegates here.
 
-- **Languages.** `lib/c` is C. Go code (`bin/aot`, `tst/wazero`, later
+- **Languages.** `lib/c` is C. Go code (`bin/wasm2o`, `tst/wazero`, later
   `bin/kernel`, `bin/rootfs`) follows the monorepo Go style and carries its
   own `STYLE.md` next to its `go.mod`, as `trustme/bin/cargo` does. C++ for the system's own programs will follow
   STYLE.md as written once it appears.

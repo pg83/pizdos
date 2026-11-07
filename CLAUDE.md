@@ -6,9 +6,9 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
 ## Build and test
 
 - `./build` builds `libc.a`, `busybox.wasm`, `busybox.links`,
-  `bin/busybox/abi.txt` (every kernel import busybox uses), `aot`,
-  `aot.wasm`, `aot.self` and the wazero runner. Run it as
-  `ix run lib/c bld/compiler -- ./build`: aot.self links the host's libc.
+  `bin/busybox/abi.txt` (every kernel import busybox uses), `wasm2o`,
+  `wasm2o.wasm`, `wasm2o.self` and the wazero runner. Run it as
+  `ix run lib/c bld/compiler -- ./build`: wasm2o.self links the host's libc.
 - `./build test` runs `tst/test_*.py`, each with the outputs of the nodes
   `TESTED` names for it in build.py.
 - A node that consumes another node's output names it in `deps=`: the engine
@@ -29,13 +29,14 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
 - The link has no `--allow-undefined`: a missing function is a link error,
   not a silent import.
 
-## bin/aot
+## bin/wasm2o
 
 - The compiler is Go with no dependencies, one `package main`: a module's
   bytes in, an ELF object and a C header out (`compileModule`); file access
   stays in `main.go`. `rt/w2x.h` is the whole contract with the host.
-- `test_aot` is the fixed point: aot.self and aot.wasm under wazero compile
-  aot.wasm and busybox.wasm to the bytes of the native `aot`. A change to
+- `test_wasm2o` is the fixed point: wasm2o.self and wasm2o.wasm under
+  wazero compile wasm2o.wasm and busybox.wasm to the bytes of the native
+  `wasm2o`. A change to
   the compiler keeps it.
 - The spec testsuite runner lives in `../wasm/tst/spec.py` and needs wabt
   (`ix run lib/c bld/compiler bld/wabt`); its baseline is 27036 passed and
