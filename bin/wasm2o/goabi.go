@@ -192,8 +192,10 @@ func (oc *objCode) callGo(sym string) {
 }
 
 // trapCall calls Go's trap with the instance and code; it does not return.
+// Like any Go call it leaves the callee room to spill its arguments.
 func (oc *objCode) trapCall(code int64) {
 	a := &oc.a
+	a.aluRI(aluSub, 8, RSP, int64(goAssign([]ValType{I32}, nil).size))
 	a.movRR(8, RAX, ctxReg)
 	a.movImm(4, RBX, code)
 	oc.callGo(symTrap)

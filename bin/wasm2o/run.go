@@ -12,7 +12,7 @@ import (
 // its exit code: proc_exit's, or 128 and the trap code after a trap.
 func runObject(data []byte, argv []string) (code int) {
 	obj := readObject(data)
-	i := instantiate(argv[0], obj, newWASI(argv))
+	i := instantiate(argv[0], obj, newWASI(argv), runStack)
 
 	defer func() {
 		switch e := recover().(type) {

@@ -40,6 +40,10 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
 - The loader (`load.go`, `gort.go`, `wasi.go`, `run.go`) is linux/amd64
   only and pinned to Go 1.25's moduledata; the compiler alone builds for
   wasip1 too. Code and its registration live as long as the process.
+- `test_wasm2o_go` runs `bin/wasm2o/*_test.go`: modules built in the test
+  run through the loader while Go collects, copies stacks, parks, preempts a
+  call-free loop on one processor and unwinds traps through native frames;
+  wide signatures cross both boundaries on the stack.
 - `test_wasm2o` is the fixed point: wasm2o.o under `wasm2o run` and
   wasm2o.wasm under wazero compile wasm2o.wasm and busybox.wasm to the bytes
   of the native `wasm2o`. A change to the compiler keeps it.

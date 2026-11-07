@@ -3,13 +3,15 @@
 
     go.py download <go> <source dir> <modules.tar>
     go.py build <go> <source dir> <output> [--wasip1] [--modules <modules.tar>]
+    go.py test <go> <source dir> <stamp>
 
 download runs `go mod download` on the directory's go.mod and go.sum, which
 checks every module against go.sum, and keeps the module cache's download
 directory as a deterministic tarball. build compiles a copy of the
 directory's .go files, go.mod and go.sum, natively or with --wasip1 as a
 WASI module; its modules come from that tarball as the module proxy, with no
-network.
+network. test runs the directory's tests, its _test.go files included, and
+touches the stamp when they pass.
 """
 import os
 import shutil
@@ -37,11 +39,11 @@ def environment(work, **extra):
     return env
 
 
-def copy(source, tree, code=True):
+def copy(source, tree, code=True, tests=False):
     tree.mkdir(parents=True)
 
     for path in Path(source).iterdir():
-        if code and path.suffix == ".go" and not path.name.endswith("_test.go") or path.name in ("go.mod", "go.sum"):
+        if code and path.suffix == ".go" and (tests or not path.name.endswith("_test.go")) or path.name in ("go.mod", "go.sum"):
             shutil.copy(path, tree / path.name)
 
 
@@ -100,6 +102,13 @@ def build(go, source, output, *flags, work):
     subprocess.run([go, "build", "-trimpath", "-o", str(output), "."], cwd=tree, env=env, check=True)
 
 
+def test(go, source, stamp, work):
+    copy(source, work / "src", tests=True)
+    subprocess.run([go, "test", "-count=1", "-timeout=300s", "."], cwd=work / "src", env=environment(work), check=True)
+    Path(stamp).parent.mkdir(parents=True, exist_ok=True)
+    Path(stamp).touch()
+
+
 def main():
     mode, *args = sys.argv[1:]
     work = Path(os.environ.get("TMPDIR") or "/tmp") / "go"
@@ -110,6 +119,8 @@ def main():
         download(*args, work)
     elif mode == "build":
         build(*args, work=work)
+    elif mode == "test":
+        test(*args, work)
     else:
         raise SystemExit(f"unknown mode {mode}")
 

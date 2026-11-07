@@ -17,9 +17,9 @@ import (
 // whose code is its thunk: calling it runs the module on the caller's
 // goroutine stack.
 
-// stackLimit is how much goroutine stack an instance may take; deeper, it
-// traps, before Go's own limit would end the program.
-const stackLimit = 64 << 20
+// runStack is how much goroutine stack a command may take; deeper, it
+// traps, before Go's own limit of 1 GiB would end the program.
+const runStack = 64 << 20
 
 const pageSize = 65536
 
@@ -261,8 +261,9 @@ func (i *Instance) load(imports Imports) {
 	registerCode(i.name, i.base, uintptr(len(obj.text)), obj.meta.regions)
 }
 
-// instantiate makes an instance of an object; start runs its init.
-func instantiate(name string, obj *Object, imports Imports) *Instance {
+// instantiate makes an instance of an object that may take stack bytes of
+// goroutine stack; start runs its init.
+func instantiate(name string, obj *Object, imports Imports, stack uint64) *Instance {
 	meta := obj.meta
 	i := &Instance{name: name, obj: obj, block: mmap(int(max(meta.instanceSize, headerSize)), syscall.PROT_READ|syscall.PROT_WRITE)}
 
@@ -271,7 +272,7 @@ func instantiate(name string, obj *Object, imports Imports) *Instance {
 	}
 
 	i.put64(offHost, uint64(uintptr(unsafe.Pointer(i))))
-	i.put64(offStackLimit, stackLimit)
+	i.put64(offStackLimit, stack)
 
 	for k := range meta.imports {
 		imp := &meta.imports[k]

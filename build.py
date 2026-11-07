@@ -146,6 +146,16 @@ wasm2o_o = command(
     color="light-cyan",
 )
 
+# wasm2o's own tests: the loader drives Go's runtime through native frames.
+wasm2o_go_test = command(
+    name="test_wasm2o_go",
+    inputs=[*build.glob("$(S)/bin/wasm2o/*.go"), "$(S)/bin/wasm2o/go.mod", "$(S)/dev/go.py"],
+    outputs=["$(B)/tst/wasm2o_go.stamp"],
+    cmd=["python3", "$(S)/dev/go.py", "test", GO, "$(S)/bin/wasm2o", "$(B)/tst/wasm2o_go.stamp"],
+    descr="TS",
+    color="green",
+)
+
 # tst/wazero: a WASI runner on wazero, what wasm2o is measured against. Its
 # modules, checked against go.sum, are fetched once; the build has no network.
 wazero_modules = command(
@@ -197,4 +207,4 @@ for test in build.glob("$(S)/tst/test_*.py"):
     ))
 
 group("install", busybox, busybox_abi, wasm2o, wasm2o_wasm, wasm2o_o, wazero)
-group("test", *tests)
+group("test", *tests, wasm2o_go_test)
