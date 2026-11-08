@@ -69,14 +69,17 @@ allocation, including input and output storage, is at most 64 KiB.
 Native segments use libc
 `mmap`; WASI segments use `memory.grow`, with metadata outside payload pages.
 Pool chunks still grow geometrically up to 64 KiB. SSA values, operands and
-machine code use owning page vectors. Machine blocks and optional instruction
-operands live in ObjPool; their vectors release old buffers on growth and
+machine code use owning page vectors. SSA blocks have a dedicated ObjPool;
+machine blocks and optional instruction operands also live in ObjPool.
+Their vectors release old buffers on growth and
 replacement. Copied slice and map fields elsewhere remain views into pool
 storage. Separate pools hold module structures, SSA, and machine IR; SSA is
 released before register allocation, and machine IR after each function.
 CFG and loop analyses use temporary pools. Container `operator[]` follows
 the C++ in-range contract; `at()` checks the index. Input reader bounds and
 validation remain checked.
+The pending register intervals use a heap with stable ties, and predecessor
+queries use epoch markers instead of quadratic prefix searches.
 `./build test_aot` checks both WASI entry points against wasm2o,
 including compilation of the new compiler itself and repeated export calls.
 

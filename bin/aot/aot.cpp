@@ -688,8 +688,10 @@ namespace {
             buffer.clear();
         }
 
-        void pushBack(const T& value) {
-            buffer.append(&value, sizeof(T));
+        void pushBack(T value) {
+            const usize before = buffer.size();
+            buffer.resize(checkedAdd(before, sizeof(T)));
+            copyBytes(static_cast<u8*>(buffer.data()) + before, &value, sizeof(T));
         }
 
         T popBack() {
@@ -1334,11 +1336,13 @@ namespace {
         }
 
         void pushBack(T value) {
-            reserve(size() + 1);
             if (paged) {
                 pages.pushBack(value);
-            } else {
+            } else if (small.size() < (pageBytes - sizeof(Buffer::Header)) / sizeof(T)) {
                 small.pushBack(value);
+            } else {
+                reserve(small.size() + 1);
+                pages.pushBack(value);
             }
         }
 
@@ -1900,6 +1904,31 @@ namespace {
         return -1;
     }
 
+    // Find an existing key or the first reusable slot in one probe walk.
+    // Continue past tombstones so an update cannot create a duplicate key.
+    template <typename K, typename V>
+    static Int findMapSlot(Map<K, V> m, const K& key) {
+        const Int mask = m.data->buckets.count - 1;
+        Int at = Int(hashValue(key) & mask);
+        Int free = -1;
+        for (Int probe = 0; probe <= mask; ++probe, at = (at + 1) & mask) {
+            auto& entry = m.data->buckets[at];
+            if (entry.state == 1) {
+                if (entry.key == key) {
+                    return at;
+                }
+            } else {
+                if (free < 0) {
+                    free = at;
+                }
+                if (entry.state == 0) {
+                    return free;
+                }
+            }
+        }
+        return free;
+    }
+
     template <typename K, typename V>
     V Map<K, V>::operator[](K key) const {
         Int at = findMap(*this, key);
@@ -1936,8 +1965,8 @@ namespace {
         require(m.data != nullptr, "nil map assignment");
         K key = K(keyValue);
         V value = V(valueValue);
-        Int at = findMap(m, key);
-        if (at >= 0) {
+        Int at = m.data->buckets.count ? findMapSlot(m, key) : -1;
+        if (at >= 0 && m.data->buckets[at].state == 1) {
             m.data->buckets[at].value = value;
             return;
         }
@@ -1954,8 +1983,15 @@ namespace {
                     insertMap(m, e.key, e.value);
                 }
             }
+            at = findMapSlot(m, key);
         }
-        insertMap(m, key, value);
+        require(at >= 0, "map has no insertion slot");
+        auto& entry = m.data->buckets[at];
+        ++m.data->count;
+        if (entry.state == 0) {
+            ++m.data->occupied;
+        }
+        entry = {key, value, 1};
     }
 
     template <typename K, typename V>
@@ -3031,11 +3067,16 @@ namespace {
         i64 aux{};
     };
 
+    struct Lrange {
+        i32 from{};
+        i32 to{};
+    };
+
     struct Interval {
         VReg vreg{};
         u8 classValue{};
-        Slice<Lrange> ranges{};
-        Slice<i32> uses{};
+        Vec<Lrange> ranges{};
+        Vec<i32> uses{};
         VReg reg{};
         Interval* parent{};
         Slice<Interval*> children{};
@@ -3063,11 +3104,20 @@ namespace {
         return result;
     }
 
+    struct ParamIndex {
+        i32 index = 0;
+        u32 epoch = 0;
+    };
+
     struct Optimizer {
         Function* f{};
-        Slice<i32> alias{};
+        Vec<i32> alias{};
         Map<ConstKey, i32> consts{};
-        Slice<i32> uses{};
+        Vec<i32> uses{};
+        Vec<u32> incomingSeen;
+        u32 incomingEpoch = 0;
+        Vec<ParamIndex> repairIndex;
+        u32 repairEpoch = 0;
     };
 
     struct MemoryLoop {
@@ -3425,7 +3475,8 @@ namespace {
         return result;
     }
 
-    struct Value {
+    // A power-of-two stride makes paged value indexing a shift and mask.
+    struct alignas(16) Value {
         Op op{};
         ValType typ{};
         u16 nargs{};
@@ -3434,6 +3485,8 @@ namespace {
         i32 aux2{};
         i32 block{};
     };
+
+    static_assert(sizeof(Value) == 32);
 
     static bool operator==(const Value& a, const Value& b) {
         return a.op == b.op && a.typ == b.typ && a.nargs == b.nargs && a.args == b.args && a.aux == b.aux && a.aux2 == b.aux2 && a.block == b.block;
@@ -3868,7 +3921,10 @@ namespace {
         FuncType* typ{};
         PageVec<Value> values{};
         PageVec<i32> pool{};
-        Slice<Block> blocks{};
+        ObjPool blockPool;
+        NodeVec<Block> blocks;
+
+        Function();
     };
 
     struct Import {
@@ -3898,11 +3954,6 @@ namespace {
         String sym{};
         Slice<ValType> params{};
         Slice<ValType> results{};
-    };
-
-    struct Lrange {
-        i32 from{};
-        i32 to{};
     };
 
     static bool operator==(const Lrange& a, const Lrange& b) {
@@ -4107,11 +4158,15 @@ namespace {
 
     struct Block {
         Slice<i32> params{};
-        Slice<i32> instrs{};
+        Vec<i32> instrs{};
         Term term{};
         Slice<i32> preds{};
         bool dead{};
     };
+
+    Function::Function() {
+        blocks.owner = &blockPool;
+    }
 
     static constexpr Int offMem = Int(0LL);
 
@@ -5502,7 +5557,7 @@ namespace {
 
     static bool optimizerIdentity(Optimizer* o, i32 v, Op op, i32 a, i32 b, ValType t);
 
-    static Slice<Edge*> optimizerIncoming(Optimizer* o, i32 b);
+    static Vec<Edge*> optimizerIncoming(Optimizer* o, i32 b);
 
     static bool optimizerIsConst(Optimizer* o, i32 v);
 
@@ -5725,7 +5780,7 @@ namespace {
 
     static Int memX(Amem m);
 
-    static Slice<Lrange> mergeRanges(Slice<Lrange> x, Slice<Lrange> y);
+    static Slice<Lrange> mergeRanges(Span<Lrange> x, Span<Lrange> y);
 
     static Bitset newBitset(Int n);
 
@@ -5740,7 +5795,7 @@ namespace {
     template <typename Data>
     static Tuple2<Int, Int> order2_func(Data data, Int a, Int b, Int* swaps);
 
-    static bool overlap(Slice<Lrange> x, Slice<Lrange> y);
+    static bool overlap(Span<Lrange> x, Span<Lrange> y);
 
     static u8 packedPP(u8 size);
 
@@ -5782,7 +5837,7 @@ namespace {
 
     static u8 scaleBits(u8 s);
 
-    static i32 selfUses(Slice<Edge*> in, Int k, i32 p);
+    static i32 selfUses(Span<Edge*> in, Int k, i32 p);
 
     template <typename Data>
     static void siftDown_func(Data data, Int lo, Int hi, Int first);
@@ -5812,7 +5867,7 @@ namespace {
 
     static String typesPart(Slice<ValType> ts);
 
-    static Slice<i32> unique(Slice<i32> blocks);
+    static Slice<i32> uniquePredecessors(Slice<i32> blocks);
 
     static FloatRange unknownFloatRange();
 
@@ -6076,10 +6131,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     break;
                 }
                 case OpParam: {
-                    Slice<Edge*> incoming = optimizerIncoming((n)->o, (val)->block);
+                    Vec<Edge*> incoming = optimizerIncoming((n)->o, (val)->block);
                     ok = (((val)->block != i32(0LL)) && (length(incoming) > Int(0LL)));
                     {
-                        auto range11 = incoming;
+                        auto range11 = incoming.view();
                         for (Int index12 = 0, rangeEnd13 = length(range11); index12 < rangeEnd13; ++index12) {
                             Edge* e = range11[index12];
                             ok = (ok && floatIntegerNarrowCan(n, (e)->args[(val)->aux], (depth + Int(1LL))));
@@ -6124,16 +6179,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         i32 p = functionNewValue(f, OpParam, I32, b, convert<i64>(index), Span<const i32>({}));
         ((f)->blocks[b]).params = appendValues(((f)->blocks[b]).params, p);
         setMap((n)->values, v, p);
-        Slice<Edge*> incoming = optimizerIncoming((n)->o, b);
+        Vec<Edge*> incoming = optimizerIncoming((n)->o, b);
         {
-            auto range16 = incoming;
+            auto range16 = incoming.view();
             for (Int index17 = 0, rangeEnd18 = length(range16); index17 < rangeEnd18; ++index17) {
                 Edge* e = range16[index17];
                 (e)->args = appendValues((e)->args, i32(-1LL));
             }
         }
         {
-            auto range19 = incoming;
+            auto range19 = incoming.view();
             for (Int index20 = 0, rangeEnd21 = length(range19); index20 < rangeEnd21; ++index20) {
                 Edge* e = range19[index20];
                 i32 arg = (e)->args[(val).aux];
@@ -6413,16 +6468,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void functionComputePreds(Function* f) {
         // Predecessors belong to the graph even when the caller is building
         // a short-lived analysis in another pool.
-        PoolScope graphScope(*f->blocks.array->owner);
+        PoolScope graphScope(*f->blocks.owner);
         {
-            auto range59 = (f)->blocks;
+            auto& range59 = (f)->blocks;
             for (Int index60 = 0, rangeEnd61 = length(range59); index60 < rangeEnd61; ++index60) {
                 Int i = index60;
                 ((f)->blocks[i]).preds = subslice(((f)->blocks[i]).preds, Int(0), Int(0LL));
             }
         }
         {
-            auto range62 = (f)->blocks;
+            auto& range62 = (f)->blocks;
             for (Int index63 = 0, rangeEnd64 = length(range62); index63 < rangeEnd64; ++index63) {
                 Int i = index63;
                 if (((f)->blocks[i]).dead) {
@@ -6440,7 +6495,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static i32 functionNewBlock(Function* f) {
-        (f)->blocks = appendValues((f)->blocks, Block{});
+        f->blocks.pushBack(Block{});
         return convert<i32>((length((f)->blocks) - Int(1LL)));
     }
 
@@ -6939,7 +6994,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     }
                 }
                 {
-                    auto range126 = (src)->instrs;
+                    auto range126 = (src)->instrs.view();
                     for (Int index127 = 0, rangeEnd128 = length(range126); index127 < rangeEnd128; ++index127) {
                         i32 v = range126[index127];
                         {
@@ -6949,7 +7004,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                                 continue;
                             }
                         }
-                        (dst)->instrs = appendValues((dst)->instrs, remap(v));
+                        (dst)->instrs.pushBack(remap(v));
                     }
                 }
                 Term* t = (&((src)->term));
@@ -7019,7 +7074,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
                 Block* blk = (&((f)->blocks[b]));
                 {
-                    auto range142 = (blk)->instrs;
+                    auto range142 = (blk)->instrs.view();
                     for (Int index143 = 0, rangeEnd144 = length(range142); index143 < rangeEnd144; ++index143) {
                         i32 v = range142[index143];
                         {
@@ -7112,7 +7167,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
                 Block* blk = (&((f)->blocks[b]));
                 {
-                    auto range170 = (blk)->instrs;
+                    auto range170 = (blk)->instrs.view();
                     for (Int index171 = 0, rangeEnd172 = length(range170); index171 < rangeEnd172; ++index171) {
                         i32 v = range170[index171];
                         {
@@ -7301,7 +7356,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Slice<i32> stores = {};
         i32 pending = i32(-1LL);
         {
-            auto range208 = ((f)->blocks[(l)->header]).instrs;
+            auto range208 = ((f)->blocks[(l)->header]).instrs.view();
             for (Int index209 = 0, rangeEnd210 = length(range208); index209 < rangeEnd210; ++index209) {
                 i32 v = range208[index209];
                 Value* val = (&((f)->values[v]));
@@ -7415,7 +7470,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         Int index = Int(0LL);
         {
-            auto range227 = ((f)->blocks[(l)->header]).instrs;
+            auto range227 = ((f)->blocks[(l)->header]).instrs.view();
             for (Int index228 = 0, rangeEnd229 = length(range227); index228 < rangeEnd229; ++index228) {
                 i32 v = range227[index228];
                 {
@@ -7496,7 +7551,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         auto emit = [&](Op op, ValType typ, i64 aux, Slice<i32> args) mutable -> i32 {
             i32 v = functionNewValue(f, op, typ, current, aux, args);
-            ((f)->blocks[current]).instrs = appendValues(((f)->blocks[current]).instrs, v);
+            ((f)->blocks[current]).instrs.pushBack(v);
             return v;
         };
         auto constant = [&](ValType typ, i64 x) mutable -> i32 {
@@ -7616,7 +7671,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return ((b >= i32(0LL)) && (l)->members[b]);
         };
         {
-            auto range257 = (f)->blocks;
+            auto& range257 = (f)->blocks;
             for (Int index258 = 0, rangeEnd259 = length(range257); index258 < rangeEnd259; ++index258) {
                 Int b = index258;
                 if (((l)->members[b] || ((f)->blocks[b]).dead)) {
@@ -7624,7 +7679,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
                 Block* blk = (&((f)->blocks[b]));
                 {
-                    auto range260 = (blk)->instrs;
+                    auto range260 = (blk)->instrs.view();
                     for (Int index261 = 0, rangeEnd262 = length(range260); index261 < rangeEnd262; ++index261) {
                         i32 v = range260[index261];
                         {
@@ -7807,7 +7862,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     for (Int index288 = 0, rangeEnd289 = length(range287); index288 < rangeEnd289; ++index288) {
                         i32 b = range287[index288];
                         {
-                            auto range290 = (((l)->f)->blocks[b]).instrs;
+                            auto range290 = (((l)->f)->blocks[b]).instrs.view();
                             for (Int index291 = 0, rangeEnd292 = length(range290); index291 < rangeEnd292; ++index291) {
                                 i32 v = range290[index291];
                                 {
@@ -7922,7 +7977,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             for (Int index309 = 0, rangeEnd310 = length(range308); index309 < rangeEnd310; ++index309) {
                 i32 b = range308[index309];
                 {
-                    auto range311 = ((f)->blocks[b]).instrs;
+                    auto range311 = ((f)->blocks[b]).instrs.view();
                     for (Int index312 = 0, rangeEnd313 = length(range311); index312 < rangeEnd313; ++index312) {
                         i32 v = range311[index312];
                         Value* val = (&((f)->values[v]));
@@ -8004,7 +8059,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         i32 current = guard;
         auto emit = [&](Op op, ValType typ, Slice<i32> args) mutable -> i32 {
             i32 v = functionNewValue(f, op, typ, current, i64(0LL), args);
-            ((f)->blocks[current]).instrs = appendValues(((f)->blocks[current]).instrs, v);
+            ((f)->blocks[current]).instrs.pushBack(v);
             return v;
         };
         auto constant = [&](ValType typ, u64 x) mutable -> i32 {
@@ -8185,7 +8240,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 (l)->copies = appendValues((l)->copies, specialized);
                 i32 choice = functionNewBlock(f);
                 i32 eq = functionNewValue(f, OpEqz, I32, choice, i64(0LL), Span<const i32>({index}));
-                ((f)->blocks[choice]).instrs = appendValues(((f)->blocks[choice]).instrs, eq);
+                ((f)->blocks[choice]).instrs.pushBack(eq);
                 ((f)->blocks[choice]).term = Term{TermIf, eq, sliceOf<Edge>({Edge{specialized, appendSlice(Slice<i32>{}, ((l)->entry).args)}, entry}), {}, {}};
                 entry = Edge{choice, {}};
             }
@@ -8848,13 +8903,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             {
                                 if ((role == roleTemp)) {
                                     intervalAddRange(it, p, (p + i32(2LL)));
-                                    (it)->uses = appendValues((it)->uses, p, (p + i32(1LL)));
+                                    (it)->uses.append(Span<const i32>({p, p + 1}));
                                 } else if (((role & roleDef) != Int(0LL))) {
                                     if ((!(intervalCutAt(it, (p + i32(1LL)))))) {
                                         intervalAddRange(it, (p + i32(1LL)), (p + i32(2LL)));
                                     }
                                     if ((needReg || vRegIsPhys(*(r)))) {
-                                        (it)->uses = appendValues((it)->uses, (p + i32(1LL)));
+                                        (it)->uses.pushBack(p + 1);
                                     }
                                 }
                             switchEnd408:;
@@ -8868,7 +8923,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                                 Interval* it = allocatorInterval(a, (*(r)));
                                 intervalAddRange(it, from, (p + i32(1LL)));
                                 if ((needReg || vRegIsPhys(*(r)))) {
-                                    (it)->uses = appendValues((it)->uses, p);
+                                    (it)->uses.pushBack(p);
                                 }
                             }
                         });
@@ -8969,7 +9024,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static bool allocatorCoalesce(Allocator* a) {
         MFunc* mf = (a)->mf;
         Slice<i32> parent = makeSlice<i32>((mf)->nregs);
-        Slice<Slice<Lrange>> ranges = makeSlice<Slice<Lrange>>((mf)->nregs);
+        Slice<Span<Lrange>> ranges = makeSlice<Span<Lrange>>((mf)->nregs);
         {
             auto range423 = parent;
             for (Int index424 = 0, rangeEnd425 = length(range423); index424 < rangeEnd425; ++index424) {
@@ -8978,7 +9033,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 {
                     Interval* it = (a)->intervals[x];
                     if ((!isNil(it))) {
-                        ranges[x] = (it)->ranges;
+                        ranges[x] = (it)->ranges.view();
                     }
                 }
             }
@@ -9048,7 +9103,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 auto temporary440 = find((c).src);
                 i32 x = temporary439;
                 i32 y = temporary440;
-                if (((((x == y) || isNil(ranges[x])) || isNil(ranges[y])) || overlap(ranges[x], ranges[y]))) {
+                if (((((x == y) || (length(ranges[x]) == 0)) || (length(ranges[y]) == 0)) || overlap(ranges[x], ranges[y]))) {
                     continue;
                 }
                 parent[y] = x;
@@ -11541,7 +11596,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static i32 frontendEmit(Frontend* fe, Op op, ValType t, i64 aux, Span<const i32> args) {
         i32 v = functionNewValue((fe)->f, op, t, (fe)->cur, aux, args);
         Block* blk = (&(((fe)->f)->blocks[(fe)->cur]));
-        (blk)->instrs = appendValues((blk)->instrs, v);
+        (blk)->instrs.pushBack(v);
         return v;
     }
 
@@ -11900,7 +11955,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void frontendResolveAliases(Frontend* fe) {
         Function* f = (fe)->f;
         {
-            auto range648 = (f)->blocks;
+            auto& range648 = (f)->blocks;
             for (Int index649 = 0, rangeEnd650 = length(range648); index649 < rangeEnd650; ++index649) {
                 Int b = index649;
                 Block* blk = (&((f)->blocks[b]));
@@ -11945,7 +12000,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         {
-            auto range660 = (f)->blocks;
+            auto& range660 = (f)->blocks;
             for (Int index661 = 0, rangeEnd662 = length(range660); index661 < rangeEnd662; ++index661) {
                 Int b = index661;
                 Term* t = (&(((f)->blocks[b]).term));
@@ -13075,7 +13130,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
             }
         }
-        (it)->ranges = appendValues((it)->ranges, Lrange{from, to});
+        (it)->ranges.pushBack(Lrange{from, to});
     }
 
     // covered is the first position from p on that it covers.
@@ -13136,7 +13191,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void intervalFinish(Interval* it) {
-        Slice<Lrange> r = (it)->ranges;
+        Span<Lrange> r = (it)->ranges.view();
         {
             auto temporary730 = Int(0LL);
             auto temporary731 = (length(r) - Int(1LL));
@@ -13154,10 +13209,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 r[j] = temporary735;
             }
         }
-        sortValues((it)->uses, [&](Int i, Int j) mutable -> bool {
+        sortValues((it)->uses.view(), [&](Int i, Int j) mutable -> bool {
             return ((it)->uses[i] < (it)->uses[j]);
         });
-        (it)->uses = dedup((it)->uses);
+        Int count = 0;
+        for (usize i = 0; i < it->uses.size(); ++i) {
+            const i32 use = it->uses[i];
+            if (!count || it->uses[usize(count - 1)] != use) {
+                it->uses[usize(count++)] = use;
+            }
+        }
+        it->uses.resize(usize(count));
     }
 
     // intersection returns the first position both intervals cover, or maxPos;
@@ -13224,12 +13286,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         if (((k < length((it)->ranges)) && (((it)->ranges[k]).from < p))) {
-            (child)->ranges = appendValues((child)->ranges, Lrange{p, ((it)->ranges[k]).to});
-            (child)->ranges = appendSlice((child)->ranges, subslice((it)->ranges, (k + Int(1LL)), length((it)->ranges)));
-            (it)->ranges = appendValues(subslice((it)->ranges, Int(0), k, k), Lrange{((it)->ranges[k]).from, p});
+            child->ranges.pushBack(Lrange{p, it->ranges[usize(k)].to});
+            child->ranges.append(subslice(it->ranges.view(), k + 1, length(it->ranges)));
+            it->ranges.resize(usize(k + 1));
+            it->ranges[usize(k)].to = p;
         } else {
-            (child)->ranges = appendSlice((child)->ranges, subslice((it)->ranges, k, length((it)->ranges)));
-            (it)->ranges = subslice((it)->ranges, Int(0), k, k);
+            child->ranges.assign(subslice(it->ranges.view(), k, length(it->ranges)));
+            it->ranges.resize(usize(k));
         }
         if (((it)->cursor > length((it)->ranges))) {
             (it)->cursor = length((it)->ranges);
@@ -13237,8 +13300,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Int u = sortSearch(length((it)->uses), [&](Int i) mutable -> bool {
             return ((it)->uses[i] >= p);
         });
-        (child)->uses = appendSlice((child)->uses, subslice((it)->uses, u, length((it)->uses)));
-        (it)->uses = subslice((it)->uses, Int(0), u, u);
+        child->uses.assign(subslice(it->uses.view(), u, length(it->uses)));
+        it->uses.resize(usize(u));
         Interval* root = it;
         if ((!isNil((it)->parent))) {
             root = (it)->parent;
@@ -13720,7 +13783,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 i32 b = range759[index760];
                 Block* blk = (&((f)->blocks[b]));
                 {
-                    auto range762 = (blk)->instrs;
+                    auto range762 = (blk)->instrs.view();
                     for (Int index763 = 0, rangeEnd764 = length(range762); index763 < rangeEnd764; ++index763) {
                         i32 v = range762[index763];
                         {
@@ -13941,7 +14004,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Block* blk = (&((f)->blocks[((f)->values[call]).block]));
         Slice<i32> out = {};
         {
-            auto range786 = (blk)->instrs;
+            auto range786 = (blk)->instrs.view();
             for (Int index787 = 0, rangeEnd788 = length(range786); index787 < rangeEnd788; ++index787) {
                 Int i = index787;
                 i32 v = range786[index787];
@@ -13949,7 +14012,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     continue;
                 }
                 {
-                    auto range789 = subslice((blk)->instrs, (i + Int(1LL)), length((blk)->instrs));
+                    auto range789 = subslice((blk)->instrs.view(), (i + Int(1LL)), length((blk)->instrs));
                     for (Int index790 = 0, rangeEnd791 = length(range789); index790 < rangeEnd791; ++index790) {
                         i32 w = range789[index790];
                         if (((((f)->values[w]).op != OpExtract) || (functionArgs(f, w)[Int(0LL)] != call))) {
@@ -13983,7 +14046,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             for (Int index796 = 0, rangeEnd797 = length(range795); index796 < rangeEnd797; ++index796) {
                 i32 b = range795[index796];
                 {
-                    auto range798 = ((f)->blocks[b]).instrs;
+                    auto range798 = ((f)->blocks[b]).instrs.view();
                     for (Int index799 = 0, rangeEnd800 = length(range798); index799 < rangeEnd800; ++index799) {
                         i32 v = range798[index799];
                         {
@@ -14633,7 +14696,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     }
                 }
                 {
-                    auto range833 = (blk)->instrs;
+                    auto range833 = (blk)->instrs.view();
                     for (Int index834 = 0, rangeEnd835 = length(range833); index834 < rangeEnd835; ++index834) {
                         i32 v = range833[index834];
                         Value* val = (&((f)->values[v]));
@@ -14860,7 +14923,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 i32 b = range854[index855];
                 Block* blk = (&((f)->blocks[b]));
                 {
-                    auto range857 = (blk)->instrs;
+                    auto range857 = (blk)->instrs.view();
                     for (Int index858 = 0, rangeEnd859 = length(range857); index858 < rangeEnd859; ++index858) {
                         i32 v = range857[index858];
                         {
@@ -17123,7 +17186,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         {
-            auto range1117 = (f)->blocks;
+            auto& range1117 = (f)->blocks;
             for (Int index1118 = 0, rangeEnd1119 = length(range1117); index1118 < rangeEnd1119; ++index1118) {
                 Int b = index1118;
                 Term* t = (&(((f)->blocks[b]).term));
@@ -17161,7 +17224,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         bool changed = false;
         optimizerCountUses(o);
         {
-            auto range1129 = (f)->blocks;
+            auto& range1129 = (f)->blocks;
             for (Int index1130 = 0, rangeEnd1131 = length(range1129); index1130 < rangeEnd1131; ++index1130) {
                 Int b = index1130;
                 Block* blk = (&((f)->blocks[b]));
@@ -17199,7 +17262,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         changed = (optimizerUnreachable(o) || changed);
         bool merged = false;
         {
-            auto range1138 = (f)->blocks;
+            auto& range1138 = (f)->blocks;
             for (Int index1139 = 0, rangeEnd1140 = length(range1138); index1139 < rangeEnd1140; ++index1139) {
                 Int b = index1139;
                 Block* blk = (&((f)->blocks[b]));
@@ -17221,13 +17284,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     }
                 }
                 {
-                    auto range1144 = (blk)->instrs;
+                    auto range1144 = (blk)->instrs.view();
                     for (Int index1145 = 0, rangeEnd1146 = length(range1144); index1145 < rangeEnd1146; ++index1145) {
                         i32 v = range1144[index1145];
                         ((f)->values[v]).block = p;
                     }
                 }
-                (pb)->instrs = appendSlice((pb)->instrs, (blk)->instrs);
+                (pb)->instrs.append((blk)->instrs.view());
                 (pb)->term = (blk)->term;
                 (*(blk)) = Block{{}, {}, {}, {}, true};
                 {
@@ -17280,7 +17343,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
                 Slice<CseKey> added = {};
                 {
-                    auto range1156 = ((f)->blocks[(visit).block]).instrs;
+                    auto range1156 = ((f)->blocks[(visit).block]).instrs.view();
                     for (Int index1157 = 0, rangeEnd1158 = length(range1156); index1157 < rangeEnd1158; ++index1157) {
                         i32 v = range1156[index1157];
                         Value* val = (&((f)->values[v]));
@@ -17368,9 +17431,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void optimizerCountUses(Optimizer* o) {
         Function* f = (o)->f;
-        (o)->uses = makeSlice<i32>(length((f)->values));
+        o->uses.resize(usize(length(f->values)));
+        o->uses.visit([](i32& count) {
+            count = 0;
+        });
         {
-            auto range1167 = (f)->blocks;
+            auto& range1167 = (f)->blocks;
             for (Int index1168 = 0, rangeEnd1169 = length(range1167); index1168 < rangeEnd1169; ++index1168) {
                 Int b = index1168;
                 Block* blk = (&((f)->blocks[b]));
@@ -17378,7 +17444,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     continue;
                 }
                 {
-                    auto range1170 = (blk)->instrs;
+                    auto range1170 = (blk)->instrs.view();
                     for (Int index1171 = 0, rangeEnd1172 = length(range1170); index1171 < rangeEnd1172; ++index1171) {
                         i32 v = range1170[index1171];
                         {
@@ -17427,14 +17493,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 optimizerCountUses(o);
                 bool removed = false;
                 {
-                    auto range1185 = (f)->blocks;
+                    auto& range1185 = (f)->blocks;
                     for (Int index1186 = 0, rangeEnd1187 = length(range1185); index1186 < rangeEnd1187; ++index1186) {
                         Int b = index1186;
                         Block* blk = (&((f)->blocks[b]));
                         if ((blk)->dead) {
                             continue;
                         }
-                        Slice<i32> out = makeSlice<i32>(Int(0LL), length((blk)->instrs));
+                        const usize count = blk->instrs.size();
+                        usize first = count;
                         {
                             Int i = (length((blk)->instrs) - Int(1LL));
                             for (; (i >= Int(0LL)); i--) {
@@ -17450,31 +17517,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                                     removed = true;
                                     continue;
                                 }
-                                out = appendValues(out, v);
+                                blk->instrs[--first] = v;
                             }
                         }
-                        {
-                            auto temporary1191 = Int(0LL);
-                            auto temporary1192 = (length(out) - Int(1LL));
-                            Int i = temporary1191;
-                            Int j = temporary1192;
-                            for (; (i < j); [&]() {
-                                auto temporary1193 = (i + Int(1LL));
-                                auto temporary1194 = (j - Int(1LL));
-                                i = temporary1193;
-                                j = temporary1194;
-                            }()) {
-                                auto temporary1195 = out[j];
-                                auto temporary1196 = out[i];
-                                out[i] = temporary1195;
-                                out[j] = temporary1196;
-                            }
+                        if (first && first != count) {
+                            copySlice(blk->instrs.view(), subslice(blk->instrs.view(), Int(first), Int(count)));
                         }
-                        (blk)->instrs = out;
+                        blk->instrs.resize(count - first);
                     }
                 }
                 {
-                    auto range1197 = (f)->blocks;
+                    auto& range1197 = (f)->blocks;
                     for (Int index1198 = 0, rangeEnd1199 = length(range1197); index1198 < rangeEnd1199; ++index1198) {
                         Int b = index1198;
                         Block* blk = (&((f)->blocks[b]));
@@ -17483,7 +17536,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         }
                         Slice<bool> keep = makeSlice<bool>(length((blk)->params));
                         bool drop = false;
-                        Slice<Edge*> in = optimizerIncoming(o, convert<i32>(b));
+                        Vec<Edge*> in = optimizerIncoming(o, convert<i32>(b));
                         {
                             auto range1200 = (blk)->params;
                             for (Int index1201 = 0, rangeEnd1202 = length(range1200); index1201 < rangeEnd1202; ++index1201) {
@@ -17653,26 +17706,41 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     // incoming lists the edges into block b, each once.
-    static Slice<Edge*> optimizerIncoming(Optimizer* o, i32 b) {
-        Function* f = (o)->f;
-        Slice<Edge*> out = {};
-        Slice<i32> preds = ((f)->blocks[b]).preds;
-        {
-            auto range1220 = preds;
-            for (Int index1221 = 0, rangeEnd1222 = length(range1220); index1221 < rangeEnd1222; ++index1221) {
-                Int i = index1221;
-                i32 q = range1220[index1221];
-                if (slicesContains(subslice(preds, Int(0), i), q)) {
+    static Vec<Edge*> optimizerIncoming(Optimizer* o, i32 b) {
+        Function* f = o->f;
+        Vec<Edge*> out;
+        Slice<i32> preds = f->blocks[b].preds;
+        const bool deduplicate = length(preds) > 1;
+        u32 epoch = 0;
+        if (deduplicate) {
+            const usize before = o->incomingSeen.size();
+            const usize count = usize(length(f->blocks));
+            if (before < count) {
+                o->incomingSeen.resize(count);
+                for (usize i = before; i < count; ++i) {
+                    o->incomingSeen[i] = 0;
+                }
+            }
+            epoch = ++o->incomingEpoch;
+            if (!epoch) {
+                o->incomingSeen.visit([](u32& mark) {
+                    mark = 0;
+                });
+                epoch = ++o->incomingEpoch;
+            }
+        }
+        for (Int i = 0; i < length(preds); ++i) {
+            const i32 q = preds[i];
+            if (deduplicate) {
+                if (o->incomingSeen[usize(q)] == epoch) {
                     continue;
                 }
-                {
-                    auto range1223 = (((f)->blocks[q]).term).edges;
-                    for (Int index1224 = 0, rangeEnd1225 = length(range1223); index1224 < rangeEnd1225; ++index1224) {
-                        Int e = index1224;
-                        if ((((((f)->blocks[q]).term).edges[e]).block == b)) {
-                            out = appendValues(out, (&((((f)->blocks[q]).term).edges[e])));
-                        }
-                    }
+                o->incomingSeen[usize(q)] = epoch;
+            }
+            auto edges = f->blocks[q].term.edges;
+            for (Int e = 0; e < length(edges); ++e) {
+                if (edges[e].block == b) {
+                    out.pushBack(&edges[e]);
                 }
             }
         }
@@ -17811,48 +17879,63 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void optimizerRepair(Optimizer* o, i32 h, Map<i32, Bypass> bypasses) {
         Function* f = (o)->f;
         Slice<i32> params = appendSlice(Slice<i32>{}, ((f)->blocks[h]).params);
-        Map<i32, Int> index = mapOf<i32, Int>({});
-        {
-            auto range1247 = params;
-            for (Int index1248 = 0, rangeEnd1249 = length(range1247); index1248 < rangeEnd1249; ++index1248) {
-                Int j = index1248;
-                i32 p = range1247[index1248];
-                setMap(index, p, j);
+        u32 epoch = ++o->repairEpoch;
+        if (!epoch) {
+            o->repairIndex.visit([](ParamIndex& entry) {
+                entry.epoch = 0;
+            });
+            epoch = ++o->repairEpoch;
+        }
+        if (length(params)) {
+            const usize before = o->repairIndex.size();
+            const usize count = usize(length(f->values));
+            if (before < count) {
+                o->repairIndex.resize(count);
+                for (usize i = before; i < count; ++i) {
+                    o->repairIndex[i] = {};
+                }
+            }
+            for (Int j = 0; j < length(params); ++j) {
+                o->repairIndex[usize(params[j])] = {i32(j), epoch};
             }
         }
+        auto paramIndex = [&](i32 v) -> i32 {
+            if (Uint(v) >= o->repairIndex.size()) {
+                return -1;
+            }
+            const ParamIndex entry = o->repairIndex[usize(v)];
+            return entry.epoch == epoch ? entry.index : -1;
+        };
         Map<Array<i32, 2>, i32> memo = mapOf<Array<i32, 2>, i32>({});
         Map<i32, Slice<i32>> preds = mapOf<i32, Slice<i32>>({});
-        Fn<i32(i32, Int)> value = {};
-        auto seen = [&](i32 b, i32 v) mutable -> i32 {
+        auto seen = [&](auto& recur, i32 b, i32 v) -> i32 {
             v = optimizerResolve(o, v);
             {
-                auto temporary1250 = lookupMap(index, v);
-                Int j = temporary1250.v0;
-                bool ok = temporary1250.v1;
+                i32 j = paramIndex(v);
+                bool ok = j >= 0;
                 if (ok) {
-                    return value(b, j);
+                    return recur(recur, b, j);
                 }
             }
             return v;
         };
-        value = [&](i32 b, Int j) mutable -> i32 {
+        auto value = [&](auto& recur, i32 b, Int j) -> i32 {
             if ((b == h)) {
                 return params[j];
             }
-            {
-                auto temporary1251 = lookupMap(bypasses, b);
-                Bypass d = temporary1251.v0;
-                bool ok = temporary1251.v1;
-                if (ok) {
-                    return seen((d).pred, (d).args[j]);
-                }
-            }
             Array<i32, 2> key = Array<i32, 2>{{b, convert<i32>(j)}};
             {
-                auto temporary1252 = lookupMap(memo, key);
-                i32 v = temporary1252.v0;
-                bool ok = temporary1252.v1;
-                if (ok) {
+                auto found = lookupMap(memo, key);
+                if (found.v1) {
+                    return found.v0;
+                }
+            }
+            {
+                auto found = lookupMap(bypasses, b);
+                if (found.v1) {
+                    const Bypass d = found.v0;
+                    const i32 v = seen(recur, d.pred, d.args[j]);
+                    setMap(memo, key, v);
                     return v;
                 }
             }
@@ -17860,7 +17943,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             Slice<i32> from = temporary1253.v0;
             bool ok = temporary1253.v1;
             if ((!(ok))) {
-                from = unique(((f)->blocks[b]).preds);
+                from = uniquePredecessors(((f)->blocks[b]).preds);
                 setMap(preds, b, from);
             }
             if ((length(from) == Int(0LL))) {
@@ -17869,7 +17952,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 return v;
             }
             if ((length(from) == Int(1LL))) {
-                i32 v = value(from[Int(0LL)], j);
+                i32 v = recur(recur, from[Int(0LL)], j);
                 setMap(memo, key, v);
                 return v;
             }
@@ -17904,7 +17987,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         for (Int index1264 = 0, rangeEnd1265 = length(range1263); index1264 < rangeEnd1265; ++index1264) {
                             Int i = index1264;
                             if ((((((f)->blocks[q]).term).edges[i]).block == b)) {
-                                i32 arg = value(q, j);
+                                i32 arg = recur(recur, q, j);
                                 ((((f)->blocks[q]).term).edges[i]).args[at] = arg;
                             }
                         }
@@ -17923,12 +18006,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 bool isBypass = temporary1266.v1;
                 auto at = [&](i32 v) mutable -> i32 {
                     if (isBypass) {
-                        return seen((bypasses[b]).pred, v);
+                        return seen(value, (bypasses[b]).pred, v);
                     }
-                    return seen(b, v);
+                    return seen(value, b, v);
                 };
                 {
-                    auto range1267 = ((f)->blocks[b]).instrs;
+                    auto range1267 = ((f)->blocks[b]).instrs.view();
                     for (Int index1268 = 0, rangeEnd1269 = length(range1267); index1268 < rangeEnd1269; ++index1268) {
                         i32 v = range1267[index1268];
                         Span<i32> args = functionArgs(f, v);
@@ -17938,8 +18021,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                                 Int i = index1271;
                                 i32 a = range1270[index1271];
                                 {
-                                    auto temporary1273 = lookupMap(index, optimizerResolve(o, a));
-                                    bool ok = temporary1273.v1;
+                                    bool ok = paramIndex(optimizerResolve(o, a)) >= 0;
                                     if (ok) {
                                         args[i] = at(a);
                                     }
@@ -17980,7 +18062,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void optimizerReplace(Optimizer* o, i32 v, i32 w) {
         {
             for (; (length((o)->alias) < length(((o)->f)->values));) {
-                (o)->alias = appendValues((o)->alias, i32(-1LL));
+                o->alias.pushBack(-1);
             }
         }
         if ((v != w)) {
@@ -18049,7 +18131,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                                 }
                                 bool pure = true;
                                 {
-                                    auto range1289 = (body)->instrs;
+                                    auto range1289 = (body)->instrs.view();
                                     for (Int index1290 = 0, rangeEnd1291 = length(range1289); index1290 < rangeEnd1291; ++index1290) {
                                         i32 v = range1289[index1290];
                                         Op op = ((f)->values[v]).op;
@@ -18093,11 +18175,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                                     no = temporary1299;
                                 }
                                 {
-                                    auto range1300 = (body)->instrs;
+                                    auto range1300 = (body)->instrs.view();
                                     for (Int index1301 = 0, rangeEnd1302 = length(range1300); index1301 < rangeEnd1302; ++index1301) {
                                         i32 v = range1300[index1301];
                                         ((f)->values[v]).block = b;
-                                        (blk)->instrs = appendValues((blk)->instrs, v);
+                                        (blk)->instrs.pushBack(v);
                                     }
                                 }
                                 Slice<i32> args = makeSlice<i32>(length(yes));
@@ -18109,7 +18191,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                                         args[j] = x;
                                         if ((x != no[j])) {
                                             i32 v = functionNewValue(f, OpSelect, ((f)->values[x]).typ, b, i64(0LL), Span<const i32>({(t).value, x, no[j]}));
-                                            (blk)->instrs = appendValues((blk)->instrs, v);
+                                            (blk)->instrs.pushBack(v);
                                             args[j] = v;
                                         }
                                     }
@@ -18150,7 +18232,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         bool changed = false;
         optimizerCountUses(o);
         {
-            auto range1306 = (f)->blocks;
+            auto& range1306 = (f)->blocks;
             for (Int index1307 = 0, rangeEnd1308 = length(range1306); index1307 < rangeEnd1308; ++index1307) {
                 Int b = index1307;
                 Block* blk = (&((f)->blocks[b]));
@@ -18158,7 +18240,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     continue;
                 }
                 {
-                    auto range1309 = (blk)->instrs;
+                    auto range1309 = (blk)->instrs.view();
                     for (Int index1310 = 0, rangeEnd1311 = length(range1309); index1310 < rangeEnd1311; ++index1310) {
                         i32 v = range1309[index1310];
                         if (optimizerSimplifyValue(o, v)) {
@@ -18419,7 +18501,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Function* f = (o)->f;
         bool changed = false;
         {
-            auto range1336 = (f)->blocks;
+            auto& range1336 = (f)->blocks;
             for (Int index1337 = 0, rangeEnd1338 = length(range1336); index1337 < rangeEnd1338; ++index1337) {
                 Int b = index1337;
                 Block* blk = (&((f)->blocks[b]));
@@ -18428,7 +18510,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
                 Slice<bool> keep = {};
                 bool removed = false;
-                Slice<Edge*> in = optimizerIncoming(o, convert<i32>(b));
+                Vec<Edge*> in = optimizerIncoming(o, convert<i32>(b));
                 {
                     auto range1339 = (blk)->params;
                     for (Int index1340 = 0, rangeEnd1341 = length(range1339); index1340 < rangeEnd1341; ++index1340) {
@@ -18437,7 +18519,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         i32 same = i32(-1LL);
                         bool trivial = true;
                         {
-                            auto range1342 = in;
+                            auto range1342 = in.view();
                             for (Int index1343 = 0, rangeEnd1344 = length(range1342); index1343 < rangeEnd1344; ++index1343) {
                                 Edge* e = range1342[index1343];
                                 i32 a = optimizerResolve(o, (e)->args[k]);
@@ -18581,7 +18663,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         bool changed = false;
         {
-            auto range1355 = (f)->blocks;
+            auto& range1355 = (f)->blocks;
             for (Int index1356 = 0, rangeEnd1357 = length(range1355); index1356 < rangeEnd1357; ++index1356) {
                 Int b = index1356;
                 if (((!(reached[b])) && (!(((f)->blocks[b]).dead)))) {
@@ -19129,7 +19211,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static Function* buildFunction(Module* m, Int index) {
         Func* fn = (&((m)->funcs[index]));
-        Function* f = activePool->make<Function>(Function{m, index, (&((m)->types[(fn)->typ])), {}, {}, {}});
+        Function* f = activePool->make<Function>();
+        f->module = m;
+        f->index = index;
+        f->typ = &m->types[fn->typ];
         Frontend* fe = activePool->make<Frontend>(Frontend{m, f, Reader{(fn)->body, {}}, {}, {}, {}, {}, {}, {}, {}, {}, {}, mapOf<ConstKey, i32>({}), mapOf<i32, Slice<i32>>({}), {}});
         frontendRun(fe);
         return f;
@@ -19190,7 +19275,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             for (Int index1413 = 0, rangeEnd1414 = length(range1412); index1413 < rangeEnd1414; ++index1413) {
                 i32 b = range1412[index1413];
                 {
-                    auto range1415 = ((f)->blocks[b]).instrs;
+                    auto range1415 = ((f)->blocks[b]).instrs.view();
                     for (Int index1416 = 0, rangeEnd1417 = length(range1415); index1416 < rangeEnd1417; ++index1416) {
                         i32 v = range1415[index1416];
                         Value* val = (&((f)->values[v]));
@@ -19291,7 +19376,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         i32 b = range1436[index1437];
                         entry(b);
                         {
-                            auto range1439 = ((f)->blocks[b]).instrs;
+                            auto range1439 = ((f)->blocks[b]).instrs.view();
                             for (Int index1440 = 0, rangeEnd1441 = length(range1439); index1440 < rangeEnd1441; ++index1440) {
                                 i32 v = range1439[index1440];
                                 Value* val = (&((f)->values[v]));
@@ -19854,9 +19939,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (((((l)->exit < i32(0LL)) || (length((l)->order) > Int(48LL))) || (insts > Int(400LL)))) {
             return {};
         }
-        if ((multipleExits && memoryLoopHasLiveOut(l))) {
-            return {};
-        }
         bool outsidePred = false;
         {
             auto range1498 = ((f)->blocks[(l)->exit]).preds;
@@ -19864,9 +19946,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 i32 p = range1498[index1499];
                 outsidePred = (outsidePred || (!((l)->members[p])));
             }
-        }
-        if ((outsidePred && memoryLoopHasLiveOut(l))) {
-            return {};
         }
         Term* t = (&(((f)->blocks[(l)->latch]).term));
         if (((t)->kind != TermIf)) {
@@ -19984,6 +20063,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     setMap((l)->induction, p, LoopSpan{((l)->entry).args[j], u64(1LL), convert<u64>(step), {}, {}, {}, {}, {}, true});
                 }
             }
+        }
+        // Only countable loops need the whole-function live-out scan.
+        if ((multipleExits || outsidePred) && memoryLoopHasLiveOut(l)) {
+            return {};
         }
         (l)->unsignedValue = activePool->make<UnsignedRanges>(UnsignedRanges{f, makeSlice<UnsignedRange>(length((f)->values)), makeSlice<bool>(length((f)->values))});
         return l;
@@ -20595,7 +20678,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     }
                 }
                 {
-                    auto range1569 = ((f)->blocks[b]).instrs;
+                    auto range1569 = ((f)->blocks[b]).instrs.view();
                     for (Int index1570 = 0, rangeEnd1571 = length(range1569); index1570 < rangeEnd1571; ++index1570) {
                         i32 v = range1569[index1570];
                         if ((!((l)->deferred[v]))) {
@@ -20710,7 +20793,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // mergeRanges is the sorted union of two lists of ranges that do not
     // overlap.
-    static Slice<Lrange> mergeRanges(Slice<Lrange> x, Slice<Lrange> y) {
+    static Slice<Lrange> mergeRanges(Span<Lrange> x, Span<Lrange> y) {
         Slice<Lrange> out = makeSlice<Lrange>(Int(0LL), (length(x) + length(y)));
         auto temporary1575 = Int(0LL);
         auto temporary1576 = Int(0LL);
@@ -20880,7 +20963,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     // overlap tells whether two sorted lists of ranges share a position.
-    static bool overlap(Slice<Lrange> x, Slice<Lrange> y) {
+    static bool overlap(Span<Lrange> x, Span<Lrange> y) {
         auto temporary1588 = Int(0LL);
         auto temporary1589 = Int(0LL);
         Int i = temporary1588;
@@ -21280,7 +21363,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // selfUses counts the uses of parameter p of block b that are its own
     // argument on the edges in, into b.
-    static i32 selfUses(Slice<Edge*> in, Int k, i32 p) {
+    static i32 selfUses(Span<Edge*> in, Int k, i32 p) {
         i32 n = i32(0LL);
         {
             auto range1614 = in;
@@ -21637,15 +21720,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     // unique is a list of blocks without repeats, in order.
-    static Slice<i32> unique(Slice<i32> blocks) {
+    // functionComputePreds emits edges grouped by source block. Repair only
+    // changes operands, so adjacent deduplication preserves predecessor order.
+    static Slice<i32> uniquePredecessors(Slice<i32> blocks) {
         Slice<i32> out = {};
-        {
-            auto range1641 = blocks;
-            for (Int index1642 = 0, rangeEnd1643 = length(range1641); index1642 < rangeEnd1643; ++index1642) {
-                i32 b = range1641[index1642];
-                if ((!(slicesContains(out, b)))) {
-                    out = appendValues(out, b);
-                }
+        for (Int i = 0; i < length(blocks); ++i) {
+            const i32 block = blocks[i];
+            if (!length(out) || out[length(out) - 1] != block) {
+                out = appendValues(out, block);
             }
         }
         return out;
@@ -22310,6 +22392,12 @@ namespace {
         for (u32 i = 0; i < 1000; ++i) {
             require(small[i] == i, "small vector contents");
         }
+        while (small.size() < small.capacity()) {
+            small.pushBack(17);
+        }
+        const u32 first = small[0];
+        small.pushBack(small[0]);
+        require(small.back() == first && small[0] == first, "small vector aliased growth");
         PageVec<u64> large;
         for (u64 i = 0; i < 50000; ++i) {
             large.pushBack(i * 7);
@@ -22385,6 +22473,60 @@ namespace {
         }
         int count = 0;
         int order[3]{};
+        {
+            ObjPool pool;
+            PoolScope scope(pool);
+            auto map = makeMap<i32, i32>();
+            for (i32 i = 0; i < 4096; ++i) {
+                setMap(map, i, i * 3);
+            }
+            for (i32 i = 0; i < 4096; i += 2) {
+                eraseMap(map, i);
+            }
+            require(length(map) == 2048, "map erase count");
+            for (i32 i = 1; i < 4096; i += 2) {
+                setMap(map, i, -i);
+            }
+            require(length(map) == 2048, "map update count");
+            for (i32 i = 0; i < 8192; i += 2) {
+                setMap(map, i, i * 7);
+            }
+            require(length(map) == 6144, "map reinsert count");
+            for (i32 i = 0; i < 8192; ++i) {
+                auto found = lookupMap(map, i);
+                const bool present = i < 4096 || i % 2 == 0;
+                require(found.v1 == present, "map membership after reuse");
+                if (present) {
+                    require(found.v0 == (i % 2 == 0 ? i * 7 : -i), "map value after reuse");
+                }
+            }
+        }
+        {
+            ObjPool pool;
+            PoolScope scope(pool);
+            auto* f = pool.make<Function>();
+            auto* o = pool.make<Optimizer>();
+            o->f = f;
+            for (int i = 0; i < 4; ++i) {
+                f->blocks.pushBack(Block{});
+            }
+            f->blocks[0].term.edges = sliceOf<Edge>({Edge{3, {}}, Edge{1, {}}, Edge{3, {}}});
+            f->blocks[1].term.edges = sliceOf<Edge>({Edge{3, {}}});
+            f->blocks[2].term.edges = sliceOf<Edge>({Edge{3, {}}});
+            f->blocks[3].preds = sliceOf<i32>({2, 0, 2, 1, 0});
+            for (int pass = 0; pass < 3; ++pass) {
+                if (pass == 1) {
+                    o->incomingEpoch = 0xffffffffu;
+                } else if (pass == 2) {
+                    f->blocks.pushBack(Block{});
+                }
+                auto incoming = optimizerIncoming(o, 3);
+                require(incoming.size() == 4, "incoming parallel edges");
+                require(incoming[0] == &f->blocks[2].term.edges[0], "incoming first predecessor");
+                require(incoming[1] == &f->blocks[0].term.edges[0] && incoming[2] == &f->blocks[0].term.edges[2], "incoming edge order");
+                require(incoming[3] == &f->blocks[1].term.edges[0], "incoming last predecessor");
+            }
+        }
         {
             ObjPool pool;
             for (int i = 0; i < 3; ++i) {
