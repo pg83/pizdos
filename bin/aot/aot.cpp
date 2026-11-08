@@ -572,11 +572,15 @@ void Buffer::reserve(usize size) {
     }
     const usize need = checkedAdd(size, sizeof(Header));
     const usize bytes = allocationBytes(need);
+    auto* before = header();
+    const usize used = before->used;
     auto* next = static_cast<Header*>(heap.allocate(bytes));
-    *next = {header()->used, bytes};
-    copyBytes(next + 1, storage, header()->used);
-    if (header() != &emptyBuffer) {
-        heap.release(header());
+    *next = {used, bytes};
+    if (used) {
+        copyBytes(next + 1, storage, used);
+    }
+    if (before != &emptyBuffer) {
+        heap.release(before);
     }
     storage = next + 1;
 }
@@ -1090,8 +1094,8 @@ namespace {
         {
         }
 
-        void initialize(Int size) {
-            require(size >= 0 && Uint(size) <= 0x7fffffff, "array too large");
+        void initialize(Int size, Int clearFrom = 0) {
+            require(size >= 0 && Uint(size) <= 0x7fffffff && clearFrom >= 0 && clearFrom <= size, "array too large");
             count = size;
             paged = Uint(size) * sizeof(T) > pageBytes - sizeof(Buffer::Header);
             if (paged) {
@@ -1101,8 +1105,30 @@ namespace {
                 small.resize(usize(size));
                 contiguous = small.data();
             }
-            for (Int i = 0; i < size; ++i) {
-                (*this)[i] = T{};
+            auto reset = [](T* values, usize count) {
+                if (!count) {
+                    return;
+                }
+                if constexpr (__is_integral(T) || __is_pointer(T) || __is_floating_point(T) || __is_enum(T)) {
+                    zeroBytes(values, count * sizeof(T));
+                } else {
+                    for (usize i = 0; i < count; ++i) {
+                        values[i] = T{};
+                    }
+                }
+            };
+            if (paged) {
+                usize at = usize(clearFrom);
+                while (at < usize(size)) {
+                    const usize offset = at % PageVec<T>::itemsPerPage;
+                    const usize available = PageVec<T>::itemsPerPage - offset;
+                    const usize remaining = usize(size) - at;
+                    const usize take = remaining < available ? remaining : available;
+                    reset(pages.pages.data()[at / PageVec<T>::itemsPerPage] + offset, take);
+                    at += take;
+                }
+            } else {
+                reset(contiguous + clearFrom, usize(size - clearFrom));
             }
         }
 
@@ -1534,7 +1560,9 @@ namespace {
         if (space < need) {
             space = need;
         }
-        Slice<T> result = makeSlice<T>(s.count, space);
+        auto* data = owner->make<ArrayData<T>>(owner);
+        data->initialize(space, s.count);
+        Slice<T> result{data, 0, s.count, u32(space)};
         copySlice(Span<T>(result), Span<const T>(s));
         s = result;
     }
@@ -3643,11 +3671,11 @@ namespace {
         Slice<Slice<i32>> instPos{};
         Slice<Bitset> liveIn{};
         Slice<Bitset> liveOut{};
-        Slice<Interval*> intervals{};
+        Vec<Interval*> intervals{};
         Array<Interval*, 32> fixed{};
         IntervalQueue unhandled{};
-        Slice<Interval*> active{};
-        Slice<Interval*> inactive{};
+        Vec<Interval*> active{};
+        Vec<Interval*> inactive{};
         Slice<i32> slots{};
         i32 nslots{};
         Slice<i32> posBlock{};
@@ -5951,7 +5979,24 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static Slice<VReg> allocXMMs{};
 
-    static Map<Op, AluOp> aluOps{};
+    static AluOp aluOpcode(Op op) {
+        switch (op) {
+            case OpAdd:
+                return aluAdd;
+            case OpSub:
+                return aluSub;
+            case OpAnd:
+                return aluAnd;
+            case OpOr:
+                return aluOr;
+            case OpXor:
+                return aluXor;
+            case OpMul:
+                return aluImul;
+            default:
+                return {};
+        }
+    }
 
     static Slice<VReg> argGPRs{};
 
@@ -5961,7 +6006,32 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static Slice<VReg> callerSaved{};
 
-    static Map<FAluOp, u8> fAluOpcodes{};
+    static u8 floatOpcode(FAluOp op) {
+        switch (op) {
+            case fAdd:
+                return 88;
+            case fSub:
+                return 92;
+            case fMul:
+                return 89;
+            case fDiv:
+                return 94;
+            case fMin:
+                return 93;
+            case fMax:
+                return 95;
+            case fAnd:
+                return 84;
+            case fAndn:
+                return 85;
+            case fOr:
+                return 86;
+            case fXor:
+                return 87;
+            default:
+                return {};
+        }
+    }
 
     static Array<Op, 7> floatUnary{};
 
@@ -5971,7 +6041,32 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static Array<u8, 10> intCC{};
 
-    static Map<Op, Op> invertCmp{};
+    static Tuple2<Op, bool> invertComparison(Op op) {
+        switch (op) {
+            case OpEq:
+                return {OpNe, true};
+            case OpNe:
+                return {OpEq, true};
+            case OpLtS:
+                return {OpGeS, true};
+            case OpGeS:
+                return {OpLtS, true};
+            case OpLtU:
+                return {OpGeU, true};
+            case OpGeU:
+                return {OpLtU, true};
+            case OpGtS:
+                return {OpLeS, true};
+            case OpLeS:
+                return {OpGtS, true};
+            case OpGtU:
+                return {OpLeU, true};
+            case OpLeU:
+                return {OpGtU, true};
+            default:
+                return {0, false};
+        }
+    }
 
     static Slice<VReg> memmoveClobbers{};
 
@@ -5983,14 +6078,31 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static Slice<VReg> resultXMMs{};
 
-    static Map<ValType, u8> typeLetters{};
+    static Tuple2<u8, bool> typeLetter(ValType op) {
+        switch (op) {
+            case I32:
+                return {'i', true};
+            case I64:
+                return {'I', true};
+            case F32:
+                return {'f', true};
+            case F64:
+                return {'F', true};
+            case V128:
+                return {'v', true};
+            case FuncRef:
+                return {'r', true};
+            case ExternRef:
+                return {'e', true};
+            default:
+                return {0, false};
+        }
+    }
 
     static void initializeCompilerTables() {
         allocGPRs = sliceOf<VReg>({RAX, RCX, RDX, RSI, RDI, R8, R9, RBX, R10, R11, R12});
 
         allocXMMs = xmmRange(Int(15LL));
-
-        aluOps = mapOf<Op, AluOp>({{OpAdd, aluAdd}, {OpSub, aluSub}, {OpAnd, aluAnd}, {OpOr, aluOr}, {OpXor, aluXor}, {OpMul, aluImul}});
 
         argGPRs = sliceOf<VReg>({RBX, RCX, RDI, RSI, R8, R9});
 
@@ -6000,8 +6112,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
         callerSaved = appendSlice(sliceOf<VReg>({RAX, RBX, RCX, RDX, RSI, RDI, R8, R9}), xmmRange(Int(15LL)));
 
-        fAluOpcodes = mapOf<FAluOp, u8>({{fAdd, u8(88LL)}, {fSub, u8(92LL)}, {fMul, u8(89LL)}, {fDiv, u8(94LL)}, {fMin, u8(93LL)}, {fMax, u8(95LL)}, {fAnd, u8(84LL)}, {fAndn, u8(85LL)}, {fOr, u8(86LL)}, {fXor, u8(87LL)}});
-
         floatUnary = Array<Op, 7>{{OpFAbs, OpFNeg, OpFCeil, OpFFloor, OpFTrunc, OpFNearest, OpFSqrt}};
 
         goFloatRegs = xmmRange(Int(15LL));
@@ -6009,8 +6119,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         goIntRegs = sliceOf<VReg>({RAX, RBX, RCX, RDI, RSI, R8, R9, R10, R11});
 
         intCC = Array<u8, 10>{{ccE, ccNE, ccL, ccB, ccG, ccA, ccLE, ccBE, ccGE, ccAE}};
-
-        invertCmp = mapOf<Op, Op>({{OpEq, OpNe}, {OpNe, OpEq}, {OpLtS, OpGeS}, {OpGeS, OpLtS}, {OpLtU, OpGeU}, {OpGeU, OpLtU}, {OpGtS, OpLeS}, {OpLeS, OpGtS}, {OpGtU, OpLeU}, {OpLeU, OpGtU}});
 
         memmoveClobbers = sliceOf<VReg>({RAX, RCX, RSI, RDI});
 
@@ -6021,8 +6129,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         resultGPRs = sliceOf<VReg>({RAX, RBX, RCX, RDI, RSI, R8, R9});
 
         resultXMMs = xmmRange(Int(15LL));
-
-        typeLetters = mapOf<ValType, u8>({{I32, u8(105LL)}, {I64, u8(73LL)}, {F32, u8(102LL)}, {F64, u8(70LL)}, {V128, u8(118LL)}, {FuncRef, u8(114LL)}, {ExternRef, u8(101LL)}});
     }
 
     static AddressExpression addressExpressionsOf(AddressExpressions* r, i32 v, Int depth) {
@@ -7637,7 +7743,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             condition = emit(OpAnd, I32, i64(0LL), sliceOf<i32>({condition, positive}));
         }
         {
-            auto range251 = sliceOf<i32>({src, dst});
+            auto range251 = Array<i32, 2>{{src, dst}};
             for (Int index252 = 0, rangeEnd253 = length(range251); index252 < rangeEnd253; ++index252) {
                 i32 addr = range251[index252];
                 i32 end = emit(OpAdd, I64, i64(0LL), sliceOf<i32>({emit(OpExtendU, I64, i64(0LL), sliceOf<i32>({addr})), lengthValue}));
@@ -8162,7 +8268,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             i32 end = constant(I64, (bound).offset);
             i32 begin = constant(I64, (bound).lo);
             {
-                auto range329 = sliceOf<Array<i64, 2>>({Array<i64, 2>{{convert<i64>((bound).base), convert<i64>((bound).mul)}}, Array<i64, 2>{{convert<i64>((bound).base2), convert<i64>((bound).mul2)}}});
+                auto range329 = Array<Array<i64, 2>, 2>{{Array<i64, 2>{{convert<i64>((bound).base), convert<i64>((bound).mul)}}, Array<i64, 2>{{convert<i64>((bound).base2), convert<i64>((bound).mul2)}}}};
                 for (Int index330 = 0, rangeEnd331 = length(range329); index330 < rangeEnd331; ++index330) {
                     Array<i64, 2> term = range329[index330];
                     if ((term[Int(1LL)] == i64(0LL))) {
@@ -8689,41 +8795,44 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void allocatorAdvance(Allocator* a, i32 pos) {
-        Slice<Interval*> active = subslice((a)->active, Int(0), Int(0LL));
-        Slice<Interval*> moved = {};
+        Span<Interval*> active = subslice(a->active.view(), 0, 0);
+        Interval* moved[32];
+        usize movedCount = 0;
         {
-            auto range374 = (a)->active;
+            auto range374 = (a)->active.view();
             for (Int index375 = 0, rangeEnd376 = length(range374); index375 < rangeEnd376; ++index375) {
                 Interval* it = range374[index375];
                 {
                     if (intervalEndsBefore(it, pos)) {
                     } else if ((!(intervalCoversAt(it, pos)))) {
-                        moved = appendValues(moved, it);
+                        require(movedCount < 32, "too many active register intervals");
+                        moved[movedCount++] = it;
                     } else {
-                        active = appendValues(active, it);
+                        active[active.count++] = it;
                     }
                 switchEnd378:;
                 }
             }
         }
-        (a)->active = active;
-        Slice<Interval*> inactive = subslice((a)->inactive, Int(0), Int(0LL));
+        a->active.resize(active.count);
+        Span<Interval*> inactive = subslice(a->inactive.view(), 0, 0);
         {
-            auto range379 = (a)->inactive;
+            auto range379 = (a)->inactive.view();
             for (Int index380 = 0, rangeEnd381 = length(range379); index380 < rangeEnd381; ++index380) {
                 Interval* it = range379[index380];
                 {
                     if (intervalEndsBefore(it, pos)) {
                     } else if (intervalCoversAt(it, pos)) {
-                        (a)->active = appendValues((a)->active, it);
+                        a->active.pushBack(it);
                     } else {
-                        inactive = appendValues(inactive, it);
+                        inactive[inactive.count++] = it;
                     }
                 switchEnd383:;
                 }
             }
         }
-        (a)->inactive = appendSlice(inactive, moved);
+        a->inactive.resize(inactive.count);
+        a->inactive.append(Span<Interval* const>(moved, movedCount));
     }
 
     static void allocatorAllocateBlocked(Allocator* a, Interval* cur) {
@@ -8739,7 +8848,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         i32 start = intervalStart(cur);
         {
-            auto range387 = (a)->active;
+            auto range387 = (a)->active.view();
             for (Int index388 = 0, rangeEnd389 = length(range387); index388 < rangeEnd389; ++index388) {
                 Interval* it = range387[index388];
                 if ((it)->fixed) {
@@ -8757,7 +8866,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         {
-            auto range390 = (a)->inactive;
+            auto range390 = (a)->inactive.view();
             for (Int index391 = 0, rangeEnd392 = length(range390); index391 < rangeEnd392; ++index391) {
                 Interval* it = range390[index391];
                 i32 x = intervalIntersection(it, cur);
@@ -8812,31 +8921,31 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             allocatorAddUnhandled(a, intervalSplit(cur, at));
         }
-        Slice<Interval*> active = subslice((a)->active, Int(0), Int(0LL));
+        Span<Interval*> active = subslice(a->active.view(), 0, 0);
         {
-            auto range396 = (a)->active;
+            auto range396 = (a)->active.view();
             for (Int index397 = 0, rangeEnd398 = length(range396); index397 < rangeEnd398; ++index397) {
                 Interval* it = range396[index397];
                 if ((((it)->reg != reg) || (it)->fixed)) {
-                    active = appendValues(active, it);
+                    active[active.count++] = it;
                     continue;
                 }
                 allocatorEvict(a, it, start);
             }
         }
-        (a)->active = active;
-        Slice<Interval*> inactive = subslice((a)->inactive, Int(0), Int(0LL));
+        a->active.resize(active.count);
+        Span<Interval*> inactive = subslice(a->inactive.view(), 0, 0);
         {
-            auto range399 = (a)->inactive;
+            auto range399 = (a)->inactive.view();
             for (Int index400 = 0, rangeEnd401 = length(range399); index400 < rangeEnd401; ++index400) {
                 Interval* it = range399[index400];
                 if ((((it)->reg != reg) || (it)->fixed)) {
-                    inactive = appendValues(inactive, it);
+                    inactive[inactive.count++] = it;
                     continue;
                 }
                 i32 x = intervalIntersection(it, cur);
                 if ((x == maxPos)) {
-                    inactive = appendValues(inactive, it);
+                    inactive[inactive.count++] = it;
                     continue;
                 }
                 i32 lo = (intervalPrevUse(it, x) + i32(1LL));
@@ -8853,7 +8962,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         allocatorEvict(a, it, start);
                         continue;
                     }
-                    inactive = appendValues(inactive, it);
+                    inactive[inactive.count++] = it;
                     continue;
                 }
                 i32 cut = allocatorSplitPos(a, (start + i32(1LL)), x);
@@ -8861,15 +8970,18 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     compilerError(String("internal error: no split position for %s before %d"));
                 }
                 allocatorAddUnhandled(a, intervalSplit(cur, cut));
-                inactive = appendValues(inactive, it);
+                inactive[inactive.count++] = it;
             }
         }
-        (a)->inactive = inactive;
+        a->inactive.resize(inactive.count);
     }
 
     static void allocatorBuildIntervals(Allocator* a) {
         MFunc* mf = (a)->mf;
-        (a)->intervals = makeSlice<Interval*>((mf)->nregs);
+        a->intervals.resize(usize(mf->nregs));
+        a->intervals.visit([](Interval*& interval) {
+            interval = nullptr;
+        });
         {
             Int i = (length((a)->order) - Int(1LL));
             for (; (i >= Int(0LL)); i--) {
@@ -8942,7 +9054,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         {
-            auto range412 = (a)->intervals;
+            auto range412 = (a)->intervals.view();
             for (Int index413 = 0, rangeEnd414 = length(range412); index413 < rangeEnd414; ++index413) {
                 Interval* it = range412[index413];
                 if ((!isNil(it))) {
@@ -9351,16 +9463,46 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             a->liveOut[b] = newBitset(nv);
         }
-        for (bool changed = true; changed;) {
-            changed = false;
-            for (Int i = length(a->order) - 1; i >= 0; --i) {
-                const i32 b = a->order[i];
-                Bitset out = a->liveOut[b];
-                for (Int j = 0; j < length(mf->blocks[b].succs); ++j) {
-                    bitsetUnion(out, a->liveIn[mf->blocks[b].succs[j]]);
-                }
-                if (bitsetPropagate(a->liveIn[b], {}, out, kill[b])) {
-                    changed = true;
+        // A block only needs another visit after a successor's live-in set
+        // changes. States 0/1/2 mean unreachable / idle / queued.
+        Vec<i32> work;
+        Vec<u8> state;
+        work.resize(usize(n));
+        state.resize(usize(n));
+        state.visit([](u8& value) {
+            value = 0;
+        });
+        usize pending = usize(length(a->order));
+        usize head = 0;
+        usize tail = pending == usize(n) ? 0 : pending;
+        for (usize i = 0; i < pending; ++i) {
+            const i32 b = a->order[Int(pending - 1 - i)];
+            work[i] = b;
+            state[usize(b)] = 2;
+        }
+        while (pending) {
+            const i32 b = work[head];
+            if (++head == usize(n)) {
+                head = 0;
+            }
+            --pending;
+            state[usize(b)] = 1;
+            Bitset out = a->liveOut[b];
+            for (Int j = 0; j < length(mf->blocks[b].succs); ++j) {
+                bitsetUnion(out, a->liveIn[mf->blocks[b].succs[j]]);
+            }
+            if (bitsetPropagate(a->liveIn[b], {}, out, kill[b])) {
+                auto preds = mf->blocks[b].preds;
+                for (Int j = 0; j < length(preds); ++j) {
+                    const i32 pred = preds[j];
+                    if (state[usize(pred)] == 1) {
+                        work[tail] = pred;
+                        if (++tail == usize(n)) {
+                            tail = 0;
+                        }
+                        ++pending;
+                        state[usize(pred)] = 2;
+                    }
                 }
             }
         }
@@ -9415,19 +9557,18 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         MFunc* mf = (a)->mf;
         Map<i32, Slice<Move>> inner = mapOf<i32, Slice<Move>>({});
         {
-            auto range478 = (a)->intervals;
+            auto range478 = (a)->intervals.view();
             for (Int index479 = 0, rangeEnd480 = length(range478); index479 < rangeEnd480; ++index479) {
                 Int x = index479;
                 Interval* it = range478[index479];
                 if (isNil(it)) {
                     continue;
                 }
-                Slice<Interval*> all = appendSlice(sliceOf<Interval*>({it}), (it)->children);
                 {
-                    Int i = Int(1LL);
-                    for (; (i < length(all)); i++) {
-                        auto temporary481 = all[(i - Int(1LL))];
-                        auto temporary482 = all[i];
+                    Int i = Int(0LL);
+                    for (; (i < length(it->children)); i++) {
+                        auto temporary481 = i ? it->children[i - 1] : it;
+                        auto temporary482 = it->children[i];
                         Interval* prev = temporary481;
                         Interval* c = temporary482;
                         i32 p = intervalStart(c);
@@ -9500,33 +9641,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             for (Int index492 = 0, rangeEnd493 = length(range491); index492 < rangeEnd493; ++index492) {
                 i32 b = range491[index492];
                 MBlock* blk = (&((mf)->blocks[b]));
-                Int n = length((blk)->insts);
-                {
-                    auto range494 = sliceOf<Slice<Move>>({atStart[b], atEnd[b]});
-                    for (Int index495 = 0, rangeEnd496 = length(range494); index495 < rangeEnd496; ++index495) {
-                        Slice<Move> moves = range494[index495];
-                        if ((length(moves) > Int(0LL))) {
-                            n++;
-                        }
-                    }
-                }
-                {
-                    auto range497 = (a)->instPos[b];
-                    for (Int index498 = 0, rangeEnd499 = length(range497); index498 < rangeEnd499; ++index498) {
-                        i32 p = range497[index498];
-                        {
-                            auto range500 = Array<i32, 2>{{(i32(2LL) * p), ((i32(2LL) * p) + i32(1LL))}};
-                            for (Int index501 = 0, rangeEnd502 = length(range500); index501 < rangeEnd502; ++index501) {
-                                i32 key = range500[index501];
-                                if ((length(inner[key]) > Int(0LL))) {
-                                    n++;
-                                }
-                            }
-                        }
-                    }
-                }
                 Vec<MInst> out;
-                out.reserve(usize(n));
+                out.reserve(blk->insts.size());
                 Slice<OrigInst> orig = {};
                 auto emitMoves = [&](Slice<Move> moves) mutable -> void {
                     if ((length(moves) == Int(0LL))) {
@@ -9589,6 +9705,19 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // same value redundant, including saves repeated on each loop iteration.
     // Coalesced loop parameters have several definitions and are left alone.
     static void allocatorSaveSpillsBeforeLoops(Allocator* a, Map<i32, Slice<Move>> inner, Map<i32, Slice<Move>> atEnd, Map<i32, Slice<Move>> atStart) {
+        if (!a->nslots || (!length(inner) && !length(atEnd) && !length(atStart))) {
+            return;
+        }
+        bool hasLoop = false;
+        for (Int i = 0; i < length(a->mf->blocks); ++i) {
+            if (a->mf->blocks[usize(i)].depth > 0) {
+                hasLoop = true;
+                break;
+            }
+        }
+        if (!hasLoop) {
+            return;
+        }
         Slice<SpillDef> defs = makeSlice<SpillDef>(((a)->mf)->nregs);
         {
             auto range509 = (a)->order;
@@ -9622,6 +9751,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     setMap(owners, slotLoc(slot), x);
                 }
             }
+        }
+        if (!length(owners)) {
+            return;
         }
         Slice<bool> save = makeSlice<bool>(length(defs));
         auto consider = [&](Slice<Move> moves, i32 b) mutable -> void {
@@ -9747,7 +9879,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void allocatorScan(Allocator* a) {
         {
-            auto range547 = (a)->intervals;
+            auto range547 = (a)->intervals.view();
             for (Int index548 = 0, rangeEnd549 = length(range547); index548 < rangeEnd549; ++index548) {
                 Interval* it = range547[index548];
                 if (((!isNil(it)) && (length((it)->ranges) > Int(0LL)))) {
@@ -9769,7 +9901,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             for (Int index551 = 0, rangeEnd552 = length(range550); index551 < rangeEnd552; ++index551) {
                 Int r = index551;
                 if (((!isNil((a)->fixed[r])) && (length(((a)->fixed[r])->ranges) > Int(0LL)))) {
-                    (a)->inactive = appendValues((a)->inactive, (a)->fixed[r]);
+                    a->inactive.pushBack(a->fixed[r]);
                 }
             }
         }
@@ -9790,7 +9922,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     allocatorAllocateBlocked(a, cur);
                 }
                 if (((cur)->reg != noReg)) {
-                    (a)->active = appendValues((a)->active, cur);
+                    a->active.pushBack(cur);
                 }
             }
         }
@@ -9849,14 +9981,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         {
-            auto range559 = (a)->active;
+            auto range559 = (a)->active.view();
             for (Int index560 = 0, rangeEnd561 = length(range559); index560 < rangeEnd561; ++index560) {
                 Interval* it = range559[index560];
                 freeUntil[(it)->reg] = i32(0LL);
             }
         }
         {
-            auto range562 = (a)->inactive;
+            auto range562 = (a)->inactive.view();
             for (Int index563 = 0, rangeEnd564 = length(range562); index563 < rangeEnd564; ++index563) {
                 Interval* it = range562[index563];
                 if ((freeUntil[(it)->reg] == i32(0LL))) {
@@ -10081,11 +10213,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void asmFalu(Asm* a, FAluOp op, u8 size, VReg dst, VReg x, VReg y) {
-        asmVexRR(a, fAluPP(op, size), u8(1LL), false, fAluOpcodes[op], regNum(dst), regNum(x), regNum(y));
+        asmVexRR(a, fAluPP(op, size), u8(1LL), false, floatOpcode(op), regNum(dst), regNum(x), regNum(y));
     }
 
     static void asmFaluM(Asm* a, FAluOp op, u8 size, VReg dst, VReg x, Amem m) {
-        asmVexRM(a, fAluPP(op, size), u8(1LL), false, fAluOpcodes[op], regNum(dst), regNum(x), m, Int(0LL));
+        asmVexRM(a, fAluPP(op, size), u8(1LL), false, floatOpcode(op), regNum(dst), regNum(x), m, Int(0LL));
     }
 
     static void asmFblend(Asm* a, u8 size, VReg dst, VReg x, VReg y, VReg mask) {
@@ -13447,7 +13579,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     (in).dst = d;
                     (in).imm = x;
                     (in).size = size;
-                    (in).aux = convert<u8>(aluOps[op]);
+                    (in).aux = convert<u8>(aluOpcode(op));
                     lowererEmit(l, in);
                     return;
                 }
@@ -13460,7 +13592,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         (in).dst = d;
         (in).src = rb;
         (in).size = size;
-        (in).aux = convert<u8>(aluOps[op]);
+        (in).aux = convert<u8>(aluOpcode(op));
         lowererEmit(l, in);
     }
 
@@ -16333,7 +16465,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Slice<i32> top = {};
         Slice<i32> fail = {};
         {
-            auto range1025 = sliceOf<i32>({framesEntry, framesResume});
+            auto range1025 = Array<i32, 2>{{framesEntry, framesResume}};
             for (Int index1026 = 0, rangeEnd1027 = length(range1025); index1026 < rangeEnd1027; ++index1026) {
                 i32 entry = range1025[index1026];
                 asmAluRM(a, aluCmp, u8(8LL), R8, word(entry));
@@ -16751,7 +16883,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         asmMovRR(a, u8(8LL), RSP, R8);
         asmRet(a);
         {
-            auto range1071 = sliceOf<i32>({down, above, before, after, other});
+            auto range1071 = Array<i32, 5>{{down, above, before, after, other}};
             for (Int index1072 = 0, rangeEnd1073 = length(range1071); index1072 < rangeEnd1073; ++index1072) {
                 i32 at = range1071[index1072];
                 asmPatch32(a, at, asmPos(a));
@@ -16917,7 +17049,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         asmStore(a, u8(8LL), R9, baseAt(ctxReg, offBase));
         asmLoad(a, u8(8LL), u8(8LL), false, memReg, baseAt(ctxReg, offMem));
         {
-            auto range1090 = sliceOf<VReg>({R10, R11, R12});
+            auto range1090 = Array<VReg, 3>{{R10, R11, R12}};
             for (Int index1091 = 0, rangeEnd1092 = length(range1090); index1091 < rangeEnd1092; ++index1091) {
                 Int k = index1091;
                 VReg r = range1090[index1091];
@@ -18568,7 +18700,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             switch (switch1345) {
                 case OpEqz: {
                     {
-                        auto temporary1346 = lookupMap(invertCmp, (src)->op);
+                        auto temporary1346 = invertComparison((src)->op);
                         Op invert = temporary1346.v0;
                         bool ok = temporary1346.v1;
                         if (((ok && ((o)->uses[a] == i32(1LL))) && ((src)->block == ((f)->values[v]).block))) {
@@ -18964,7 +19096,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static Tuple2<AddressExpression, bool> addAddressExpression(AddressExpression a, AddressExpression b, u32 factor) {
         AddressExpression out = AddressExpression{{}, ((a).offset + (factor * (b).offset))};
         {
-            auto range1366 = sliceOf<Anonymous4>({Anonymous4{a, u32(1LL)}, Anonymous4{b, factor}});
+            auto range1366 = Array<Anonymous4, 2>{{Anonymous4{a, u32(1LL)}, Anonymous4{b, factor}}};
             for (Int index1367 = 0, rangeEnd1368 = length(range1366); index1367 < rangeEnd1368; ++index1367) {
                 Anonymous4 source = range1366[index1367];
                 {
@@ -19052,7 +19184,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             (out).stride = (b).stride;
         }
         {
-            auto range1383 = sliceOf<Array<i64, 2>>({Array<i64, 2>{{convert<i64>((a).base), convert<i64>((a).mul)}}, Array<i64, 2>{{convert<i64>((a).base2), convert<i64>((a).mul2)}}, Array<i64, 2>{{convert<i64>((b).base), convert<i64>((b).mul)}}, Array<i64, 2>{{convert<i64>((b).base2), convert<i64>((b).mul2)}}});
+            auto range1383 = Array<Array<i64, 2>, 4>{{Array<i64, 2>{{convert<i64>((a).base), convert<i64>((a).mul)}}, Array<i64, 2>{{convert<i64>((a).base2), convert<i64>((a).mul2)}}, Array<i64, 2>{{convert<i64>((b).base), convert<i64>((b).mul)}}, Array<i64, 2>{{convert<i64>((b).base2), convert<i64>((b).mul2)}}}};
             for (Int index1384 = 0, rangeEnd1385 = length(range1383); index1384 < rangeEnd1385; ++index1384) {
                 Array<i64, 2> term = range1383[index1384];
                 auto temporary1386 = convert<i32>(term[Int(0LL)]);
@@ -21707,7 +21839,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             for (Int index1638 = 0, rangeEnd1639 = length(range1637); index1638 < rangeEnd1639; ++index1638) {
                 Int i = index1638;
                 ValType t = range1637[index1638];
-                auto temporary1640 = lookupMap(typeLetters, t);
+                auto temporary1640 = typeLetter(t);
                 u8 c = temporary1640.v0;
                 bool ok = temporary1640.v1;
                 if ((!(ok))) {
@@ -21958,7 +22090,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         sh(String(""));
         Array<u32, 11> names = Array<u32, 11>{{}};
         {
-            auto range1670 = sliceOf<Anonymous24>({Anonymous24{Int(1LL), String(".text")}, Anonymous24{Int(2LL), String(".rela.text")}, Anonymous24{Int(3LL), String(".rodata")}, Anonymous24{Int(4LL), String(".eh_frame")}, Anonymous24{Int(5LL), String(".rela.eh_frame")}, Anonymous24{Int(6LL), String(".note.wasm2o")}, Anonymous24{Int(7LL), String(".symtab")}, Anonymous24{Int(8LL), String(".strtab")}, Anonymous24{Int(9LL), String(".shstrtab")}, Anonymous24{Int(10LL), String(".note.GNU-stack")}});
+            auto range1670 = Array<Anonymous24, 10>{{Anonymous24{Int(1LL), String(".text")}, Anonymous24{Int(2LL), String(".rela.text")}, Anonymous24{Int(3LL), String(".rodata")}, Anonymous24{Int(4LL), String(".eh_frame")}, Anonymous24{Int(5LL), String(".rela.eh_frame")}, Anonymous24{Int(6LL), String(".note.wasm2o")}, Anonymous24{Int(7LL), String(".symtab")}, Anonymous24{Int(8LL), String(".strtab")}, Anonymous24{Int(9LL), String(".shstrtab")}, Anonymous24{Int(10LL), String(".note.GNU-stack")}}};
             for (Int index1671 = 0, rangeEnd1672 = length(range1670); index1671 < rangeEnd1672; ++index1671) {
                 Anonymous24 sec = range1670[index1671];
                 names[(sec).index] = sh((sec).name);

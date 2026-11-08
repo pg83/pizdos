@@ -80,6 +80,9 @@ the C++ in-range contract; `at()` checks the index. Input reader bounds and
 validation remain checked.
 The pending register intervals use a heap with stable ties, and predecessor
 queries use epoch markers instead of quadratic prefix searches.
+Liveness revisits only predecessors affected by a changed live-in set.
+Interval and active-register tables own their buffers; resolve walks split
+children directly and emits moves without a separate counting pass.
 `./build test_aot` checks both WASI entry points against wasm2o,
 including compilation of the new compiler itself and repeated export calls.
 
