@@ -3790,12 +3790,27 @@ namespace {
         return nextInitial == initial.size() && entries.size() == 0;
     }
 
+    struct PositionedMoves {
+        struct Entry {
+            i32 position;
+            u32 order;
+            Move move;
+        };
+
+        Vec<Entry> entries;
+        u32 nextOrder = 0;
+    };
+
+    static void appendMove(PositionedMoves& moves, i32 position, Move move) {
+        require(moves.nextOrder != 0xffffffffu, "too many interval moves");
+        moves.entries.pushBack({position, moves.nextOrder++, move});
+    }
+
     struct Allocator {
         MFunc* mf{};
         Slice<i32> order{};
         Slice<i32> blockFrom{};
         Slice<i32> blockTo{};
-        Slice<Slice<i32>> instPos{};
         Slice<Bitset> liveIn{};
         Slice<Bitset> liveOut{};
         Vec<Interval*> intervals{};
@@ -5188,7 +5203,7 @@ namespace {
 
     static void allocatorResolve(Allocator* a);
 
-    static void allocatorSaveSpillsBeforeLoops(Allocator* a, Map<i32, Slice<Move>> inner, Map<i32, Slice<Move>> atEnd, Map<i32, Slice<Move>> atStart);
+    static void allocatorSaveSpillsBeforeLoops(Allocator* a, PositionedMoves& inner, Map<i32, Slice<Move>> atEnd, Map<i32, Slice<Move>> atStart);
 
     static void allocatorScan(Allocator* a);
 
@@ -9127,7 +9142,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     Int j = (length(insts) - Int(1LL));
                     for (; (j >= Int(0LL)); j--) {
                         MInst* in = (&(insts[j]));
-                        i32 p = (a)->instPos[b][j];
+                        i32 p = from + 2 + 2 * j;
                         {
                             auto range404 = mInstClobberSet(in);
                             for (Int index405 = 0, rangeEnd406 = length(range404); index405 < rangeEnd406; ++index405) {
@@ -9450,9 +9465,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         i32 p = intervalStart(cur);
         {
-            auto range451 = appendSlice(sliceOf<Interval*>({it}), (it)->children);
-            for (Int index452 = 0, rangeEnd453 = length(range451); index452 < rangeEnd453; ++index452) {
-                Interval* c = range451[index452];
+            for (Int i = -1; i < length(it->children); ++i) {
+                Interval* c = i < 0 ? it : it->children[i];
                 if ((((c)->reg != noReg) && ((((intervalCovers(c, (p - i32(1LL))) || intervalCovers(c, p)) || (intervalEnd(c) == p)) || (intervalEnd(c) == (p - i32(1LL))))))) {
                     return (c)->reg;
                 }
@@ -9509,24 +9523,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         (a)->blockFrom = makeSlice<i32>(n);
         (a)->blockTo = makeSlice<i32>(n);
-        (a)->instPos = makeSlice<Slice<i32>>(n);
         i32 pos = i32(0LL);
         {
             auto range454 = (a)->order;
             for (Int index455 = 0, rangeEnd456 = length(range454); index455 < rangeEnd456; ++index455) {
                 i32 b = range454[index455];
                 (a)->blockFrom[b] = pos;
-                pos += i32(2LL);
-                Span<MInst> insts = ((mf)->blocks[b]).insts.view();
-                (a)->instPos[b] = makeSlice<i32>(length(insts));
-                {
-                    auto range457 = insts;
-                    for (Int index458 = 0, rangeEnd459 = length(range457); index458 < rangeEnd459; ++index458) {
-                        Int i = index458;
-                        (a)->instPos[b][i] = pos;
-                        pos += i32(2LL);
-                    }
-                }
+                pos += 2 + 2 * i32(mf->blocks[b].insts.size());
                 (a)->blockTo[b] = pos;
             }
         }
@@ -9675,7 +9678,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // intervals inside blocks and on edges.
     static void allocatorResolve(Allocator* a) {
         MFunc* mf = (a)->mf;
-        Map<i32, Slice<Move>> inner = mapOf<i32, Slice<Move>>({});
+        PositionedMoves inner;
         {
             auto range478 = (a)->intervals.view();
             for (Int index479 = 0, rangeEnd480 = length(range478); index479 < rangeEnd480; ++index479) {
@@ -9713,7 +9716,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             key = ((i32(2LL) * ((p - i32(1LL)))) + i32(1LL));
                         }
                         if ((src != dst)) {
-                            setMap(inner, key, appendValues(inner[key], Move{dst, src}));
+                            appendMove(inner, key, Move{dst, src});
                         }
                         (void)(x);
                     }
@@ -9755,7 +9758,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         allocatorSaveSpillsBeforeLoops(a, inner, atEnd, atStart);
-        Slice<Slice<OrigInst>> origs = {};
+        if (inner.entries.size() > 1) {
+            sortValues(inner.entries.view(), [&](Int i, Int j) {
+                const auto& left = inner.entries[usize(i)];
+                const auto& right = inner.entries[usize(j)];
+                return left.position < right.position || (left.position == right.position && left.order < right.order);
+            });
+        }
+        usize nextMove = 0;
         {
             auto range491 = (a)->order;
             for (Int index492 = 0, rangeEnd493 = length(range491); index492 < rangeEnd493; ++index492) {
@@ -9763,7 +9773,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 MBlock* blk = (&((mf)->blocks[b]));
                 Vec<MInst> out;
                 out.reserve(blk->insts.size());
-                Slice<OrigInst> orig = {};
                 auto emitMoves = [&](Slice<Move> moves) mutable -> void {
                     if ((length(moves) == Int(0LL))) {
                         return;
@@ -9776,7 +9785,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     auto range503 = (blk)->insts.view();
                     for (Int index504 = 0, rangeEnd505 = length(range503); index504 < rangeEnd505; ++index504) {
                         Int i = index504;
-                        i32 p = (a)->instPos[b][i];
+                        i32 p = a->blockFrom[b] + 2 + 2 * i;
                         if ((i == branches)) {
                             emitMoves(atEnd[b]);
                         }
@@ -9784,11 +9793,22 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             auto range506 = Array<i32, 2>{{(i32(2LL) * p), ((i32(2LL) * p) + i32(1LL))}};
                             for (Int index507 = 0, rangeEnd508 = length(range506); index507 < rangeEnd508; ++index507) {
                                 i32 key = range506[index507];
-                                emitMoves(inner[key]);
+                                // Positions at block boundaries have no
+                                // instruction here, just as in the old table.
+                                while (nextMove < inner.entries.size() && inner.entries[nextMove].position < key) {
+                                    ++nextMove;
+                                }
+                                if (nextMove < inner.entries.size() && inner.entries[nextMove].position == key) {
+                                    MInst moves = inst(mParMove);
+                                    auto& list = mInstExtra(&moves)->moves;
+                                    do {
+                                        list.pushBack(inner.entries[nextMove++].move);
+                                    } while (nextMove < inner.entries.size() && inner.entries[nextMove].position == key);
+                                    out.pushBack(moves);
+                                }
                             }
                         }
                         MInst in = (blk)->insts[i];
-                        Slice<OrigOperand> ops = {};
                         mInstForEachOperand(&(in), [&](VReg* r, Int role) mutable -> void {
                             if (((*(r)) == noReg)) {
                                 return;
@@ -9807,7 +9827,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             }
                         });
                         if (((in).op == mParMove)) {
-                            mInstExtra(&in)->moves.assign(dropSelfMoves(mInstMoves(&in)));
+                            mInstExtra(&in)->moves.resize(usize(length(dropSelfMoves(mInstMoves(&in)))));
                         }
                         out.pushBack(in);
                     }
@@ -9824,8 +9844,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // definition outside a loop, saving it there makes every later save of the
     // same value redundant, including saves repeated on each loop iteration.
     // Coalesced loop parameters have several definitions and are left alone.
-    static void allocatorSaveSpillsBeforeLoops(Allocator* a, Map<i32, Slice<Move>> inner, Map<i32, Slice<Move>> atEnd, Map<i32, Slice<Move>> atStart) {
-        if (!a->nslots || (!length(inner) && !length(atEnd) && !length(atStart))) {
+    static void allocatorSaveSpillsBeforeLoops(Allocator* a, PositionedMoves& inner, Map<i32, Slice<Move>> atEnd, Map<i32, Slice<Move>> atStart) {
+        if (!a->nslots || (!inner.entries.size() && !length(atEnd) && !length(atStart))) {
             return;
         }
         bool hasLoop = false;
@@ -9855,7 +9875,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             SpillDef* d = (&(defs[allocatorVindex(a, (*(r)))]));
                             (d)->count++;
                             (d)->block = b;
-                            (d)->pos = (a)->instPos[b][i];
+                            (d)->pos = a->blockFrom[b] + 2 + 2 * i;
                         });
                     }
                 }
@@ -9892,15 +9912,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
             }
         };
-        {
-            auto range522 = inner;
-            for (Int index523 = 0; index523 < mapSlots(range522); ++index523) {
-                if (!mapOccupied(range522, index523)) {
-                    continue;
-                }
-                i32 key = mapKey(range522, index523);
-                Slice<Move> moves = mapValue(range522, index523);
-                consider(moves, (a)->posBlock[(key / i32(4LL))]);
+        for (usize i = 0; i < inner.entries.size(); ++i) {
+            const auto& entry = inner.entries[i];
+            auto owner = lookupMap(owners, entry.move.dst);
+            if (owner.v1 && a->mf->blocks[a->posBlock[entry.position / 4]].depth > a->mf->blocks[defs[owner.v0].block].depth) {
+                save[owner.v0] = true;
             }
         }
         {
@@ -9944,17 +9960,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             return out;
         };
-        {
-            auto range535 = inner;
-            for (Int index536 = 0; index536 < mapSlots(range535); ++index536) {
-                if (!mapOccupied(range535, index536)) {
-                    continue;
-                }
-                i32 key = mapKey(range535, index536);
-                Slice<Move> moves = mapValue(range535, index536);
-                setMap(inner, key, filter(moves));
+        usize kept = 0;
+        for (usize i = 0; i < inner.entries.size(); ++i) {
+            const auto entry = inner.entries[i];
+            auto owner = lookupMap(owners, entry.move.dst);
+            if (!owner.v1 || !save[owner.v0]) {
+                inner.entries[kept++] = entry;
             }
         }
+        inner.entries.resize(kept);
         {
             auto range538 = atEnd;
             for (Int index539 = 0; index539 < mapSlots(range538); ++index539) {
@@ -9991,7 +10005,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 VReg dst = slotLoc((a)->slots[x]);
                 if ((src != dst)) {
                     i32 key = (i32(2LL) * (((d).pos + i32(2LL))));
-                    setMap(inner, key, appendValues(inner[key], Move{dst, src}));
+                    appendMove(inner, key, Move{dst, src});
                 }
             }
         }
