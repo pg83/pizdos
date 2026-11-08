@@ -127,12 +127,13 @@ def shape(kind, row):
     return row.rsplit(" ", 1)[0]
 
 
-def decode_work(build, wasm2o, kinds, runs, minimum, work):
+def decode_work(build, wasm2o, kinds, runs, minimum, work, objects=None):
     root = unpack_corpus(build / "stand/decode-corpus-1.tgz", work)
     rows = []
 
     for kind in kinds:
         folder = build / "stand/decode" / kind
+        obj = objects / f"{kind}.o" if objects else folder / "module.o"
         files = sorted(p for p in (root.rglob("*") if kind == "magic" else (root / kind).iterdir())
                        if p.is_file() and p.name not in ("MANIFEST", "SHA256SUMS"))
         commands = {"A": [str(folder / "native")], "C": [str(wasm2o), "stand"], "R": [str(folder / "reference")]}
@@ -154,7 +155,7 @@ def decode_work(build, wasm2o, kinds, runs, minimum, work):
             order = order[run % 3:] + order[:run % 3]
 
             for name in order:
-                inputs = [folder / "module.o", *files] if name == "C" else files
+                inputs = [obj, *files] if name == "C" else files
                 elapsed, got = decode_run(commands[name], repeat, kind, inputs, len(files))
 
                 if name in outputs and got != outputs[name]:
@@ -178,7 +179,8 @@ def decode_work(build, wasm2o, kinds, runs, minimum, work):
               f"  C/R {medians['C'] / medians['R']:.3f}  C/A {medians['C'] / medians['A']:.3f}"
               f"  {len(files)} files x{repeat}, C=R, native exact {native_same}/{len(files)}", flush=True)
         rows.append({"work": "decode/" + kind, "files": len(files), "repeat": repeat, "seconds": medians,
-                     "samples": samples, "outputs": outputs, "native_exact": native_same, "aot_reference_identical": True})
+                     "samples": samples, "outputs": outputs, "native_exact": native_same, "aot_reference_identical": True,
+                     "object_sha256": hashlib.sha256(obj.read_bytes()).hexdigest()})
 
     return rows
 
@@ -188,6 +190,7 @@ def main():
     parser.add_argument("paths", nargs="*")
     parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--build-dir", type=Path, default=Path(".build"))
+    parser.add_argument("--objects", type=Path, help="use saved KIND.o files for generated-code comparisons")
     parser.add_argument("--only", default="aot," + ",".join(KINDS))
     parser.add_argument("--min-time", type=float, default=0.25, help="minimum reference time per decode sample")
     parser.add_argument("--json", type=Path, help="write samples and per-file results")
@@ -222,7 +225,7 @@ def main():
             kinds = [kind for kind in KINDS if kind in selected]
 
             if kinds:
-                rows.extend(decode_work(build, wasm2o, kinds, args.runs, args.min_time, work))
+                rows.extend(decode_work(build, wasm2o, kinds, args.runs, args.min_time, work, args.objects))
 
     if args.json:
         args.json.parent.mkdir(parents=True, exist_ok=True)

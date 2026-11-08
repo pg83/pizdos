@@ -49,6 +49,12 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   reactor to `aot.aot`. `wasm2o` embeds that object through `go:embed`;
   `dev/go.py --embed` stages it for both native builds and Go tests. There is
   no Go compiler implementation or wasm2o.wasm bootstrap.
+- Compiler optimization aims to reduce compilation CPU while generated
+  programs run no slower on the stand. ELF bytes may change between
+  revisions; native and embedded forms of the same compiler still agree.
+  Freeze the compiler's wasm input across revisions with
+  `dev/aot_perf.py --compiler-input`, save objects with `--objects`, and
+  run the saved and candidate objects through the same stand loader.
 - `bin/wasm2o` is the Go loader, kernel and WASI host. `compile.go` links
   embedded code once and gives each invocation its own instance, memory and
   fd streams. `compile()` reads fd 0 and writes ELF to fd 1;

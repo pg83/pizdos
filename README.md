@@ -96,8 +96,11 @@ released before register allocation, and machine IR after each function.
 CFG and loop analyses use temporary pools. Container `operator[]` follows
 the C++ in-range contract; `at()` checks the index. Input reader bounds and
 validation remain checked.
-The pending register intervals use a heap with stable ties, and predecessor
-queries use epoch markers instead of quadratic prefix searches.
+Pending register intervals merge a sorted initial stream with a heap of
+splits, preserving stable ties. Predecessor queries use epoch markers
+instead of quadratic prefix searches. Coalescing visits blocks by loop
+depth without sorting individual copies; interval uses are deduplicated
+and ordered as the backwards traversal builds them.
 Liveness revisits only predecessors affected by a changed live-in set.
 Interval and active-register tables own their buffers; resolve walks split
 children directly and emits moves without a separate counting pass.
@@ -111,6 +114,13 @@ seven main inputs using native C++ and the embedded AOT. Every ELF must
 match byte for byte. Three fresh-process runs alternate compiler order;
 the report records user+system CPU and peak RSS. Optional
 `--max-cpu-ratio` and `--max-rss-ratio` bound embedded/native overhead.
+Compiler changes are measured against a saved revision on the same wasm
+inputs; generated code may change, provided its execution on the stand
+does not slow down. `--compiler-input saved/aot.wasm` freezes the compiler
+workload, and `--objects saved/objects` keeps the verified ELF outputs.
+`dev/stand.py --only im,pdf,djvu,svg,magic --objects saved/objects` measures
+those outputs on the pinned corpus. Compare saved and candidate objects
+with the same loader and runtime settings.
 
 - `wasm2o` compiles a module ahead of time to an ordinary x86-64 ELF
   relocatable object (written by `bin/aot/aot.cpp`, read by `bin/wasm2o/elf.go`): code in `.text`, constants and

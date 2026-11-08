@@ -1372,6 +1372,10 @@ namespace {
             }
         }
 
+        T popBack() {
+            return paged ? pages.popBack() : small.popBack();
+        }
+
         void assign(Span<const T> source) {
             reserve(source.count);
             resize(source.count);
@@ -3615,9 +3619,14 @@ namespace {
 
         static bool before(const Entry& a, const Entry& b);
         void push(Interval* interval, i32 start);
+        bool empty() const;
         Interval* pop();
 
-        PageVec<Entry> entries;
+        // Initial intervals keep their sorted order. Only splits need a
+        // mutable heap; pop merges the two streams with stable ties.
+        PageVec<Entry> initial;
+        Vec<Entry> entries;
+        usize nextInitial = 0;
         u32 nextOrder = 0;
     };
 
@@ -3642,7 +3651,10 @@ namespace {
     }
 
     Interval* IntervalQueue::pop() {
-        require(!entries.empty(), "empty interval queue");
+        require(!empty(), "empty interval queue");
+        if (nextInitial < initial.size() && (entries.size() == 0 || before(initial[nextInitial], entries[0]))) {
+            return initial[nextInitial++].interval;
+        }
         Interval* result = entries[0].interval;
         const Entry last = entries.popBack();
         const usize count = entries.size();
@@ -3661,6 +3673,10 @@ namespace {
             entries[at] = last;
         }
         return result;
+    }
+
+    bool IntervalQueue::empty() const {
+        return nextInitial == initial.size() && entries.size() == 0;
     }
 
     struct Allocator {
@@ -5083,7 +5099,7 @@ namespace {
 
     static void asmAluRR(Asm* a, AluOp op, u8 size, VReg dst, VReg src);
 
-    static void asmB(Asm* a, Slice<u8> bytes);
+    static void asmB(Asm* a, Span<const u8> bytes);
 
     static void asmBitCount(Asm* a, u8 kind, u8 size, VReg dst, VReg src);
 
@@ -5161,9 +5177,9 @@ namespace {
 
     static void asmNops(Asm* a, i32 n);
 
-    static void asmOpRM(Asm* a, bool w, Slice<u8> op, Int reg, Amem m, Int imm, bool byteReg);
+    static void asmOpRM(Asm* a, bool w, Span<const u8> op, Int reg, Amem m, Int imm, bool byteReg);
 
-    static void asmOpRR(Asm* a, bool w, Slice<u8> op, Int reg, Int rm, bool byteRegs);
+    static void asmOpRR(Asm* a, bool w, Span<const u8> op, Int reg, Int rm, bool byteRegs);
 
     static void asmPatch32(Asm* a, i32 at, i32 target);
 
@@ -5177,7 +5193,7 @@ namespace {
 
     static i32 asmPos(Asm* a);
 
-    static void asmPrefixed(Asm* a, u8 prefix, bool w, Slice<u8> op, Int reg, Int rm);
+    static void asmPrefixed(Asm* a, u8 prefix, bool w, Span<const u8> op, Int reg, Int rm);
 
     static void asmPush(Asm* a, VReg r);
 
@@ -5366,6 +5382,8 @@ namespace {
     static bool intervalCovers(Interval* it, i32 p);
 
     static bool intervalCoversAt(Interval* it, i32 p);
+
+    static void intervalRecordUse(Interval* it, i32 p);
 
     static bool intervalCutAt(Interval* it, i32 p);
 
@@ -9015,13 +9033,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             {
                                 if ((role == roleTemp)) {
                                     intervalAddRange(it, p, (p + i32(2LL)));
-                                    (it)->uses.append(Span<const i32>({p, p + 1}));
+                                    intervalRecordUse(it, p + 1);
+                                    intervalRecordUse(it, p);
                                 } else if (((role & roleDef) != Int(0LL))) {
                                     if ((!(intervalCutAt(it, (p + i32(1LL)))))) {
                                         intervalAddRange(it, (p + i32(1LL)), (p + i32(2LL)));
                                     }
                                     if ((needReg || vRegIsPhys(*(r)))) {
-                                        (it)->uses.pushBack(p + 1);
+                                        intervalRecordUse(it, p + 1);
                                     }
                                 }
                             switchEnd408:;
@@ -9035,7 +9054,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                                 Interval* it = allocatorInterval(a, (*(r)));
                                 intervalAddRange(it, from, (p + i32(1LL)));
                                 if ((needReg || vRegIsPhys(*(r)))) {
-                                    (it)->uses.pushBack(p);
+                                    intervalRecordUse(it, p);
                                 }
                             }
                         });
@@ -9134,93 +9153,83 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // and reports whether it joined any: the allocator then starts again on
     // the renamed code.
     static bool allocatorCoalesce(Allocator* a) {
-        MFunc* mf = (a)->mf;
-        Slice<i32> parent = makeSlice<i32>((mf)->nregs);
-        Slice<Span<Lrange>> ranges = makeSlice<Span<Lrange>>((mf)->nregs);
-        {
-            auto range423 = parent;
-            for (Int index424 = 0, rangeEnd425 = length(range423); index424 < rangeEnd425; ++index424) {
-                Int x = index424;
-                parent[x] = convert<i32>(x);
-                {
-                    Interval* it = (a)->intervals[x];
-                    if ((!isNil(it))) {
-                        ranges[x] = (it)->ranges.view();
-                    }
-                }
-            }
+        MFunc* mf = a->mf;
+        Vec<i32> parent;
+        Vec<Span<Lrange>> ranges;
+        parent.resize(usize(mf->nregs));
+        ranges.resize(usize(mf->nregs));
+        for (Int x = 0; x < mf->nregs; ++x) {
+            parent[usize(x)] = i32(x);
+            Interval* it = a->intervals[usize(x)];
+            ranges[usize(x)] = it ? it->ranges.view() : Span<Lrange>{};
         }
-        Fn<i32(i32)> find = {};
-        find = [&](i32 x) mutable -> i32 {
-            {
-                for (; (parent[x] != x);) {
-                    parent[x] = parent[parent[x]];
-                    x = parent[x];
-                }
+        auto find = [&](i32 x) {
+            while (parent[usize(x)] != x) {
+                parent[usize(x)] = parent[usize(parent[usize(x)])];
+                x = parent[usize(x)];
             }
             return x;
         };
-        Slice<CopyPairCoalesce41> copies = {};
-        auto add = [&](VReg dst, VReg src, Int depth) mutable -> void {
-            if (((((vRegIsPhys(dst) || vRegIsPhys(src)) || (dst == noReg)) || (src == noReg)) || (dst == src))) {
+        bool joined = false;
+        auto join = [&](VReg dst, VReg src) {
+            if (dst == noReg || src == noReg || dst == src || vRegIsPhys(dst) || vRegIsPhys(src)) {
                 return;
             }
-            if (((mf)->classValue[allocatorVindex(a, dst)] == (mf)->classValue[allocatorVindex(a, src)])) {
-                copies = appendValues(copies, CopyPairCoalesce41{convert<i32>(allocatorVindex(a, dst)), convert<i32>(allocatorVindex(a, src)), depth});
+            const Int dx = allocatorVindex(a, dst);
+            const Int sx = allocatorVindex(a, src);
+            if (mf->classValue[dx] != mf->classValue[sx]) {
+                return;
             }
+            const i32 x = find(i32(dx));
+            const i32 y = find(i32(sx));
+            if (x == y || !length(ranges[usize(x)]) || !length(ranges[usize(y)]) || overlap(ranges[usize(x)], ranges[usize(y)])) {
+                return;
+            }
+            parent[usize(y)] = x;
+            ranges[usize(x)] = mergeRanges(ranges[usize(x)], ranges[usize(y)]);
+            joined = true;
         };
-        {
-            auto& range426 = (mf)->blocks;
-            for (Int index427 = 0, rangeEnd428 = length(range426); index427 < rangeEnd428; ++index427) {
-                Int b = index427;
-                Int depth = ((mf)->blocks[b]).depth;
-                {
-                    auto range429 = ((mf)->blocks[b]).insts.view();
-                    for (Int index430 = 0, rangeEnd431 = length(range429); index430 < rangeEnd431; ++index430) {
-                        Int i = index430;
-                        MInst* in = (&(((mf)->blocks[b]).insts[i]));
-                        {
-                            auto switch432 = (in)->op;
-                            switch (switch432) {
-                                case mParMove: {
-                                    {
-                                        auto range433 = mInstMoves(in);
-                                        for (Int index434 = 0, rangeEnd435 = length(range433); index434 < rangeEnd435; ++index434) {
-                                            Move m = range433[index434];
-                                            add((m).dst, (m).src, depth);
-                                        }
-                                    }
-                                    break;
-                                }
-                                case mMov:
-                                case mFMov: {
-                                    add((in)->dst, (in)->src, depth);
-                                    break;
-                                }
-                            }
+        // Copies were stably sorted by their block's loop depth. Bucketing
+        // blocks by that same integer key preserves the exact visitation
+        // order without collecting and sorting a second list of copies.
+        Int deepest = 0;
+        for (Int b = 0; b < length(mf->blocks); ++b) {
+            require(mf->blocks[b].depth >= 0, "negative loop depth");
+            deepest = maximum(deepest, mf->blocks[b].depth);
+        }
+        Vec<i32> heads;
+        Vec<i32> tails;
+        Vec<i32> next;
+        heads.resize(usize(deepest + 1));
+        tails.resize(usize(deepest + 1));
+        next.resize(mf->blocks.size());
+        heads.visit([](i32& head) {
+            head = -1;
+        });
+        for (Int b = 0; b < length(mf->blocks); ++b) {
+            const usize depth = usize(mf->blocks[b].depth);
+            next[usize(b)] = -1;
+            if (heads[depth] < 0) {
+                heads[depth] = i32(b);
+            } else {
+                next[usize(tails[depth])] = i32(b);
+            }
+            tails[depth] = i32(b);
+        }
+        for (Int depth = deepest; depth >= 0; --depth) {
+            for (i32 b = heads[usize(depth)]; b >= 0; b = next[usize(b)]) {
+                auto& instructions = mf->blocks[b].insts;
+                for (usize i = 0; i < instructions.size(); ++i) {
+                    MInst* in = &instructions[i];
+                    if (in->op == mParMove) {
+                        auto moves = mInstMoves(in);
+                        for (Int j = 0; j < length(moves); ++j) {
+                            join(moves[j].dst, moves[j].src);
                         }
+                    } else if (in->op == mMov || in->op == mFMov) {
+                        join(in->dst, in->src);
                     }
                 }
-            }
-        }
-        sortValuesStable(copies, [&](Int i, Int j) mutable -> bool {
-            return ((copies[i]).depth > (copies[j]).depth);
-        });
-        bool joined = false;
-        {
-            auto range436 = copies;
-            for (Int index437 = 0, rangeEnd438 = length(range436); index437 < rangeEnd438; ++index437) {
-                CopyPairCoalesce41 c = range436[index437];
-                auto temporary439 = find((c).dst);
-                auto temporary440 = find((c).src);
-                i32 x = temporary439;
-                i32 y = temporary440;
-                if (((((x == y) || (length(ranges[x]) == 0)) || (length(ranges[y]) == 0)) || overlap(ranges[x], ranges[y]))) {
-                    continue;
-                }
-                parent[y] = x;
-                ranges[x] = mergeRanges(ranges[x], ranges[y]);
-                joined = true;
             }
         }
         if ((!(joined))) {
@@ -9883,19 +9892,19 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             for (Int index548 = 0, rangeEnd549 = length(range547); index548 < rangeEnd549; ++index548) {
                 Interval* it = range547[index548];
                 if (((!isNil(it)) && (length((it)->ranges) > Int(0LL)))) {
-                    a->unhandled.entries.pushBack({it, intervalStart(it), 0});
+                    a->unhandled.initial.pushBack({it, intervalStart(it), 0});
                 }
             }
         }
-        sortValues(Span<IntervalQueue::Entry>(a->unhandled.entries), [&](Int i, Int j) {
-            return a->unhandled.entries[usize(i)].start < a->unhandled.entries[usize(j)].start;
+        sortValues(Span<IntervalQueue::Entry>(a->unhandled.initial), [&](Int i, Int j) {
+            return a->unhandled.initial[usize(i)].start < a->unhandled.initial[usize(j)].start;
         });
         // Preserve the previous sort's ties. Future insertions used an upper
         // bound, so they follow all existing entries with the same start.
-        for (usize i = 0; i < a->unhandled.entries.size(); ++i) {
-            a->unhandled.entries[i].order = u32(i);
+        for (usize i = 0; i < a->unhandled.initial.size(); ++i) {
+            a->unhandled.initial[i].order = u32(i);
         }
-        a->unhandled.nextOrder = u32(a->unhandled.entries.size());
+        a->unhandled.nextOrder = u32(a->unhandled.initial.size());
         {
             auto range550 = (a)->fixed;
             for (Int index551 = 0, rangeEnd552 = length(range550); index551 < rangeEnd552; ++index551) {
@@ -9914,7 +9923,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         {
-            for (; !a->unhandled.entries.empty();) {
+            for (; !a->unhandled.empty();) {
                 Interval* cur = a->unhandled.pop();
                 i32 pos = intervalStart(cur);
                 allocatorAdvance(a, pos);
@@ -10062,11 +10071,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void asmAluMI(Asm* a, AluOp op, u8 size, Amem m, i64 x) {
         if ((x == convert<i64>(convert<i8>(x)))) {
-            asmOpRM(a, (size == u8(8LL)), sliceOf<u8>({u8(131LL)}), convert<Int>(op), m, Int(1LL), false);
+            asmOpRM(a, (size == u8(8LL)), Span<const u8>({u8(131LL)}), convert<Int>(op), m, Int(1LL), false);
             asmBytes(a, {u8(convert<u8>(x))});
             return;
         }
-        asmOpRM(a, (size == u8(8LL)), sliceOf<u8>({u8(129LL)}), convert<Int>(op), m, Int(4LL), false);
+        asmOpRM(a, (size == u8(8LL)), Span<const u8>({u8(129LL)}), convert<Int>(op), m, Int(4LL), false);
         asmU32(a, convert<u32>(x));
     }
 
@@ -10113,33 +10122,34 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void asmAluRM(Asm* a, AluOp op, u8 size, VReg dst, Amem m) {
         if ((op == aluImul)) {
-            asmOpRM(a, (size == u8(8LL)), sliceOf<u8>({u8(15LL), u8(175LL)}), convert<Int>(dst), m, Int(0LL), false);
+            asmOpRM(a, (size == u8(8LL)), Span<const u8>({u8(15LL), u8(175LL)}), convert<Int>(dst), m, Int(0LL), false);
             return;
         }
-        asmOpRM(a, (size == u8(8LL)), sliceOf<u8>({u8(shiftLeft(convert<u8>(op), Int(3LL)) | u8(3LL))}), convert<Int>(dst), m, Int(0LL), false);
+        asmOpRM(a, (size == u8(8LL)), Span<const u8>({u8(shiftLeft(convert<u8>(op), Int(3LL)) | u8(3LL))}), convert<Int>(dst), m, Int(0LL), false);
     }
 
     // aluRR emits "op dst, src" for add, or, adc, sbb, and, sub, xor, cmp.
     static void asmAluRR(Asm* a, AluOp op, u8 size, VReg dst, VReg src) {
         if ((op == aluImul)) {
-            asmOpRR(a, (size == u8(8LL)), sliceOf<u8>({u8(15LL), u8(175LL)}), convert<Int>(dst), convert<Int>(src), false);
+            asmOpRR(a, (size == u8(8LL)), Span<const u8>({u8(15LL), u8(175LL)}), convert<Int>(dst), convert<Int>(src), false);
             return;
         }
-        asmOpRR(a, (size == u8(8LL)), sliceOf<u8>({u8(shiftLeft(convert<u8>(op), Int(3LL)) | u8(3LL))}), convert<Int>(dst), convert<Int>(src), false);
+        asmOpRR(a, (size == u8(8LL)), Span<const u8>({u8(shiftLeft(convert<u8>(op), Int(3LL)) | u8(3LL))}), convert<Int>(dst), convert<Int>(src), false);
     }
 
-    static void asmB(Asm* a, Slice<u8> bytes) {
+    static void asmB(Asm* a, Span<const u8> bytes) {
         appendSpan((a)->buf, Span<const u8>(bytes));
     }
 
     static void asmBitCount(Asm* a, u8 kind, u8 size, VReg dst, VReg src) {
-        Slice<u8> op = subslice(sliceOf<u8>({u8(15LL), u8(189LL), u8(15LL), u8(188LL), u8(15LL), u8(184LL)}), u8(kind * u8(2LL)), u8(u8(kind * u8(2LL)) + u8(2LL)));
-        asmPrefixed(a, u8(243LL), (size == u8(8LL)), op, convert<Int>(dst), convert<Int>(src));
+        static constexpr u8 opcodes[] = {189, 188, 184};
+        require(kind < 3, "bit count opcode");
+        asmPrefixed(a, 243, size == 8, Span<const u8>({15, opcodes[kind]}), dst, src);
     }
 
     // callMem calls the address stored at m.
     static void asmCallMem(Asm* a, Amem m) {
-        asmOpRM(a, false, sliceOf<u8>({u8(255LL)}), Int(2LL), m, Int(0LL), false);
+        asmOpRM(a, false, Span<const u8>({u8(255LL)}), Int(2LL), m, Int(0LL), false);
     }
 
     static void asmCallReg(Asm* a, VReg r) {
@@ -10155,7 +10165,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void asmCmov(Asm* a, u8 cc, u8 size, VReg dst, VReg src) {
-        asmOpRR(a, (size == u8(8LL)), sliceOf<u8>({u8(15LL), u8(u8(64LL) + cc)}), convert<Int>(dst), convert<Int>(src), false);
+        asmOpRR(a, (size == u8(8LL)), Span<const u8>({u8(15LL), u8(u8(64LL) + cc)}), convert<Int>(dst), convert<Int>(src), false);
     }
 
     static void asmCvtFF(Asm* a, u8 from, VReg dst, VReg src) {
@@ -10192,21 +10202,21 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Int s = temporary575;
         {
             if (((width == u8(4LL)) && signedValue)) {
-                asmOpRR(a, true, sliceOf<u8>({u8(99LL)}), d, s, false);
+                asmOpRR(a, true, Span<const u8>({u8(99LL)}), d, s, false);
             } else if ((width == u8(4LL))) {
-                asmOpRR(a, false, sliceOf<u8>({u8(139LL)}), d, s, false);
+                asmOpRR(a, false, Span<const u8>({u8(139LL)}), d, s, false);
             } else if ((width == u8(2LL))) {
                 u8 op = u8(183LL);
                 if (signedValue) {
                     op = u8(191LL);
                 }
-                asmOpRR(a, (signedValue && (dsize == u8(8LL))), sliceOf<u8>({u8(15LL), op}), d, s, false);
+                asmOpRR(a, (signedValue && (dsize == u8(8LL))), Span<const u8>({u8(15LL), op}), d, s, false);
             } else {
                 u8 op = u8(182LL);
                 if (signedValue) {
                     op = u8(190LL);
                 }
-                asmOpRR(a, (signedValue && (dsize == u8(8LL))), sliceOf<u8>({u8(15LL), op}), d, s, true);
+                asmOpRR(a, (signedValue && (dsize == u8(8LL))), Span<const u8>({u8(15LL), op}), d, s, true);
             }
         switchEnd577:;
         }
@@ -10282,11 +10292,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void asmImul3(Asm* a, u8 size, VReg dst, VReg src, i64 x) {
         if ((x == convert<i64>(convert<i8>(x)))) {
-            asmOpRR(a, (size == u8(8LL)), sliceOf<u8>({u8(107LL)}), convert<Int>(dst), convert<Int>(src), false);
+            asmOpRR(a, (size == u8(8LL)), Span<const u8>({u8(107LL)}), convert<Int>(dst), convert<Int>(src), false);
             asmBytes(a, {u8(convert<u8>(x))});
             return;
         }
-        asmOpRR(a, (size == u8(8LL)), sliceOf<u8>({u8(105LL)}), convert<Int>(dst), convert<Int>(src), false);
+        asmOpRR(a, (size == u8(8LL)), Span<const u8>({u8(105LL)}), convert<Int>(dst), convert<Int>(src), false);
         asmU32(a, convert<u32>(x));
     }
 
@@ -10313,7 +10323,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void asmLea(Asm* a, u8 size, VReg dst, Amem m) {
-        asmOpRM(a, (size == u8(8LL)), sliceOf<u8>({u8(141LL)}), convert<Int>(dst), m, Int(0LL), false);
+        asmOpRM(a, (size == u8(8LL)), Span<const u8>({u8(141LL)}), convert<Int>(dst), m, Int(0LL), false);
         if ((dst == RSP)) {
             if (((((m).base != Int(4LL)) || ((m).index >= Int(0LL))) || ((m).label >= i32(0LL)))) {
                 compilerError(String("internal error: untracked change of rsp"));
@@ -10327,23 +10337,23 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Int d = convert<Int>(dst);
         {
             if ((width == u8(8LL))) {
-                asmOpRM(a, true, sliceOf<u8>({u8(139LL)}), d, m, Int(0LL), false);
+                asmOpRM(a, true, Span<const u8>({u8(139LL)}), d, m, Int(0LL), false);
             } else if ((((width == u8(4LL)) && signedValue) && (dsize == u8(8LL)))) {
-                asmOpRM(a, true, sliceOf<u8>({u8(99LL)}), d, m, Int(0LL), false);
+                asmOpRM(a, true, Span<const u8>({u8(99LL)}), d, m, Int(0LL), false);
             } else if ((width == u8(4LL))) {
-                asmOpRM(a, false, sliceOf<u8>({u8(139LL)}), d, m, Int(0LL), false);
+                asmOpRM(a, false, Span<const u8>({u8(139LL)}), d, m, Int(0LL), false);
             } else if ((width == u8(2LL))) {
                 u8 op = u8(183LL);
                 if (signedValue) {
                     op = u8(191LL);
                 }
-                asmOpRM(a, (signedValue && (dsize == u8(8LL))), sliceOf<u8>({u8(15LL), op}), d, m, Int(0LL), false);
+                asmOpRM(a, (signedValue && (dsize == u8(8LL))), Span<const u8>({u8(15LL), op}), d, m, Int(0LL), false);
             } else {
                 u8 op = u8(182LL);
                 if (signedValue) {
                     op = u8(190LL);
                 }
-                asmOpRM(a, (signedValue && (dsize == u8(8LL))), sliceOf<u8>({u8(15LL), op}), d, m, Int(0LL), false);
+                asmOpRM(a, (signedValue && (dsize == u8(8LL))), Span<const u8>({u8(15LL), op}), d, m, Int(0LL), false);
             }
         switchEnd579:;
         }
@@ -10413,7 +10423,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Int d = convert<Int>(dst);
         {
             if ((x == i64(0LL))) {
-                asmOpRR(a, false, sliceOf<u8>({u8(51LL)}), d, d, false);
+                asmOpRR(a, false, Span<const u8>({u8(51LL)}), d, d, false);
             } else if (((size == u8(4LL)) || (((x >= i64(0LL)) && (x <= i64(4294967295LL)))))) {
                 asmRex(a, false, Int(-1LL), Int(-1LL), d, false);
                 asmBytes(a, {u8(u8(u8(184LL) + lo3(d)))});
@@ -10433,7 +10443,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void asmMovRR(Asm* a, u8 size, VReg dst, VReg src) {
-        asmOpRR(a, (size == u8(8LL)), sliceOf<u8>({u8(139LL)}), convert<Int>(dst), convert<Int>(src), false);
+        asmOpRR(a, (size == u8(8LL)), Span<const u8>({u8(139LL)}), convert<Int>(dst), convert<Int>(src), false);
     }
 
     static void asmMovXG(Asm* a, u8 size, VReg dst, VReg src) {
@@ -10454,14 +10464,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
     }
 
-    static void asmOpRM(Asm* a, bool w, Slice<u8> op, Int reg, Amem m, Int imm, bool byteReg) {
+    static void asmOpRM(Asm* a, bool w, Span<const u8> op, Int reg, Amem m, Int imm, bool byteReg) {
         asmRex(a, w, reg, memX(m), memB(m), (byteReg && (reg >= Int(4LL))));
         asmB(a, op);
         asmModrmMem(a, reg, m, imm);
     }
 
     // opRR emits an instruction "op reg, rm" between registers.
-    static void asmOpRR(Asm* a, bool w, Slice<u8> op, Int reg, Int rm, bool byteRegs) {
+    static void asmOpRR(Asm* a, bool w, Span<const u8> op, Int reg, Int rm, bool byteRegs) {
         asmRex(a, w, reg, Int(-1LL), rm, (byteRegs && (((reg >= Int(4LL)) || (rm >= Int(4LL))))));
         asmB(a, op);
         asmModrmReg(a, reg, rm);
@@ -10489,7 +10499,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void asmPopMem(Asm* a, Amem m) {
-        asmOpRM(a, false, sliceOf<u8>({u8(143LL)}), Int(0LL), m, Int(0LL), false);
+        asmOpRM(a, false, Span<const u8>({u8(143LL)}), Int(0LL), m, Int(0LL), false);
         asmMoveSP(a, i32(-8LL));
     }
 
@@ -10503,7 +10513,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     // prefixed emits a mandatory prefix (66, F2, F3) before the REX prefix.
-    static void asmPrefixed(Asm* a, u8 prefix, bool w, Slice<u8> op, Int reg, Int rm) {
+    static void asmPrefixed(Asm* a, u8 prefix, bool w, Span<const u8> op, Int reg, Int rm) {
         asmBytes(a, {u8(prefix)});
         asmOpRR(a, w, op, reg, rm, false);
     }
@@ -10515,7 +10525,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void asmPushMem(Asm* a, Amem m) {
-        asmOpRM(a, false, sliceOf<u8>({u8(255LL)}), Int(6LL), m, Int(0LL), false);
+        asmOpRM(a, false, Span<const u8>({u8(255LL)}), Int(6LL), m, Int(0LL), false);
         asmMoveSP(a, i32(8LL));
     }
 
@@ -10652,20 +10662,20 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             auto switch591 = width;
             switch (switch591) {
                 case u8(8LL): {
-                    asmOpRM(a, true, sliceOf<u8>({u8(137LL)}), s, m, Int(0LL), false);
+                    asmOpRM(a, true, Span<const u8>({u8(137LL)}), s, m, Int(0LL), false);
                     break;
                 }
                 case u8(4LL): {
-                    asmOpRM(a, false, sliceOf<u8>({u8(137LL)}), s, m, Int(0LL), false);
+                    asmOpRM(a, false, Span<const u8>({u8(137LL)}), s, m, Int(0LL), false);
                     break;
                 }
                 case u8(2LL): {
                     asmBytes(a, {u8(u8(102LL))});
-                    asmOpRM(a, false, sliceOf<u8>({u8(137LL)}), s, m, Int(0LL), false);
+                    asmOpRM(a, false, Span<const u8>({u8(137LL)}), s, m, Int(0LL), false);
                     break;
                 }
                 default: {
-                    asmOpRM(a, false, sliceOf<u8>({u8(136LL)}), s, m, Int(0LL), true);
+                    asmOpRM(a, false, Span<const u8>({u8(136LL)}), s, m, Int(0LL), true);
                     break;
                 }
             }
@@ -10677,23 +10687,23 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             auto switch592 = width;
             switch (switch592) {
                 case u8(8LL): {
-                    asmOpRM(a, true, sliceOf<u8>({u8(199LL)}), Int(0LL), m, Int(4LL), false);
+                    asmOpRM(a, true, Span<const u8>({u8(199LL)}), Int(0LL), m, Int(4LL), false);
                     asmU32(a, convert<u32>(x));
                     break;
                 }
                 case u8(4LL): {
-                    asmOpRM(a, false, sliceOf<u8>({u8(199LL)}), Int(0LL), m, Int(4LL), false);
+                    asmOpRM(a, false, Span<const u8>({u8(199LL)}), Int(0LL), m, Int(4LL), false);
                     asmU32(a, convert<u32>(x));
                     break;
                 }
                 case u8(2LL): {
                     asmBytes(a, {u8(u8(102LL))});
-                    asmOpRM(a, false, sliceOf<u8>({u8(199LL)}), Int(0LL), m, Int(2LL), false);
+                    asmOpRM(a, false, Span<const u8>({u8(199LL)}), Int(0LL), m, Int(2LL), false);
                     asmBytes(a, {u8(convert<u8>(x)), u8(convert<u8>(shiftRight(x, Int(8LL))))});
                     break;
                 }
                 default: {
-                    asmOpRM(a, false, sliceOf<u8>({u8(198LL)}), Int(0LL), m, Int(1LL), false);
+                    asmOpRM(a, false, Span<const u8>({u8(198LL)}), Int(0LL), m, Int(1LL), false);
                     asmBytes(a, {u8(convert<u8>(x))});
                     break;
                 }
@@ -10702,7 +10712,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void asmTest(Asm* a, u8 size, VReg x, VReg y) {
-        asmOpRR(a, (size == u8(8LL)), sliceOf<u8>({u8(133LL)}), convert<Int>(y), convert<Int>(x), false);
+        asmOpRR(a, (size == u8(8LL)), Span<const u8>({u8(133LL)}), convert<Int>(y), convert<Int>(x), false);
     }
 
     static void asmTestImm(Asm* a, u8 size, VReg x, i64 imm) {
@@ -10786,7 +10796,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void asmXchg(Asm* a, VReg x, VReg y) {
-        asmOpRR(a, true, sliceOf<u8>({u8(135LL)}), convert<Int>(x), convert<Int>(y), false);
+        asmOpRR(a, true, Span<const u8>({u8(135LL)}), convert<Int>(x), convert<Int>(y), false);
     }
 
     // children lists the immediate dominator's children in a stable order.
@@ -12662,7 +12672,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
                 case mTestImm: {
                     if (((((in)->aux == u8(1LL)) && ((in)->imm >= i64(0LL))) && ((in)->imm <= i64(255LL)))) {
-                        asmOpRR(a, false, sliceOf<u8>({u8(246LL)}), Int(0LL), convert<Int>((in)->src), true);
+                        asmOpRR(a, false, Span<const u8>({u8(246LL)}), Int(0LL), convert<Int>((in)->src), true);
                         asmBytes(a, {u8(convert<u8>((in)->imm))});
                     } else {
                         asmTestImm(a, (in)->size, (in)->src, (in)->imm);
@@ -13116,7 +13126,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         asmBytes(a, {u8(u8(141LL)), u8(u8(shiftLeft(lo3(convert<Int>(t0)), Int(3LL)) | u8(5LL)))});
         i32 leaAt = asmPos(a);
         asmU32(a, u32(0LL));
-        asmOpRM(a, false, sliceOf<u8>({u8(255LL)}), Int(4LL), Amem{convert<Int>(t0), convert<Int>((in)->src), u8(8LL), {}, i32(-1LL), {}}, Int(0LL), false);
+        asmOpRM(a, false, Span<const u8>({u8(255LL)}), Int(4LL), Amem{convert<Int>(t0), convert<Int>((in)->src), u8(8LL), {}, i32(-1LL), {}}, Int(0LL), false);
         (e)->tables = appendValues((e)->tables, TableFixup{leaAt, (leaAt + i32(4LL)), mInstTable(in)});
     }
 
@@ -13322,6 +13332,23 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return (intervalEnd(it) <= p);
     }
 
+    // Instructions arrive in descending position order. Within one
+    // instruction, definitions and uses may revisit its two positions.
+    static void intervalRecordUse(Interval* it, i32 p) {
+        auto& uses = it->uses;
+        const usize count = uses.size();
+        if (!count || p < uses[count - 1]) {
+            uses.pushBack(p);
+        } else if (p != uses[count - 1]) {
+            const i32 last = uses[count - 1];
+            require((p & 1) && last == p - 1, "out of order interval use");
+            if (count == 1 || uses[count - 2] != p) {
+                uses[count - 1] = p;
+                uses.pushBack(last);
+            }
+        }
+    }
+
     static void intervalFinish(Interval* it) {
         Span<Lrange> r = (it)->ranges.view();
         {
@@ -13341,17 +13368,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 r[j] = temporary735;
             }
         }
-        sortValues((it)->uses.view(), [&](Int i, Int j) mutable -> bool {
-            return ((it)->uses[i] < (it)->uses[j]);
-        });
-        Int count = 0;
-        for (usize i = 0; i < it->uses.size(); ++i) {
+        const usize count = it->uses.size();
+        for (usize i = 0; i < count / 2; ++i) {
             const i32 use = it->uses[i];
-            if (!count || it->uses[usize(count - 1)] != use) {
-                it->uses[usize(count++)] = use;
-            }
+            it->uses[i] = it->uses[count - 1 - i];
+            it->uses[count - 1 - i] = use;
         }
-        it->uses.resize(usize(count));
     }
 
     // intersection returns the first position both intervals cover, or maxPos;
@@ -16748,7 +16770,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             asmAluRR(a, aluAdd, u8(8LL), RDI, RAX);
                             asmMovImm(a, u8(4LL), RCX, n);
                             i32 loop = asmPos(a);
-                            asmOpRM(a, true, sliceOf<u8>({u8(99LL)}), Int(0LL), baseAt(RSI, i32(0LL)), Int(0LL), false);
+                            asmOpRM(a, true, Span<const u8>({u8(99LL)}), Int(0LL), baseAt(RSI, i32(0LL)), Int(0LL), false);
                             asmTest(a, u8(8LL), RAX, RAX);
                             i32 null = asmJcc8(a, ccE);
                             asmAluRR(a, aluAdd, u8(8LL), RAX, ctxReg);
@@ -22567,6 +22589,20 @@ namespace {
         }
         static_assert(sizeof(MInst) <= 72);
         {
+            Interval interval;
+            const i32 visits[] = {11, 10, 11, 7, 6, 7, 2, 3, 2, 0, 1, 1, 0};
+            for (i32 p : visits) {
+                intervalRecordUse(&interval, p);
+            }
+            intervalFinish(&interval);
+            const i32 expected[] = {0, 1, 2, 3, 6, 7, 10, 11};
+            require(interval.uses.size() == 8, "interval use deduplication");
+            for (usize i = 0; i < 8; ++i) {
+                require(interval.uses[i] == expected[i], "interval use order");
+            }
+            require(intervalNextUse(&interval, 4) == 6 && intervalPrevUse(&interval, 6) == 3, "interval use lookup");
+        }
+        {
             Interval intervals[5]{};
             IntervalQueue queue;
             queue.push(&intervals[0], 5);
@@ -22579,7 +22615,23 @@ namespace {
             require(queue.pop() == &intervals[0], "interval queue first tie");
             require(queue.pop() == &intervals[2], "interval queue second tie");
             require(queue.pop() == &intervals[3], "interval queue later tie");
-            require(queue.entries.empty(), "interval queue drain");
+            require(queue.empty(), "interval queue drain");
+        }
+        {
+            Interval intervals[6]{};
+            IntervalQueue queue;
+            queue.initial.pushBack({&intervals[0], 3, 0});
+            queue.initial.pushBack({&intervals[1], 5, 1});
+            queue.initial.pushBack({&intervals[2], 5, 2});
+            queue.nextOrder = 3;
+            queue.push(&intervals[3], 5);
+            queue.push(&intervals[4], 1);
+            require(queue.pop() == &intervals[4], "split before initial interval");
+            require(queue.pop() == &intervals[0], "initial interval priority");
+            queue.push(&intervals[5], 5);
+            require(queue.pop() == &intervals[1] && queue.pop() == &intervals[2], "initial interval ties");
+            require(queue.pop() == &intervals[3] && queue.pop() == &intervals[5], "split interval ties");
+            require(queue.empty(), "merged interval queue drain");
         }
         u64 total = 0;
         moved.visit([&](u64 value) {
