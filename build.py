@@ -302,6 +302,7 @@ NATIVE_CONFIG = json.dumps({
     "ldflags": build.ldflags,
     "magic_data": os.environ.get("MAGIC_DATA", ""),
     "ix": os.environ.get("STAND_IX_REV", ""),
+    "scalar": os.environ.get("STAND_NATIVE_SCALAR", ""),
 }, sort_keys=True)
 decode_stand = []
 

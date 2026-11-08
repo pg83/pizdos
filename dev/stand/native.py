@@ -22,7 +22,7 @@ def main():
     here = Path(__file__).resolve().parent
     output = Path(output).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
-    common = [*config["cppflags"], *config["cflags"], "-O3", "-march=x86-64-v3", "-fomit-frame-pointer", "-flto=thin"]
+    common = [*config["cppflags"], *config["cflags"], "-O3", "-march=x86-64-v3", "-mno-avx", "-mno-avx2", "-mno-fma", "-fno-vectorize", "-fno-slp-vectorize", "-fomit-frame-pointer", "-flto=thin"]
 
     with tempfile.TemporaryDirectory(prefix="native-", dir=output.parent) as tmp:
         tmp = Path(tmp)

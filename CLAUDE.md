@@ -14,8 +14,12 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   tools and runs `./build stand`: wasm2o.wasm through wasm2c, plus decode's
   im, pdf, djvu, svg and magic modules through wasm2o, wasm2c and native
   libraries with the same wrappers. `dev/stand.py --runs 5 --json FILE`
-  runs native (A), our AOT (C) and wasm2c (R) interleaved; C/R <= 1 is the
-  goal. Decode excludes startup, I/O and host hashing and repeats short
+  runs native (A), our AOT (C) and wasm2c (R) interleaved; C/A <= 1.2 is the
+  goal. Native codec libraries and wrappers disable SIMD implementations,
+  loop/SLP vectorization, AVX and FMA (scalar.py edits only the private ix
+  checkout); AVIF uses libaom, as the wasm module does. The stand_scalar
+  flag belongs to each decoder library, never to the whole ix realm or
+  host toolchain. Decode excludes startup, I/O and host hashing and repeats short
   workloads. C and R must agree exactly; native agrees on status and sizes,
   with pixel hash differences counted separately. The 89-file corpus is
   pinned by hash in build.py and fetched from pg83/store; corpus.sh makes

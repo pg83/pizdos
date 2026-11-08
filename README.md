@@ -82,7 +82,7 @@ build.py      the build graph
 sh dev/stand/build.sh
                  # the full stand, with its pinned ix toolchain and libraries
 dev/stand.py --runs 5 --json .build/stand/results.json
-                 # native (A), wasm2o (C), wasm2c (R); the goal is C/R <= 1
+                 # native (A), wasm2o (C), wasm2c (R); the goal is C/A <= 1.2
 dev/stand.py --only im,pdf,djvu,svg,magic
                  # just the C/C++ decoder workloads
 ```
@@ -98,6 +98,13 @@ The stand's build script keeps a private ix checkout in `.build-stand/ix`,
 at the revision that produced [decode release 16](https://github.com/impulse-desktop/decode/releases/tag/16).
 It supplies the native ImageMagick, PDFium, DjVuLibre, SVG and libmagic
 libraries, wasm2c and the host compiler, then runs `./build stand`.
+`dev/stand/scalar.py` applies reproducible edits to that private checkout:
+native codec libraries and wrappers use -O3 with loop/SLP vectorization,
+AVX and FMA disabled. The codecs' own SIMD dispatch is disabled as well
+(scalar Highway for JPEG XL, generic libaom, portable libdeflate). SSE
+registers remain available for the x86-64 scalar floating-point ABI.
+AVIF uses libaom on both sides. The scalar flag is scoped to the decoder
+libraries so the host compiler keeps its normal build.
 The graph fetches the release's scalar wasm modules and the same revision's
 wrappers, checks their hashes and builds each through wasm2o, bounds-checked
 wasm2c with clang -O3 and ThinLTO, and the native libraries. Normal builds
@@ -122,7 +129,7 @@ with `GOMAXPROCS=1`, `MAGICK_THREAD_LIMIT=1` and `OMP_NUM_THREADS=1`.
 
 C and R must agree exactly on every result, including the hashes of rendered
 RGBA pixels. Native must agree on success, dimensions and page counts;
-its pixel hashes can differ with native SIMD, floating point and libm, and
+its pixel hashes can differ with floating point and libm, and
 the report states how many match exactly. `--json` saves the samples and
 every file's result. The original positional `dev/stand.py` invocation still
 runs the Go workloads alone; `./build stand_bin` builds their wasm2c reference.

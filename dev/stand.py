@@ -8,7 +8,7 @@ Compiler workloads measure end-to-end wall and CPU time. Decode workloads
 measure work inside each driver, excluding startup, linking, file I/O and
 output hashing. Small workloads repeat in the same instance. C and R must
 agree exactly; native must agree on status, dimensions and page count, but
-its pixels may differ with native SIMD, libm and floating-point arithmetic.
+its pixels may differ with libm and floating-point arithmetic.
 
 The original positional form is accepted for compiler workloads alone:
     stand.py [--runs N] <wasm2o> <wasm2o.o> <stand> <input.wasm>...
