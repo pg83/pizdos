@@ -3586,16 +3586,16 @@ namespace {
         Layout* lay{};
         CfgInfo* ci{};
         MFunc* mf{};
-        Slice<VReg> vregs{};
-        Slice<i32> uses{};
-        Slice<bool> deferred{};
-        Slice<i32> mblk{};
+        Vec<VReg> vregs{};
+        Vec<i32> uses{};
+        Vec<bool> deferred{};
+        Vec<i32> mblk{};
         i32 cur{};
         Map<Array<i32, 2>, i32> split{};
         Map<i32, i64> checked{};
         Slice<CheckUndo> checkUndo{};
         Slice<Slice<i32>> floatHomes{};
-        Slice<bool> rawTrunc{};
+        Vec<bool> rawTrunc{};
         UnsignedRanges* addresses{};
     };
 
@@ -3906,19 +3906,19 @@ namespace {
 
     struct Allocator {
         MFunc* mf{};
-        Slice<i32> order{};
-        Slice<i32> blockFrom{};
-        Slice<i32> blockTo{};
-        Slice<Bitset> liveIn{};
-        Slice<Bitset> liveOut{};
+        Vec<i32> order{};
+        Vec<i32> blockFrom{};
+        Vec<i32> blockTo{};
+        Vec<Bitset> liveIn{};
+        Vec<Bitset> liveOut{};
         Vec<Interval*> intervals{};
         Array<Interval*, 32> fixed{};
         IntervalQueue unhandled{};
         Vec<Interval*> active{};
         Vec<Interval*> inactive{};
-        Slice<i32> slots{};
+        Vec<i32> slots{};
         i32 nslots{};
-        Slice<i32> posBlock{};
+        Vec<i32> posBlock{};
         Array<bool, 32> used{};
     };
 
@@ -3991,7 +3991,7 @@ namespace {
     struct CseVisit {
         i32 block{};
         bool leave{};
-        Slice<CseKey> keys{};
+        usize base{};
     };
 
     struct FloatRange {
@@ -6913,7 +6913,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // Build hot reverse postorder without visiting fallback edges: cold paths
     // must not affect the placement of hot successors. A strict function keeps
     // the allocator's exact order.
-    static Slice<i32> mFuncHotOrder(MFunc* mf, Slice<i32> order) {
+    static Span<i32> mFuncHotOrder(MFunc* mf, Span<i32> order) {
         Int first = Int(-1LL);
         {
             auto range74 = order;
@@ -9458,58 +9458,52 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // linearize orders blocks in reverse postorder of the machine CFG and
     // numbers instruction positions.
     static void allocatorLinearize(Allocator* a) {
-        MFunc* mf = (a)->mf;
-        Int n = length((mf)->blocks);
-        Slice<bool> visited = makeSlice<bool>(n);
-        Slice<i32> post = {};
-        Slice<FrameRegalloc324> stack = sliceOf<FrameRegalloc324>({FrameRegalloc324{i32(0LL), Int(0LL)}});
-        visited[Int(0LL)] = true;
-        {
-            for (; (length(stack) > Int(0LL));) {
-                FrameRegalloc324* top = (&(stack[(length(stack) - Int(1LL))]));
-                Slice<i32> succs = ((mf)->blocks[(top)->b]).succs;
-                if (((top)->i < length(succs))) {
-                    i32 s = succs[((length(succs) - Int(1LL)) - (top)->i)];
-                    (top)->i++;
-                    if ((!(visited[s]))) {
-                        visited[s] = true;
-                        stack = appendValues(stack, FrameRegalloc324{s, Int(0LL)});
-                    }
-                    continue;
+        MFunc* mf = a->mf;
+        const usize n = mf->blocks.size();
+        Vec<u8> visited;
+        visited.resize(n);
+        visited.fill(0);
+        Vec<FrameRegalloc324> stack;
+        stack.pushBack({0, 0});
+        visited[0] = 1;
+        a->order.reserve(n);
+        while (stack.size()) {
+            auto* top = &stack[stack.size() - 1];
+            auto succs = mf->blocks[top->b].succs;
+            if (top->i < length(succs)) {
+                const i32 successor = succs[length(succs) - 1 - top->i++];
+                if (!visited[usize(successor)]) {
+                    visited[usize(successor)] = 1;
+                    stack.pushBack({successor, 0});
                 }
-                post = appendValues(post, (top)->b);
-                stack = subslice(stack, Int(0), (length(stack) - Int(1LL)));
+                continue;
             }
+            a->order.pushBack(top->b);
+            stack.popBack();
         }
-        {
-            Int i = (length(post) - Int(1LL));
-            for (; (i >= Int(0LL)); i--) {
-                (a)->order = appendValues((a)->order, post[i]);
-            }
+        const usize count = a->order.size();
+        for (usize i = 0; i < count / 2; ++i) {
+            const i32 block = a->order[i];
+            a->order[i] = a->order[count - 1 - i];
+            a->order[count - 1 - i] = block;
         }
-        (a)->blockFrom = makeSlice<i32>(n);
-        (a)->blockTo = makeSlice<i32>(n);
-        i32 pos = i32(0LL);
-        {
-            auto range454 = (a)->order;
-            for (Int index455 = 0, rangeEnd456 = length(range454); index455 < rangeEnd456; ++index455) {
-                i32 b = range454[index455];
-                (a)->blockFrom[b] = pos;
-                pos += 2 + 2 * i32(mf->blocks[b].insts.size());
-                (a)->blockTo[b] = pos;
-            }
+        a->blockFrom.resize(n);
+        a->blockFrom.fill(0);
+        a->blockTo.resize(n);
+        a->blockTo.fill(0);
+        i32 pos = 0;
+        for (usize i = 0; i < count; ++i) {
+            const i32 block = a->order[i];
+            a->blockFrom[usize(block)] = pos;
+            pos += 2 + 2 * i32(mf->blocks[block].insts.size());
+            a->blockTo[usize(block)] = pos;
         }
-        (a)->posBlock = makeSlice<i32>(((pos / i32(2LL)) + i32(1LL)));
-        {
-            auto range460 = (a)->order;
-            for (Int index461 = 0, rangeEnd462 = length(range460); index461 < rangeEnd462; ++index461) {
-                i32 b = range460[index461];
-                {
-                    i32 p = (a)->blockFrom[b];
-                    for (; (p < (a)->blockTo[b]); p += i32(2LL)) {
-                        (a)->posBlock[(p / i32(2LL))] = b;
-                    }
-                }
+        a->posBlock.resize(usize(pos / 2 + 1));
+        a->posBlock[a->posBlock.size() - 1] = 0;
+        for (usize i = 0; i < count; ++i) {
+            const i32 block = a->order[i];
+            for (i32 p = a->blockFrom[usize(block)]; p < a->blockTo[usize(block)]; p += 2) {
+                a->posBlock[usize(p / 2)] = block;
             }
         }
     }
@@ -9520,13 +9514,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         const Int nv = mf->nregs;
         // Gen/kill sets and operand callbacks have no users after dataflow.
         ObjPool temporary;
-        Slice<Bitset> kill;
-        {
-            PoolScope scope(temporary);
-            kill = makeSlice<Bitset>(n);
-        }
-        a->liveIn = makeSlice<Bitset>(n);
-        a->liveOut = makeSlice<Bitset>(n);
+        Vec<Bitset> kill;
+        kill.resize(usize(n));
+        kill.fill(Bitset{});
+        a->liveIn.resize(usize(n));
+        a->liveIn.fill(Bitset{});
+        a->liveOut.resize(usize(n));
+        a->liveOut.fill(Bitset{});
         for (Int index = 0; index < length(a->order); ++index) {
             const i32 b = a->order[index];
             a->liveIn[b] = newBitset(nv);
@@ -9690,7 +9684,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Map<i32, Slice<Move>> atEnd = mapOf<i32, Slice<Move>>({});
         Map<i32, Slice<Move>> atStart = mapOf<i32, Slice<Move>>({});
         {
-            auto range485 = (a)->order;
+            auto range485 = (a)->order.view();
             for (Int index486 = 0, rangeEnd487 = length(range485); index486 < rangeEnd487; ++index486) {
                 i32 b = range485[index486];
                 MBlock* blk = (&((mf)->blocks[b]));
@@ -9731,7 +9725,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         usize nextMove = 0;
         {
-            auto range491 = (a)->order;
+            auto range491 = (a)->order.view();
             for (Int index492 = 0, rangeEnd493 = length(range491); index492 < rangeEnd493; ++index492) {
                 i32 b = range491[index492];
                 MBlock* blk = (&((mf)->blocks[b]));
@@ -9824,7 +9818,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         Slice<SpillDef> defs = makeSlice<SpillDef>(((a)->mf)->nregs);
         {
-            auto range509 = (a)->order;
+            auto range509 = (a)->order.view();
             for (Int index510 = 0, rangeEnd511 = length(range509); index510 < rangeEnd511; ++index510) {
                 i32 b = range509[index510];
                 {
@@ -9847,7 +9841,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         Map<VReg, Int> owners = makeMap<VReg, Int>();
         {
-            auto range515 = (a)->slots;
+            auto range515 = (a)->slots.view();
             for (Int index516 = 0, rangeEnd517 = length(range515); index516 < rangeEnd517; ++index516) {
                 Int x = index516;
                 i32 slot = range515[index516];
@@ -10003,14 +9997,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
             }
         }
-        (a)->slots = makeSlice<i32>(((a)->mf)->nregs);
-        {
-            auto range553 = (a)->slots;
-            for (Int index554 = 0, rangeEnd555 = length(range553); index554 < rangeEnd555; ++index554) {
-                Int i = index554;
-                (a)->slots[i] = i32(-1LL);
-            }
-        }
+        a->slots.resize(usize(a->mf->nregs));
+        a->slots.fill(-1);
         {
             for (; !a->unhandled.empty();) {
                 Interval* cur = a->unhandled.pop();
@@ -14019,7 +14007,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void lowererCountUses(Lowerer* l) {
         Function* f = (l)->f;
-        (l)->uses = makeSlice<i32>(length((f)->values));
+        l->uses.resize(f->values.size());
+        l->uses.fill(0);
         {
             auto range759 = ((l)->ci)->order;
             for (Int index760 = 0, rangeEnd761 = length(range759); index760 < rangeEnd761; ++index760) {
@@ -14275,7 +14264,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // unobserved result does not matter. Trapping wasm conversions stay intact.
     static void lowererFindRawTruncations(Lowerer* l) {
         Function* f = (l)->f;
-        (l)->rawTrunc = makeSlice<bool>(length((f)->values));
+        l->rawTrunc.resize(f->values.size());
+        l->rawTrunc.fill(false);
         Slice<i32> user = makeSlice<i32>(length((f)->values));
         {
             auto range792 = user;
@@ -14926,7 +14916,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // their own block.
     static void lowererMarkDeferred(Lowerer* l) {
         Function* f = (l)->f;
-        (l)->deferred = makeSlice<bool>(length((f)->values));
+        l->deferred.resize(f->values.size());
+        l->deferred.fill(false);
         {
             auto range830 = ((l)->ci)->order;
             for (Int index831 = 0, rangeEnd832 = length(range830); index831 < rangeEnd832; ++index831) {
@@ -15889,7 +15880,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         {
-            auto range918 = (l)->vregs;
+            auto range918 = (l)->vregs.view();
             for (Int index919 = 0, rangeEnd920 = length(range918); index919 < rangeEnd920; ++index919) {
                 Int v = index919;
                 VReg reg = range918[index919];
@@ -16394,7 +16385,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 (e)->blockAt[i] = i32(-1LL);
             }
         }
-        Slice<i32> order = mFuncHotOrder(mf, (al)->order);
+        Span<i32> order = mFuncHotOrder(mf, al->order.view());
         Slice<Int> positions = makeSlice<Int>(length((mf)->blocks));
         {
             auto range998 = order;
@@ -17564,87 +17555,99 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void optimizerCommonExpressions(Optimizer* o) {
-        Function* f = (o)->f;
+        Function* f = o->f;
         optimizerApply(o);
         CfgInfo* ci = functionAnalyze(f);
-        Slice<Slice<i32>> children = cfgInfoChildren(ci);
-        Map<CseKey, i32> available = mapOf<CseKey, i32>({});
-        Slice<CseVisit> stack = sliceOf<CseVisit>({CseVisit{(ci)->order[Int(0LL)], {}, {}}});
-        {
-            for (; (length(stack) > Int(0LL));) {
-                CseVisit visit = stack[(length(stack) - Int(1LL))];
-                stack = subslice(stack, Int(0), (length(stack) - Int(1LL)));
-                if ((visit).leave) {
-                    {
-                        auto range1153 = (visit).keys;
-                        for (Int index1154 = 0, rangeEnd1155 = length(range1153); index1154 < rangeEnd1155; ++index1154) {
-                            CseKey key = range1153[index1154];
-                            eraseMap(available, key);
-                        }
-                    }
+        auto children = cfgInfoChildren(ci);
+        struct Entry {
+            u64 hash;
+            CseKey key;
+            i32 value;
+            i32 next;
+        };
+        Vec<i32> heads;
+        Vec<Entry> entries;
+        Vec<CseVisit> stack;
+        stack.pushBack({ci->order[0], false, 0});
+        while (stack.size()) {
+            const CseVisit visit = stack.popBack();
+            if (visit.leave) {
+                // Insertions are nested by dominance. Rehashing preserves
+                // insertion order, so undoing the suffix restores each head.
+                while (entries.size() > visit.base) {
+                    const auto& entry = entries[entries.size() - 1];
+                    heads[usize(entry.hash) & (heads.size() - 1)] = entry.next;
+                    entries.resize(entries.size() - 1);
+                }
+                continue;
+            }
+            const usize base = entries.size();
+            auto instructions = f->blocks[visit.block].instrs.view();
+            for (Int i = 0; i < length(instructions); ++i) {
+                const i32 v = instructions[i];
+                const Value& val = f->values[v];
+                if (readsState(val.op) || val.nargs > 3 || (val.typ != I32 && val.typ != I64 && val.typ != F32 && val.typ != F64)) {
                     continue;
                 }
-                Slice<CseKey> added = {};
-                {
-                    auto range1156 = ((f)->blocks[(visit).block]).instrs.view();
-                    for (Int index1157 = 0, rangeEnd1158 = length(range1156); index1157 < rangeEnd1158; ++index1157) {
-                        i32 v = range1156[index1157];
-                        Value* val = (&((f)->values[v]));
-                        if (((readsState((val)->op) || ((val)->nargs > u16(3LL))) || ((((((val)->typ != I32) && ((val)->typ != I64)) && ((val)->typ != F32)) && ((val)->typ != F64))))) {
-                            continue;
-                        }
-                        CseKey key = CseKey{(val)->op, (val)->typ, (val)->nargs, (val)->aux, (val)->aux2, {}};
-                        {
-                            auto range1159 = functionArgs(f, v);
-                            for (Int index1160 = 0, rangeEnd1161 = length(range1159); index1160 < rangeEnd1161; ++index1160) {
-                                Int i = index1160;
-                                i32 a = range1159[index1160];
-                                (key).args[i] = optimizerResolve(o, a);
+                CseKey key{val.op, val.typ, val.nargs, val.aux, val.aux2, {}};
+                auto args = functionArgs(f, v);
+                for (Int j = 0; j < length(args); ++j) {
+                    key.args[j] = optimizerResolve(o, args[j]);
+                }
+                if (!isFloat(val.typ)) {
+                    switch (val.op) {
+                        case OpAdd:
+                        case OpMul:
+                        case OpAnd:
+                        case OpOr:
+                        case OpXor:
+                        case OpEq:
+                        case OpNe: {
+                            if (key.args[0] > key.args[1]) {
+                                const i32 a = key.args[0];
+                                key.args[0] = key.args[1];
+                                key.args[1] = a;
                             }
-                        }
-                        if ((!(isFloat((val)->typ)))) {
-                            {
-                                auto switch1162 = (val)->op;
-                                switch (switch1162) {
-                                    case OpAdd:
-                                    case OpMul:
-                                    case OpAnd:
-                                    case OpOr:
-                                    case OpXor:
-                                    case OpEq:
-                                    case OpNe: {
-                                        if (((key).args[Int(0LL)] > (key).args[Int(1LL)])) {
-                                            auto temporary1163 = (key).args[Int(1LL)];
-                                            auto temporary1164 = (key).args[Int(0LL)];
-                                            (key).args[Int(0LL)] = temporary1163;
-                                            (key).args[Int(1LL)] = temporary1164;
-                                        }
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        {
-                            auto temporary1165 = lookupMap(available, key);
-                            i32 prior = temporary1165.v0;
-                            bool ok = temporary1165.v1;
-                            if (ok) {
-                                optimizerReplace(o, v, prior);
-                            } else {
-                                setMap(available, key, v);
-                                added = appendValues(added, key);
-                            }
+                            break;
                         }
                     }
                 }
-                stack = appendValues(stack, CseVisit{(visit).block, true, added});
-                Slice<i32> kids = children[(visit).block];
-                {
-                    Int i = (length(kids) - Int(1LL));
-                    for (; (i >= Int(0LL)); i--) {
-                        stack = appendValues(stack, CseVisit{kids[i], {}, {}});
+                const u64 hash = hashValue(key);
+                i32 prior = -1;
+                if (heads.size()) {
+                    i32 at = heads[usize(hash) & (heads.size() - 1)];
+                    while (at >= 0) {
+                        const auto& entry = entries[usize(at)];
+                        if (entry.hash == hash && entry.key == key) {
+                            prior = entry.value;
+                            break;
+                        }
+                        at = entry.next;
                     }
                 }
+                if (prior >= 0) {
+                    optimizerReplace(o, v, prior);
+                    continue;
+                }
+                if (entries.size() == heads.size()) {
+                    heads.resize(heads.size() ? heads.size() * 2 : 16);
+                    heads.fill(-1);
+                    for (usize j = 0; j < entries.size(); ++j) {
+                        auto& entry = entries[j];
+                        const usize bucket = usize(entry.hash) & (heads.size() - 1);
+                        entry.next = heads[bucket];
+                        heads[bucket] = i32(j);
+                    }
+                }
+                const usize bucket = usize(hash) & (heads.size() - 1);
+                const i32 at = i32(entries.size());
+                entries.pushBack({hash, key, v, heads[bucket]});
+                heads[bucket] = at;
+            }
+            stack.pushBack({visit.block, true, base});
+            auto kids = children[visit.block];
+            for (Int i = length(kids) - 1; i >= 0; --i) {
+                stack.pushBack({kids[i], false, 0});
             }
         }
         optimizerApply(o);
@@ -20854,27 +20857,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static MFunc* lowerFunction(Module* m, Layout* lay, Function* f) {
         Lowerer* l = activePool->make<Lowerer>(Lowerer{m, f, lay, {}, activePool->make<MFunc>(MFunc{}), {}, {}, {}, {}, {}, mapOf<Array<i32, 2>, i32>({}), mapOf<i32, i64>({}), {}, {}, {}, {}});
         (l)->ci = functionAnalyze(f);
-        (l)->vregs = makeSlice<VReg>(length((f)->values));
-        {
-            auto range1547 = (l)->vregs;
-            for (Int index1548 = 0, rangeEnd1549 = length(range1547); index1548 < rangeEnd1549; ++index1548) {
-                Int i = index1548;
-                (l)->vregs[i] = noReg;
-            }
-        }
+        l->vregs.resize(f->values.size());
+        l->vregs.fill(noReg);
         lowererCountUses(l);
         lowererMarkDeferred(l);
         lowererPlaceFloatConstants(l);
         lowererFindRawTruncations(l);
         Slice<Slice<CheckedValue>> proofs = checkedValues(f, (l)->ci);
-        (l)->mblk = makeSlice<i32>(length((f)->blocks));
-        {
-            auto range1550 = (l)->mblk;
-            for (Int index1551 = 0, rangeEnd1552 = length(range1550); index1551 < rangeEnd1552; ++index1551) {
-                Int i = index1551;
-                (l)->mblk[i] = i32(-1LL);
-            }
-        }
+        l->mblk.resize(f->blocks.size());
+        l->mblk.fill(-1);
         {
             auto range1553 = ((l)->ci)->order;
             for (Int index1554 = 0, rangeEnd1555 = length(range1553); index1554 < rangeEnd1555; ++index1554) {
@@ -22927,6 +22918,50 @@ namespace {
                     require(found.v0 == (i % 2 == 0 ? i * 7 : -i), "map value after reuse");
                 }
             }
+        }
+        {
+            ObjPool pool;
+            PoolScope scope(pool);
+            auto* f = pool.make<Function>();
+            auto* o = pool.make<Optimizer>();
+            o->f = f;
+            for (int i = 0; i < 4; ++i) {
+                functionNewBlock(f);
+            }
+            const i32 input = functionNewValue(f, OpParam, I32, 0, 0, {});
+            f->blocks[0].params = sliceOf<i32>({input});
+            Array<i32, 32> constants;
+            Array<i32, 32> roots;
+            auto emit = [&](i32 block, Op op, i32 a, i32 b) {
+                const i32 v = functionNewValue(f, op, I32, block, 0, Span<const i32>({a, b}));
+                f->blocks[block].instrs.pushBack(v);
+                return v;
+            };
+            for (i32 i = 0; i < 32; ++i) {
+                constants[i] = functionNewValue(f, OpConst, I32, -1, i + 1, {});
+                roots[i] = emit(0, OpAdd, input, constants[i]);
+            }
+            i32 first = -1;
+            for (i32 i = 0; i < 32; ++i) {
+                first = emit(1, OpMul, input, constants[i]);
+            }
+            const i32 rootCopy = emit(1, OpAdd, input, constants[17]);
+            const i32 second = emit(2, OpMul, input, constants[31]);
+            const i32 third = emit(3, OpMul, input, constants[31]);
+            const i32 thirdCopy = emit(3, OpMul, input, constants[31]);
+            const i32 merged = functionNewValue(f, OpParam, I32, 3, 0, {});
+            const i32 shared = functionNewValue(f, OpParam, I32, 3, 1, {});
+            f->blocks[3].params = sliceOf<i32>({merged, shared});
+            f->blocks[0].term = Term{TermIf, input, sliceOf<Edge>({Edge{1, {}}, Edge{2, {}}}), {}, {}};
+            f->blocks[1].term = Term{TermJump, {}, sliceOf<Edge>({Edge{3, sliceOf<i32>({first, rootCopy})}}), {}, {}};
+            f->blocks[2].term = Term{TermJump, {}, sliceOf<Edge>({Edge{3, sliceOf<i32>({second, roots[17]})}}), {}, {}};
+            f->blocks[3].term = Term{TermReturn, {}, {}, sliceOf<i32>({third, thirdCopy, merged, shared}), {}};
+            functionComputePreds(f);
+            optimizerCommonExpressions(o);
+            require(optimizerResolve(o, rootCopy) == roots[17] && f->blocks[1].term.edges[0].args[1] == roots[17], "CSE retains dominating expressions after growth");
+            require(optimizerResolve(o, second) == second, "CSE restores sibling scope after growth");
+            require(optimizerResolve(o, third) == third, "CSE does not merge sibling definitions");
+            require(f->blocks[3].term.values[0] == third && f->blocks[3].term.values[1] == third, "CSE merges expressions within a scope");
         }
         {
             ObjPool pool;
