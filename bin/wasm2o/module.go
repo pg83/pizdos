@@ -107,17 +107,20 @@ type Data struct {
 }
 
 type Module struct {
-	types     []FuncType
-	imports   []Import
-	funcs     []Func
-	tables    []Table
-	mems      []Memory
-	globals   []Global
-	exports   []Export
-	start     int64
-	elems     []Elem
-	datas     []Data
-	dataCount int64
+	memoryTail  uint64
+	tailRanges  bool
+	tailProfile bool
+	types       []FuncType
+	imports     []Import
+	funcs       []Func
+	tables      []Table
+	mems        []Memory
+	globals     []Global
+	exports     []Export
+	start       int64
+	elems       []Elem
+	datas       []Data
+	dataCount   int64
 	// counts of imported entities, which come first in each index space
 	importedFuncs   int
 	importedTables  int

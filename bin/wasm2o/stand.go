@@ -82,7 +82,7 @@ func (m *module) fn(name string) any {
 }
 
 func (m *module) mem() []byte {
-	return m.i.memory.bytes()
+	return m.i.memoryBytes()
 }
 
 // put copies b into the module's memory.
@@ -238,6 +238,9 @@ func standCommand(args []string) int {
 	}
 
 	fresh()
+
+	defer func() { m.i.release() }()
+
 	total := time.Duration(0)
 
 	for _, file := range files {

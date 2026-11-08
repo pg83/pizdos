@@ -204,7 +204,10 @@ func load(t *testing.T, m *testModule, imports testImports) *Instance {
 	var i *Instance
 
 	if e := try(func() {
-		obj := readObject(compileModule(m.encode()))
+		// These modules include assertions on exact Wasm trap boundaries.
+		// The default padded compiler is exercised by memory_tail_test
+		// and by the self-compilation, decoder and BusyBox tests.
+		obj := readObject(compileModuleWithOptions(m.encode(), CompileOptions{}))
 		i = instantiate(t.Name(), obj, imports, 8<<20)
 		i.start()
 	}); e != nil {

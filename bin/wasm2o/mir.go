@@ -170,6 +170,7 @@ const (
 	mFSelect     // dst = src or src2 by float comparison of uses[0:2]; aux: OpFEq..OpFGe
 	mMemOp       // memory.copy/fill/init: see emitter
 	mCopyForward // rdi <- bytes at rsi, rcx times, in forward order
+	mCounter     // add imm to a diagnostic 64-bit counter at mem
 )
 
 // truncFlags for mTruncF
@@ -276,7 +277,7 @@ type MInst struct {
 	src2  VReg
 	imm   int64
 	mem   Mem
-	// target is a block for branches, a callee for calls
+	// target is a block for branches, a callee for calls.
 	target int32
 	// uses and defs list the fixed registers a call or return reads and
 	// writes; moves holds a parallel move.
@@ -295,6 +296,8 @@ type MBlock struct {
 	depth int
 	// id is the SSA block this was lowered from, or -1 for a split edge.
 	id int32
+	// cold blocks are reached only by an optimization's fallback edges.
+	cold bool
 }
 
 type MFunc struct {
@@ -320,6 +323,69 @@ func (mf *MFunc) newReg(class uint8) VReg {
 	mf.class = append(mf.class, class)
 
 	return r
+}
+
+// Build hot reverse postorder without visiting fallback edges: cold paths
+// must not affect the placement of hot successors. A strict function keeps
+// the allocator's exact order.
+func (mf *MFunc) hotOrder(order []int32) []int32 {
+	first := -1
+
+	for j, b := range order {
+		if mf.blocks[b].cold {
+			first = j
+
+			break
+		}
+	}
+
+	if first < 0 {
+		return order
+	}
+
+	type visit struct {
+		block int32
+		edge  int
+	}
+
+	seen := make([]bool, len(mf.blocks))
+	seen[0] = true
+	stack := []visit{{block: 0}}
+	var post []int32
+
+	for len(stack) > 0 {
+		top := &stack[len(stack)-1]
+		succs := mf.blocks[top.block].succs
+
+		if top.edge < len(succs) {
+			s := succs[len(succs)-1-top.edge]
+			top.edge++
+
+			if !seen[s] && !mf.blocks[s].cold {
+				seen[s] = true
+				stack = append(stack, visit{block: s})
+			}
+
+			continue
+		}
+
+		post = append(post, top.block)
+		stack = stack[:len(stack)-1]
+	}
+
+	out := make([]int32, 0, len(order))
+
+	for j := len(post) - 1; j >= 0; j-- {
+		out = append(out, post[j])
+	}
+
+	for _, b := range order {
+		if mf.blocks[b].cold {
+			out = append(out, b)
+		}
+	}
+
+	return out
 }
 
 func (mf *MFunc) regClass(r VReg) uint8 {
@@ -371,7 +437,7 @@ func (in *MInst) forEachOperand(cb func(r *VReg, role int)) {
 	case mStore, mFStore:
 		mem()
 		cb(&in.src, roleUse)
-	case mStoreImm, mCmpMemImm:
+	case mStoreImm, mCmpMemImm, mCounter:
 		mem()
 	case mAlu:
 		cb(&in.src, roleUse)
@@ -506,6 +572,7 @@ var mopNames = map[MOp]string{
 	mLoadArg: "loadarg", mStoreRet: "storeret", mGrowMem: "growmem", mSpillStore: "spill", mSpillLoad: "reload",
 	mDivOvf: "divovf", mTruncF: "truncf", mFMinMax: "fminmax", mCvtU64F: "cvtu64f", mFAluMem: "falum",
 	mFSelect: "fselect", mMemOp: "memop", mCopyForward: "copy.forward",
+	mCounter: "counter",
 }
 
 func (m Mem) String() string {

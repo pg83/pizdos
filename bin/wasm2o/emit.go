@@ -45,6 +45,8 @@ type funcEmitter struct {
 	tables   []tableFixup
 	late     []func()
 	incoming int32
+	profile  int32
+	cold     bool
 }
 
 func (oc *objCode) emitFunction(index int, mf *MFunc, al *allocator) {
@@ -52,6 +54,11 @@ func (oc *objCode) emitFunction(index int, mf *MFunc, al *allocator) {
 	start := oc.beginRegion(oc.funcName(index))
 	oc.funcAt[index] = start
 	e := &funcEmitter{oc: oc, a: a, mf: mf, al: al}
+
+	if oc.m.tailProfile {
+		e.profile = oc.lay.tailProfile + int32(index)*tailCounterBytes
+	}
+
 	e.pushes = al.calleeSavedUsed()
 	e.frame = int32(mf.stackArgs) + 8*al.nslots
 	e.framed = mf.hasCalls || e.frame > 0 || len(e.pushes) > 0
@@ -97,22 +104,27 @@ func (oc *objCode) emitFunction(index int, mf *MFunc, al *allocator) {
 		e.blockAt[i] = -1
 	}
 
-	for i, b := range al.order {
+	order := mf.hotOrder(al.order)
+	positions := make([]int, len(mf.blocks))
+
+	for j, b := range order {
+		positions[b] = j
+	}
+
+	for i, b := range order {
 		next := int32(-1)
 
-		if i+1 < len(al.order) {
-			next = al.order[i+1]
+		if i+1 < len(order) {
+			next = order[i+1]
 		}
 
 		a.setSP(e.body)
 
 		for _, p := range mf.blocks[b].preds {
-			if al.blockFrom[p] >= al.blockFrom[b] {
-				// Back edges enter an aligned header; padding is crossed
-				// only when entering the loop for the first time.
-				for a.pos()%32 != 0 {
-					a.b(0x90)
-				}
+			if !mf.blocks[b].cold && !mf.blocks[p].cold && positions[p] >= positions[b] {
+				// Back edges skip padding, but every entry from an outer
+				// loop may cross it. Use a few multi-byte instructions.
+				a.nops(-a.pos() & 31)
 
 				break
 			}
@@ -190,6 +202,7 @@ func (e *funcEmitter) jumpTo(cc int, block int32) {
 }
 
 func (e *funcEmitter) block(blk *MBlock, next int32) {
+	e.cold = blk.cold
 	insts := blk.insts
 	n := len(insts)
 
@@ -237,6 +250,8 @@ func (e *funcEmitter) inst(in *MInst) {
 
 	switch in.op {
 	case mNop:
+	case mCounter:
+		a.aluMI(aluAdd, 8, e.mem(in.mem), in.imm)
 	case mCopyForward:
 		// With a one-byte forward overlap, each store supplies the next
 		// load. The whole checked span therefore repeats the first byte.
@@ -459,26 +474,45 @@ func (e *funcEmitter) inst(in *MInst) {
 // path the exact limit.
 func (e *funcEmitter) check(in *MInst) {
 	a := e.a
+
+	if e.profile != 0 {
+		a.aluMI(aluAdd, 8, baseAt(ctxReg, e.profile+24), 1)
+	}
+
 	src, end := in.src, in.imm
+
+	if e.cold {
+		e.exactCheck(src, end)
+
+		return
+	}
+
 	a.aluRM(aluCmp, 8, src, baseAt(ctxReg, offMemBound))
 	at := a.jccRel(ccG)
 	resume := a.pos()
 	e.late = append(e.late, func() {
 		a.patch32(at, a.pos())
-		s := RAX
-
-		if src == RAX {
-			s = RCX
-		}
-
-		a.push(s)
-		a.load(8, 8, false, s, baseAt(ctxReg, offMemSize))
-		a.aluRI(aluSub, 8, s, end)
-		a.aluRR(aluCmp, 8, src, s)
-		a.pop(s)
-		e.trapJcc(ccG, trapMemoryOOB)
+		e.exactCheck(src, end)
 		a.patch32(a.jmpRel(), resume)
 	})
+}
+
+// A fallback is already cold: use the exact limit directly, without
+// another fast comparison and an out-of-line slow path returning here.
+func (e *funcEmitter) exactCheck(src VReg, end int64) {
+	a := e.a
+	s := RAX
+
+	if src == RAX {
+		s = RCX
+	}
+
+	a.push(s)
+	a.load(8, 8, false, s, baseAt(ctxReg, e.oc.lay.memoryEnd))
+	a.aluRI(aluSub, 8, s, end)
+	a.aluRR(aluCmp, 8, src, s)
+	a.pop(s)
+	e.trapJcc(ccG, trapMemoryOOB)
 }
 
 func (e *funcEmitter) switchTable(in *MInst) {

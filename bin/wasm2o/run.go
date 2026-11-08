@@ -21,6 +21,8 @@ func runObject(path, root string, argv []string) (code int) {
 
 	i := instantiate(argv[0], obj, newWASI(argv), runStack)
 
+	defer i.writeTailProfile()
+
 	defer func() {
 		switch e := recover().(type) {
 		case nil:

@@ -79,8 +79,39 @@ type objCode struct {
 	initFn  int
 }
 
+type CompileOptions struct {
+	memoryTail  bool
+	tailRanges  bool
+	tailProfile bool
+}
+
 func compileModule(data []byte) []byte {
+	options := CompileOptions{memoryTail: true, tailRanges: true}
+
+	switch mode := os.Getenv("W2X_MEMORY_TAIL"); mode {
+	case "", "1", "optimized":
+	case "plain":
+		options.tailRanges = false
+	case "strict":
+		options.memoryTail, options.tailRanges = false, false
+	default:
+		throwFmt("unknown memory tail mode %q", mode)
+	}
+
+	options.tailProfile = options.tailRanges && os.Getenv("W2X_TAIL_PROFILE") != ""
+
+	return compileModuleWithOptions(data, options)
+}
+
+func compileModuleWithOptions(data []byte, options CompileOptions) []byte {
 	m := decodeModule(data)
+
+	if options.memoryTail && len(m.mems) > 0 {
+		m.memoryTail = boundSlack
+		m.tailRanges = options.tailRanges
+		m.tailProfile = options.tailProfile && options.tailRanges
+	}
+
 	oc := &objCode{m: m, floatIx: map[[2]uint64]int32{}, externIx: map[string]int32{}, globals: map[string]bool{}, jumpAt: map[int32]int32{}}
 	oc.initFn = m.addInitFunction()
 	oc.lay = newLayout(m)
@@ -427,7 +458,16 @@ func (oc *objCode) description() *Meta {
 			max = l.max
 		}
 
-		meta.memory = &MemoryMeta{min: l.min, max: max, imported: m.mems[0].imported}
+		meta.memory = &MemoryMeta{min: l.min, max: max, imported: m.mems[0].imported, tail: m.memoryTail}
+
+		if m.memoryTail != 0 {
+			meta.memory.tailEnd = uint32(lay.memoryEnd)
+		}
+
+		if m.tailProfile {
+			meta.memory.profile = uint32(lay.tailProfile)
+			meta.memory.profileFuncs = uint32(len(m.funcs))
+		}
 	}
 
 	for i, t := range m.tables {

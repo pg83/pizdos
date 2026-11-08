@@ -155,6 +155,10 @@ func lowerFunction(m *Module, lay *Layout, f *Function) *MFunc {
 
 	l.linkBlocks()
 
+	if m.tailRanges {
+		l.versionTailRanges()
+	}
+
 	return l.mf
 }
 
@@ -1293,7 +1297,7 @@ func (l *lowerer) address(addr int32, offset int64, width int, proven bool) Mem 
 			l.addresses = &UnsignedRanges{f: l.f, cache: make([]UnsignedRange, len(l.f.values)), seen: make([]bool, len(l.f.values))}
 		}
 
-		checked = checked || l.addresses.of(addr, 0).hi+uint64(end) <= l.m.mems[0].limits.min*65536
+		checked = checked || l.addresses.of(addr, 0).hi+uint64(end) <= l.m.mems[0].limits.min*65536+l.m.memoryTail
 	}
 
 	prior, had := l.checked[addr]
@@ -1332,7 +1336,7 @@ func (l *lowerer) address(addr int32, offset int64, width int, proven bool) Mem 
 	l.emit(add)
 	c := inst(mCmpMem)
 	c.src = t
-	c.mem = memAt(ctxReg, offMemSize)
+	c.mem = memAt(ctxReg, l.lay.memoryEnd)
 	c.size = 8
 	l.emit(c)
 	l.trapIf(ccA, trapMemoryOOB)
@@ -1842,8 +1846,8 @@ func (l *lowerer) memAddr(dst VReg, a VReg) {
 
 func (l *lowerer) memCopy(args []int32) {
 	d, s, n := l.use(args[0]), l.use(args[1]), l.use(args[2])
-	l.checkRange(d, n, memAt(ctxReg, offMemSize), 8, trapMemoryOOB)
-	l.checkRange(s, n, memAt(ctxReg, offMemSize), 8, trapMemoryOOB)
+	l.checkRange(d, n, memAt(ctxReg, l.lay.memoryEnd), 8, trapMemoryOOB)
+	l.checkRange(s, n, memAt(ctxReg, l.lay.memoryEnd), 8, trapMemoryOOB)
 	dst := l.mf.newReg(classGPR)
 	l.memAddr(dst, d)
 	src := l.mf.newReg(classGPR)
@@ -1853,7 +1857,7 @@ func (l *lowerer) memCopy(args []int32) {
 
 func (l *lowerer) memFill(args []int32) {
 	d, val, n := l.use(args[0]), l.use(args[1]), l.use(args[2])
-	l.checkRange(d, n, memAt(ctxReg, offMemSize), 8, trapMemoryOOB)
+	l.checkRange(d, n, memAt(ctxReg, l.lay.memoryEnd), 8, trapMemoryOOB)
 	dst := l.mf.newReg(classGPR)
 	l.memAddr(dst, d)
 	l.memStub(stubMemset, dst, val, n)
@@ -1896,7 +1900,7 @@ func (l *lowerer) memInit(seg int, args []int32) {
 	c.size = 8
 	l.emit(c)
 	l.trapIf(ccA, trapMemoryOOB)
-	l.checkRange(d, n, memAt(ctxReg, offMemSize), 8, trapMemoryOOB)
+	l.checkRange(d, n, memAt(ctxReg, l.lay.memoryEnd), 8, trapMemoryOOB)
 	dst := l.mf.newReg(classGPR)
 	l.memAddr(dst, d)
 	src := l.mf.newReg(classGPR)

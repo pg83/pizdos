@@ -13,8 +13,12 @@ import "encoding/binary"
 
 type MemoryMeta struct {
 	// min and max are in pages of 64 KiB.
-	min, max uint64
-	imported bool
+	min, max     uint64
+	imported     bool
+	tail         uint64 // accessible bytes beyond memory.size; zero for strict objects
+	tailEnd      uint32 // instance slot holding the accessible end
+	profile      uint32 // optional diagnostic counters in the instance
+	profileFuncs uint32
 }
 
 type TableMeta struct {
@@ -142,6 +146,18 @@ func encodeNote(m *Meta) []byte {
 		w.u(uint64(e.index))
 	}
 
+	// Strict objects keep their original descriptor. An older loader
+	// rejects the extension instead of running padded accesses unsafely.
+	if m.memory != nil && m.memory.tail != 0 {
+		w.u(m.memory.tail)
+		w.u(uint64(m.memory.tailEnd))
+
+		if m.memory.profile != 0 {
+			w.u(uint64(m.memory.profile))
+			w.u(uint64(m.memory.profileFuncs))
+		}
+	}
+
 	return w.out
 }
 
@@ -224,6 +240,23 @@ func decodeNote(data []byte) *Meta {
 
 	for i := range m.exports {
 		m.exports[i] = ExportMeta{kind: byte(r.u()), name: r.str(), index: r.u32()}
+	}
+
+	if len(r.data) != 0 && m.memory != nil {
+		m.memory.tail = r.u()
+		m.memory.tailEnd = r.u32()
+
+		if m.memory.tail != boundSlack || m.memory.tailEnd&7 != 0 || uint64(m.memory.tailEnd)+8 > uint64(m.instanceSize) {
+			throwFmt("unsupported memory tail %d", m.memory.tail)
+		}
+
+		if len(r.data) != 0 {
+			m.memory.profile, m.memory.profileFuncs = r.u32(), r.u32()
+
+			if m.memory.profile < headerSize || m.memory.profile&7 != 0 || uint64(m.memory.profile)+uint64(m.memory.profileFuncs)*tailCounterBytes > uint64(m.instanceSize) {
+				throwFmt("invalid memory tail profile")
+			}
+		}
 	}
 
 	if len(r.data) != 0 {

@@ -62,6 +62,22 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   every allocation, `W2X_OPT_FUNCS=lo-hi` optimizes only those functions,
   for bisecting a miscompilation; `W2O_PERFMAP=<dir>` makes the loader
   write perf-<pid>.map for perf.
+- Compilation enables a physical 64 KiB readable and writable tail beyond
+  the logical memory size by default, with machine-code range versioning:
+  one address guard covers related accesses within 64 KiB on the fast path,
+  with exact checks and side-effect order on the fallback path. Versioning
+  precedes register allocation; emission places fallback blocks after hot
+  code and uses multi-byte NOPs for loop alignment.
+  `memory.size`, growth limits and the zero initialization of newly grown
+  pages retain their logical meaning. The object records the extension;
+  running it needs this loader but no environment setting.
+  `W2X_MEMORY_TAIL=plain` disables range versioning for comparisons;
+  `W2X_MEMORY_TAIL=strict` compiles with exact Wasm bounds. `wasm2o spec`
+  and boundary-assertion unit tests select strict compilation explicitly.
+  `W2X_TAIL_PROFILE=1` adds per-function counters to an optimized object;
+  `W2O_TAIL_PROFILE=FILE` when running a stand or WASI command appends JSON
+  records with executed guards, fallback entries, omitted checks and
+  ordinary checks. Profiled objects are for counting, not timing.
 - Speed is measured against wasm2c in its bounds-checked mode (clang -O3,
   `WASM_RT_MEMCHECK_BOUNDS_CHECK`, memory on mmap, counted call depth) by
   the stand: both run wasm2o.wasm compiling busybox.wasm and wasm2o.wasm,

@@ -7,7 +7,7 @@ package main
 const (
 	offMem        = 0  // base of linear memory
 	offMemSize    = 8  // size of linear memory in bytes
-	offMemBound   = 16 // int64 size - boundSlack: see mCheck
+	offMemBound   = 16 // accessible memory end - boundSlack: see mCheck
 	offStackLimit = 24 // the most bytes of goroutine stack the code may use; beyond, it traps
 	offHost       = 32 // free for the loader
 	offTokens     = 40 // the last invocation token handed out: see jumpFrame
@@ -42,6 +42,10 @@ const (
 // bounds when a <= size - boundSlack and o + n <= boundSlack.
 const boundSlack = 1 << 16
 
+// Diagnostic counters per function: guards, fallbacks, omitted checks,
+// and ordinary checks that actually execute. Only profiled objects have them.
+const tailCounterBytes = 32
+
 // Each table is {entries, size, max}: entries is an array of descriptor
 // pointers, null for a null reference.
 const (
@@ -55,16 +59,26 @@ const (
 const descBytes = 16
 
 type Layout struct {
-	globals []int32
-	tables  []int32
-	descs   int32
-	dropped int32
-	size    int32
+	memoryEnd   int32 // logical size in strict mode, a private slot for padded mode
+	tailProfile int32
+	globals     []int32
+	tables      []int32
+	descs       int32
+	dropped     int32
+	size        int32
 }
 
 func newLayout(m *Module) *Layout {
-	l := &Layout{}
+	l := &Layout{memoryEnd: offMemSize}
 	off := int32(headerSize)
+
+	if m.memoryTail != 0 {
+		// Keep the accessible end within an x86 disp8 of the context.
+		// Putting it after all descriptors adds three bytes to every
+		// exact check in a padded object.
+		l.memoryEnd = off
+		off += 8
+	}
 
 	for _, g := range m.globals {
 		if g.typ == V128 {
@@ -90,6 +104,13 @@ func newLayout(m *Module) *Layout {
 	off += int32(len(m.funcs)) * descBytes
 	l.dropped = off
 	off += int32(len(m.datas) + len(m.elems))
+
+	if m.tailProfile {
+		off = (off + 7) &^ 7
+		l.tailProfile = off
+		off += int32(len(m.funcs)) * tailCounterBytes
+	}
+
 	l.size = (off + 15) &^ 15
 
 	return l

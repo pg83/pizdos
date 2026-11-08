@@ -52,9 +52,15 @@ build.py      the build graph
   through the GOT, imports and exports of functions as symbols that carry
   their wasm types (`bin/wasm2o/symbols.go`), and the rest of the module's
   description in a `.note.wasm2o`. `ld.lld -r` relinks it and the loader
-  runs the result. The code needs no signal handlers, guard pages or
-  reserved address space: memory accesses are checked explicitly, a trap
-  calls Go, and linear memory may move when it grows.
+  runs the result. Memory accesses use explicit range guards and a trap
+  calls Go. Linear memory is reserved at its maximum and grows in place.
+  The default AOT semantics allow reads and writes into an additional
+  64 KiB tail beyond the logical size. `memory.size` and growth limits
+  remain logical; newly grown pages are zeroed. Generic range versioning
+  before register allocation shares one guard across related accesses;
+  checked fallbacks live at the end of the function. No compiler flag is
+  needed. `W2X_MEMORY_TAIL=strict` selects exact Wasm bounds for diagnostics,
+  and the spec runner always uses those bounds.
 - The code runs on a goroutine's stack under Go 1.25 amd64 ABIInternal
   (`bin/wasm2o/goabi.go`): exports are functions Go calls, imports are Go
   function values, prologues grow the stack through Go's morestack, and the

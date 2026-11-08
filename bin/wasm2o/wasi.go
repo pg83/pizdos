@@ -127,7 +127,7 @@ func (w *WASI) table(*ImportMeta) uintptr {
 }
 
 func guest(ctx uintptr) []byte {
-	return instanceAt(ctx).memory.bytes()
+	return instanceAt(ctx).memoryBytes()
 }
 
 // span is n bytes of memory at at, or nil when they do not fit.

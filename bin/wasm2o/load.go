@@ -62,9 +62,10 @@ type Instance struct {
 
 // LinearMemory is reserved at its maximum: it grows in place.
 type LinearMemory struct {
-	data  []byte
-	pages uint64
-	max   uint64
+	data     []byte
+	pages    uint64
+	max      uint64
+	tailUsed bool
 	// users are the instances whose headers describe it.
 	users []*Instance
 }
@@ -103,7 +104,7 @@ func newMemory(least, most uint64) *LinearMemory {
 		throwFmt("memory of %d..%d pages", least, most)
 	}
 
-	m := &LinearMemory{data: mmap(int(max(most, 1)*pageSize), syscall.PROT_READ|syscall.PROT_WRITE), max: most}
+	m := &LinearMemory{data: mmap(int(most*pageSize+boundSlack), syscall.PROT_READ|syscall.PROT_WRITE), max: most}
 	m.grow(uint32(least))
 
 	return m
@@ -115,6 +116,12 @@ func (m *LinearMemory) grow(delta uint32) uint32 {
 
 	if old+uint64(delta) > m.max {
 		return math.MaxUint32
+	}
+
+	if delta != 0 && m.tailUsed {
+		// The old accessible tail becomes part of newly grown memory.
+		// Writes to it must not survive the zero initialization of growth.
+		clear(m.data[old*pageSize : old*pageSize+boundSlack])
 	}
 
 	m.pages += uint64(delta)
@@ -130,6 +137,10 @@ func (m *LinearMemory) bytes() []byte {
 	return m.data[:m.pages*pageSize]
 }
 
+func (i *Instance) memoryBytes() []byte {
+	return i.memory.data[:i.memory.pages*pageSize+i.obj.meta.memory.tail]
+}
+
 func (i *Instance) ctx() uintptr {
 	return uintptr(unsafe.Pointer(unsafe.SliceData(i.block)))
 }
@@ -142,7 +153,11 @@ func (i *Instance) setMemory() {
 	size := i.memory.pages * pageSize
 	i.put64(offMem, uint64(uintptr(unsafe.Pointer(unsafe.SliceData(i.memory.data)))))
 	i.put64(offMemSize, size)
-	i.put64(offMemBound, uint64(int64(size)-boundSlack))
+	i.put64(offMemBound, uint64(int64(size+i.obj.meta.memory.tail)-boundSlack))
+
+	if i.obj.meta.memory.tail != 0 {
+		i.put64(i.obj.meta.memory.tailEnd, size+i.obj.meta.memory.tail)
+	}
 }
 
 // instanceAt is the instance of a context the code passes: its header holds
@@ -406,6 +421,14 @@ func newInstance(c *Code, imports Imports, stack uint64) *Instance {
 	}
 
 	if i.memory != nil {
+		if meta.memory.tail != 0 {
+			if uint64(len(i.memory.data)) < i.memory.max*pageSize+meta.memory.tail {
+				throwFmt("imported memory has no accessible tail")
+			}
+
+			i.memory.tailUsed = true
+		}
+
 		i.memory.users = append(i.memory.users, i)
 		i.setMemory()
 	}
@@ -438,9 +461,20 @@ func (i *Instance) clone(imports Imports, stack uint64, from, to uint64) *Instan
 	if i.memory != nil {
 		c.memory.grow(uint32(i.memory.pages - c.memory.pages))
 		copy(c.memory.data[from:to], i.memory.data[from:to])
+
+		if i.memory.tailUsed {
+			c.memory.tailUsed = true
+			start := i.memory.pages * pageSize
+			copy(c.memory.data[start:start+boundSlack], i.memory.data[start:start+boundSlack])
+		}
 	}
 
 	copy(c.block[headerSize:], i.block[headerSize:])
+
+	if meta := i.obj.meta.memory; meta != nil && meta.profile != 0 {
+		clear(c.block[meta.profile : uint64(meta.profile)+uint64(meta.profileFuncs)*tailCounterBytes])
+	}
+
 	c.put64(offTokens, binary.LittleEndian.Uint64(i.block[offTokens:]))
 	moved := c.ctx() - i.ctx()
 	k := 0
@@ -468,6 +502,8 @@ func (i *Instance) clone(imports Imports, stack uint64, from, to uint64) *Instan
 // release unmaps the instance block and the memory the instance made; the
 // instance is not used again.
 func (i *Instance) release() {
+	i.writeTailProfile()
+
 	if i.memory != nil && !i.obj.meta.memory.imported && len(i.memory.users) == 1 {
 		throw(syscall.Munmap(i.memory.data))
 	}

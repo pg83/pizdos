@@ -270,7 +270,9 @@ func (r *specRunner) load(filename string) *Instance {
 
 	if e := try(func() {
 		data := throw2(os.ReadFile(filepath.Join(r.dir, filename)))
-		obj := readObject(compileModule(data))
+		// Spec assertions require exact Wasm bounds, independently of
+		// the ordinary compiler's padded memory semantics.
+		obj := readObject(compileModuleWithOptions(data, CompileOptions{}))
 		i = instantiate(filename, obj, r, specStack)
 	}); e != nil {
 		r.unsupported[e.message()] = true

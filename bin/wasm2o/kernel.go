@@ -494,7 +494,7 @@ func (p *Process) newString(s string) uint32 {
 // memory
 
 func (p *Process) mem() []byte {
-	return p.inst.memory.bytes()
+	return p.inst.memoryBytes()
 }
 
 func oob() {
