@@ -62,8 +62,14 @@ Wasm bounds for spec tests; normal compilation enables the same 64 KiB tail
 and optimizations as wasm2o. `W2X_SPEC_COMPILER=/absolute/path/to/aot`
 makes the existing `wasm2o spec` runner use this compiler with `--strict`.
 
-The C++ implementation uses 64 KiB pages and power-of-two small objects.
-Pool chunks grow geometrically up to 64 KiB. Containers own small allocations
+The C++ implementation adapts `trustme/bin/rustc/malloc.cpp`: 2 MiB segments,
+64 KiB payload pages, class-local bump allocation and intrusive free lists.
+Size classes step by 16 bytes through 256 bytes, then four classes per power
+of two, up to 64 KiB. Empty pages can immediately serve another size class.
+There are no multi-page object runs or large-object mappings; the two
+contiguous I/O buffers use their separate path. Native segments use libc
+`mmap`; WASI segments use `memory.grow`, with metadata outside payload pages.
+Pool chunks still grow geometrically up to 64 KiB. Containers own allocations
 or pages; copied slice and map fields are views into storage owned by ObjPool.
 One pool holds the module and output structures, and a second is cleared
 after each function. Only the input and returned output use large contiguous

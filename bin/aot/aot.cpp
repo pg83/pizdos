@@ -13,6 +13,7 @@ using uptr = __UINTPTR_TYPE__;
     #include <stdlib.h>
     #include <unistd.h>
     #include <errno.h>
+    #include <sys/mman.h>
 #endif
 
 void* operator new(usize, void* p) noexcept {
@@ -154,12 +155,6 @@ namespace {
         return checkedAdd(size, alignment - 1) & ~(alignment - 1);
     }
 
-    struct FreePage {
-        FreePage* next;
-    };
-
-    static FreePage* freePages;
-
     static void* growPages(usize count) {
         require(count != 0, "zero page allocation");
 #if defined(__wasm__) || defined(wasm)
@@ -177,90 +172,355 @@ namespace {
 #endif
     }
 
-    static void* allocPage() {
-        if (freePages != nullptr) {
-            auto* result = freePages;
-            freePages = result->next;
-            return result;
-        }
-        return growPages(1);
-    }
+    static constexpr usize heapSegmentShift = 21;
+    static constexpr usize heapSegmentBytes = usize(1) << heapSegmentShift;
+    static constexpr usize heapPagesPerSegment = heapSegmentBytes / pageBytes;
+    static constexpr usize heapClassCount = 48;
+    static constexpr u16 heapFreePage = 0xffff;
+    static constexpr u16 heapUnavailablePage = 0xfffe;
+    static constexpr u32 heapNoSegment = 0;
+#if defined(__wasm__) || defined(wasm)
+    static constexpr usize heapSegmentLimit = usize(1) << 11;
+#else
+    static constexpr usize heapSegmentLimit = usize(1) << 15;
+    static constexpr uptr heapNativeBase = uptr(0x2000) << 32;
+#endif
 
-    static void freePage(void* page) {
-        require(page != nullptr && reinterpret_cast<uptr>(page) % pageBytes == 0, "invalid page");
-        auto* link = static_cast<FreePage*>(page);
-        link->next = freePages;
-        freePages = link;
-    }
-
-    struct FreeObject {
-        FreeObject* next;
+    struct HeapSlot {
+        HeapSlot* next;
     };
 
-    struct ObjectClass {
-        u8* current;
-        usize used;
-        FreeObject* free;
+    struct HeapPage {
+        HeapSlot* free;
+        HeapPage* prev;
+        HeapPage* next;
+        u32 live;
+        u16 cls;
     };
 
-    struct SmallObjAllocator {
+    struct HeapSegment {
+        u32 freeMask;
+        u32 prev;
+        u32 next;
+        bool linked;
+        bool registered;
+    };
+
+    struct HeapClass {
+        HeapSlot* free;
+        uptr bump;
+        uptr end;
+        usize size;
+        HeapPage* current;
+        HeapPage* partial;
+    };
+
+    // Adapted from trustme/bin/rustc/malloc.cpp. All ordinary allocations
+    // fit in one page, so runs and large-object headers are unnecessary.
+    // Metadata is outside payload pages, including the 64 KiB size class.
+    struct Heap {
+        static usize classIndex(usize size);
+        static usize classSize(usize index);
+        HeapPage* pageOf(const void* object);
+        uptr pageAddress(const HeapPage* page);
+        void linkSegment(u32 index);
+        void unlinkSegment(u32 index);
+        void registerSegment(u32 index);
+        void mapSegment();
+        HeapPage* takePage();
+        void releasePage(HeapPage* page);
+        void* refill(usize index);
         void* allocate(usize size);
-        void deallocate(void* object, usize size);
+        void release(void* object);
+        void releaseSlow(HeapPage* page, void* object);
+        void adoptPages(void* data, usize bytes);
 
-        ObjectClass classes[13]{};
+        HeapClass classes[heapClassCount]{};
+        HeapSegment segments[heapSegmentLimit]{};
+        HeapPage pages[heapSegmentLimit * heapPagesPerSegment]{};
+        u32 freeSegments = heapNoSegment;
+        u32 mappedSegments = 0;
     };
 
-    static SmallObjAllocator smallAllocator;
+    static Heap heap;
+}
 
-    static usize allocationClass(usize size) {
-        require(size != 0 && size <= pageBytes, "small allocation exceeds 64 KiB");
-        usize index = 0;
-        usize bytes = objectAlignment;
-        while (bytes < size) {
-            bytes *= 2;
-            ++index;
-        }
-        return index;
+usize Heap::classIndex(usize size) {
+    require(size != 0 && size <= pageBytes, "allocation exceeds 64 KiB");
+    if (size <= 256) {
+        return (size + 15) / 16 - 1;
+    }
+    const unsigned exponent = 31 - __builtin_clz(u32(size - 1));
+    return 16 + (exponent - 8) * 4 + (((size - 1) >> (exponent - 2)) & 3);
+}
+
+usize Heap::classSize(usize index) {
+    if (index < 16) {
+        return (index + 1) * objectAlignment;
+    }
+    const usize base = usize(1) << (8 + (index - 16) / 4);
+    return base + (base / 4) * ((index - 16) % 4 + 1);
+}
+
+HeapPage* Heap::pageOf(const void* object) {
+    uptr address = reinterpret_cast<uptr>(object);
+#if !defined(__wasm__) && !defined(wasm)
+    address -= heapNativeBase;
+    require(address < heapSegmentLimit * heapSegmentBytes, "object outside allocator");
+#endif
+    return pages + (address >> 16);
+}
+
+uptr Heap::pageAddress(const HeapPage* page) {
+    const uptr address = uptr(page - pages) << 16;
+#if defined(__wasm__) || defined(wasm)
+    return address;
+#else
+    return heapNativeBase + address;
+#endif
+}
+
+void Heap::linkSegment(u32 index) {
+    auto& segment = segments[index];
+    segment.linked = true;
+    segment.prev = heapNoSegment;
+    segment.next = freeSegments;
+    if (freeSegments != heapNoSegment) {
+        segments[freeSegments].prev = index;
+    }
+    freeSegments = index;
+}
+
+void Heap::unlinkSegment(u32 index) {
+    auto& segment = segments[index];
+    if (segment.prev != heapNoSegment) {
+        segments[segment.prev].next = segment.next;
+    } else {
+        freeSegments = segment.next;
+    }
+    if (segment.next != heapNoSegment) {
+        segments[segment.next].prev = segment.prev;
+    }
+    segment.linked = false;
+}
+
+void Heap::registerSegment(u32 index) {
+    require(index < heapSegmentLimit, "allocator region exhausted");
+    auto& segment = segments[index];
+    require(!segment.registered, "allocator segment already registered");
+    segment.registered = true;
+    segment.freeMask = 0;
+    segment.linked = false;
+    segment.prev = segment.next = heapNoSegment;
+    for (usize i = 0; i < heapPagesPerSegment; ++i) {
+        pages[usize(index) * heapPagesPerSegment + i].cls = heapUnavailablePage;
     }
 }
 
-void* SmallObjAllocator::allocate(usize size) {
-    const usize index = allocationClass(size);
-    // A full-page object shares the page freelist with PageVec storage.
-    if ((objectAlignment << index) == pageBytes) {
-        return allocPage();
+void Heap::mapSegment() {
+#if defined(__wasm__) || defined(wasm)
+    const usize before = __builtin_wasm_memory_size(0);
+    const usize first = alignUp(before, heapPagesPerSegment);
+    const u32 index = u32(first / heapPagesPerSegment);
+    require(index < heapSegmentLimit, "allocator region exhausted");
+    if (__builtin_wasm_memory_grow(0, first - before + heapPagesPerSegment) == ~usize(0)) {
+        fail("out of memory");
     }
+    // I/O blobs and host-owned input may separate segments in linear memory.
+    // The padding after them is ordinary reusable page storage.
+    if (first != before) {
+        adoptPages(reinterpret_cast<void*>(before * pageBytes), (first - before) * pageBytes);
+    }
+#else
+    require(mappedSegments + 1 < heapSegmentLimit, "allocator region exhausted");
+    const u32 index = mappedSegments + 1;
+    void* wanted = reinterpret_cast<void*>(heapNativeBase + usize(index) * heapSegmentBytes);
+    void* got = ::mmap(wanted, heapSegmentBytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+    require(got == wanted, "allocator mapping failed");
+    #if defined(MADV_HUGEPAGE)
+    (void)::madvise(got, heapSegmentBytes, MADV_HUGEPAGE);
+    #endif
+#endif
+    registerSegment(index);
+    auto& segment = segments[index];
+    segment.freeMask = ~u32(0);
+    for (usize i = 0; i < heapPagesPerSegment; ++i) {
+        pages[usize(index) * heapPagesPerSegment + i].cls = heapFreePage;
+    }
+    linkSegment(index);
+    ++mappedSegments;
+}
+
+HeapPage* Heap::takePage() {
+    if (freeSegments == heapNoSegment) {
+        mapSegment();
+    }
+    const u32 index = freeSegments;
+    auto& segment = segments[index];
+    const unsigned slot = __builtin_ctz(segment.freeMask);
+    segment.freeMask &= ~(u32(1) << slot);
+    if (segment.freeMask == 0) {
+        unlinkSegment(index);
+    }
+    auto* page = pages + usize(index) * heapPagesPerSegment + slot;
+    require(page->cls == heapFreePage, "allocator page is not free");
+    page->free = nullptr;
+    page->prev = page->next = nullptr;
+    page->live = 0;
+    return page;
+}
+
+void Heap::releasePage(HeapPage* page) {
+    const usize pageIndex = usize(page - pages);
+    const u32 segmentIndex = u32(pageIndex / heapPagesPerSegment);
+    auto& segment = segments[segmentIndex];
+    const u32 bit = u32(1) << (pageIndex % heapPagesPerSegment);
+    require((segment.freeMask & bit) == 0, "allocator page already free");
+    page->cls = heapFreePage;
+    page->free = nullptr;
+    page->prev = page->next = nullptr;
+    segment.freeMask |= bit;
+    if (!segment.linked) {
+        linkSegment(segmentIndex);
+    }
+}
+
+void* Heap::refill(usize index) {
     auto& state = classes[index];
-    if (state.free != nullptr) {
-        auto* result = state.free;
-        state.free = result->next;
-        return result;
+    const usize size = classSize(index);
+    // A current page counts frees in the class-local list. At this point
+    // both that list and the bump range are exhausted: every slot is live.
+    if (state.current) {
+        state.current->live = u32(pageBytes / size);
     }
-    const usize bytes = objectAlignment << index;
-    if (state.current == nullptr || bytes > pageBytes - state.used) {
-        state.current = static_cast<u8*>(allocPage());
-        state.used = 0;
+    if (auto* page = state.partial) {
+        state.partial = page->next;
+        if (state.partial) {
+            state.partial->prev = nullptr;
+        }
+        page->prev = page->next = nullptr;
+        state.current = page;
+        auto* slot = page->free;
+        page->free = nullptr;
+        state.free = slot->next;
+        state.bump = state.end = 0;
+        return slot;
     }
-    auto* result = state.current + state.used;
-    state.used += bytes;
-    return result;
+    auto* page = takePage();
+    page->cls = u16(index);
+    state.current = page;
+    state.free = nullptr;
+    state.size = size;
+    state.bump = pageAddress(page) + size;
+    state.end = pageAddress(page) + (pageBytes / size) * size;
+    return reinterpret_cast<void*>(pageAddress(page));
 }
 
-void SmallObjAllocator::deallocate(void* object, usize size) {
-    if (object == nullptr) {
+void* Heap::allocate(usize size) {
+    auto& state = classes[classIndex(size)];
+    if (auto* slot = state.free) {
+        state.free = slot->next;
+        return slot;
+    }
+    if (state.bump < state.end) {
+        void* object = reinterpret_cast<void*>(state.bump);
+        state.bump += state.size;
+        return object;
+    }
+    return refill(classIndex(size));
+}
+
+void Heap::releaseSlow(HeapPage* page, void* object) {
+    const usize index = page->cls;
+    require(index < heapClassCount && page->live != 0, "free of unallocated object");
+    auto& state = classes[index];
+    if (--page->live == 0) {
+        // Classes above 32 KiB have one slot per page. Such a full page
+        // becomes empty on its first free and was never on the partial list.
+        if (page->free) {
+            if (page->prev) {
+                page->prev->next = page->next;
+            } else {
+                state.partial = page->next;
+            }
+            if (page->next) {
+                page->next->prev = page->prev;
+            }
+        }
+        releasePage(page);
         return;
     }
-    if (size > pageBytes / 2) {
-        freePage(object);
+    auto* slot = static_cast<HeapSlot*>(object);
+    slot->next = page->free;
+    page->free = slot;
+    if (!slot->next) {
+        page->prev = nullptr;
+        page->next = state.partial;
+        if (state.partial) {
+            state.partial->prev = page;
+        }
+        state.partial = page;
+    }
+}
+
+void Heap::release(void* object) {
+    if (!object) {
         return;
     }
-    auto& state = classes[allocationClass(size)];
-    auto* link = static_cast<FreeObject*>(object);
-    link->next = state.free;
-    state.free = link;
+    auto* page = pageOf(object);
+    const usize index = page->cls;
+    require(index < heapClassCount, "free of unallocated object");
+    auto& state = classes[index];
+    if (page == state.current) {
+        auto* slot = static_cast<HeapSlot*>(object);
+        slot->next = state.free;
+        state.free = slot;
+        return;
+    }
+    releaseSlow(page, object);
+}
+
+void Heap::adoptPages(void* data, usize bytes) {
+#if defined(__wasm__) || defined(wasm)
+    const uptr first = reinterpret_cast<uptr>(data);
+    require(first % pageBytes == 0 && bytes % pageBytes == 0, "invalid free memory range");
+    for (usize offset = 0; offset < bytes; offset += pageBytes) {
+        const usize pageIndex = (first + offset) >> 16;
+        const u32 segmentIndex = u32(pageIndex / heapPagesPerSegment);
+        require(segmentIndex < heapSegmentLimit, "allocator region exhausted");
+        if (!segments[segmentIndex].registered) {
+            registerSegment(segmentIndex);
+        }
+        auto* page = pages + pageIndex;
+        require(page->cls == heapUnavailablePage, "I/O memory already owned by allocator");
+        releasePage(page);
+    }
+#else
+    (void)data;
+    (void)bytes;
+    fail("external pages are not in the native allocator region");
+#endif
 }
 
 namespace {
+    static void* allocPage() {
+        return heap.allocate(pageBytes);
+    }
+
+    static void freePage(void* page) {
+        require(page && reinterpret_cast<uptr>(page) % pageBytes == 0, "invalid page");
+        heap.release(page);
+    }
+
+    static usize allocationBytes(usize size) {
+        require(size != 0 && size <= pageBytes, "allocation exceeds 64 KiB");
+        usize bytes = objectAlignment;
+        while (bytes < size) {
+            bytes *= 2;
+        }
+        return bytes;
+    }
+
     template <typename T>
     static T&& move(T& value) {
         return static_cast<T&&>(value);
@@ -302,7 +562,7 @@ Buffer::Buffer()
 
 Buffer::~Buffer() {
     if (header() != &emptyBuffer) {
-        smallAllocator.deallocate(header(), header()->allocation);
+        heap.release(header());
     }
 }
 
@@ -343,12 +603,12 @@ void Buffer::reserve(usize size) {
         return;
     }
     const usize need = checkedAdd(size, sizeof(Header));
-    const usize bytes = objectAlignment << allocationClass(need);
-    auto* next = static_cast<Header*>(smallAllocator.allocate(bytes));
+    const usize bytes = allocationBytes(need);
+    auto* next = static_cast<Header*>(heap.allocate(bytes));
     *next = {header()->used, bytes};
     copyBytes(next + 1, storage, header()->used);
     if (header() != &emptyBuffer) {
-        smallAllocator.deallocate(header(), header()->allocation);
+        heap.release(header());
     }
     storage = next + 1;
 }
@@ -660,7 +920,7 @@ void* ObjPool::allocate(usize size, usize alignment) {
             bytes *= 2;
         }
         require(bytes <= pageBytes, "object exceeds pool chunk");
-        auto* chunk = static_cast<Chunk*>(smallAllocator.allocate(bytes));
+        auto* chunk = static_cast<Chunk*>(heap.allocate(bytes));
         *chunk = {chunks, bytes};
         chunks = chunk;
         current = reinterpret_cast<u8*>(chunk + 1);
@@ -682,7 +942,7 @@ void ObjPool::clear() {
     while (chunks != nullptr) {
         auto* chunk = chunks;
         chunks = chunk->next;
-        smallAllocator.deallocate(chunk, chunk->size);
+        heap.release(chunk);
     }
     current = nullptr;
     left = 0;
@@ -18107,7 +18367,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static bool bitsetUnion(Bitset s, Bitset o) {
         bool changed = false;
         visitBitsetWords(o, [&](usize index, u64 word) {
-            if (bitsetAddWord(s, index, word)) { changed = true; }
+            if (bitsetAddWord(s, index, word)) {
+                changed = true;
+            }
         });
         return changed;
     }
@@ -19976,7 +20238,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         data->pool = activePool;
         data->bits = usize(n);
         data->nodes.resize((usize(n) + 16383) / 16384);
-        data->nodes.visit([](BitNode*& node) { node = nullptr; });
+        data->nodes.visit([](BitNode*& node) {
+            node = nullptr;
+        });
         return {data};
     }
 
@@ -21242,9 +21506,7 @@ namespace {
 
     static void releaseBlob(Blob blob) {
 #if defined(__wasm__) || defined(wasm)
-        for (usize i = 0; i < blob.size; i += pageBytes) {
-            freePage(const_cast<u8*>(blob.data + i));
-        }
+        heap.adoptPages(const_cast<u8*>(blob.data), alignUp(blob.size, pageBytes));
 #else
         ::free(const_cast<u8*>(blob.data));
 #endif
@@ -21432,17 +21694,98 @@ namespace {
         }
     };
 
+    static void allocatorSelfTest() {
+        for (usize cls = 0; cls < heapClassCount; ++cls) {
+            const usize bytes = Heap::classSize(cls);
+            const usize low = cls == 0 ? 1 : Heap::classSize(cls - 1) + 1;
+            require(Heap::classIndex(low) == cls && Heap::classIndex(bytes) == cls, "allocator size class");
+            PageVec<void*> objects;
+            const usize count = 3 * (pageBytes / bytes) + 7;
+            for (usize i = 0; i < count; ++i) {
+                auto* object = static_cast<u8*>(heap.allocate(low));
+                require(reinterpret_cast<uptr>(object) % objectAlignment == 0, "allocator alignment");
+                *reinterpret_cast<u64*>(object) = i + 1;
+                *reinterpret_cast<u64*>(object + bytes - sizeof(u64)) = ~(u64(i) + 1);
+                objects.pushBack(object);
+            }
+            for (usize i = 0; i < count; ++i) {
+                auto* object = static_cast<u8*>(objects[i]);
+                require(*reinterpret_cast<u64*>(object) == i + 1, "allocator overlap");
+                require(*reinterpret_cast<u64*>(object + bytes - sizeof(u64)) == ~(u64(i) + 1), "allocator extent");
+            }
+            for (usize i = 1; i < count; i += 2) {
+                heap.release(objects[i]);
+            }
+            for (usize i = 1; i < count; i += 2) {
+                objects[i] = heap.allocate(bytes);
+                *static_cast<u64*>(objects[i]) = i + 1;
+            }
+            for (usize i = 0; i < count; ++i) {
+                require(*static_cast<u64*>(objects[i]) == i + 1, "partial page refill");
+            }
+            for (usize order = 0; order < 3; ++order) {
+                for (usize i = order; i < count; i += 3) {
+                    heap.release(objects[i]);
+                }
+            }
+        }
+        {
+            PageVec<void*> large;
+            for (usize i = 0; i < 96; ++i) {
+                large.pushBack(heap.allocate(pageBytes));
+            }
+            const u32 mapped = heap.mappedSegments;
+            large.visit([](void* object) {
+                heap.release(object);
+            });
+            void* smaller[256];
+            for (usize i = 0; i < 256; ++i) {
+                smaller[i] = heap.allocate(8192);
+            }
+            require(heap.mappedSegments == mapped, "empty pages not shared between classes");
+            for (usize i = 0; i < 256; ++i) {
+                heap.release(smaller[i]);
+            }
+        }
+        {
+            void* first = heap.allocate(pageBytes);
+            void* current = heap.allocate(pageBytes);
+            heap.release(first);
+            require(heap.pageOf(first)->cls == heapFreePage, "single-slot page release");
+            heap.release(current);
+        }
+    #if defined(__wasm__) || defined(wasm)
+        {
+            auto* first = static_cast<u8*>(growPages(5));
+            auto* second = static_cast<u8*>(growPages(40));
+            require(second == first + 5 * pageBytes, "I/O test memory layout");
+            heap.adoptPages(second, 40 * pageBytes);
+            heap.adoptPages(first, 5 * pageBytes);
+            HeapPage* recycled[45];
+            for (usize i = 0; i < 45; ++i) {
+                recycled[i] = heap.takePage();
+                const uptr address = heap.pageAddress(recycled[i]);
+                require(address >= reinterpret_cast<uptr>(first) && address < reinterpret_cast<uptr>(second) + 40 * pageBytes, "I/O page recycling");
+            }
+            for (usize i = 0; i < 45; ++i) {
+                heap.releasePage(recycled[i]);
+            }
+        }
+    #endif
+    }
+
     static void selfTest() {
+        allocatorSelfTest();
         void* page = allocPage();
         freePage(page);
         require(allocPage() == page, "page freelist");
         freePage(page);
         for (usize bytes = 1; bytes <= pageBytes; bytes *= 2) {
-            void* object = smallAllocator.allocate(bytes);
+            void* object = heap.allocate(bytes);
             require(reinterpret_cast<uptr>(object) % objectAlignment == 0, "object alignment");
-            smallAllocator.deallocate(object, bytes);
-            require(smallAllocator.allocate(bytes) == object, "object freelist");
-            smallAllocator.deallocate(object, bytes);
+            heap.release(object);
+            require(heap.allocate(bytes) == object, "object freelist");
+            heap.release(object);
         }
         SmallVec<u32> small;
         require(sizeof(small) == sizeof(void*) && small.empty(), "empty vector representation");

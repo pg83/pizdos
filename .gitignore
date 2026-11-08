@@ -15,6 +15,7 @@ __pycache__/
 /aot
 /aot_command
 /aot_native
+/aot_selftest
 /testsuite_tarball
 /musl_tarball
 /busybox_tarball

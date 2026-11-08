@@ -161,6 +161,14 @@ aot_command = command(
     descr="CC", color="green",
 )
 
+aot_selftest = command(
+    name="aot_selftest",
+    inputs=["$(S)/bin/aot/aot.cpp"],
+    outputs=["$(B)/bin/aot/aot-selftest.wasm"],
+    cmd=[CLANG, *AOT_WASM_FLAGS, "-DAOT_SELF_TEST", "$(S)/bin/aot/aot.cpp", "-o", "$(B)/bin/aot/aot-selftest.wasm"],
+    descr="CC", color="green",
+)
+
 # A native build needs host libc headers/libraries, supplied by the usual
 # CPPFLAGS/LDFLAGS. The C driver links libc without a C++ runtime.
 aot_native = command(
@@ -400,7 +408,7 @@ stand_corpus = fetch(
 
 # What each test runs against: its arguments are the outputs of these nodes.
 TESTED = {
-    "aot": [aot, aot_command, wazero, wasm2o, busybox],
+    "aot": [aot, aot_command, wazero, wasm2o, busybox, aot_selftest],
     "busybox_abi": [busybox],
     "busybox": [wasm2o, busybox_o, busybox],
     "wasm2o": [wasm2o, wasm2o_wasm, wasm2o_o, wasm2o_relinked, wazero, busybox],
