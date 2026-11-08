@@ -46,6 +46,11 @@ func optimize(f *Function) {
 	}
 
 	o.commonExpressions()
+
+	if o.narrowFloatComparisons() {
+		o.deadCode()
+	}
+
 	o.selectTriangles()
 	versionMemoryLoops(f)
 

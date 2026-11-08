@@ -237,6 +237,18 @@ func (e *funcEmitter) inst(in *MInst) {
 
 	switch in.op {
 	case mNop:
+	case mCopyForward:
+		// With a one-byte forward overlap, each store supplies the next
+		// load. The whole checked span therefore repeats the first byte.
+		a.lea(8, RAX, baseAt(RSI, 1))
+		a.aluRR(aluCmp, 8, RDI, RAX)
+		copy := a.jcc8(ccNE)
+		a.load(1, 4, false, RAX, baseAt(RSI, 0))
+		a.b(0xf3, 0xaa) // rep stosb
+		done := a.jmp8()
+		a.here8(copy)
+		a.b(0xf3, 0xa4) // rep movsb, DF stays clear
+		a.here8(done)
 	case mMov:
 		if in.dst == in.src && in.aux == 0 {
 			return

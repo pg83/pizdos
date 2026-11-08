@@ -70,6 +70,7 @@ func lowerFunction(m *Module, lay *Layout, f *Function) *MFunc {
 	l.markDeferred()
 	l.placeFloatConstants()
 	l.findRawTruncations()
+	proofs := checkedValues(f, l.ci)
 	l.mblk = make([]int32, len(f.blocks))
 
 	for i := range l.mblk {
@@ -113,6 +114,17 @@ func lowerFunction(m *Module, lay *Layout, f *Function) *MFunc {
 		b := visit.block
 		undo := len(l.checkUndo)
 		l.cur = l.mblk[b]
+
+		if proofs != nil {
+			for _, proof := range proofs[b] {
+				prior, had := l.checked[proof.value]
+
+				if !had || prior < proof.end {
+					l.checkUndo = append(l.checkUndo, CheckUndo{value: proof.value, end: prior, set: had})
+					l.checked[proof.value] = proof.end
+				}
+			}
+		}
 
 		if b == l.ci.order[0] {
 			l.entry()
@@ -602,6 +614,17 @@ func (l *lowerer) lowerValue(v int32) {
 		l.stubCall(stubMemoryGrow, []VReg{l.use(args[0])}, []Type{I32}, v)
 	case OpMemCopy:
 		l.memCopy(args)
+	case OpCopyForward:
+		dst, src := l.mf.newReg(classGPR), l.mf.newReg(classGPR)
+		l.memAddr(dst, l.use(args[0]))
+		l.memAddr(src, l.use(args[1]))
+		pm := inst(mParMove)
+		pm.moves = []Move{{RDI, dst}, {RSI, src}, {RCX, l.use(args[2])}}
+		l.emit(pm)
+		in := inst(mCopyForward)
+		in.uses = []VReg{RDI, RSI, RCX}
+		in.defs = []VReg{RAX, RDI, RSI, RCX}
+		l.emit(in)
 	case OpMemFill:
 		l.memFill(args)
 	case OpMemInit:

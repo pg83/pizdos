@@ -21,10 +21,16 @@ type MemoryLoop struct {
 	members         []bool
 	order           []int32
 	count           int32
+	countBias       int32
+	countStep       uint64
+	countStop       uint64
+	countMask       uint64
+	countSigned     bool
 	start, limit    int32
 	signedLimit     bool
 	induction       map[int32]LoopSpan
 	cache           map[int32]LoopSpan
+	noWrap          map[int32]bool
 	unsigned        *UnsignedRanges
 	allowLoads      bool
 	invariantCache  map[int32]bool
@@ -73,7 +79,7 @@ func versionMemoryLoops(f *Function) {
 }
 
 func findMemoryLoop(f *Function, ci *cfgInfo, h int32) *MemoryLoop {
-	l := &MemoryLoop{f: f, ci: ci, header: h, latch: -1, preheader: -1, exit: -1, start: -1, limit: -1,
+	l := &MemoryLoop{f: f, ci: ci, header: h, latch: -1, preheader: -1, exit: -1, start: -1, limit: -1, countBias: -1, countStep: 1,
 		members: make([]bool, len(f.blocks)), induction: map[int32]LoopSpan{}, cache: map[int32]LoopSpan{}}
 
 	for _, p := range f.blocks[h].preds {
@@ -122,6 +128,7 @@ func findMemoryLoop(f *Function, ci *cfgInfo, h int32) *MemoryLoop {
 	}
 
 	insts := 0
+	multipleExits := false
 
 	for _, b := range ci.order {
 		if !l.members[b] {
@@ -134,15 +141,22 @@ func findMemoryLoop(f *Function, ci *cfgInfo, h int32) *MemoryLoop {
 		for _, e := range f.blocks[b].term.edges {
 			if !l.members[e.block] {
 				if l.exit >= 0 && l.exit != e.block {
-					return nil
+					multipleExits = true
+				} else {
+					l.exit = e.block
 				}
-
-				l.exit = e.block
 			}
 		}
 	}
 
 	if l.exit < 0 || len(l.order) > 48 || insts > 400 {
+		return nil
+	}
+
+	// Existing exit parameters already carry each edge's values. Several
+	// exits need no new SSA merges when nothing defined in the loop is
+	// directly used outside it.
+	if multipleExits && l.hasLiveOut() {
 		return nil
 	}
 
@@ -165,15 +179,24 @@ func findMemoryLoop(f *Function, ci *cfgInfo, h int32) *MemoryLoop {
 	condition := &f.values[t.value]
 	args := f.args(t.value)
 	var next int32
+	unsignedStop := int64(-1)
+	zeroTest := false
 
 	if condition.op == OpEqz && t.edges[1].block == h {
 		next = args[0]
+		zeroTest = true
 	} else if condition.op == OpNe && t.edges[0].block == h && f.values[args[1]].op == OpConst && f.values[args[1]].aux == 0 {
 		next = args[0]
-	} else if (condition.op == OpGtS || condition.op == OpGtU) && t.edges[0].block == h && f.values[args[1]].op == OpConst && f.values[args[1]].aux == 0 {
+		zeroTest = true
+	} else if condition.op == OpGtU && t.edges[0].block == h && f.values[args[1]].op == OpConst && uint32(f.values[args[1]].aux) < 65536 {
 		next = args[0]
+		unsignedStop = int64(uint32(f.values[args[1]].aux))
+	} else if condition.op == OpGtS && t.edges[0].block == h && f.values[args[1]].op == OpConst && f.values[args[1]].aux == 0 {
+		next = args[0]
+		l.countSigned = true
 	} else if t.edges[0].block == h && (condition.op == OpAdd || condition.op == OpSub) {
 		next = t.value
+		zeroTest = true
 	} else if t.edges[0].block == h && (condition.op == OpLtS || condition.op == OpLtU) {
 		next = args[0]
 		l.limit = args[1]
@@ -193,15 +216,46 @@ func findMemoryLoop(f *Function, ci *cfgInfo, h int32) *MemoryLoop {
 	l.count = -1
 
 	for j, p := range f.blocks[h].params {
-		if back.args[j] != next {
+		candidate, bias := next, int32(-1)
+
+		if unsignedStop >= 0 && back.args[j] != next && f.values[next].op == OpAdd {
+			a := f.args(next)
+
+			for k := 0; k < 2; k++ {
+				other := f.values[a[1-k]].block
+
+				if a[k] == back.args[j] && (other < 0 || !l.members[other] && ci.dominates(other, h)) {
+					candidate, bias = a[k], a[1-k]
+				}
+			}
+		}
+
+		if back.args[j] != candidate {
 			continue
 		}
 
-		if l.limit >= 0 && inductionStep(f, p, next) == 1 {
+		step := inductionStep(f, p, candidate)
+
+		if l.limit >= 0 && step == 1 {
 			l.start = l.entry.args[j]
-		} else if l.limit < 0 && inductionStep(f, p, next) == -1 {
+		} else if l.limit < 0 && step < 0 && step >= -65536 {
+			n := uint64(-step)
+			stop, mask := uint64(0), uint64(0)
+
+			if unsignedStop >= 0 && uint64(unsignedStop)+1 >= n {
+				stop = uint64(unsignedStop)
+			} else if zeroTest && n&(n-1) == 0 {
+				stop, mask = n-1, n-1
+			} else if step != -1 || unsignedStop >= 0 {
+				continue
+			}
+
 			l.count = l.entry.args[j]
-			l.induction[p] = LoopSpan{base: -1, factor: 1, offset: 1, valid: true}
+			l.countBias, l.countStep, l.countStop, l.countMask = bias, n, stop, mask
+
+			if step == -1 && bias < 0 {
+				l.induction[p] = LoopSpan{base: -1, factor: 1, offset: 1, valid: true}
+			}
 		}
 	}
 
@@ -432,6 +486,10 @@ func (l *MemoryLoop) span(v int32, depth int) LoopSpan {
 			a, b := l.span(args[0], depth+1), l.span(args[1], depth+1)
 
 			out = addLoopSpans(a, b)
+
+			if out.valid {
+				l.noWrap[v] = true
+			}
 		case OpShl:
 			if l.f.values[args[1]].op == OpConst {
 				n := uint32(l.f.values[args[1]].aux) & 31
@@ -471,7 +529,7 @@ func (l *MemoryLoop) version() int32 {
 		for _, b := range l.order {
 			for _, v := range l.f.blocks[b].instrs {
 				switch l.f.values[v].op {
-				case OpCall, OpCallIndirect, OpMemCopy, OpMemFill, OpMemInit:
+				case OpCall, OpCallIndirect, OpMemCopy, OpMemFill, OpMemInit, OpCopyForward:
 					l.allowLoads = false
 				}
 			}
@@ -480,6 +538,7 @@ func (l *MemoryLoop) version() int32 {
 		l.invariantCache = map[int32]bool{}
 		l.invariantNodes = nil
 		l.cache = map[int32]LoopSpan{}
+		l.noWrap = map[int32]bool{}
 
 		if fast := l.versionOne(); fast >= 0 {
 			return fast
@@ -622,17 +681,23 @@ func (l *MemoryLoop) versionOne() int32 {
 		hasLoad = hasLoad || f.values[v].op == OpLoad
 	}
 
-	if len(proven) < 4 || len(guards) > 24 || unboundedWrite && hasLoad {
+	if len(proven) < 2 || len(guards) > 24 || unboundedWrite && hasLoad {
 		return -1
 	}
 
 	minimum := uint64(4)
 
+	if len(proven) < 4 {
+		minimum = 8
+	}
+
 	if hasLoad {
 		minimum = 16
 	}
 
-	if l.count >= 0 && l.unsigned.of(l.count, 0).hi < minimum {
+	minimumCount := (minimum-1)*l.countStep + l.countStop + 1
+
+	if l.count >= 0 && l.countBias < 0 && l.unsigned.of(l.count, 0).hi < minimumCount {
 		return -1
 	}
 
@@ -650,9 +715,19 @@ func (l *MemoryLoop) versionOne() int32 {
 	pages := emit(OpMemSize, I32)
 	size := emit(OpShl, I64, emit(OpExtendU, I64, pages), constant(I64, 16))
 	condition := constant(I32, 1)
+	countValue := l.count
 
 	if l.count >= 0 {
-		condition = emit(OpGeU, I32, l.count, constant(I32, minimum))
+		if l.countBias >= 0 {
+			countValue = emit(OpAdd, I32, countValue, l.countBias)
+		}
+
+		condition = emit(OpGeU, I32, countValue, constant(I32, minimumCount))
+
+		if l.countMask != 0 {
+			aligned := emit(OpEqz, I32, emit(OpAnd, I32, countValue, constant(I32, l.countMask)))
+			condition = emit(OpAnd, I32, condition, aligned)
+		}
 	}
 
 	invariants := map[int32]int32{}
@@ -715,8 +790,6 @@ func (l *MemoryLoop) versionOne() int32 {
 		}
 	}
 
-	countValue := l.count
-
 	if l.limit >= 0 {
 		limit := mapValue(l.limit)
 		countValue = emit(OpSub, I32, limit, l.start)
@@ -730,6 +803,10 @@ func (l *MemoryLoop) versionOne() int32 {
 		}
 	}
 
+	// A decreasing unsigned remainder bounds the number of iterations even
+	// when an unrolled loop consumes several bytes per step. Using it as an
+	// upper bound avoids a division in the entry guard; the address checks
+	// may conservatively select the original loop near the end of memory.
 	count := emit(OpExtendU, I64, countValue)
 	iterations := emit(OpSub, I64, count, constant(I64, 1))
 	evaluate := func(bound LoopSpan) (int32, int32) {
@@ -784,6 +861,10 @@ func (l *MemoryLoop) versionOne() int32 {
 	fast := l.clone(proven, invariants, nil)
 	l.copies = append(l.copies, fast)
 	entry := Edge{block: fast, args: append([]int32(nil), l.entry.args...)}
+
+	if bulk := l.copyLoop(fast, countValue, size, proven, invariants); bulk >= 0 {
+		entry.block = bulk
+	}
 
 	if len(switches) >= 2 {
 		index := mapValue(f.blocks[switches[0]].term.value)
@@ -865,6 +946,28 @@ func (l *MemoryLoop) clone(proven map[int32]bool, invariants map[int32]int32, ca
 			}
 
 			args := append([]int32(nil), f.args(int32(v))...)
+
+			// The range guard bounded these additions before i32 wrapping.
+			// Move constant address terms into the memory displacement only
+			// in this guarded copy; the original keeps wrapping normally.
+			if proven[int32(v)] {
+				for l.noWrap[args[0]] {
+					add := f.args(args[0])
+					a, k := add[0], f.values[add[1]]
+
+					if k.op != OpConst {
+						a, k = add[1], f.values[add[0]]
+					}
+
+					if k.op != OpConst || uint64(uint32(k.aux))+uint64(f.values[n].aux) > 1<<31-1 {
+						break
+					}
+
+					f.values[n].aux += int64(uint32(k.aux))
+					args[0] = a
+				}
+			}
+
 			f.values[n].args = int32(len(f.pool))
 			f.values[n].nargs = uint16(len(args))
 

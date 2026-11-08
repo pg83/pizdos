@@ -116,6 +116,7 @@ const (
 	OpTableCopy // aux: destination table, aux2: source table
 	OpTableInit // aux: element segment, aux2: table
 	OpElemDrop
+	OpCopyForward // internal: positive, checked forward byte copy; args dst, src, length:i64
 
 	opCount
 )
@@ -135,7 +136,8 @@ var opNames = [opCount]string{
 	OpDemote: "demote", OpPromote: "promote", OpReinterpret: "reinterpret", OpSelect: "select",
 	OpLoad: "load", OpStore: "store", OpMemSize: "memory.size", OpMemGrow: "memory.grow", OpMemCopy: "memory.copy",
 	OpMemFill: "memory.fill", OpMemInit: "memory.init", OpDataDrop: "data.drop",
-	OpGlobalGet: "global.get", OpGlobalSet: "global.set", OpCall: "call", OpCallIndirect: "call_indirect", OpExtract: "extract",
+	OpCopyForward: "copy.forward",
+	OpGlobalGet:   "global.get", OpGlobalSet: "global.set", OpCall: "call", OpCallIndirect: "call_indirect", OpExtract: "extract",
 	OpRefNull: "ref.null", OpRefIsNull: "ref.is_null", OpRefFunc: "ref.func", OpTableGet: "table.get", OpTableSet: "table.set",
 	OpTableSize: "table.size", OpTableGrow: "table.grow", OpTableFill: "table.fill", OpTableCopy: "table.copy",
 	OpTableInit: "table.init", OpElemDrop: "elem.drop",
@@ -385,7 +387,7 @@ func isFloat(t Type) bool {
 func hasEffect(op Op) bool {
 	switch op {
 	case OpDivS, OpDivU, OpRemS, OpRemU, OpTruncS, OpTruncU,
-		OpLoad, OpStore, OpMemGrow, OpMemCopy, OpMemFill, OpMemInit, OpDataDrop,
+		OpLoad, OpStore, OpMemGrow, OpMemCopy, OpMemFill, OpMemInit, OpDataDrop, OpCopyForward,
 		OpGlobalSet, OpCall, OpCallIndirect,
 		OpTableGet, OpTableSet, OpTableGrow, OpTableFill, OpTableCopy, OpTableInit, OpElemDrop:
 		return true

@@ -162,13 +162,14 @@ const (
 	mMemFill
 	mSpillStore
 	mSpillLoad
-	mDivOvf  // trap if src is the minimum value and src2 is -1
-	mTruncF  // dst(gpr) = truncate src(xmm); aux: truncFlags; trapping unless saturating
-	mFMinMax // dst = min/max(src, src2) with wasm semantics; aux 1: max
-	mCvtU64F // dst(xmm) = convert unsigned 64-bit src; temps: two gprs
-	mFAluMem // dst = src op [mem]; aux: fAluOp
-	mFSelect // dst = src or src2 by float comparison of uses[0:2]; aux: OpFEq..OpFGe
-	mMemOp   // memory.copy/fill/init: see emitter
+	mDivOvf      // trap if src is the minimum value and src2 is -1
+	mTruncF      // dst(gpr) = truncate src(xmm); aux: truncFlags; trapping unless saturating
+	mFMinMax     // dst = min/max(src, src2) with wasm semantics; aux 1: max
+	mCvtU64F     // dst(xmm) = convert unsigned 64-bit src; temps: two gprs
+	mFAluMem     // dst = src op [mem]; aux: fAluOp
+	mFSelect     // dst = src or src2 by float comparison of uses[0:2]; aux: OpFEq..OpFGe
+	mMemOp       // memory.copy/fill/init: see emitter
+	mCopyForward // rdi <- bytes at rsi, rcx times, in forward order
 )
 
 // truncFlags for mTruncF
@@ -440,7 +441,7 @@ func (in *MInst) forEachOperand(cb func(r *VReg, role int)) {
 		cb(&in.temps[i], roleTemp)
 	}
 
-	if in.op == mDiv || in.op == mCall || in.op == mCallInd || in.op == mRet || in.op == mSignExtAx || in.op == mZeroDx || in.op == mGrowMem {
+	if in.op == mDiv || in.op == mCall || in.op == mCallInd || in.op == mRet || in.op == mSignExtAx || in.op == mZeroDx || in.op == mGrowMem || in.op == mCopyForward {
 		if in.op == mDiv || in.op == mGrowMem {
 			cb(&in.src, roleUse)
 		}
@@ -504,7 +505,7 @@ var mopNames = map[MOp]string{
 	mRet: "ret", mTrap: "trap", mTrapIf: "trapif", mCheck: "check", mParMove: "pmov", mStackArg: "stackarg",
 	mLoadArg: "loadarg", mStoreRet: "storeret", mGrowMem: "growmem", mSpillStore: "spill", mSpillLoad: "reload",
 	mDivOvf: "divovf", mTruncF: "truncf", mFMinMax: "fminmax", mCvtU64F: "cvtu64f", mFAluMem: "falum",
-	mFSelect: "fselect", mMemOp: "memop",
+	mFSelect: "fselect", mMemOp: "memop", mCopyForward: "copy.forward",
 }
 
 func (m Mem) String() string {
