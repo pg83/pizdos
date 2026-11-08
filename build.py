@@ -140,6 +140,37 @@ wasm2o_wasm = command(
     color="light-blue",
 )
 
+# bin/aot is a single freestanding C++ translation unit. The WASI reactor
+# exports compile(Blob) -> Blob; the command build also supplies _start.
+AOT_FLAGS = ["-x", "c++", "-std=c++20", "-O2", "-fno-exceptions", "-fno-rtti", "-fno-builtin", "-fwrapv", "-ffp-contract=off", "-Wno-parentheses-equality"]
+AOT_WASM_FLAGS = [*AOT_FLAGS, "--target=wasm32-unknown-unknown", "-ffreestanding", "-nostdlib", "-nostdinc", "-nostdinc++", "-mbulk-memory", "-Wl,--no-entry", "-Wl,--export-memory", "-Wl,-z,stack-size=4194304"]
+
+aot = command(
+    name="aot",
+    inputs=["$(S)/bin/aot/aot.cpp"],
+    outputs=["$(B)/bin/aot/aot.wasm"],
+    cmd=[CLANG, *AOT_WASM_FLAGS, "$(S)/bin/aot/aot.cpp", "-o", "$(B)/bin/aot/aot.wasm"],
+    descr="CC", color="green",
+)
+
+aot_command = command(
+    name="aot_command",
+    inputs=["$(S)/bin/aot/aot.cpp"],
+    outputs=["$(B)/bin/aot/aot-command.wasm"],
+    cmd=[CLANG, *AOT_WASM_FLAGS, "-DAOT_COMMAND", "$(S)/bin/aot/aot.cpp", "-o", "$(B)/bin/aot/aot-command.wasm"],
+    descr="CC", color="green",
+)
+
+# A native build needs host libc headers/libraries, supplied by the usual
+# CPPFLAGS/LDFLAGS. The C driver links libc without a C++ runtime.
+aot_native = command(
+    name="aot_native",
+    inputs=["$(S)/bin/aot/aot.cpp"],
+    outputs=["$(B)/bin/aot/aot"],
+    cmd=[CLANG, *build.cppflags, *build.cxxflags, *AOT_FLAGS, "$(S)/bin/aot/aot.cpp", "-o", "$(B)/bin/aot/aot", *build.ldflags],
+    descr="CC", color="green",
+)
+
 # wasm2o.wasm compiled by wasm2o: the compiler as its own output, which
 # `wasm2o run` executes on a goroutine stack.
 wasm2o_o = command(
@@ -369,6 +400,7 @@ stand_corpus = fetch(
 
 # What each test runs against: its arguments are the outputs of these nodes.
 TESTED = {
+    "aot": [aot, aot_command, wazero, wasm2o, busybox],
     "busybox_abi": [busybox],
     "busybox": [wasm2o, busybox_o, busybox],
     "wasm2o": [wasm2o, wasm2o_wasm, wasm2o_o, wasm2o_relinked, wazero, busybox],

@@ -9,6 +9,7 @@ hardware, not a different kernel.
 
 ```
 bin/wasm2o/   wasm to x86-64 (Go): a module in, an ELF object out; `wasm2o run` loads one onto a goroutine, a program of lib/c into its kernel
+bin/aot/      the same compiler in one freestanding C++ file, targeting WASI preview1
 bin/busybox/  busybox for the system: our config and the generator that replaces kconfig
 bin/kernel/   the kernel (Go), not yet
 bin/rootfs/   the root filesystem service (Go, wasm), not yet
@@ -45,6 +46,29 @@ build.py      the build graph
   to the top of the heap, so the stack must come first.
 
 ## native code
+
+`./build aot aot_command` builds the C++ compiler without a sysroot, libc,
+or a C++ runtime. `aot.wasm` exports `compile(Blob) -> Blob`, where `Blob`
+is `{const uint8_t* data; size_t size;}`. Under clang's wasm32 C ABI,
+`compile(resultDescriptor, inputDescriptor)` receives two addresses; each
+descriptor contains a little-endian 32-bit pointer followed by a 32-bit size.
+The output remains valid until the next call. The host places the input and
+descriptors in guest memory; only WASI preview1 imports are needed.
+
+`aot-command.wasm` also exports `_start`: wasm on stdin, ELF on stdout.
+`./build aot_native` builds the equivalent native command using host libc
+and the usual `CPPFLAGS`/`LDFLAGS`. Its optional `--strict` selects exact
+Wasm bounds for spec tests; normal compilation enables the same 64 KiB tail
+and optimizations as wasm2o. `W2X_SPEC_COMPILER=/absolute/path/to/aot`
+makes the existing `wasm2o spec` runner use this compiler with `--strict`.
+
+The C++ implementation uses 64 KiB pages and power-of-two small objects.
+Pool chunks grow geometrically up to 64 KiB. Containers own small allocations
+or pages; copied slice and map fields are views into storage owned by ObjPool.
+One pool holds the module and output structures, and a second is cleared
+after each function. Only the input and returned output use large contiguous
+allocations. `./build test_aot` checks both WASI entry points against wasm2o,
+including compilation of the new compiler itself and repeated export calls.
 
 - `wasm2o` compiles a module ahead of time to an ordinary x86-64 ELF
   relocatable object (`bin/wasm2o/elf.go`): code in `.text`, constants and

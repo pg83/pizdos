@@ -12,6 +12,10 @@ __pycache__/
 /wasm2o_o
 /wazero
 /libc
+/aot
+/aot_command
+/aot_native
+/testsuite_tarball
 /musl_tarball
 /busybox_tarball
 /test_*

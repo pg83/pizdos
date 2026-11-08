@@ -12,21 +12,72 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/tetratelabs/wazero"
+	"github.com/tetratelabs/wazero/api"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 	"github.com/tetratelabs/wazero/sys"
 )
 
 func usage() {
-	throwFmt("usage: wazero [-interpreter] [-compile] [-reserve] module.wasm [args...]")
+	throwFmt("usage: wazero [-interpreter] [-compile] [-reserve] [-aot] module.wasm [args...]")
+}
+
+// compileBlob exercises the C ABI compile(Blob) -> Blob without a command
+// entry point. Clang's wasm32 ABI passes both two-word structs by address.
+// A repeat count checks reuse of a single compiler instance and input.
+func compileBlob(ctx context.Context, module api.Module, repeat int) {
+	input := throw2(io.ReadAll(os.Stdin))
+	memory := module.Memory()
+	first, ok := memory.Grow(uint32((len(input) + 16 + 65535) / 65536))
+
+	if !ok {
+		throwFmt("cannot place compiler input in memory")
+	}
+
+	base := first * 65536
+
+	if !memory.Write(base+16, input) || !memory.WriteUint32Le(base+8, base+16) || !memory.WriteUint32Le(base+12, uint32(len(input))) {
+		throwFmt("compiler input does not fit")
+	}
+
+	var output []byte
+
+	for i := 0; i < repeat; i++ {
+		throw2(module.ExportedFunction("compile").Call(ctx, uint64(base), uint64(base+8)))
+		pointer, p := memory.ReadUint32Le(base)
+		size, s := memory.ReadUint32Le(base + 4)
+
+		if !p || !s {
+			throwFmt("compiler returned an invalid blob descriptor")
+		}
+
+		result, ok := memory.Read(pointer, size)
+
+		if !ok {
+			throwFmt("compiler returned an invalid blob")
+		}
+
+		if i == 0 {
+			output = append([]byte(nil), result...)
+		} else if !bytes.Equal(output, result) {
+			throwFmt("repeated compilation changed the object")
+		}
+	}
+
+	pages, _ := memory.Grow(0)
+	fmt.Fprintf(os.Stderr, "wazero: aot memory %.3f MiB\n", float64(pages)/16)
+	throw2(os.Stdout.Write(output))
 }
 
 func report(compile time.Duration, run time.Duration) {
@@ -71,7 +122,7 @@ func moduleConfig(args []string) wazero.ModuleConfig {
 }
 
 func run(args []string) int {
-	interpreter, compileOnly, reserve := false, false, false
+	interpreter, compileOnly, reserve, aot := false, false, false, false
 
 	for len(args) > 0 && strings.HasPrefix(args[0], "-") {
 		switch args[0] {
@@ -81,6 +132,8 @@ func run(args []string) int {
 			compileOnly = true
 		case "-reserve":
 			reserve = true
+		case "-aot":
+			aot = true
 		default:
 			usage()
 		}
@@ -113,7 +166,24 @@ func run(args []string) int {
 
 	wasi_snapshot_preview1.MustInstantiate(ctx, runtime)
 	start = time.Now()
-	_, err := runtime.InstantiateModule(ctx, compiled, moduleConfig(args))
+	var err error
+
+	if aot {
+		repeat := 1
+
+		if len(args) > 1 {
+			repeat = throw2(strconv.Atoi(args[1]))
+		}
+
+		if repeat < 1 {
+			throwFmt("aot repeat must be positive")
+		}
+
+		module := throw2(runtime.InstantiateModule(ctx, compiled, moduleConfig(args).WithStartFunctions()))
+		compileBlob(ctx, module, repeat)
+	} else {
+		_, err = runtime.InstantiateModule(ctx, compiled, moduleConfig(args))
+	}
 	elapsed := time.Since(start)
 	code := 0
 
