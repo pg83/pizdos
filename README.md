@@ -48,12 +48,10 @@ build.py      the build graph
 ## native code
 
 `./build aot aot_command` builds the C++ compiler without a sysroot, libc,
-or a C++ runtime. `aot.wasm` exports `compile(Blob) -> Blob`, where `Blob`
-is `{const uint8_t* data; size_t size;}`. Under clang's wasm32 C ABI,
-`compile(resultDescriptor, inputDescriptor)` receives two addresses; each
-descriptor contains a little-endian 32-bit pointer followed by a 32-bit size.
-The output remains valid until the next call. The host places the input and
-descriptors in guest memory; only WASI preview1 imports are needed.
+or a C++ runtime. `aot.wasm` exports `void compile()`: it reads wasm from
+WASI preview1 fd 0 and writes ELF to fd 1. Input is stored in 64 KiB pages;
+output is streamed by section, including data segments borrowed from input.
+The host supplies the two descriptors through WASI, with no guest-memory ABI.
 
 `aot-command.wasm` also exports `_start`: wasm on stdin, ELF on stdout.
 `./build aot_native` builds the equivalent native command using host libc
@@ -66,15 +64,22 @@ The C++ implementation adapts `trustme/bin/rustc/malloc.cpp`: 2 MiB segments,
 64 KiB payload pages, class-local bump allocation and intrusive free lists.
 Size classes step by 16 bytes through 256 bytes, then four classes per power
 of two, up to 64 KiB. Empty pages can immediately serve another size class.
-There are no multi-page object runs or large-object mappings; the two
-contiguous I/O buffers use their separate path. Native segments use libc
+There are no multi-page object runs or large-object mappings. Every object
+allocation, including input and output storage, is at most 64 KiB.
+Native segments use libc
 `mmap`; WASI segments use `memory.grow`, with metadata outside payload pages.
 Pool chunks still grow geometrically up to 64 KiB. Containers own allocations
 or pages; copied slice and map fields are views into storage owned by ObjPool.
 One pool holds the module and output structures, and a second is cleared
-after each function. Only the input and returned output use large contiguous
-allocations. `./build test_aot` checks both WASI entry points against wasm2o,
+after each function. `./build test_aot` checks both WASI entry points against wasm2o,
 including compilation of the new compiler itself and repeated export calls.
+
+`./build aot_native aot_measure` builds the native compiler and a small
+`wait4` measurement parent with the same host flags. Run
+`python3 dev/aot_perf.py --json .build/aot-perf.json --check` to compare all
+seven main inputs with native Go. Each output must match byte for byte.
+Three fresh-process runs alternate compiler order; the gate requires median
+user+system CPU at most 0.5 times Go and maximum RSS at most Go on every input.
 
 - `wasm2o` compiles a module ahead of time to an ordinary x86-64 ELF
   relocatable object (`bin/wasm2o/elf.go`): code in `.text`, constants and

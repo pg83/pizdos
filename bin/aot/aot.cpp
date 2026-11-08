@@ -155,23 +155,6 @@ namespace {
         return checkedAdd(size, alignment - 1) & ~(alignment - 1);
     }
 
-    static void* growPages(usize count) {
-        require(count != 0, "zero page allocation");
-#if defined(__wasm__) || defined(wasm)
-        const usize first = __builtin_wasm_memory_grow(0, count);
-        if (first == ~usize(0)) {
-            fail("out of memory");
-        }
-        return reinterpret_cast<void*>(first * pageBytes);
-#else
-        void* data = ::aligned_alloc(pageBytes, checkedMultiply(count, pageBytes));
-        if (data == nullptr) {
-            fail("out of memory");
-        }
-        return data;
-#endif
-    }
-
     static constexpr usize heapSegmentShift = 21;
     static constexpr usize heapSegmentBytes = usize(1) << heapSegmentShift;
     static constexpr usize heapPagesPerSegment = heapSegmentBytes / pageBytes;
@@ -834,9 +817,16 @@ namespace {
             return value;
         }
 
-        void append(const T* values, usize count) {
-            for (usize i = 0; i < count; ++i) {
-                pushBack(values[i]);
+        void append(const T* values, usize size) {
+            reserve(checkedAdd(count, size));
+            while (size) {
+                const usize offset = count % itemsPerPage;
+                const usize available = itemsPerPage - offset;
+                const usize take = size < available ? size : available;
+                copyBytes(pages.data()[count / itemsPerPage] + offset, values, take * sizeof(T));
+                count += take;
+                values += take;
+                size -= take;
             }
         }
 
@@ -948,11 +938,6 @@ void ObjPool::clear() {
     left = 0;
     nextChunk = 128;
 }
-
-struct Blob {
-    const u8* data;
-    usize size;
-};
 
 namespace std {
     template <typename T>
@@ -1268,6 +1253,42 @@ namespace {
         return n;
     }
 
+    static void writeBytes(u32 fd, Slice<u8> bytes) {
+        if (!bytes.count) {
+            return;
+        }
+        if (bytes.array->contiguous) {
+            writeAll(fd, bytes.array->contiguous + bytes.offset, bytes.count);
+            return;
+        }
+        usize at = bytes.offset;
+        usize remaining = bytes.count;
+        while (remaining) {
+            const usize offset = at % pageBytes;
+            const usize available = pageBytes - offset;
+            const usize take = remaining < available ? remaining : available;
+            writeAll(fd, bytes.array->pages.pages.data()[at / pageBytes] + offset, take);
+            at += take;
+            remaining -= take;
+        }
+    }
+
+    static void writeZeros(u32 fd, u64 count) {
+        static constexpr u8 zeros[64]{};
+        while (count) {
+            const usize take = count < sizeof(zeros) ? usize(count) : sizeof(zeros);
+            writeAll(fd, zeros, take);
+            count -= take;
+        }
+    }
+
+    template <typename T>
+    static void storeLittle(u8* bytes, T value) {
+        for (usize i = 0; i < sizeof(T); ++i) {
+            bytes[i] = u8(value >> (i * 8));
+        }
+    }
+
     struct String {
         const u8* data = nullptr;
         usize count = 0;
@@ -1333,7 +1354,11 @@ namespace {
         if (!s.array->paged) {
             return {s.array->small.data() + s.offset, s.count};
         }
-        require(s.count <= pageBytes, "large internal string");
+        const usize first = s.offset / pageBytes;
+        if ((usize(s.offset) + s.count - 1) / pageBytes == first) {
+            return {s.array->pages.pages.data()[first] + s.offset % pageBytes, s.count};
+        }
+        require(s.count <= pageBytes - 32, "large internal string");
         auto* p = static_cast<u8*>(activePool->allocate(s.count, 1));
         for (u32 i = 0; i < s.count; ++i) {
             p[i] = s[i];
@@ -3600,7 +3625,7 @@ namespace {
         Slice<CallFixup> jumpCalls{};
         Slice<CodeBlob> blobs{};
         Slice<i32> blobAt{};
-        Slice<u8> rodata{};
+        u64 rodataSize{};
         Map<Array<u64, 2>, i32> floatIx{};
         Slice<String> externs{};
         Map<String, i32> externIx{};
@@ -5363,7 +5388,7 @@ namespace {
 
     static void versionMemoryLoops(Function* f);
 
-    static Slice<u8> writeELF(ObjCode* oc, Slice<u8> note);
+    static void writeELF(ObjCode* oc, Slice<u8> note);
 
     static Slice<VReg> xmmRange(Int n);
 
@@ -16199,21 +16224,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // placeBlobs lays the constants and data segments out in .rodata.
     static void objCodePlaceBlobs(ObjCode* oc) {
-        (oc)->blobAt = makeSlice<i32>(length((oc)->blobs));
-        {
-            auto range1074 = (oc)->blobs;
-            for (Int index1075 = 0, rangeEnd1076 = length(range1074); index1075 < rangeEnd1076; ++index1075) {
-                Int i = index1075;
-                CodeBlob b = range1074[index1075];
-                {
-                    for (; ((length((oc)->rodata) % (b).align) != Int(0LL));) {
-                        (oc)->rodata = appendValues((oc)->rodata, u8(0LL));
-                    }
-                }
-                (oc)->blobAt[i] = convert<i32>(length((oc)->rodata));
-                (oc)->rodata = appendSlice((oc)->rodata, (b).bytes);
-            }
+        oc->blobAt = makeSlice<i32>(length(oc->blobs));
+        u64 offset = 0;
+        for (Int i = 0; i < length(oc->blobs); ++i) {
+            const CodeBlob& blob = oc->blobs[i];
+            offset = alignUp(usize(offset), usize(blob.align));
+            require(offset <= 0x7fffffff, "rodata offset overflow");
+            oc->blobAt[i] = i32(offset);
+            offset += length(blob.bytes);
         }
+        oc->rodataSize = offset;
     }
 
     // recordFrame writes the jump frame in an adapter, whose RBP is set while
@@ -21215,7 +21235,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
     }
 
-    static Slice<u8> writeELF(ObjCode* oc, Slice<u8> note) {
+    static void writeELF(ObjCode* oc, Slice<u8> note) {
         constexpr Int secText = Int(11LL);
         constexpr Int secRelaText = {};
         constexpr Int secRodata = {};
@@ -21350,68 +21370,83 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 names[(sec).index] = sh((sec).name);
             }
         }
-        Slice<u8> out = makeSlice<u8>(Int(64LL));
-        Array<u64, 11> offsets = {};
-        Array<u64, 11> sizes = {};
-        auto place = [&](Int sec, Slice<u8> data, Int align) mutable -> void {
-            {
-                for (; ((length(out) % align) != Int(0LL));) {
-                    out = appendValues(out, u8(0LL));
+        Array<u64, 11> offsets{};
+        Array<u64, 11> sizes{};
+        Array<Slice<u8>, 11> contents{};
+        u64 position = 64;
+        auto reserveSection = [&](Int section, u64 bytes, usize alignment) {
+            position = alignUp(usize(position), alignment);
+            offsets[section] = position;
+            sizes[section] = bytes;
+            position += bytes;
+        };
+        auto place = [&](Int section, Slice<u8> data, usize alignment) {
+            reserveSection(section, length(data), alignment);
+            contents[section] = data;
+        };
+        place(1, oc->a.buf, 16);
+        place(2, relaText, 8);
+        reserveSection(3, oc->rodataSize, 16);
+        place(4, eh, 8);
+        place(5, relaEh, 8);
+        place(6, noteBody, 4);
+        place(7, symtab, 8);
+        place(8, strtab, 1);
+        place(9, shstrtab, 1);
+        place(10, {}, 1);
+        const u64 shoff = alignUp(usize(position), 8);
+        u8 fileHeader[64]{};
+        copyBytes(fileHeader, "\177ELF\002\001\001", 8);
+        storeLittle(fileHeader + 16, u16(1));
+        storeLittle(fileHeader + 18, u16(62));
+        storeLittle(fileHeader + 20, u32(1));
+        storeLittle(fileHeader + 40, shoff);
+        storeLittle(fileHeader + 52, u16(64));
+        storeLittle(fileHeader + 58, u16(64));
+        storeLittle(fileHeader + 60, u16(11));
+        storeLittle(fileHeader + 62, u16(9));
+        u8 sectionHeaders[11 * 64]{};
+        auto header = [&](Int section, u32 type, u64 flags, u32 link, u32 info, u64 alignment, u64 entrySize) {
+            u8* bytes = sectionHeaders + usize(section) * 64;
+            storeLittle(bytes, names[section]);
+            storeLittle(bytes + 4, type);
+            storeLittle(bytes + 8, flags);
+            storeLittle(bytes + 24, offsets[section]);
+            storeLittle(bytes + 32, sizes[section]);
+            storeLittle(bytes + 40, link);
+            storeLittle(bytes + 44, info);
+            storeLittle(bytes + 48, alignment);
+            storeLittle(bytes + 56, entrySize);
+        };
+        header(1, shtProgbits, shfAlloc | shfExec, 0, 0, 16, 0);
+        header(2, shtRela, shfInfoLink, 7, 1, 8, 24);
+        header(3, shtProgbits, shfAlloc, 0, 0, 16, 0);
+        header(4, shtProgbits, shfAlloc, 0, 0, 8, 0);
+        header(5, shtRela, shfInfoLink, 7, 4, 8, 24);
+        header(6, shtNote, 0, 0, 0, 4, 0);
+        header(7, shtSymtab, 0, 8, u32(firstGlobal), 8, 24);
+        header(8, shtStrtab, 0, 0, 0, 1, 0);
+        header(9, shtStrtab, 0, 0, 0, 1, 0);
+        header(10, shtProgbits, 0, 0, 0, 1, 0);
+        writeAll(1, fileHeader, sizeof(fileHeader));
+        position = sizeof(fileHeader);
+        for (Int section = 1; section < 11; ++section) {
+            writeZeros(1, offsets[section] - position);
+            if (section == 3) {
+                u64 written = 0;
+                for (Int i = 0; i < length(oc->blobs); ++i) {
+                    writeZeros(1, u64(oc->blobAt[i]) - written);
+                    writeBytes(1, oc->blobs[i].bytes);
+                    written = u64(oc->blobAt[i]) + length(oc->blobs[i].bytes);
                 }
+                require(written == oc->rodataSize, "rodata layout mismatch");
+            } else {
+                writeBytes(1, contents[section]);
             }
-            offsets[sec] = convert<u64>(length(out));
-            sizes[sec] = convert<u64>(length(data));
-            out = appendSlice(out, data);
-        };
-        place(Int(1LL), ((oc)->a).buf, Int(16LL));
-        place(Int(2LL), relaText, Int(8LL));
-        place(Int(3LL), (oc)->rodata, Int(16LL));
-        place(Int(4LL), eh, Int(8LL));
-        place(Int(5LL), relaEh, Int(8LL));
-        place(Int(6LL), noteBody, Int(4LL));
-        place(Int(7LL), symtab, Int(8LL));
-        place(Int(8LL), strtab, Int(1LL));
-        place(Int(9LL), shstrtab, Int(1LL));
-        place(Int(10LL), {}, Int(1LL));
-        {
-            for (; ((length(out) % Int(8LL)) != Int(0LL));) {
-                out = appendValues(out, u8(0LL));
-            }
+            position = offsets[section] + sizes[section];
         }
-        u64 shoff = convert<u64>(length(out));
-        auto header = [&](Int sec, u32 typ, u64 flags, u32 link, u32 info, u64 align, u64 entsize) mutable -> void {
-            out = littleAppendUint32(out, names[sec]);
-            out = littleAppendUint32(out, typ);
-            out = littleAppendUint64(out, flags);
-            out = littleAppendUint64(out, u64(0LL));
-            out = littleAppendUint64(out, offsets[sec]);
-            out = littleAppendUint64(out, sizes[sec]);
-            out = littleAppendUint32(out, link);
-            out = littleAppendUint32(out, info);
-            out = littleAppendUint64(out, align);
-            out = littleAppendUint64(out, entsize);
-        };
-        out = appendSlice(out, makeSlice<u8>(Int(64LL)));
-        header(Int(1LL), shtProgbits, u64(6LL), u32(0LL), u32(0LL), u64(16LL), u64(0LL));
-        header(Int(2LL), shtRela, shfInfoLink, u32(7LL), u32(1LL), u64(8LL), u64(24LL));
-        header(Int(3LL), shtProgbits, shfAlloc, u32(0LL), u32(0LL), u64(16LL), u64(0LL));
-        header(Int(4LL), shtProgbits, shfAlloc, u32(0LL), u32(0LL), u64(8LL), u64(0LL));
-        header(Int(5LL), shtRela, shfInfoLink, u32(7LL), u32(4LL), u64(8LL), u64(24LL));
-        header(Int(6LL), shtNote, u64(0LL), u32(0LL), u32(0LL), u64(4LL), u64(0LL));
-        header(Int(7LL), shtSymtab, u64(0LL), u32(8LL), convert<u32>(firstGlobal), u64(8LL), u64(24LL));
-        header(Int(8LL), shtStrtab, u64(0LL), u32(0LL), u32(0LL), u64(1LL), u64(0LL));
-        header(Int(9LL), shtStrtab, u64(0LL), u32(0LL), u32(0LL), u64(1LL), u64(0LL));
-        header(Int(10LL), shtProgbits, u64(0LL), u32(0LL), u32(0LL), u64(1LL), u64(0LL));
-        copySlice(out, sliceOf<u8>({u8(127LL), u8(69LL), u8(76LL), u8(70LL), u8(2LL), u8(1LL), u8(1LL), u8(0LL)}));
-        littlePutUint16(subslice(out, Int(16LL), length(out)), u16(1LL));
-        littlePutUint16(subslice(out, Int(18LL), length(out)), u16(62LL));
-        littlePutUint32(subslice(out, Int(20LL), length(out)), u32(1LL));
-        littlePutUint64(subslice(out, Int(40LL), length(out)), shoff);
-        littlePutUint16(subslice(out, Int(52LL), length(out)), u16(64LL));
-        littlePutUint16(subslice(out, Int(58LL), length(out)), u16(64LL));
-        littlePutUint16(subslice(out, Int(60LL), length(out)), u16(11LL));
-        littlePutUint16(subslice(out, Int(62LL), length(out)), u16(9LL));
-        return out;
+        writeZeros(1, shoff - position);
+        writeAll(1, sectionHeaders, sizeof(sectionHeaders));
     }
 
     static Slice<VReg> xmmRange(Int n) {
@@ -21485,31 +21520,22 @@ namespace {
         reader->pos = length(reader->data);
     }
 
-    static Blob readInput() {
-        PageVec<u8> bytes;
+    static Slice<u8> readInput(ObjPool& owner) {
+        auto* input = owner.make<ArrayData<u8>>(&owner);
+        input->paged = true;
         u8 buffer[pageBytes];
         for (;;) {
             IoVec vector{buffer, sizeof(buffer)};
             usize count = 0;
             require(wasiFdRead(0, &vector, 1, &count) == 0, "stdin read failed");
-            if (count == 0) {
+            if (!count) {
                 break;
             }
-            bytes.append(buffer, count);
+            input->pages.append(buffer, count);
         }
-        auto* input = static_cast<u8*>(growPages((bytes.size() + pageBytes - 1) / pageBytes + (bytes.empty() ? 1 : 0)));
-        for (usize i = 0; i < bytes.size(); ++i) {
-            input[i] = bytes[i];
-        }
-        return {input, bytes.size()};
-    }
-
-    static void releaseBlob(Blob blob) {
-#if defined(__wasm__) || defined(wasm)
-        heap.adoptPages(const_cast<u8*>(blob.data), alignUp(blob.size, pageBytes));
-#else
-        ::free(const_cast<u8*>(blob.data));
-#endif
+        require(input->pages.size() <= 0x7fffffff, "input exceeds address space");
+        input->count = Int(input->pages.size());
+        return {input, 0, u32(input->count), u32(input->count)};
     }
 
     static void writeNumber(u64 value) {
@@ -21523,43 +21549,25 @@ namespace {
     }
 
     static void decodeCommand() {
-        Blob input = readInput();
         ObjPool pool;
         PoolScope scope(pool);
-        Module* module = decodeModule(borrowSlice(const_cast<u8*>(input.data), input.size));
+        Module* module = decodeModule(readInput(pool));
         writeNumber(length(module->types));
         writeAll(1, " ", 1);
         writeNumber(length(module->funcs));
         writeAll(1, " ", 1);
         writeNumber(length(module->datas));
         writeAll(1, "\n", 1);
-        releaseBlob(input);
     }
 }
 
 namespace {
-    // The returned blob remains valid until the next compile call.
-    // Keeping one reusable output allocation also bounds repeated WASI calls.
-    static u8* outputData;
-    static usize outputCapacity;
-
-    static u8* reserveOutput(usize bytes) {
-        if (bytes > outputCapacity) {
-            if (outputData) {
-                releaseBlob({outputData, outputCapacity});
-            }
-            outputCapacity = alignUp(bytes, pageBytes);
-            outputData = static_cast<u8*>(growPages(outputCapacity / pageBytes));
-        }
-        return outputData;
-    }
-
-    static Blob compileWithOptions(Blob input, CompileOptions options) {
+    static void compileWithOptions(CompileOptions options) {
         ObjPool modulePool;
         ObjPool workPool;
         PoolScope scope(modulePool);
         initializeCompilerTables();
-        Module* module = decodeModule(borrowSlice(const_cast<u8*>(input.data), input.size));
+        Module* module = decodeModule(readInput(modulePool));
         if (options.memoryTail && length(module->mems) > 0) {
             module->memoryTail = 65536;
             module->tailRanges = options.tailRanges;
@@ -21578,7 +21586,6 @@ namespace {
         code->jumpCalls = makeSlice<CallFixup>(0);
         code->blobs = makeSlice<CodeBlob>(0);
         code->blobAt = makeSlice<i32>(0);
-        code->rodata = makeSlice<u8>(0);
         code->floatIx = makeMap<Array<u64, 2>, i32>();
         code->externs = makeSlice<String>(0);
         code->externIx = makeMap<String, i32>();
@@ -21605,12 +21612,7 @@ namespace {
         objCodeInitThunk(code);
         objCodePlaceBlobs(code);
         objCodeResolve(code);
-        Slice<u8> output = writeELF(code, encodeNote(objCodeDescription(code)));
-        auto* bytes = reserveOutput(output.count);
-        for (usize i = 0; i < output.count; ++i) {
-            bytes[i] = output[i];
-        }
-        return {bytes, output.count};
+        writeELF(code, encodeNote(objCodeDescription(code)));
     }
 }
 
@@ -21618,23 +21620,20 @@ extern "C"
 #if defined(__wasm__) || defined(wasm)
     __attribute__((export_name("compile")))
 #endif
-    Blob compile(Blob input) {
-    return compileWithOptions(input, CompileOptions{true, true, false});
+    void compile() {
+    compileWithOptions(CompileOptions{true, true, false});
 }
 
 namespace {
     static void compilerCommand(bool strict = false) {
-        Blob input = readInput();
 #ifdef AOT_STRICT
-        Blob output = compileWithOptions(input, CompileOptions{});
-#else
-        Blob output = strict ? compileWithOptions(input, CompileOptions{}) : compile(input);
+        strict = true;
 #endif
-        writeAll(1, output.data, output.size);
-        releaseBlob({outputData, outputCapacity});
-        outputData = nullptr;
-        outputCapacity = 0;
-        releaseBlob(input);
+        if (strict) {
+            compileWithOptions(CompileOptions{});
+        } else {
+            compile();
+        }
     }
 }
 
@@ -21756,18 +21755,17 @@ namespace {
         }
     #if defined(__wasm__) || defined(wasm)
         {
-            auto* first = static_cast<u8*>(growPages(5));
-            auto* second = static_cast<u8*>(growPages(40));
-            require(second == first + 5 * pageBytes, "I/O test memory layout");
-            heap.adoptPages(second, 40 * pageBytes);
-            heap.adoptPages(first, 5 * pageBytes);
-            HeapPage* recycled[45];
-            for (usize i = 0; i < 45; ++i) {
+            const usize oldPages = __builtin_wasm_memory_grow(0, 1);
+            require(oldPages != ~usize(0), "test memory growth");
+            auto* first = reinterpret_cast<u8*>(oldPages * pageBytes);
+            heap.adoptPages(first, pageBytes);
+            HeapPage* recycled[1];
+            for (usize i = 0; i < 1; ++i) {
                 recycled[i] = heap.takePage();
                 const uptr address = heap.pageAddress(recycled[i]);
-                require(address >= reinterpret_cast<uptr>(first) && address < reinterpret_cast<uptr>(second) + 40 * pageBytes, "I/O page recycling");
+                require(address >= reinterpret_cast<uptr>(first) && address < reinterpret_cast<uptr>(first) + pageBytes, "I/O page recycling");
             }
-            for (usize i = 0; i < 45; ++i) {
+            for (usize i = 0; i < 1; ++i) {
                 heap.releasePage(recycled[i]);
             }
         }

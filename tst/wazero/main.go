@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"github.com/tetratelabs/wazero"
-	"github.com/tetratelabs/wazero/api"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 	"github.com/tetratelabs/wazero/sys"
 )
@@ -33,51 +32,32 @@ func usage() {
 	throwFmt("usage: wazero [-interpreter] [-compile] [-reserve] [-aot] module.wasm [args...]")
 }
 
-// compileBlob exercises the C ABI compile(Blob) -> Blob without a command
-// entry point. Clang's wasm32 ABI passes both two-word structs by address.
-// A repeat count checks reuse of a single compiler instance and input.
-func compileBlob(ctx context.Context, module api.Module, repeat int) {
+// compileAot exercises compile() through WASI stdin/stdout. Rewinding the
+// host reader lets repeated calls reuse one compiler instance without
+// placing either input or output in an extra guest-memory blob.
+func compileAot(ctx context.Context, runtime wazero.Runtime, compiled wazero.CompiledModule, args []string, repeat int) {
 	input := throw2(io.ReadAll(os.Stdin))
-	memory := module.Memory()
-	first, ok := memory.Grow(uint32((len(input) + 16 + 65535) / 65536))
-
-	if !ok {
-		throwFmt("cannot place compiler input in memory")
-	}
-
-	base := first * 65536
-
-	if !memory.Write(base+16, input) || !memory.WriteUint32Le(base+8, base+16) || !memory.WriteUint32Le(base+12, uint32(len(input))) {
-		throwFmt("compiler input does not fit")
-	}
-
-	var output []byte
+	reader := bytes.NewReader(input)
+	var output bytes.Buffer
+	config := moduleConfig(args).WithStartFunctions().WithStdin(reader).WithStdout(&output)
+	module := throw2(runtime.InstantiateModule(ctx, compiled, config))
+	var expected []byte
 
 	for i := 0; i < repeat; i++ {
-		throw2(module.ExportedFunction("compile").Call(ctx, uint64(base), uint64(base+8)))
-		pointer, p := memory.ReadUint32Le(base)
-		size, s := memory.ReadUint32Le(base + 4)
-
-		if !p || !s {
-			throwFmt("compiler returned an invalid blob descriptor")
-		}
-
-		result, ok := memory.Read(pointer, size)
-
-		if !ok {
-			throwFmt("compiler returned an invalid blob")
-		}
+		throw2(reader.Seek(0, io.SeekStart))
+		output.Reset()
+		throw2(module.ExportedFunction("compile").Call(ctx))
 
 		if i == 0 {
-			output = append([]byte(nil), result...)
-		} else if !bytes.Equal(output, result) {
+			expected = append([]byte(nil), output.Bytes()...)
+		} else if !bytes.Equal(expected, output.Bytes()) {
 			throwFmt("repeated compilation changed the object")
 		}
 	}
 
-	pages, _ := memory.Grow(0)
+	pages, _ := module.Memory().Grow(0)
 	fmt.Fprintf(os.Stderr, "wazero: aot memory %.3f MiB\n", float64(pages)/16)
-	throw2(os.Stdout.Write(output))
+	throw2(os.Stdout.Write(expected))
 }
 
 func report(compile time.Duration, run time.Duration) {
@@ -179,8 +159,7 @@ func run(args []string) int {
 			throwFmt("aot repeat must be positive")
 		}
 
-		module := throw2(runtime.InstantiateModule(ctx, compiled, moduleConfig(args).WithStartFunctions()))
-		compileBlob(ctx, module, repeat)
+		compileAot(ctx, runtime, compiled, args, repeat)
 	} else {
 		_, err = runtime.InstantiateModule(ctx, compiled, moduleConfig(args))
 	}

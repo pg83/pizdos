@@ -141,7 +141,7 @@ wasm2o_wasm = command(
 )
 
 # bin/aot is a single freestanding C++ translation unit. The WASI reactor
-# exports compile(Blob) -> Blob; the command build also supplies _start.
+# exports compile(), reading fd 0 and writing fd 1; the command adds _start.
 AOT_FLAGS = ["-x", "c++", "-std=c++20", "-O2", "-fno-exceptions", "-fno-rtti", "-fno-builtin", "-fwrapv", "-ffp-contract=off", "-Wno-parentheses-equality"]
 AOT_WASM_FLAGS = [*AOT_FLAGS, "--target=wasm32-unknown-unknown", "-ffreestanding", "-nostdlib", "-nostdinc", "-nostdinc++", "-mbulk-memory", "-Wl,--no-entry", "-Wl,--export-memory", "-Wl,-z,stack-size=4194304"]
 
@@ -176,6 +176,14 @@ aot_native = command(
     inputs=["$(S)/bin/aot/aot.cpp"],
     outputs=["$(B)/bin/aot/aot"],
     cmd=[CLANG, *build.cppflags, *build.cxxflags, *AOT_FLAGS, "$(S)/bin/aot/aot.cpp", "-o", "$(B)/bin/aot/aot", *build.ldflags],
+    descr="CC", color="green",
+)
+
+aot_measure = command(
+    name="aot_measure",
+    inputs=["$(S)/dev/aot_measure.c"],
+    outputs=["$(B)/dev/aot_measure"],
+    cmd=[CLANG, *build.cppflags, "-O2", "$(S)/dev/aot_measure.c", "-o", "$(B)/dev/aot_measure", *build.ldflags],
     descr="CC", color="green",
 )
 
