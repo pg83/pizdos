@@ -858,6 +858,22 @@ func (a *asm) fcmpM(size uint8, x VReg, m amem) {
 	a.vexRM(packedPP(size), 1, false, 0x2e, regNum(x), -1, m, 0)
 }
 
+func (a *asm) fcmpMask(size uint8, dst, x, y VReg, predicate byte) {
+	a.vexRR(scalarPP(size), 1, false, 0xc2, regNum(dst), regNum(x), regNum(y))
+	a.b(predicate)
+}
+
+func (a *asm) fblend(size uint8, dst, x, y, mask VReg) {
+	op := byte(0x4a)
+
+	if size == 8 {
+		op = 0x4b
+	}
+
+	a.vexRR(pp66, 3, false, op, regNum(dst), regNum(x), regNum(y))
+	a.b(byte(regNum(mask) << 4))
+}
+
 func (a *asm) fxor(dst VReg) {
 	r := regNum(dst)
 	a.vexRR(ppNone, 1, false, 0x57, r, r, r)
@@ -866,7 +882,9 @@ func (a *asm) fxor(dst VReg) {
 // cvtIF converts a signed integer of isize bytes to a float of fsize bytes.
 func (a *asm) cvtIF(isize, fsize uint8, dst, src VReg) {
 	d := regNum(dst)
-	a.vexRR(scalarPP(fsize), 1, isize == 8, 0x2a, d, d, int(src))
+	// Go's X15 is always zero: merging its unused upper lanes avoids a
+	// false dependency on dst without a separate xor before the conversion.
+	a.vexRR(scalarPP(fsize), 1, isize == 8, 0x2a, d, 15, int(src))
 }
 
 // cvtFI truncates a float of fsize bytes to a signed integer of isize bytes.
@@ -876,7 +894,7 @@ func (a *asm) cvtFI(isize, fsize uint8, dst, src VReg) {
 
 func (a *asm) cvtFF(from uint8, dst, src VReg) {
 	d := regNum(dst)
-	a.vexRR(scalarPP(from), 1, false, 0x5a, d, d, regNum(src))
+	a.vexRR(scalarPP(from), 1, false, 0x5a, d, 15, regNum(src))
 }
 
 func (a *asm) movGX(size uint8, dst, src VReg) {

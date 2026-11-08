@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"runtime"
 )
 
 // dumpFunc names a function, by name or index, whose IR is printed at
@@ -46,6 +47,11 @@ type textReloc struct {
 	addend int64
 }
 
+// Absolute text addresses in jump tables, relocated by an ordinary linker.
+type TextAddress struct {
+	at, target int32
+}
+
 type objCode struct {
 	m         *Module
 	lay       *Layout
@@ -65,6 +71,7 @@ type objCode struct {
 	externs    []string
 	externIx   map[string]int32
 	relocs     []textReloc
+	addresses  []TextAddress
 	regions    []Region
 	regionName string
 	// globals are the regions whose symbols are global: thunks Go calls.
@@ -129,6 +136,13 @@ func compileModule(data []byte) []byte {
 		}
 
 		oc.emitFunction(i, mf, al)
+
+		if runtime.GOARCH == "wasm" {
+			// Go on wasm schedules cooperatively. Let its collector finish
+			// between functions instead of retaining successive IR graphs
+			// as allocations made during one long marking cycle.
+			runtime.Gosched()
+		}
 	}
 
 	oc.exportThunks()
@@ -449,8 +463,23 @@ func (oc *objCode) description() *Meta {
 // applies the active data segments, then calls the start function.
 func (m *Module) addInitFunction() int {
 	code := []byte{0}
+	var parts [][]byte
+	steps := 0
+	next := func() {
+		// Go modules can contain tens of thousands of small data segments.
+		// Keep their generated initializer from becoming one enormous SSA
+		// and register-allocation problem.
+		if steps == 128 {
+			parts = append(parts, append(code, 0x0b))
+			code = []byte{0}
+			steps = 0
+		}
+
+		steps++
+	}
 
 	for i := m.importedGlobals; i < len(m.globals); i++ {
+		next()
 		g := &m.globals[i]
 		code = append(code, g.init[:len(g.init)-1]...)
 		code = append(code, 0x24)
@@ -462,6 +491,7 @@ func (m *Module) addInitFunction() int {
 			continue
 		}
 
+		next()
 		code = append(code, d.offset[:len(d.offset)-1]...)
 		code = append(code, 0x41, 0, 0x41)
 		code = appendSleb(code, int64(int32(uint32(len(d.bytes)))))
@@ -471,12 +501,6 @@ func (m *Module) addInitFunction() int {
 		code = appendLeb(code, uint64(i))
 	}
 
-	if m.start >= 0 {
-		code = append(code, 0x10)
-		code = appendLeb(code, uint64(m.start))
-	}
-
-	code = append(code, 0x0b)
 	typ := -1
 
 	for i, t := range m.types {
@@ -491,6 +515,23 @@ func (m *Module) addInitFunction() int {
 		m.types = append(m.types, FuncType{})
 		typ = len(m.types) - 1
 	}
+
+	if len(parts) > 0 {
+		parts = append(parts, append(code, 0x0b))
+		code = []byte{0}
+
+		for k, body := range parts {
+			fn := len(m.funcs)
+			m.funcs = append(m.funcs, Func{typ: uint32(typ), body: body, name: fmt.Sprintf("init.part%d", k)})
+			code = appendLeb(append(code, 0x10), uint64(fn))
+		}
+	}
+
+	if m.start >= 0 {
+		code = appendLeb(append(code, 0x10), uint64(m.start))
+	}
+
+	code = append(code, 0x0b)
 
 	if m.dataCount < 0 {
 		m.dataCount = int64(len(m.datas))

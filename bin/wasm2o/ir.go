@@ -160,6 +160,7 @@ type memKind int32
 
 const (
 	memSigned memKind = 1 << 4
+	memProven memKind = 1 << 5 // guarded loop version proved the entire access range
 )
 
 func makeMemKind(width int, signed bool) memKind {

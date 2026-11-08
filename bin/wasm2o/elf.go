@@ -192,6 +192,10 @@ func writeELF(oc *objCode, note []byte) []byte {
 		}
 	}
 
+	for _, r := range oc.addresses {
+		relaText = rela(relaText, uint64(r.at), symText, rX86_64_64, int64(r.target))
+	}
+
 	eh, starts := ehFrame(oc.regions)
 	var relaEh []byte
 

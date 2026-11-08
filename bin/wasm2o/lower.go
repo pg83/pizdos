@@ -36,10 +36,29 @@ type lowerer struct {
 	cur      int32
 	// split maps an edge (block, edge index) to the block placed on it.
 	split map[[2]int32]int32
+	// checked is the largest checked access end for an SSA address on the
+	// active dominator path. Wasm memory can grow but cannot shrink.
+	checked    map[int32]int64
+	checkUndo  []CheckUndo
+	floatHomes [][]int32
+	rawTrunc   []bool
+	addresses  *UnsignedRanges
+}
+
+type CheckUndo struct {
+	value int32
+	end   int64
+	set   bool
+}
+
+type LowerVisit struct {
+	block int32
+	leave bool
+	undo  int
 }
 
 func lowerFunction(m *Module, lay *Layout, f *Function) *MFunc {
-	l := &lowerer{m: m, f: f, lay: lay, mf: &MFunc{}, split: map[[2]int32]int32{}}
+	l := &lowerer{m: m, f: f, lay: lay, mf: &MFunc{}, split: map[[2]int32]int32{}, checked: map[int32]int64{}}
 	l.ci = f.analyze()
 	l.vregs = make([]VReg, len(f.values))
 
@@ -49,6 +68,8 @@ func lowerFunction(m *Module, lay *Layout, f *Function) *MFunc {
 
 	l.countUses()
 	l.markDeferred()
+	l.placeFloatConstants()
+	l.findRawTruncations()
 	l.mblk = make([]int32, len(f.blocks))
 
 	for i := range l.mblk {
@@ -67,11 +88,43 @@ func lowerFunction(m *Module, lay *Layout, f *Function) *MFunc {
 		}
 	}
 
-	for _, b := range l.ci.order {
+	children := l.ci.children()
+	visits := []LowerVisit{{block: l.ci.order[0]}}
+
+	for len(visits) > 0 {
+		visit := visits[len(visits)-1]
+		visits = visits[:len(visits)-1]
+
+		if visit.leave {
+			for len(l.checkUndo) > visit.undo {
+				u := l.checkUndo[len(l.checkUndo)-1]
+				l.checkUndo = l.checkUndo[:len(l.checkUndo)-1]
+
+				if u.set {
+					l.checked[u.value] = u.end
+				} else {
+					delete(l.checked, u.value)
+				}
+			}
+
+			continue
+		}
+
+		b := visit.block
+		undo := len(l.checkUndo)
 		l.cur = l.mblk[b]
 
 		if b == l.ci.order[0] {
 			l.entry()
+		}
+
+		for _, v := range l.floatHomes[b] {
+			val := &f.values[v]
+			in := inst(mFConst)
+			in.dst = l.def(v)
+			in.imm = val.aux
+			in.size = typeSize(val.typ)
+			l.emit(in)
 		}
 
 		for _, v := range f.blocks[b].instrs {
@@ -81,6 +134,11 @@ func lowerFunction(m *Module, lay *Layout, f *Function) *MFunc {
 		}
 
 		l.terminator(b)
+		visits = append(visits, LowerVisit{block: b, leave: true, undo: undo})
+
+		for i := len(children[b]) - 1; i >= 0; i-- {
+			visits = append(visits, LowerVisit{block: children[b][i]})
+		}
 	}
 
 	l.linkBlocks()
@@ -123,6 +181,10 @@ func isCompare(op Op) bool {
 	return (op >= OpEqz && op <= OpGeU) || (op >= OpFEq && op <= OpFGe)
 }
 
+func flagCondition(op Op) bool {
+	return isCompare(op) || op == OpAnd || op == OpOr || op == OpXor || op == OpSub
+}
+
 // markDeferred finds comparisons whose only use is the branch or a select of
 // their own block.
 func (l *lowerer) markDeferred() {
@@ -135,12 +197,36 @@ func (l *lowerer) markDeferred() {
 		if blk.term.kind == TermIf {
 			c := blk.term.value
 
-			if l.uses[c] == 1 && f.values[c].block == b && isCompare(f.values[c].op) {
+			if l.uses[c] == 1 && f.values[c].block == b && flagCondition(f.values[c].op) {
 				l.deferred[c] = true
 			}
 		}
 
 		for _, v := range blk.instrs {
+			val := &f.values[v]
+
+			if val.op == OpAdd {
+				args := f.args(v)
+
+				for i := len(args) - 1; i >= 0; i-- {
+					a := args[i]
+
+					if l.scaledIndex(a, b) {
+						l.deferred[a] = true
+
+						break
+					}
+				}
+			}
+
+			if val.op == OpEqz {
+				a := f.args(v)[0]
+
+				if l.uses[a] == 1 && f.values[a].block == b && f.values[a].op == OpAnd {
+					l.deferred[a] = true
+				}
+			}
+
 			if f.values[v].op != OpSelect {
 				continue
 			}
@@ -148,9 +234,7 @@ func (l *lowerer) markDeferred() {
 			c := f.args(v)[0]
 			op := f.values[c].op
 
-			// A select takes one condition code: float equality needs the
-			// parity flag besides, so it stays a value.
-			if l.uses[c] == 1 && f.values[c].block == b && isCompare(op) && op != OpFEq && op != OpFNe && !isFloat(f.values[v].typ) {
+			if l.uses[c] == 1 && f.values[c].block == b && flagCondition(op) {
 				l.deferred[c] = true
 			}
 		}
@@ -226,6 +310,14 @@ func (l *lowerer) use(v int32) VReg {
 		bits := l.constBits(v)
 
 		if isFloat(val.typ) {
+			if bits == 0 {
+				return XMM0 + 15
+			}
+
+			if l.vregs[v] != noReg {
+				return l.vregs[v]
+			}
+
 			r := l.mf.newReg(classXMM)
 			in := inst(mFConst)
 			in.dst = r
@@ -445,15 +537,27 @@ func (l *lowerer) lowerValue(v int32) {
 		in.size = size
 		in.dsize = typeSize(f.values[args[0]].typ)
 
+		if l.rawTrunc[v] {
+			in.op = mCvtFI
+			l.emit(in)
+
+			break
+		}
+
 		if val.op == OpTruncU || val.op == OpTruncSatU {
 			in.aux |= truncUnsigned
+
+			if size == 4 {
+				in.temps = []VReg{l.mf.newReg(classGPR)}
+			} else {
+				in.temps = []VReg{l.mf.newReg(classXMM), l.mf.newReg(classGPR)}
+			}
 		}
 
 		if val.op == OpTruncSatS || val.op == OpTruncSatU {
 			in.aux |= truncSat
 		}
 
-		in.temps = []VReg{l.mf.newReg(classXMM), l.mf.newReg(classGPR)}
 		l.emit(in)
 	case OpConvertS, OpConvertU:
 		l.convert(v, val.op, args[0], size)
@@ -557,6 +661,10 @@ func (l *lowerer) lowerValue(v int32) {
 var aluOps = map[Op]aluOp{OpAdd: aluAdd, OpSub: aluSub, OpAnd: aluAnd, OpOr: aluOr, OpXor: aluXor, OpMul: aluImul}
 
 func (l *lowerer) alu(v int32, op Op, a, b int32, size uint8) {
+	if op == OpAdd && l.leaAdd(v, a, b, size) {
+		return
+	}
+
 	if op != OpSub && l.isConst(a) && !l.isConst(b) {
 		a, b = b, a
 	}
@@ -776,7 +884,38 @@ func (l *lowerer) compare(c int32) (uint8, int) {
 	val := &f.values[c]
 	args := f.args(c)
 
+	if val.op == OpAnd {
+		l.testBits(args[0], args[1])
+
+		return ccNE, 0
+	}
+
+	if val.op == OpXor || val.op == OpSub {
+		in := inst(mCmp)
+		in.src = l.use(args[0])
+		in.src2 = l.use(args[1])
+		in.size = typeSize(f.values[args[0]].typ)
+		l.emit(in)
+
+		return ccNE, 0
+	}
+
+	if val.op == OpOr {
+		l.lowerValue(c)
+
+		return ccNE, 0
+	}
+
 	if val.op == OpEqz {
+		v := args[0]
+
+		if l.deferred[v] && f.values[v].op == OpAnd {
+			bits := f.args(v)
+			l.testBits(bits[0], bits[1])
+
+			return ccE, 0
+		}
+
 		a := l.use(args[0])
 		in := inst(mTest)
 		in.src = a
@@ -849,6 +988,26 @@ func (l *lowerer) compare(c int32) (uint8, int) {
 	return cc, 0
 }
 
+func (l *lowerer) testBits(a, b int32) {
+	if l.isConst(a) {
+		a, b = b, a
+	}
+
+	in := inst(mTest)
+	in.size = typeSize(l.f.values[a].typ)
+	in.src = l.use(a)
+
+	if x, ok := l.imm(b, in.size); ok {
+		in.op = mTestImm
+		in.imm = x
+		in.aux = 1 // only the zero flag is observed
+	} else {
+		in.src2 = l.use(b)
+	}
+
+	l.emit(in)
+}
+
 // condition codes of OpEq..OpGeU
 var intCC = [10]uint8{ccE, ccNE, ccL, ccB, ccG, ccA, ccLE, ccBE, ccGE, ccAE}
 
@@ -914,29 +1073,47 @@ func (l *lowerer) selectValue(v int32, args []int32) {
 	size := typeSize(t)
 
 	if isFloat(t) {
+		if l.deferred[cond] && f.values[cond].op >= OpFEq && f.values[cond].op <= OpFGe {
+			cmp := f.args(cond)
+			in := inst(mFSelect)
+			in.dst = l.def(v)
+			in.src = l.use(x)
+			in.src2 = l.use(y)
+			in.uses = []VReg{l.use(cmp[0]), l.use(cmp[1])}
+			in.temps = []VReg{l.mf.newReg(classXMM)}
+			in.aux = uint8(f.values[cond].op - OpFEq)
+			in.size = size
+			in.dsize = typeSize(f.values[cmp[0]].typ)
+			l.emit(in)
+
+			return
+		}
+
 		// Through general registers: cmov has no xmm form.
-		gx := l.mf.newReg(classGPR)
-		gy := l.mf.newReg(classGPR)
-		in := inst(mMovXG)
-		in.dst = gx
-		in.src = l.use(x)
-		in.size = size
-		l.emit(in)
-		in = inst(mMovXG)
-		in.dst = gy
-		in.src = l.use(y)
-		in.size = size
-		l.emit(in)
-		c := l.use(cond)
-		tst := inst(mTest)
-		tst.src = c
-		tst.src2 = c
-		tst.size = 4
-		l.emit(tst)
+		gx := l.floatBits(x, size)
+		gy := l.floatBits(y, size)
+		cc := uint8(ccNE)
+
+		if l.deferred[cond] {
+			var parity int
+			cc, parity = l.compare(cond)
+
+			if parity != 0 {
+				throwFmt("internal error: float comparison deferred to select")
+			}
+		} else {
+			c := l.use(cond)
+			tst := inst(mTest)
+			tst.src = c
+			tst.src2 = c
+			tst.size = 4
+			l.emit(tst)
+		}
+
 		cm := inst(mCmov)
 		cm.dst = gy
 		cm.src = gx
-		cm.cc = ccNE
+		cm.cc = cc
 		cm.size = size
 		l.emit(cm)
 		back := inst(mMovGX)
@@ -953,14 +1130,10 @@ func (l *lowerer) selectValue(v int32, args []int32) {
 	d := l.def(v)
 	l.mov(d, ry, size)
 	cc := uint8(ccNE)
+	parity := 0
 
 	if l.deferred[cond] {
-		var parity int
 		cc, parity = l.compare(cond)
-
-		if parity != 0 {
-			throwFmt("internal error: float comparison deferred to select")
-		}
 	} else {
 		c := l.use(cond)
 		tst := inst(mTest)
@@ -981,6 +1154,37 @@ func (l *lowerer) selectValue(v int32, args []int32) {
 	}
 
 	l.emit(cm)
+
+	if parity != 0 {
+		cm.cc = ccP
+
+		if parity == 1 {
+			cm.src = ry
+		}
+
+		l.emit(cm)
+	}
+}
+
+// floatBits materializes a select's alternatives in the class cmov uses.
+// Constants need no trip through an xmm register, and their NaN payloads
+// and signs of zero stay intact.
+func (l *lowerer) floatBits(v int32, size uint8) VReg {
+	r := l.mf.newReg(classGPR)
+	in := inst(mMovXG)
+	in.dst = r
+	in.size = size
+
+	if l.isConst(v) {
+		in.op = mMovImm
+		in.imm = l.constBits(v)
+	} else {
+		in.src = l.use(v)
+	}
+
+	l.emit(in)
+
+	return r
 }
 
 func (l *lowerer) copysign(v int32, a, b int32, size uint8) {
@@ -1041,6 +1245,14 @@ func (l *lowerer) convert(v int32, op Op, a int32, size uint8) {
 	if op == OpConvertU {
 		// a zero-extended i32 converts as a non-negative i64
 		in.size = 8
+
+		if l.addresses == nil {
+			l.addresses = &UnsignedRanges{f: l.f, cache: make([]UnsignedRange, len(l.f.values)), seen: make([]bool, len(l.f.values))}
+		}
+
+		if l.addresses.of(a, 0).hi <= math.MaxInt32 {
+			in.size = 4
+		}
 	}
 
 	l.emit(in)
@@ -1048,9 +1260,30 @@ func (l *lowerer) convert(v int32, op Op, a int32, size uint8) {
 
 // address returns the memory operand of an access of width bytes at addr
 // plus the static offset, emitting its bounds check.
-func (l *lowerer) address(addr int32, offset int64, width int) Mem {
+func (l *lowerer) address(addr int32, offset int64, width int, proven bool) Mem {
 	ra := l.use(addr)
 	end := offset + int64(width)
+	checked := proven
+
+	if len(l.m.mems) > 0 && !l.m.mems[0].imported {
+		if l.addresses == nil {
+			l.addresses = &UnsignedRanges{f: l.f, cache: make([]UnsignedRange, len(l.f.values)), seen: make([]bool, len(l.f.values))}
+		}
+
+		checked = checked || l.addresses.of(addr, 0).hi+uint64(end) <= l.m.mems[0].limits.min*65536
+	}
+
+	prior, had := l.checked[addr]
+	checked = checked || had && prior >= end
+
+	if checked && offset < math.MaxInt32 {
+		return memIndexed(memReg, ra, int32(offset))
+	}
+
+	if !had || end > prior {
+		l.checkUndo = append(l.checkUndo, CheckUndo{value: addr, end: prior, set: had})
+		l.checked[addr] = end
+	}
 
 	if end <= boundSlack {
 		in := inst(mCheck)
@@ -1104,7 +1337,7 @@ func (l *lowerer) address(addr int32, offset int64, width int) Mem {
 func (l *lowerer) load(v int32, addr int32) {
 	val := &l.f.values[v]
 	kind := memKind(val.aux2)
-	mem := l.address(addr, val.aux, kind.width())
+	mem := l.address(addr, val.aux, kind.width(), kind&memProven != 0)
 	in := inst(mLoad)
 
 	if isFloat(val.typ) {
@@ -1126,9 +1359,23 @@ func (l *lowerer) load(v int32, addr int32) {
 func (l *lowerer) store(v int32, addr, value int32) {
 	val := &l.f.values[v]
 	kind := memKind(val.aux2)
-	mem := l.address(addr, val.aux, kind.width())
+	mem := l.address(addr, val.aux, kind.width(), kind&memProven != 0)
 	width := uint8(kind.width())
 	t := l.f.values[value].typ
+
+	if isFloat(t) && l.isConst(value) && l.vregs[value] == noReg {
+		bits := l.constBits(value)
+
+		if width == 4 || bits == int64(int32(bits)) {
+			in := inst(mStoreImm)
+			in.mem = mem
+			in.imm = bits
+			in.size = width
+			l.emit(in)
+
+			return
+		}
+	}
 
 	if !isFloat(t) {
 		if x, ok := l.imm(value, width); ok && width <= 8 {
@@ -1802,14 +2049,36 @@ func (l *lowerer) terminator(b int32) {
 		switch parity {
 		case 1:
 			j := inst(mJcc)
+			j.cc = ccNE
+			j.target = els
+			l.emit(j)
+			j = inst(mJcc)
 			j.cc = ccP
 			j.target = els
 			l.emit(j)
+			j = inst(mJmp)
+			j.target = then
+			l.emit(j)
+
+			break
 		case 2:
 			j := inst(mJcc)
+			j.cc = ccNE
+			j.target = then
+			l.emit(j)
+			j = inst(mJcc)
 			j.cc = ccP
 			j.target = then
 			l.emit(j)
+			j = inst(mJmp)
+			j.target = els
+			l.emit(j)
+
+			break
+		}
+
+		if parity != 0 {
+			break
 		}
 
 		j := inst(mJcc)
@@ -1822,10 +2091,31 @@ func (l *lowerer) terminator(b int32) {
 	case TermSwitch:
 		in := inst(mSwitch)
 		in.src = l.use(t.value)
-		in.temps = []VReg{l.mf.newReg(classGPR), l.mf.newReg(classGPR)}
+		in.temps = []VReg{l.mf.newReg(classGPR)}
 
 		for i := range t.edges {
 			in.table = append(in.table, l.edgeBlock(b, i))
+		}
+
+		if len(in.table) >= 5 && in.table[0] != in.table[len(in.table)-1] {
+			// Keep the table's scratch register and spills on the uncommon
+			// path instead of reserving them on the first-case fast path.
+			dispatch := int32(len(l.mf.blocks))
+			first := in.table[0]
+			in.table[0] = in.table[len(in.table)-1]
+			in.aux = 1
+			l.mf.blocks = append(l.mf.blocks, MBlock{id: -1, depth: l.mf.blocks[l.cur].depth, insts: []MInst{in}})
+			test := inst(mTest)
+			test.src, test.src2, test.size = in.src, in.src, 4
+			l.emit(test)
+			j := inst(mJcc)
+			j.cc, j.target = ccE, first
+			l.emit(j)
+			j = inst(mJmp)
+			j.target = dispatch
+			l.emit(j)
+
+			break
 		}
 
 		l.emit(in)

@@ -105,6 +105,19 @@ func (oc *objCode) emitFunction(index int, mf *MFunc, al *allocator) {
 		}
 
 		a.setSP(e.body)
+
+		for _, p := range mf.blocks[b].preds {
+			if al.blockFrom[p] >= al.blockFrom[b] {
+				// Back edges enter an aligned header; padding is crossed
+				// only when entering the loop for the first time.
+				for a.pos()%32 != 0 {
+					a.b(0x90)
+				}
+
+				break
+			}
+		}
+
 		e.blockAt[b] = a.pos()
 		e.block(&mf.blocks[b], next)
 	}
@@ -140,7 +153,7 @@ func (oc *objCode) emitFunction(index int, mf *MFunc, al *allocator) {
 	}
 
 	for _, t := range e.tables {
-		for len(a.buf)%4 != 0 {
+		for len(a.buf)%8 != 0 {
 			a.b(0xcc)
 		}
 
@@ -148,7 +161,8 @@ func (oc *objCode) emitFunction(index int, mf *MFunc, al *allocator) {
 		a.patch32(t.lea, base)
 
 		for _, b := range t.table {
-			a.u32(uint32(e.blockAt[b] - base))
+			oc.addresses = append(oc.addresses, TextAddress{a.pos(), e.blockAt[b]})
+			a.u64(0)
 		}
 	}
 
@@ -268,7 +282,12 @@ func (e *funcEmitter) inst(in *MInst) {
 	case mTest:
 		a.test(in.size, in.src, in.src2)
 	case mTestImm:
-		a.testImm(in.size, in.src, in.imm)
+		if in.aux == 1 && in.imm >= 0 && in.imm <= 255 {
+			a.opRR(false, []byte{0xf6}, 0, int(in.src), true)
+			a.b(byte(in.imm))
+		} else {
+			a.testImm(in.size, in.src, in.imm)
+		}
 	case mSetcc:
 		a.setcc(in.cc, in.dst)
 	case mCmov:
@@ -312,6 +331,18 @@ func (e *funcEmitter) inst(in *MInst) {
 		}
 	case mFAlu:
 		a.falu(fAluOp(in.aux), in.size, in.dst, in.src, in.src2)
+	case mFSelect:
+		mask := in.temps[0]
+		predicates := [6]byte{0, 4, 17, 30, 18, 29}
+		a.fcmpMask(in.dsize, mask, in.uses[0], in.uses[1], predicates[in.aux])
+
+		if in.dsize == 4 && in.size == 8 {
+			// A 32-bit comparison mask also selects a 64-bit value.
+			a.vexRR(pp66, 1, false, 0x70, regNum(mask), -1, regNum(mask))
+			a.b(0)
+		}
+
+		a.fblend(in.size, in.dst, in.src2, in.src, mask)
 	case mFAluMem:
 		a.faluM(fAluOp(in.aux), in.size, in.dst, in.src, e.mem(in.mem))
 	case mFUnary:
@@ -323,13 +354,10 @@ func (e *funcEmitter) inst(in *MInst) {
 	case mFCmp:
 		a.fcmp(in.size, in.src, in.src2)
 	case mCvtIF:
-		a.fxor(in.dst)
 		a.cvtIF(in.size, in.dsize, in.dst, in.src)
+	case mCvtFI:
+		a.cvtFI(in.size, in.dsize, in.dst, in.src)
 	case mCvtFF:
-		if in.dst != in.src {
-			a.fxor(in.dst)
-		}
-
 		a.cvtFF(in.size, in.dst, in.src)
 	case mMovGX:
 		a.movGX(in.size, in.dst, in.src)
@@ -452,7 +480,13 @@ func (e *funcEmitter) switchTable(in *MInst) {
 		return
 	}
 
-	t0, t1 := in.temps[0], in.temps[1]
+	if in.aux == 0 && n >= 4 && in.table[0] != def {
+		// The first case needs no table address or indirect branch.
+		a.test(4, in.src, in.src)
+		e.jumpTo(ccE, in.table[0])
+	}
+
+	t0 := in.temps[0]
 	a.aluRI(aluCmp, 4, in.src, int64(n))
 	e.jumpTo(ccAE, def)
 	// lea t0, [rip+table]: the displacement is patched when the table is
@@ -461,9 +495,7 @@ func (e *funcEmitter) switchTable(in *MInst) {
 	a.b(0x8d, lo3(int(t0))<<3|5)
 	leaAt := a.pos()
 	a.u32(0)
-	a.opRM(true, []byte{0x63}, int(t1), amem{base: int(t0), index: int(in.src), scale: 4, label: -1}, 0, false)
-	a.aluRR(aluAdd, 8, t1, t0)
-	a.jmpReg(t1)
+	a.opRM(false, []byte{0xff}, 4, amem{base: int(t0), index: int(in.src), scale: 8, label: -1}, 0, false)
 	e.tables = append(e.tables, tableFixup{lea: leaAt, end: leaAt + 4, table: in.table})
 }
 
@@ -622,7 +654,6 @@ func (e *funcEmitter) truncF(in *MInst) {
 	a := e.a
 	isize, fsize := in.size, in.dsize
 	dst, src := in.dst, in.src
-	tx, tg := in.temps[0], in.temps[1]
 	unsigned := in.aux&truncUnsigned != 0
 	sat := in.aux&truncSat != 0
 	_, high, _ := truncBounds(isize, fsize)
@@ -639,8 +670,7 @@ func (e *funcEmitter) truncF(in *MInst) {
 
 			if sat {
 				nan := a.jcc8(ccP)
-				a.fxor(tx)
-				a.fcmp(fsize, src, tx)
+				a.fcmpM(fsize, src, e.oc.floatConst(0, fsize))
 				a.patch32(a.jccRel(ccBE), resume)
 				a.movImm(isize, dst, maxSigned(isize))
 				a.patch32(a.jmpRel(), resume)
@@ -670,6 +700,7 @@ func (e *funcEmitter) truncF(in *MInst) {
 	}
 
 	if isize == 4 {
+		tg := in.temps[0]
 		// through a 64-bit conversion: in range when the upper half is zero
 		a.cvtFI(8, fsize, dst, src)
 		a.movRR(8, tg, dst)
@@ -682,8 +713,7 @@ func (e *funcEmitter) truncF(in *MInst) {
 
 			if sat {
 				zero := a.jcc8(ccP)
-				a.fxor(tx)
-				a.fcmp(fsize, src, tx)
+				a.fcmpM(fsize, src, e.oc.floatConst(0, fsize))
 				neg := a.jcc8(ccB)
 				a.movImm(4, dst, 0xffffffff)
 				a.patch32(a.jmpRel(), resume)
@@ -703,6 +733,7 @@ func (e *funcEmitter) truncF(in *MInst) {
 	}
 
 	// unsigned 64-bit: values from 2^63 up convert after subtracting 2^63
+	tx, tg := in.temps[0], in.temps[1]
 	a.fcmpM(fsize, src, e.oc.floatConst(high, fsize))
 	big := a.jcc8(ccAE)
 	a.cvtFI(8, fsize, dst, src)
@@ -777,7 +808,6 @@ func (e *funcEmitter) cvtU64F(in *MInst) {
 	t1, t2 := in.temps[0], in.temps[1]
 	a.test(8, s, s)
 	big := a.jcc8(ccS)
-	a.fxor(d)
 	a.cvtIF(8, in.dsize, d, s)
 	done := a.jmp8()
 	a.here8(big)
@@ -786,7 +816,6 @@ func (e *funcEmitter) cvtU64F(in *MInst) {
 	a.movRR(4, t2, s)
 	a.aluRI(aluAnd, 4, t2, 1)
 	a.aluRR(aluOr, 8, t1, t2)
-	a.fxor(d)
 	a.cvtIF(8, in.dsize, d, t1)
 	a.falu(fAdd, in.dsize, d, d, d)
 	a.here8(done)

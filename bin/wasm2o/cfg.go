@@ -14,6 +14,18 @@ type cfgInfo struct {
 	header []bool
 }
 
+// children lists the immediate dominator's children in a stable order.
+func (ci *cfgInfo) children() [][]int32 {
+	children := make([][]int32, len(ci.idom))
+
+	for _, b := range ci.order[1:] {
+		p := ci.idom[b]
+		children[p] = append(children[p], b)
+	}
+
+	return children
+}
+
 func (f *Function) rpo() []int32 {
 	n := len(f.blocks)
 	visited := make([]bool, n)

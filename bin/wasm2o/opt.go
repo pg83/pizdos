@@ -45,6 +45,19 @@ func optimize(f *Function) {
 		}
 	}
 
+	o.commonExpressions()
+	o.selectTriangles()
+	versionMemoryLoops(f)
+
+	for round := 0; round < 4; round++ {
+		changed := o.cleanup()
+		changed = o.trivialParams() || changed
+
+		if !changed {
+			break
+		}
+	}
+
 	o.deadCode()
 }
 

@@ -1247,42 +1247,67 @@ func (a *allocator) resolve() {
 		}
 	}
 
-	origs := make([][]origInst, len(mf.blocks))
+	a.saveSpillsBeforeLoops(inner, atEnd, atStart)
+	var origs [][]origInst
+
+	if checkAlloc {
+		origs = make([][]origInst, len(mf.blocks))
+	}
 
 	for _, b := range a.order {
 		blk := &mf.blocks[b]
-		var out []MInst
-		var orig []origInst
+		n := len(blk.insts)
 
-		if mv := atStart[b]; len(mv) > 0 {
-			out = append(out, parMove(mv))
-			orig = append(orig, origInst{})
+		for _, moves := range [][]Move{atStart[b], atEnd[b]} {
+			if len(moves) > 0 {
+				n++
+			}
 		}
 
+		for _, p := range a.instPos[b] {
+			for _, key := range [2]int32{2 * p, 2*p + 1} {
+				if len(inner[key]) > 0 {
+					n++
+				}
+			}
+		}
+
+		out := make([]MInst, 0, n)
+		var orig []origInst
+
+		if checkAlloc {
+			orig = make([]origInst, 0, n)
+		}
+
+		move := func(moves []Move) {
+			if len(moves) == 0 {
+				return
+			}
+
+			out = append(out, parMove(moves))
+
+			if checkAlloc {
+				orig = append(orig, origInst{})
+			}
+		}
+
+		move(atStart[b])
 		branches := firstBranch(blk.insts)
 
 		for i := range blk.insts {
 			p := a.instPos[b][i]
 
 			if i == branches {
-				if mv := atEnd[b]; len(mv) > 0 {
-					out = append(out, parMove(mv))
-					orig = append(orig, origInst{})
-				}
+				move(atEnd[b])
 			}
 
 			for _, key := range [2]int32{2 * p, 2*p + 1} {
-				if mv := inner[key]; len(mv) > 0 {
-					out = append(out, parMove(mv))
-					orig = append(orig, origInst{})
-				}
+				move(inner[key])
 			}
 
+			// Operand slices belong to this instruction. Allocation is done;
+			// only the checker needs to retain their virtual-register names.
 			in := blk.insts[i]
-			in.uses = append([]VReg(nil), in.uses...)
-			in.defs = append([]VReg(nil), in.defs...)
-			in.temps = append([]VReg(nil), in.temps...)
-			in.moves = append([]Move(nil), in.moves...)
 			var ops []origOperand
 
 			in.forEachOperand(func(r *VReg, role int) {
@@ -1291,7 +1316,9 @@ func (a *allocator) resolve() {
 				}
 
 				if r.isPhys() {
-					ops = append(ops, origOperand{*r, *r, role})
+					if checkAlloc {
+						ops = append(ops, origOperand{*r, *r, role})
+					}
 
 					return
 				}
@@ -1304,7 +1331,10 @@ func (a *allocator) resolve() {
 
 				v := *r
 				*r = a.location(v, at)
-				ops = append(ops, origOperand{v, *r, role})
+
+				if checkAlloc {
+					ops = append(ops, origOperand{v, *r, role})
+				}
 
 				if isSlot(*r) && in.op != mParMove {
 					throwFmt("internal error: operand of %s in a stack slot", in.String())
@@ -1316,18 +1346,21 @@ func (a *allocator) resolve() {
 			}
 
 			out = append(out, in)
-			orig = append(orig, origInst{ops: ops})
-		}
 
-		if branches == len(blk.insts) {
-			if mv := atEnd[b]; len(mv) > 0 {
-				out = append(out, parMove(mv))
-				orig = append(orig, origInst{})
+			if checkAlloc {
+				orig = append(orig, origInst{ops: ops})
 			}
 		}
 
+		if branches == len(blk.insts) {
+			move(atEnd[b])
+		}
+
 		blk.insts = out
-		origs[b] = orig
+
+		if checkAlloc {
+			origs[b] = orig
+		}
 	}
 
 	if checkAlloc {

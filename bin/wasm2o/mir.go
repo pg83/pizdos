@@ -167,7 +167,7 @@ const (
 	mFMinMax // dst = min/max(src, src2) with wasm semantics; aux 1: max
 	mCvtU64F // dst(xmm) = convert unsigned 64-bit src; temps: two gprs
 	mFAluMem // dst = src op [mem]; aux: fAluOp
-	mFSelect // dst = src2 if src (an i32 condition) is zero else temps[0]... see lowering
+	mFSelect // dst = src or src2 by float comparison of uses[0:2]; aux: OpFEq..OpFGe
 	mMemOp   // memory.copy/fill/init: see emitter
 )
 
@@ -420,6 +420,15 @@ func (in *MInst) forEachOperand(cb func(r *VReg, role int)) {
 	case mFMinMax:
 		cb(&in.src, roleUse)
 		cb(&in.src2, roleUse)
+		cb(&in.dst, roleDef)
+	case mFSelect:
+		cb(&in.src, roleUse)
+		cb(&in.src2, roleUse)
+
+		for i := range in.uses {
+			cb(&in.uses[i], roleUse)
+		}
+
 		cb(&in.dst, roleDef)
 	case mFAluMem:
 		mem()
