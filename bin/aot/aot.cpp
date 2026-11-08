@@ -2725,8 +2725,10 @@ namespace {
 
     using SortedHint = Int;
 
-    // Liveness sets are sparse across virtual-register numbers. Allocate
-    // 256-bit chunks lazily, grouped under 16-Kibit directory nodes.
+    // Small sets use at most 32 words and a mask of occupied words. Larger
+    // sets allocate 256-bit chunks under 16-Kibit directory nodes lazily.
+    static constexpr u32 denseBitsetLimit = 2048;
+
     struct BitChunk {
         u64 words[4]{};
     };
@@ -2737,9 +2739,15 @@ namespace {
     };
 
     struct BitsetData {
-        SmallVec<BitNode*> nodes;
         ObjPool* pool = nullptr;
-        usize bits = 0;
+        void* storage = nullptr;
+        u32 bits = 0;
+        u32 occupied = 0;
+    };
+
+    struct SparseBitsetStorage {
+        BitsetData data;
+        SmallVec<BitNode*> nodes;
     };
 
     struct Bitset {
@@ -2747,10 +2755,13 @@ namespace {
     };
 
     static u64 bitsetWord(Bitset set, usize index) {
-        if (!set.data || index / 256 >= set.data->nodes.size()) {
+        if (!set.data || index >= (usize(set.data->bits) + 63) / 64) {
             return 0;
         }
-        BitNode* node = set.data->nodes[index / 256];
+        if (set.data->bits <= denseBitsetLimit) {
+            return set.data->storage ? static_cast<u64*>(set.data->storage)[index] : 0;
+        }
+        BitNode* node = static_cast<BitNode**>(set.data->storage)[index / 256];
         if (!node) {
             return 0;
         }
@@ -2758,12 +2769,28 @@ namespace {
         return chunk ? chunk->words[index % 4] : 0;
     }
 
+    static u64* bitsetDenseWords(BitsetData* data) {
+        if (!data->storage) {
+            const usize bytes = ((usize(data->bits) + 63) / 64) * sizeof(u64);
+            data->storage = data->pool->allocate(bytes, alignof(u64));
+            zeroBytes(data->storage, bytes);
+        }
+        return static_cast<u64*>(data->storage);
+    }
+
     static bool bitsetAddWord(Bitset set, usize index, u64 bits) {
         if (bits == 0) {
             return false;
         }
         require(set.data && index < (set.data->bits + 63) / 64, "bitset index");
-        BitNode*& node = set.data->nodes[index / 256];
+        if (set.data->bits <= denseBitsetLimit) {
+            u64& word = bitsetDenseWords(set.data)[index];
+            const u64 before = word;
+            word |= bits;
+            set.data->occupied |= u32(1) << index;
+            return before != word;
+        }
+        BitNode*& node = static_cast<BitNode**>(set.data->storage)[index / 256];
         if (!node) {
             node = set.data->pool->make<BitNode>();
         }
@@ -2783,8 +2810,18 @@ namespace {
         if (!set.data) {
             return;
         }
-        for (usize n = 0; n < set.data->nodes.size(); ++n) {
-            BitNode* node = set.data->nodes[n];
+        if (set.data->bits <= denseBitsetLimit) {
+            auto* words = static_cast<u64*>(set.data->storage);
+            for (u32 occupied = set.data->occupied; occupied; occupied &= occupied - 1) {
+                const usize index = usize(bitsTrailingZeros64(occupied));
+                visitor(index, words[index]);
+            }
+            return;
+        }
+        auto** nodes = static_cast<BitNode**>(set.data->storage);
+        const usize count = (usize(set.data->bits) + 16383) / 16384;
+        for (usize n = 0; n < count; ++n) {
+            BitNode* node = nodes[n];
             if (!node) {
                 continue;
             }
@@ -2803,6 +2840,27 @@ namespace {
     // Compute in |= gen | (out & ~kill), without materializing a dense
     // temporary or scanning words with no live virtual registers.
     static bool bitsetPropagate(Bitset in, Bitset gen, Bitset out, Bitset kill) {
+        if (!gen.data && in.data && out.data && kill.data && in.data->bits <= denseBitsetLimit && in.data->bits == out.data->bits && in.data->bits == kill.data->bits) {
+            auto* words = static_cast<u64*>(in.data->storage);
+            const auto* source = static_cast<const u64*>(out.data->storage);
+            const auto* mask = static_cast<const u64*>(kill.data->storage);
+            bool changed = false;
+            for (u32 occupied = out.data->occupied; occupied; occupied &= occupied - 1) {
+                const usize index = usize(bitsTrailingZeros64(occupied));
+                const u64 bits = source[index] & ~(mask ? mask[index] : u64(0));
+                if (!bits) {
+                    continue;
+                }
+                if (!words) {
+                    words = bitsetDenseWords(in.data);
+                }
+                const u64 before = words[index];
+                words[index] |= bits;
+                in.data->occupied |= u32(1) << index;
+                changed |= before != words[index];
+            }
+            return changed;
+        }
         bool changed = false;
         visitBitsetWords(gen, [&](usize index, u64 word) {
             if (bitsetAddWord(in, index, word)) {
@@ -19223,6 +19281,28 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // union adds o to s and reports whether s changed.
     static bool bitsetUnion(Bitset s, Bitset o) {
+        if (s.data && o.data && s.data->bits <= denseBitsetLimit && s.data->bits == o.data->bits) {
+            if (!o.data->occupied) {
+                return false;
+            }
+            if (!s.data->occupied) {
+                auto* words = bitsetDenseWords(s.data);
+                copyBytes(words, o.data->storage, ((usize(s.data->bits) + 63) / 64) * sizeof(u64));
+                s.data->occupied = o.data->occupied;
+                return true;
+            }
+            auto* words = static_cast<u64*>(s.data->storage);
+            const auto* source = static_cast<const u64*>(o.data->storage);
+            bool changed = false;
+            for (u32 occupied = o.data->occupied; occupied; occupied &= occupied - 1) {
+                const usize index = usize(bitsTrailingZeros64(occupied));
+                const u64 before = words[index];
+                words[index] |= source[index];
+                changed |= before != words[index];
+            }
+            s.data->occupied |= o.data->occupied;
+            return changed;
+        }
         bool changed = false;
         visitBitsetWords(o, [&](usize index, u64 word) {
             if (bitsetAddWord(s, index, word)) {
@@ -21103,14 +21183,21 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static Bitset newBitset(Int n) {
         require(n >= 0, "bitset size");
-        auto* data = activePool->make<BitsetData>();
-        data->pool = activePool;
-        data->bits = usize(n);
-        data->nodes.resize((usize(n) + 16383) / 16384);
-        data->nodes.visit([](BitNode*& node) {
+        if (u32(n) <= denseBitsetLimit) {
+            auto* data = activePool->make<BitsetData>();
+            data->pool = activePool;
+            data->bits = u32(n);
+            return {data};
+        }
+        auto* backing = activePool->make<SparseBitsetStorage>();
+        backing->data.pool = activePool;
+        backing->data.bits = u32(n);
+        backing->nodes.resize((usize(n) + 16383) / 16384);
+        backing->nodes.visit([](BitNode*& node) {
             node = nullptr;
         });
-        return {data};
+        backing->data.storage = backing->nodes.data();
+        return {&backing->data};
     }
 
     static Layout* newLayout(Module* m) {
@@ -22805,6 +22892,62 @@ namespace {
             bytes[pageBytes + 1] = 'c';
             require(asString(subslice(bytes, pageBytes - 1, pageBytes + 2)) == String("abc"), "string across pages");
             require(asString(subslice(bytes, pageBytes, pageBytes + 2)) == String("bc"), "string within page");
+        }
+        {
+            ObjPool pool;
+            PoolScope scope(pool);
+            const Int sizes[] = {0, 1, 63, 64, 65, 511, 2048, 2049, 16385};
+            for (Int size : sizes) {
+                Bitset live = newBitset(size);
+                Bitset out = newBitset(size);
+                Bitset kill = newBitset(size);
+                Bitset gen = newBitset(size);
+                bool expectedChange = false;
+                for (Int i = 0; i < size; ++i) {
+                    if (i % 7 == 0) {
+                        bitsetSet(live, i);
+                    }
+                    if (i % 3 == 0) {
+                        bitsetSet(out, i);
+                        expectedChange |= i % 5 != 0 && i % 7 != 0;
+                    }
+                    if (i % 5 == 0) {
+                        bitsetSet(kill, i);
+                    }
+                    if (i % 11 == 0) {
+                        bitsetSet(gen, i);
+                    }
+                }
+                require(bitsetPropagate(live, {}, out, kill) == expectedChange, "bitset propagation change flag");
+                require(!bitsetPropagate(live, {}, out, kill), "bitset propagation fixed point");
+                bitsetPropagate(live, gen, {}, kill);
+                bitsetUnion(live, kill);
+                require(!bitsetUnion(live, live), "bitset self union");
+                Int next = 0;
+                auto expected = [](Int i) {
+                    return i % 7 == 0 || i % 3 == 0 || i % 5 == 0 || i % 11 == 0;
+                };
+                for (Int i = 0; i < size; ++i) {
+                    require(bitsetHas(live, i) == expected(i), "bitset dataflow result");
+                }
+                bitsetEach(live, [&](Int i) {
+                    while (next < size && !expected(next)) {
+                        ++next;
+                    }
+                    require(i == next++, "bitset dataflow iteration order");
+                });
+                while (next < size && !expected(next)) {
+                    ++next;
+                }
+                require(next == size, "bitset dataflow iteration count");
+            }
+            Bitset small = newBitset(2048);
+            Bitset large = newBitset(2049);
+            bitsetSet(small, 7);
+            bitsetSet(large, 2047);
+            require(bitsetUnion(small, large) && bitsetHas(small, 2047), "sparse to dense union");
+            require(bitsetUnion(large, small) && bitsetHas(large, 7), "dense to sparse union");
+            require(!bitsetUnion(small, large), "mixed union fixed point");
         }
         {
             ObjPool pool;
