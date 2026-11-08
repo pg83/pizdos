@@ -1496,6 +1496,24 @@ namespace {
             }
         }
 
+        void fill(const T& value) {
+            auto fillRange = [&](T* data, usize count) {
+                for (usize i = 0; i < count; ++i) {
+                    data[i] = value;
+                }
+            };
+            if (!paged) {
+                fillRange(small.data(), small.size());
+                return;
+            }
+            usize remaining = pages.size();
+            for (usize p = 0; remaining; ++p) {
+                const usize take = remaining < PageVec<T>::itemsPerPage ? remaining : PageVec<T>::itemsPerPage;
+                fillRange(pages.pages.data()[p], take);
+                remaining -= take;
+            }
+        }
+
         void append(Span<const T> source) {
             const usize before = size();
             const bool internal = source.contiguous && !paged && source.contiguous == small.data();
@@ -2754,6 +2772,15 @@ namespace {
         BitsetData* data = nullptr;
     };
 
+    static u64 bitsetSparseWord(BitsetData* data, usize index) {
+        BitNode* node = static_cast<BitNode**>(data->storage)[index / 256];
+        if (!node) {
+            return 0;
+        }
+        BitChunk* chunk = node->chunks[index / 4 % 64];
+        return chunk ? chunk->words[index % 4] : 0;
+    }
+
     static u64 bitsetWord(Bitset set, usize index) {
         if (!set.data || index >= (usize(set.data->bits) + 63) / 64) {
             return 0;
@@ -2761,12 +2788,7 @@ namespace {
         if (set.data->bits <= denseBitsetLimit) {
             return set.data->storage ? static_cast<u64*>(set.data->storage)[index] : 0;
         }
-        BitNode* node = static_cast<BitNode**>(set.data->storage)[index / 256];
-        if (!node) {
-            return 0;
-        }
-        BitChunk* chunk = node->chunks[index / 4 % 64];
-        return chunk ? chunk->words[index % 4] : 0;
+        return bitsetSparseWord(set.data, index);
     }
 
     static u64* bitsetDenseWords(BitsetData* data) {
@@ -2776,6 +2798,25 @@ namespace {
             zeroBytes(data->storage, bytes);
         }
         return static_cast<u64*>(data->storage);
+    }
+
+    static bool bitsetAddSparseWord(BitsetData* data, usize index, u64 bits) {
+        if (bits == 0) {
+            return false;
+        }
+        BitNode*& node = static_cast<BitNode**>(data->storage)[index / 256];
+        if (!node) {
+            node = data->pool->make<BitNode>();
+        }
+        BitChunk*& chunk = node->chunks[index / 4 % 64];
+        if (!chunk) {
+            chunk = data->pool->make<BitChunk>();
+            node->occupied |= u64(1) << (index / 4 % 64);
+        }
+        u64& word = chunk->words[index % 4];
+        const u64 before = word;
+        word |= bits;
+        return before != word;
     }
 
     static bool bitsetAddWord(Bitset set, usize index, u64 bits) {
@@ -2790,19 +2831,7 @@ namespace {
             set.data->occupied |= u32(1) << index;
             return before != word;
         }
-        BitNode*& node = static_cast<BitNode**>(set.data->storage)[index / 256];
-        if (!node) {
-            node = set.data->pool->make<BitNode>();
-        }
-        BitChunk*& chunk = node->chunks[index / 4 % 64];
-        if (!chunk) {
-            chunk = set.data->pool->make<BitChunk>();
-            node->occupied |= u64(1) << (index / 4 % 64);
-        }
-        u64& word = chunk->words[index % 4];
-        const u64 before = word;
-        word |= bits;
-        return before != word;
+        return bitsetAddSparseWord(set.data, index, bits);
     }
 
     template <typename F>
@@ -2859,6 +2888,17 @@ namespace {
                 in.data->occupied |= u32(1) << index;
                 changed |= before != words[index];
             }
+            return changed;
+        }
+        if (!gen.data && in.data && out.data && kill.data && in.data->bits > denseBitsetLimit && in.data->bits == out.data->bits && in.data->bits == kill.data->bits) {
+            bool changed = false;
+            // The source iterator bounds every word and all three sets have
+            // the same representation, so per-word tag checks are redundant.
+            visitBitsetWords(out, [&](usize index, u64 word) {
+                if (bitsetAddSparseWord(in.data, index, word & ~bitsetSparseWord(kill.data, index))) {
+                    changed = true;
+                }
+            });
             return changed;
         }
         bool changed = false;
@@ -7184,335 +7224,205 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static i32 memoryLoopClone(MemoryLoop* l, Map<i32, bool> proven, Map<i32, i32> invariants, Map<i32, Int> cases) {
-        Function* f = (l)->f;
-        auto temporary101 = length((f)->blocks);
-        auto temporary102 = length((f)->values);
-        Int oldBlocks = temporary101;
-        Int oldValues = temporary102;
-        Map<i32, i32> blocks = mapOf<i32, i32>({});
-        Map<i32, i32> values = mapOf<i32, i32>({});
-        Vec<i32> cloned;
-        {
-            auto range103 = invariants;
-            for (Int index104 = 0; index104 < mapSlots(range103); ++index104) {
-                if (!mapOccupied(range103, index104)) {
-                    continue;
-                }
-                i32 v = mapKey(range103, index104);
-                i32 mapped = mapValue(range103, index104);
-                setMap(values, v, mapped);
+        Function* f = l->f;
+        const Int oldBlocks = length(f->blocks);
+        const Int oldValues = length(f->values);
+        Vec<i32> blocks;
+        Vec<i32> values;
+        blocks.resize(usize(oldBlocks));
+        values.resize(usize(oldValues));
+        blocks.fill(-1);
+        values.fill(-1);
+        for (Int i = 0; i < mapSlots(invariants); ++i) {
+            if (mapOccupied(invariants, i)) {
+                values[usize(mapKey(invariants, i))] = mapValue(invariants, i);
             }
         }
-        {
-            auto range106 = (l)->order;
-            for (Int index107 = 0, rangeEnd108 = length(range106); index107 < rangeEnd108; ++index107) {
-                i32 b = range106[index107];
-                setMap(blocks, b, functionNewBlock(f));
-            }
+        for (Int i = 0; i < length(l->order); ++i) {
+            blocks[usize(l->order[i])] = functionNewBlock(f);
         }
-        {
-            Int v = Int(0LL);
-            for (; (v < oldValues); v++) {
-                Value val = (f)->values[v];
-                if (val.block < 0 || val.block >= length(l->members) || !l->members[val.block]) {
-                    continue;
-                }
-                {
-                    auto temporary109 = lookupMap(invariants, convert<i32>(v));
-                    bool hoisted = temporary109.v1;
-                    if (hoisted) {
-                        continue;
-                    }
-                }
-                if (((((val).block >= i32(0LL)) && (convert<i64>((val).block) < length((l)->members))) && (l)->members[(val).block])) {
-                    i32 n = functionNewValue(f, (val).op, (val).typ, blocks[(val).block], (val).aux, Span<const i32>({}));
-                    ((f)->values[n]).aux2 = (val).aux2;
-                    if (proven[convert<i32>(v)]) {
-                        ((f)->values[n]).aux2 |= i32(32LL);
-                    }
-                    setMap(values, convert<i32>(v), n);
-                    cloned.pushBack(convert<i32>(v));
-                }
-            }
-        }
-        auto remap = [&](i32 v) mutable -> i32 {
-            {
-                auto temporary110 = lookupMap(values, v);
-                i32 n = temporary110.v0;
-                bool ok = temporary110.v1;
-                if (ok) {
-                    return n;
-                }
-            }
-            return v;
+
+        struct ClonedValue {
+            i32 original;
+            bool checked;
         };
-        {
-            for (usize cloneIndex = 0; cloneIndex < cloned.size(); ++cloneIndex) {
-                i32 v = cloned[cloneIndex];
-                {
-                    i32 n = values[v];
-                    {
-                        Slice<i32> args = appendSlice(Slice<i32>{}, functionArgs(f, convert<i32>(v)));
-                        if (proven[convert<i32>(v)]) {
-                            {
-                                for (; (l)->noWrap[args[Int(0LL)]];) {
-                                    Span<i32> add = functionArgs(f, args[Int(0LL)]);
-                                    auto temporary113 = add[Int(0LL)];
-                                    auto temporary114 = (f)->values[add[Int(1LL)]];
-                                    i32 a = temporary113;
-                                    Value k = temporary114;
-                                    if (((k).op != OpConst)) {
-                                        auto temporary115 = add[Int(1LL)];
-                                        auto temporary116 = (f)->values[add[Int(0LL)]];
-                                        a = temporary115;
-                                        k = temporary116;
-                                    }
-                                    if ((((k).op != OpConst) || ((convert<u64>(convert<u32>((k).aux)) + convert<u64>(((f)->values[n]).aux)) > u64(2147483647LL)))) {
-                                        break;
-                                    }
-                                    ((f)->values[n]).aux += convert<i64>(convert<u32>((k).aux));
-                                    args[Int(0LL)] = a;
-                                }
-                            }
-                        }
-                        ((f)->values[n]).args = convert<i32>(length((f)->pool));
-                        ((f)->values[n]).nargs = convert<u16>(length(args));
-                        {
-                            auto range117 = args;
-                            for (Int index118 = 0, rangeEnd119 = length(range117); index118 < rangeEnd119; ++index118) {
-                                i32 a = range117[index118];
-                                (f)->pool.pushBack(remap(a));
-                            }
-                        }
+
+        Vec<ClonedValue> cloned;
+        // Value IDs retain their original order, including values no longer
+        // present in instruction lists, so allocation and code layout agree.
+        for (Int v = 0; v < oldValues; ++v) {
+            const Value val = f->values[v];
+            if (val.block < 0 || val.block >= length(l->members) || !l->members[val.block] || values[usize(v)] >= 0) {
+                continue;
+            }
+            const bool checked = proven[i32(v)];
+            const i32 n = functionNewValue(f, val.op, val.typ, blocks[usize(val.block)], val.aux, {});
+            f->values[n].aux2 = val.aux2 | (checked ? i32(32) : i32(0));
+            values[usize(v)] = n;
+            cloned.pushBack({i32(v), checked});
+        }
+        auto remap = [&](i32 v) {
+            const i32 mapped = values[usize(v)];
+            return mapped >= 0 ? mapped : v;
+        };
+        for (usize i = 0; i < cloned.size(); ++i) {
+            const ClonedValue entry = cloned[i];
+            const i32 n = values[usize(entry.original)];
+            const auto args = functionArgs(f, entry.original);
+            i32 address = 0;
+            if (entry.checked) {
+                address = args[0];
+                while (l->noWrap[address]) {
+                    const auto add = functionArgs(f, address);
+                    i32 a = add[0];
+                    Value k = f->values[add[1]];
+                    if (k.op != OpConst) {
+                        a = add[1];
+                        k = f->values[add[0]];
                     }
+                    if (k.op != OpConst || u64(u32(k.aux)) + u64(f->values[n].aux) > u64(2147483647)) {
+                        break;
+                    }
+                    f->values[n].aux += i64(u32(k.aux));
+                    address = a;
                 }
             }
-        }
-        {
-            auto range120 = (l)->order;
-            for (Int index121 = 0, rangeEnd122 = length(range120); index121 < rangeEnd122; ++index121) {
-                i32 b = range120[index121];
-                Block* src = (&((f)->blocks[b]));
-                Block* dst = (&((f)->blocks[blocks[b]]));
-                {
-                    auto range123 = (src)->params;
-                    for (Int index124 = 0, rangeEnd125 = length(range123); index124 < rangeEnd125; ++index124) {
-                        i32 v = range123[index124];
-                        (dst)->params = appendValues((dst)->params, remap(v));
-                    }
-                }
-                {
-                    auto range126 = (src)->instrs.view();
-                    for (Int index127 = 0, rangeEnd128 = length(range126); index127 < rangeEnd128; ++index127) {
-                        i32 v = range126[index127];
-                        {
-                            auto temporary129 = lookupMap(invariants, v);
-                            bool hoisted = temporary129.v1;
-                            if (hoisted) {
-                                continue;
-                            }
-                        }
-                        (dst)->instrs.pushBack(remap(v));
-                    }
-                }
-                Term* t = (&((src)->term));
-                {
-                    auto temporary130 = lookupMap(cases, b);
-                    Int j = temporary130.v0;
-                    bool selected = temporary130.v1;
-                    if (selected) {
-                        t = activePool->make<Term>(Term{TermJump, {}, sliceOf<Edge>({(t)->edges[j]}), {}, {}});
-                    }
-                }
-                (dst)->term = Term{(t)->kind, (t)->value, {}, {}, (t)->aux};
-                if ((((t)->kind == TermIf) || ((t)->kind == TermSwitch))) {
-                    ((dst)->term).value = remap((t)->value);
-                }
-                {
-                    auto range131 = (t)->values;
-                    for (Int index132 = 0, rangeEnd133 = length(range131); index132 < rangeEnd133; ++index132) {
-                        i32 v = range131[index132];
-                        ((dst)->term).values = appendValues(((dst)->term).values, remap(v));
-                    }
-                }
-                {
-                    auto range134 = (t)->edges;
-                    for (Int index135 = 0, rangeEnd136 = length(range134); index135 < rangeEnd136; ++index135) {
-                        Edge e = range134[index135];
-                        Edge edge = Edge{(e).block, {}};
-                        {
-                            auto temporary137 = lookupMap(blocks, (e).block);
-                            i32 target = temporary137.v0;
-                            bool ok = temporary137.v1;
-                            if (ok) {
-                                (edge).block = target;
-                            }
-                        }
-                        {
-                            auto range138 = (e).args;
-                            for (Int index139 = 0, rangeEnd140 = length(range138); index139 < rangeEnd140; ++index139) {
-                                i32 a = range138[index139];
-                                (edge).args = appendValues((edge).args, remap(a));
-                            }
-                        }
-                        ((dst)->term).edges = appendValues(((dst)->term).edges, edge);
-                    }
-                }
+            f->values[n].args = i32(f->pool.size());
+            f->values[n].nargs = u16(args.count);
+            for (Int j = 0; j < length(args); ++j) {
+                f->pool.pushBack(remap(entry.checked && j == 0 ? address : args[j]));
             }
         }
-        Slice<bool> escapes = makeSlice<bool>(oldValues);
-        auto mark = [&](i32 v) mutable -> void {
+        auto remapArgs = [&](Slice<i32> args) {
+            if (!length(args)) {
+                return Slice<i32>{};
+            }
+            auto result = makeSlice<i32>(length(args));
+            for (Int i = 0; i < length(args); ++i) {
+                result[i] = remap(args[i]);
+            }
+            return result;
+        };
+        for (Int i = 0; i < length(l->order); ++i) {
+            const i32 b = l->order[i];
+            const Block& src = f->blocks[b];
+            Block& dst = f->blocks[blocks[usize(b)]];
+            dst.params = remapArgs(src.params);
+            dst.instrs.reserve(src.instrs.size());
+            for (Int j = 0; j < length(src.instrs); ++j) {
+                const i32 v = src.instrs[j];
+                // Hoisted values existed before cloning; new copies have IDs
+                // at or above oldValues. An unmapped value stays unchanged.
+                if (values[usize(v)] >= 0 && values[usize(v)] < oldValues) {
+                    continue;
+                }
+                dst.instrs.pushBack(remap(v));
+            }
+            Term term = src.term;
+            const auto selected = lookupMap(cases, b);
+            if (selected.v1) {
+                term = Term{TermJump, {}, subslice(term.edges, selected.v0, selected.v0 + 1), {}, {}};
+            }
+            dst.term = Term{term.kind, term.value, {}, remapArgs(term.values), term.aux};
+            if (term.kind == TermIf || term.kind == TermSwitch) {
+                dst.term.value = remap(term.value);
+            }
+            if (length(term.edges)) {
+                dst.term.edges = makeSlice<Edge>(length(term.edges));
+            }
+            for (Int j = 0; j < length(term.edges); ++j) {
+                const Edge edge = term.edges[j];
+                const i32 mapped = blocks[usize(edge.block)];
+                dst.term.edges[j] = Edge{mapped >= 0 ? mapped : edge.block, remapArgs(edge.args)};
+            }
+        }
+        ObjPool temporary;
+        Bitset escapes;
+        {
+            PoolScope scope(temporary);
+            escapes = newBitset(oldValues);
+        }
+        Vec<i32> escapedValues;
+        Vec<i32*> outsideUses;
+        auto mark = [&](i32* use) {
+            const i32 v = *use;
             const i32 block = f->values[v].block;
-            if (block < 0 || block >= length(l->members) || !l->members[block]) {
+            if (block < 0 || block >= length(l->members) || !l->members[block] || values[usize(v)] < 0) {
                 return;
             }
-            {
-                auto temporary141 = lookupMap(values, v);
-                bool ok = temporary141.v1;
-                if (ok) {
-                    escapes[v] = true;
-                }
+            if (!bitsetHas(escapes, v)) {
+                bitsetSet(escapes, v);
+                escapedValues.pushBack(v);
             }
+            // Operand pages and Block objects do not move. The exit-argument
+            // appends below only grow edges inside the original/copied loop.
+            outsideUses.pushBack(use);
         };
-        {
-            Int b = Int(0LL);
-            for (; (b < oldBlocks); b++) {
-                if ((((f)->blocks[b]).dead || ((b < length((l)->members)) && (l)->members[b]))) {
-                    continue;
+        for (Int b = 0; b < oldBlocks; ++b) {
+            if (f->blocks[b].dead || (b < length(l->members) && l->members[b])) {
+                continue;
+            }
+            Block& block = f->blocks[b];
+            for (Int i = 0; i < length(block.instrs); ++i) {
+                auto args = functionArgs(f, block.instrs[i]);
+                for (Int j = 0; j < length(args); ++j) {
+                    mark(&args[j]);
                 }
-                Block* blk = (&((f)->blocks[b]));
-                {
-                    auto range142 = (blk)->instrs.view();
-                    for (Int index143 = 0, rangeEnd144 = length(range142); index143 < rangeEnd144; ++index143) {
-                        i32 v = range142[index143];
-                        {
-                            auto range145 = functionArgs(f, v);
-                            for (Int index146 = 0, rangeEnd147 = length(range145); index146 < rangeEnd147; ++index146) {
-                                i32 a = range145[index146];
-                                mark(a);
-                            }
-                        }
-                    }
-                }
-                if (((((blk)->term).kind == TermIf) || (((blk)->term).kind == TermSwitch))) {
-                    mark(((blk)->term).value);
-                }
-                {
-                    auto range148 = ((blk)->term).values;
-                    for (Int index149 = 0, rangeEnd150 = length(range148); index149 < rangeEnd150; ++index149) {
-                        i32 v = range148[index149];
-                        mark(v);
-                    }
-                }
-                {
-                    auto range151 = ((blk)->term).edges;
-                    for (Int index152 = 0, rangeEnd153 = length(range151); index152 < rangeEnd153; ++index152) {
-                        Edge e = range151[index152];
-                        {
-                            auto range154 = (e).args;
-                            for (Int index155 = 0, rangeEnd156 = length(range154); index155 < rangeEnd156; ++index155) {
-                                i32 v = range154[index155];
-                                mark(v);
-                            }
-                        }
-                    }
+            }
+            if (block.term.kind == TermIf || block.term.kind == TermSwitch) {
+                mark(&block.term.value);
+            }
+            for (Int i = 0; i < length(block.term.values); ++i) {
+                mark(&block.term.values[i]);
+            }
+            for (Int i = 0; i < length(block.term.edges); ++i) {
+                auto args = block.term.edges[i].args;
+                for (Int j = 0; j < length(args); ++j) {
+                    mark(&args[j]);
                 }
             }
         }
-        Map<i32, i32> merged = mapOf<i32, i32>({});
-        {
-            auto range157 = escapes;
-            for (Int index158 = 0, rangeEnd159 = length(range157); index158 < rangeEnd159; ++index158) {
-                Int v = index158;
-                bool escapes = range157[index158];
-                if ((!(escapes))) {
-                    continue;
-                }
-                i32 p = functionNewValue(f, OpParam, ((f)->values[v]).typ, (l)->exit, convert<i64>(length(((f)->blocks[(l)->exit]).params)), Span<const i32>({}));
-                ((f)->blocks[(l)->exit]).params = appendValues(((f)->blocks[(l)->exit]).params, p);
-                setMap(merged, convert<i32>(v), p);
-                {
-                    auto range160 = (l)->order;
-                    for (Int index161 = 0, rangeEnd162 = length(range160); index161 < rangeEnd162; ++index161) {
-                        i32 b = range160[index161];
-                        {
-                            auto range163 = (((f)->blocks[b]).term).edges;
-                            for (Int index164 = 0, rangeEnd165 = length(range163); index164 < rangeEnd165; ++index164) {
-                                Int j = index164;
-                                if ((((((f)->blocks[b]).term).edges[j]).block == (l)->exit)) {
-                                    ((((f)->blocks[b]).term).edges[j]).args = appendValues(((((f)->blocks[b]).term).edges[j]).args, convert<i32>(v));
-                                }
-                            }
-                        }
-                        {
-                            auto range166 = (((f)->blocks[blocks[b]]).term).edges;
-                            for (Int index167 = 0, rangeEnd168 = length(range166); index167 < rangeEnd168; ++index167) {
-                                Int j = index167;
-                                if ((((((f)->blocks[blocks[b]]).term).edges[j]).block == (l)->exit)) {
-                                    ((((f)->blocks[blocks[b]]).term).edges[j]).args = appendValues(((((f)->blocks[blocks[b]]).term).edges[j]).args, remap(convert<i32>(v)));
-                                }
-                            }
-                        }
+        if (escapedValues.size() > 1) {
+            sortValues(escapedValues.view(), [&](Int i, Int j) {
+                return escapedValues[usize(i)] < escapedValues[usize(j)];
+            });
+        }
+        const i32 mergedBase = i32(f->values.size());
+        for (usize i = 0; i < escapedValues.size(); ++i) {
+            const i32 v = escapedValues[i];
+            const i32 fast = values[usize(v)];
+            const i32 p = functionNewValue(f, OpParam, f->values[v].typ, l->exit, i64(length(f->blocks[l->exit].params)), {});
+            f->blocks[l->exit].params = appendValues(f->blocks[l->exit].params, p);
+            for (Int j = 0; j < length(l->order); ++j) {
+                const i32 b = l->order[j];
+                auto original = f->blocks[b].term.edges;
+                auto copy = f->blocks[blocks[usize(b)]].term.edges;
+                for (Int k = 0; k < length(original); ++k) {
+                    if (original[k].block == l->exit) {
+                        original[k].args = appendValues(original[k].args, v);
                     }
+                }
+                for (Int k = 0; k < length(copy); ++k) {
+                    if (copy[k].block == l->exit) {
+                        copy[k].args = appendValues(copy[k].args, fast);
+                    }
+                }
+            }
+            // Fast-copy lookups are finished for v. Reuse its slot for the
+            // exit parameter; all such IDs are at or above mergedBase.
+            values[usize(v)] = p;
+        }
+        for (usize i = 0; i < outsideUses.size(); ++i) {
+            i32* use = outsideUses[i];
+            // A shared operand view may record the same address twice.
+            if (u32(*use) < u32(oldValues)) {
+                const i32 mapped = values[usize(*use)];
+                if (mapped >= mergedBase) {
+                    *use = mapped;
                 }
             }
         }
-        auto rewrite = [&](i32* v) mutable -> void {
-            {
-                auto temporary169 = lookupMap(merged, (*(v)));
-                i32 n = temporary169.v0;
-                bool ok = temporary169.v1;
-                if (ok) {
-                    (*(v)) = n;
-                }
-            }
-        };
-        {
-            Int b = Int(0LL);
-            for (; (b < oldBlocks); b++) {
-                if ((((f)->blocks[b]).dead || ((b < length((l)->members)) && (l)->members[b]))) {
-                    continue;
-                }
-                Block* blk = (&((f)->blocks[b]));
-                {
-                    auto range170 = (blk)->instrs.view();
-                    for (Int index171 = 0, rangeEnd172 = length(range170); index171 < rangeEnd172; ++index171) {
-                        i32 v = range170[index171];
-                        {
-                            auto range173 = functionArgs(f, v);
-                            for (Int index174 = 0, rangeEnd175 = length(range173); index174 < rangeEnd175; ++index174) {
-                                Int j = index174;
-                                rewrite((&((f)->pool[(((f)->values[v]).args + convert<i32>(j))])));
-                            }
-                        }
-                    }
-                }
-                if (((((blk)->term).kind == TermIf) || (((blk)->term).kind == TermSwitch))) {
-                    rewrite((&(((blk)->term).value)));
-                }
-                {
-                    auto range176 = ((blk)->term).values;
-                    for (Int index177 = 0, rangeEnd178 = length(range176); index177 < rangeEnd178; ++index177) {
-                        Int j = index177;
-                        rewrite((&(((blk)->term).values[j])));
-                    }
-                }
-                {
-                    auto range179 = ((blk)->term).edges;
-                    for (Int index180 = 0, rangeEnd181 = length(range179); index180 < rangeEnd181; ++index180) {
-                        Int j = index180;
-                        {
-                            auto range182 = (((blk)->term).edges[j]).args;
-                            for (Int index183 = 0, rangeEnd184 = length(range182); index183 < rangeEnd184; ++index183) {
-                                Int k = index183;
-                                rewrite((&((((blk)->term).edges[j]).args[k])));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        return blocks[(l)->header];
+        return blocks[usize(l->header)];
     }
 
     static CopyAddress memoryLoopCopyAddress(MemoryLoop* l, i32 v, Slice<i64> steps, Map<i32, i32> invariants, Map<i32, CopyAddress> cache, Int depth) {
@@ -9181,9 +9091,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void allocatorBuildIntervals(Allocator* a) {
         MFunc* mf = (a)->mf;
         a->intervals.resize(usize(mf->nregs));
-        a->intervals.visit([](Interval*& interval) {
-            interval = nullptr;
-        });
+        a->intervals.fill(nullptr);
         {
             Int i = (length((a)->order) - Int(1LL));
             for (; (i >= Int(0LL)); i--) {
@@ -9650,9 +9558,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Vec<u8> state;
         work.resize(usize(n));
         state.resize(usize(n));
-        state.visit([](u8& value) {
-            value = 0;
-        });
+        state.fill(0);
         usize pending = usize(length(a->order));
         usize head = 0;
         usize tail = pending == usize(n) ? 0 : pending;
@@ -17769,9 +17675,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void optimizerCountUses(Optimizer* o) {
         Function* f = (o)->f;
         o->uses.resize(usize(length(f->values)));
-        o->uses.visit([](i32& count) {
-            count = 0;
-        });
+        o->uses.fill(0);
         {
             auto& range1167 = (f)->blocks;
             for (Int index1168 = 0, rangeEnd1169 = length(range1167); index1168 < rangeEnd1169; ++index1168) {
@@ -19301,6 +19205,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 changed |= before != words[index];
             }
             s.data->occupied |= o.data->occupied;
+            return changed;
+        }
+        if (s.data && o.data && s.data->bits > denseBitsetLimit && s.data->bits == o.data->bits) {
+            bool changed = false;
+            visitBitsetWords(o, [&](usize index, u64 word) {
+                if (bitsetAddSparseWord(s.data, index, word)) {
+                    changed = true;
+                }
+            });
             return changed;
         }
         bool changed = false;
@@ -22804,6 +22717,16 @@ namespace {
         for (usize i = 0; i < promoted.size(); ++i) {
             require(promoted[i] == (i + 123) * 3, "vector view assignment across pages");
         }
+        promoted.fill(42);
+        require(promoted.size() == 33000 - 123, "paged fill preserves size");
+        for (usize i = 0; i < promoted.size(); ++i) {
+            require(promoted[i] == 42, "paged fill contents");
+        }
+        Vec<i32> filled;
+        filled.fill(-1);
+        filled.resize(37);
+        filled.fill(-1);
+        require(filled.size() == 37 && filled[0] == -1 && filled[36] == -1, "small fill contents");
         static_assert(sizeof(MInst) <= 72);
         {
             Interval interval;
