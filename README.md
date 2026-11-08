@@ -74,6 +74,9 @@ operands live in ObjPool; their vectors release old buffers on growth and
 replacement. Copied slice and map fields elsewhere remain views into pool
 storage. Separate pools hold module structures, SSA, and machine IR; SSA is
 released before register allocation, and machine IR after each function.
+CFG and loop analyses use temporary pools. Container `operator[]` follows
+the C++ in-range contract; `at()` checks the index. Input reader bounds and
+validation remain checked.
 `./build test_aot` checks both WASI entry points against wasm2o,
 including compilation of the new compiler itself and repeated export calls.
 

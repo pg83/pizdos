@@ -651,13 +651,21 @@ namespace {
         }
 
         T& operator[](usize index) {
-            require(index < size(), "SmallVec index");
             return data()[index];
         }
 
         const T& operator[](usize index) const {
-            require(index < size(), "SmallVec index");
             return data()[index];
+        }
+
+        T& at(usize index) {
+            require(index < size(), "SmallVec index");
+            return (*this)[index];
+        }
+
+        const T& at(usize index) const {
+            require(index < size(), "SmallVec index");
+            return (*this)[index];
         }
 
         T& back() {
@@ -756,13 +764,21 @@ namespace {
         }
 
         T& operator[](usize index) {
-            require(index < count, "PageVec index");
             return pages[index / itemsPerPage][index % itemsPerPage];
         }
 
         const T& operator[](usize index) const {
-            require(index < count, "PageVec index");
             return pages[index / itemsPerPage][index % itemsPerPage];
+        }
+
+        T& at(usize index) {
+            require(index < count, "PageVec index");
+            return (*this)[index];
+        }
+
+        const T& at(usize index) const {
+            require(index < count, "PageVec index");
+            return (*this)[index];
         }
 
         T& back() {
@@ -1195,12 +1211,16 @@ namespace {
         }
 
         T& operator[](Int index) const {
-            require(Uint(index) < count, "view index");
             const usize at = offset + usize(index);
             if (contiguous) {
                 return contiguous[at];
             }
             return pages->pages.data()[at / PageVec<Value>::itemsPerPage][at % PageVec<Value>::itemsPerPage];
+        }
+
+        T& at(Int index) const {
+            require(Uint(index) < count, "view index");
+            return (*this)[index];
         }
     };
 
@@ -1285,13 +1305,21 @@ namespace {
         }
 
         T& operator[](usize index) {
-            require(index < size(), "Vec index");
             return paged ? pages.pages.data()[index / PageVec<T>::itemsPerPage][index % PageVec<T>::itemsPerPage] : small.data()[index];
         }
 
         const T& operator[](usize index) const {
-            require(index < size(), "Vec index");
             return paged ? pages.pages.data()[index / PageVec<T>::itemsPerPage][index % PageVec<T>::itemsPerPage] : small.data()[index];
+        }
+
+        T& at(usize index) {
+            require(index < size(), "Vec index");
+            return (*this)[index];
+        }
+
+        const T& at(usize index) const {
+            require(index < size(), "Vec index");
+            return (*this)[index];
         }
 
         Span<T> view() {
@@ -2421,6 +2449,7 @@ namespace {
 
     struct Layout;
 
+    template <typename L, typename S>
     struct LessSwap;
 
     struct Limits;
@@ -2637,9 +2666,10 @@ namespace {
         return result;
     }
 
+    template <typename L, typename S>
     struct LessSwap {
-        Fn<bool(Int, Int)> Less{};
-        Fn<void(Int, Int)> Swap{};
+        L Less;
+        S Swap;
     };
 
     struct Region {
@@ -3012,6 +3042,9 @@ namespace {
         VReg hint{};
         bool fixed{};
         Int cursor{};
+        i32 locationFrom{};
+        i32 locationTo{};
+        VReg locationReg{};
     };
 
     struct Anonymous50 {
@@ -5527,13 +5560,15 @@ namespace {
 
     static Amem baseAt(VReg base, i32 disp);
 
-    static void breakPatterns_func(LessSwap data, Int a, Int b);
+    template <typename Data>
+    static void breakPatterns_func(Data data, Int a, Int b);
 
     static Function* buildFunction(Module* m, Int index);
 
     static Slice<Slice<CheckedValue>> checkedValues(Function* f, CfgInfo* ci);
 
-    static Tuple2<Int, SortedHint> choosePivot_func(LessSwap data, Int a, Int b);
+    template <typename Data>
+    static Tuple2<Int, SortedHint> choosePivot_func(Data data, Int a, Int b);
 
     static Tuple2<i64, bool> constOffset(Slice<u8> expr);
 
@@ -5577,7 +5612,8 @@ namespace {
 
     static bool hasEffect(Op op);
 
-    static void heapSort_func(LessSwap data, Int a, Int b);
+    template <typename Data>
+    static void heapSort_func(Data data, Int a, Int b);
 
     static u8 hi(Int r);
 
@@ -5589,7 +5625,8 @@ namespace {
 
     static Tuple2<Slice<i32>, bool> inductionTerms(Function* f, i32 v, i32 phi, Int depth);
 
-    static void insertionSort_func(LessSwap data, Int a, Int b);
+    template <typename Data>
+    static void insertionSort_func(Data data, Int a, Int b);
 
     static MInst inst(MOp op);
 
@@ -5613,9 +5650,11 @@ namespace {
 
     static i64 maxSigned(u8 size);
 
-    static Int medianAdjacent_func(LessSwap data, Int a, Int* swaps);
+    template <typename Data>
+    static Int medianAdjacent_func(Data data, Int a, Int* swaps);
 
-    static Int median_func(LessSwap data, Int a, Int b, Int c, Int* swaps);
+    template <typename Data>
+    static Int median_func(Data data, Int a, Int b, Int c, Int* swaps);
 
     static FloatRange meetFloatRange(FloatRange a, FloatRange b);
 
@@ -5641,7 +5680,8 @@ namespace {
 
     static Int order(u8 id);
 
-    static Tuple2<Int, Int> order2_func(LessSwap data, Int a, Int b, Int* swaps);
+    template <typename Data>
+    static Tuple2<Int, Int> order2_func(Data data, Int a, Int b, Int* swaps);
 
     static bool overlap(Slice<Lrange> x, Slice<Lrange> y);
 
@@ -5649,13 +5689,17 @@ namespace {
 
     static MInst parMove(Slice<Move> moves);
 
-    static bool partialInsertionSort_func(LessSwap data, Int a, Int b);
+    template <typename Data>
+    static bool partialInsertionSort_func(Data data, Int a, Int b);
 
-    static Int partitionEqual_func(LessSwap data, Int a, Int b, Int pivot);
+    template <typename Data>
+    static Int partitionEqual_func(Data data, Int a, Int b, Int pivot);
 
-    static Tuple2<Int, bool> partition_func(LessSwap data, Int a, Int b, Int pivot);
+    template <typename Data>
+    static Tuple2<Int, bool> partition_func(Data data, Int a, Int b, Int pivot);
 
-    static void pdqsort_func(LessSwap data, Int a, Int b, Int limit);
+    template <typename Data>
+    static void pdqsort_func(Data data, Int a, Int b, Int limit);
 
     static bool readsState(Op op);
 
@@ -5667,9 +5711,11 @@ namespace {
 
     static bool returnsTwice(String name);
 
-    static void reverseRange_func(LessSwap data, Int a, Int b);
+    template <typename Data>
+    static void reverseRange_func(Data data, Int a, Int b);
 
-    static void rotate_func(LessSwap data, Int a, Int m, Int b);
+    template <typename Data>
+    static void rotate_func(Data data, Int a, Int m, Int b);
 
     static Amem rspAt(i32 disp);
 
@@ -5681,19 +5727,23 @@ namespace {
 
     static i32 selfUses(Slice<Edge*> in, Int k, i32 p);
 
-    static void siftDown_func(LessSwap data, Int lo, Int hi, Int first);
+    template <typename Data>
+    static void siftDown_func(Data data, Int lo, Int hi, Int first);
 
     static VReg slotLoc(i32 slot);
 
     static i32 slotOf(VReg r);
 
-    static void stable_func(LessSwap data, Int n);
+    template <typename Data>
+    static void stable_func(Data data, Int n);
 
     static u8 swapCC(u8 cc);
 
-    static void swapRange_func(LessSwap data, Int a, Int b, Int n);
+    template <typename Data>
+    static void swapRange_func(Data data, Int a, Int b, Int n);
 
-    static void symMerge_func(LessSwap data, Int a, Int m, Int b);
+    template <typename Data>
+    static void symMerge_func(Data data, Int a, Int m, Int b);
 
     static String symbolPart(String s);
 
@@ -6294,6 +6344,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // computePreds fills each block's predecessor list from the terminators, one
     // entry per edge.
     static void functionComputePreds(Function* f) {
+        // Predecessors belong to the graph even when the caller is building
+        // a short-lived analysis in another pool.
+        PoolScope graphScope(*f->blocks.array->owner);
         {
             auto range59 = (f)->blocks;
             for (Int index60 = 0, rangeEnd61 = length(range59); index60 < rangeEnd61; ++index60) {
@@ -9150,20 +9203,19 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         const Int nv = mf->nregs;
         // Gen/kill sets and operand callbacks have no users after dataflow.
         ObjPool temporary;
-        Slice<Bitset> gen;
         Slice<Bitset> kill;
         {
             PoolScope scope(temporary);
-            gen = makeSlice<Bitset>(n);
             kill = makeSlice<Bitset>(n);
         }
         a->liveIn = makeSlice<Bitset>(n);
         a->liveOut = makeSlice<Bitset>(n);
         for (Int index = 0; index < length(a->order); ++index) {
             const i32 b = a->order[index];
+            a->liveIn[b] = newBitset(nv);
             {
                 PoolScope scope(temporary);
-                Bitset g = newBitset(nv);
+                Bitset g = a->liveIn[b];
                 Bitset k = newBitset(nv);
                 for (Int i = 0; i < length(mf->blocks[b].insts); ++i) {
                     mInstForEachOperand(&mf->blocks[b].insts[i], [&](VReg* r, Int role) {
@@ -9179,10 +9231,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         }
                     });
                 }
-                gen[b] = g;
                 kill[b] = k;
             }
-            a->liveIn[b] = newBitset(nv);
             a->liveOut[b] = newBitset(nv);
         }
         for (bool changed = true; changed;) {
@@ -9193,7 +9243,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 for (Int j = 0; j < length(mf->blocks[b].succs); ++j) {
                     bitsetUnion(out, a->liveIn[mf->blocks[b].succs[j]]);
                 }
-                if (bitsetPropagate(a->liveIn[b], gen[b], out, kill[b])) {
+                if (bitsetPropagate(a->liveIn[b], {}, out, kill[b])) {
                     changed = true;
                 }
             }
@@ -9210,21 +9260,30 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // location of vreg r at position p: a register, or a stack slot encoded as
     // a negative value below noReg.
     static VReg allocatorLocation(Allocator* a, VReg r, i32 p) {
-        Interval* it = (a)->intervals[allocatorVindex(a, r)];
-        if (intervalCovers(it, p)) {
-            return allocatorLoc(a, it);
+        Interval* root = a->intervals[allocatorVindex(a, r)];
+        if (p >= root->locationFrom && p < root->locationTo) {
+            return root->locationReg;
         }
-        {
-            auto range475 = (it)->children;
-            for (Int index476 = 0, rangeEnd477 = length(range475); index476 < rangeEnd477; ++index476) {
-                Interval* c = range475[index476];
-                if (intervalCovers(c, p)) {
-                    return allocatorLoc(a, c);
-                }
+        Interval* part = root;
+        if (!intervalCovers(part, p)) {
+            // Splitting cuts an interval's suffix. Children therefore have
+            // disjoint extents and are sorted by start, including children
+            // made by splitting a previous child.
+            const Int end = sortSearch(length(root->children), [&](Int i) {
+                return intervalStart(root->children[i]) > p;
+            });
+            if (!end || !intervalCovers(root->children[end - 1], p)) {
+                compilerError(String("internal error: v%d not live at %d"));
             }
+            part = root->children[end - 1];
         }
-        compilerError(String("internal error: v%d not live at %d"));
-        return noReg;
+        const Int range = sortSearch(length(part->ranges), [&](Int i) {
+            return part->ranges[i].to > p;
+        });
+        root->locationFrom = part->ranges[range].from;
+        root->locationTo = part->ranges[range].to;
+        root->locationReg = allocatorLoc(a, part);
+        return root->locationReg;
     }
 
     static u8 allocatorRegClass(Allocator* a, VReg r) {
@@ -12965,6 +13024,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static bool intervalCovers(Interval* it, i32 p) {
+        if (!length(it->ranges)) {
+            return false;
+        }
+        if (p < it->ranges[0].from || p >= it->ranges[length(it->ranges) - 1].to) {
+            return false;
+        }
+        if (length(it->ranges) == 1) {
+            return true;
+        }
         Int k = sortSearch(length((it)->ranges), [&](Int i) mutable -> bool {
             return (((it)->ranges[i]).to > p);
         });
@@ -18974,7 +19042,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // breakPatterns_func scatters some elements around in an attempt to break some patterns
     // that might cause imbalanced partitions in quicksort.
-    static void breakPatterns_func(LessSwap data, Int a, Int b) {
+    template <typename Data>
+    static void breakPatterns_func(Data data, Int a, Int b) {
         Int lengthValue = (b - a);
         if ((lengthValue >= Int(8LL))) {
             Xorshift random = convert<Xorshift>(lengthValue);
@@ -19215,7 +19284,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // [0,8): chooses a static pivot.
     // [8,shortestNinther): uses the simple median-of-three method.
     // [shortestNinther,∞): uses the Tukey ninther method.
-    static Tuple2<Int, SortedHint> choosePivot_func(LessSwap data, Int a, Int b) {
+    template <typename Data>
+    static Tuple2<Int, SortedHint> choosePivot_func(Data data, Int a, Int b) {
         Int pivot{};
         SortedHint hint{};
         constexpr Int shortestNinther = Int(50LL);
@@ -20199,7 +20269,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return false;
     }
 
-    static void heapSort_func(LessSwap data, Int a, Int b) {
+    template <typename Data>
+    static void heapSort_func(Data data, Int a, Int b) {
         Int first = a;
         Int lo = Int(0LL);
         Int hi = (b - a);
@@ -20285,7 +20356,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     // insertionSort_func sorts data[a:b] using insertion sort.
-    static void insertionSort_func(LessSwap data, Int a, Int b) {
+    template <typename Data>
+    static void insertionSort_func(Data data, Int a, Int b) {
         {
             Int i = (a + Int(1LL));
             for (; (i < b); i++) {
@@ -20505,12 +20577,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     // medianAdjacent_func finds the median of data[a - 1], data[a], data[a + 1] and stores the index into a.
-    static Int medianAdjacent_func(LessSwap data, Int a, Int* swaps) {
+    template <typename Data>
+    static Int medianAdjacent_func(Data data, Int a, Int* swaps) {
         return median_func(data, (a - Int(1LL)), a, (a + Int(1LL)), swaps);
     }
 
     // median_func returns x where data[x] is the median of data[a],data[b],data[c], where x is a, b, or c.
-    static Int median_func(LessSwap data, Int a, Int b, Int c, Int* swaps) {
+    template <typename Data>
+    static Int median_func(Data data, Int a, Int b, Int c, Int* swaps) {
         auto temporary1572 = order2_func(data, a, b, swaps);
         a = temporary1572.v0;
         b = temporary1572.v1;
@@ -20730,7 +20804,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     // order2_func returns x,y where data[x] <= data[y], where x,y=a,b or x,y=b,a.
-    static Tuple2<Int, Int> order2_func(LessSwap data, Int a, Int b, Int* swaps) {
+    template <typename Data>
+    static Tuple2<Int, Int> order2_func(Data data, Int a, Int b, Int* swaps) {
         if ((data).Less(b, a)) {
             (*(swaps))++;
             return {b, a};
@@ -20775,7 +20850,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     // partialInsertionSort_func partially sorts a slice, returns true if the slice is sorted at the end.
-    static bool partialInsertionSort_func(LessSwap data, Int a, Int b) {
+    template <typename Data>
+    static bool partialInsertionSort_func(Data data, Int a, Int b) {
         constexpr Int maxSteps = Int(5LL);
         constexpr Int shortestShifting = Int(50LL);
         Int i = (a + Int(1LL));
@@ -20823,7 +20899,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // partitionEqual_func partitions data[a:b] into elements equal to data[pivot] followed by elements greater than data[pivot].
     // It assumed that data[a:b] does not contain elements smaller than the data[pivot].
-    static Int partitionEqual_func(LessSwap data, Int a, Int b, Int pivot) {
+    template <typename Data>
+    static Int partitionEqual_func(Data data, Int a, Int b, Int pivot) {
         Int newpivot{};
         (data).Swap(a, pivot);
         auto temporary1592 = (a + Int(1LL));
@@ -20857,7 +20934,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // Let p = data[pivot]
     // Moves elements in data[a:b] around, so that data[i]<p and data[j]>=p for i<newpivot and j>newpivot.
     // On return, data[newpivot] = p
-    static Tuple2<Int, bool> partition_func(LessSwap data, Int a, Int b, Int pivot) {
+    template <typename Data>
+    static Tuple2<Int, bool> partition_func(Data data, Int a, Int b, Int pivot) {
         Int newpivot{};
         bool alreadyPartitioned{};
         (data).Swap(a, pivot);
@@ -20912,7 +20990,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // C++ implementation: https://github.com/orlp/pdqsort
     // Rust implementation: https://docs.rs/pdqsort/latest/pdqsort/
     // limit is the number of allowed bad (very unbalanced) pivots before falling back to heapsort.
-    static void pdqsort_func(LessSwap data, Int a, Int b, Int limit) {
+    template <typename Data>
+    static void pdqsort_func(Data data, Int a, Int b, Int limit) {
         constexpr Int maxInsertion = Int(12LL);
         bool wasBalanced = true;
         bool wasPartitioned = true;
@@ -21050,7 +21129,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return false;
     }
 
-    static void reverseRange_func(LessSwap data, Int a, Int b) {
+    template <typename Data>
+    static void reverseRange_func(Data data, Int a, Int b) {
         Int i = a;
         Int j = (b - Int(1LL));
         {
@@ -21066,7 +21146,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // Data of the form 'x u v y' is changed to 'x v u y'.
     // rotate performs at most b-a many calls to data.Swap,
     // and it assumes non-degenerate arguments: a < m && m < b.
-    static void rotate_func(LessSwap data, Int a, Int m, Int b) {
+    template <typename Data>
+    static void rotate_func(Data data, Int a, Int m, Int b) {
         Int i = (m - a);
         Int j = (b - m);
         {
@@ -21149,7 +21230,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // siftDown_func implements the heap property on data[lo:hi].
     // first is an offset into the array where the root of the heap lies.
-    static void siftDown_func(LessSwap data, Int lo, Int hi, Int first) {
+    template <typename Data>
+    static void siftDown_func(Data data, Int lo, Int hi, Int first) {
         Int root = lo;
         {
             for (; true;) {
@@ -21177,7 +21259,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return convert<i32>((VReg(-2LL) - r));
     }
 
-    static void stable_func(LessSwap data, Int n) {
+    template <typename Data>
+    static void stable_func(Data data, Int n) {
         Int blockSize = Int(20LL);
         auto temporary1617 = Int(0LL);
         auto temporary1618 = blockSize;
@@ -21256,7 +21339,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return cc;
     }
 
-    static void swapRange_func(LessSwap data, Int a, Int b, Int n) {
+    template <typename Data>
+    static void swapRange_func(Data data, Int a, Int b, Int n) {
         {
             Int i = Int(0LL);
             for (; (i < n); i++) {
@@ -21284,7 +21368,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // symMerge assumes non-degenerate arguments: a < m && m < b.
     // Having the caller check this condition eliminates many leaf recursion calls,
     // which improves performance.
-    static void symMerge_func(LessSwap data, Int a, Int m, Int b) {
+    template <typename Data>
+    static void symMerge_func(Data data, Int a, Int m, Int b) {
         if (((m - a) == Int(1LL))) {
             Int i = m;
             Int j = b;
@@ -21545,7 +21630,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         {
             Int round = Int(0LL);
             for (; (round < Int(64LL)); round++) {
-                CfgInfo* ci = functionAnalyze(f);
+                ObjPool cfgPool;
+                CfgInfo* ci;
+                {
+                    PoolScope analysisScope(cfgPool);
+                    ci = functionAnalyze(f);
+                }
                 bool changed = false;
                 {
                     auto range1645 = (ci)->order;
@@ -21555,7 +21645,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             continue;
                         }
                         setMap(done, h, true);
-                        MemoryLoop* loop = findMemoryLoop(f, ci, h);
+                        ObjPool loopPool;
+                        MemoryLoop* loop;
+                        {
+                            PoolScope analysisScope(loopPool);
+                            loop = findMemoryLoop(f, ci, h);
+                            if (loop) {
+                                loop->invariantNodes = makeSlice<i32>(0);
+                                loop->copies = makeSlice<i32>(0);
+                            }
+                        }
                         if (isNil(loop)) {
                             continue;
                         }
