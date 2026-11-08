@@ -3,10 +3,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -264,6 +266,26 @@ func (r *specRunner) table(imp *ImportMeta) uintptr {
 	return src.ctx() + uintptr(src.obj.meta.tables[e.index].offset)
 }
 
+// specCompile can exercise another compiler through its stdin/stdout ABI,
+// while retaining this loader and the exact same spec assertions.
+func specCompile(data []byte) []byte {
+	if compiler := os.Getenv("W2X_SPEC_COMPILER"); compiler != "" {
+		command := exec.Command(compiler, "--strict")
+		command.Stdin = bytes.NewReader(data)
+		var diagnostic bytes.Buffer
+		command.Stderr = &diagnostic
+		object, err := command.Output()
+
+		if err != nil {
+			throwFmt("external compiler: %s: %s", err, strings.TrimSpace(diagnostic.String()))
+		}
+
+		return object
+	}
+
+	return compileModuleWithOptions(data, CompileOptions{})
+}
+
 // load compiles and instantiates a module file, or returns nil, skipped.
 func (r *specRunner) load(filename string) *Instance {
 	var i *Instance
@@ -272,7 +294,7 @@ func (r *specRunner) load(filename string) *Instance {
 		data := throw2(os.ReadFile(filepath.Join(r.dir, filename)))
 		// Spec assertions require exact Wasm bounds, independently of
 		// the ordinary compiler's padded memory semantics.
-		obj := readObject(compileModuleWithOptions(data, CompileOptions{}))
+		obj := readObject(specCompile(data))
 		i = instantiate(filename, obj, r, specStack)
 	}); e != nil {
 		r.unsupported[e.message()] = true
