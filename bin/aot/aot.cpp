@@ -1145,6 +1145,80 @@ namespace {
         return s.space;
     }
 
+    // A bounded, non-owning view. Its source is either contiguous storage or
+    // an owning PageVec; appending and allocation belong to the owner.
+    template <typename T>
+    struct Span {
+        T* contiguous = nullptr;
+        PageVec<T>* pages = nullptr;
+        u32 offset = 0;
+        u32 count = 0;
+
+        Span() = default;
+
+        Span(Slice<T> source)
+            : contiguous(source.array ? source.array->contiguous : nullptr)
+            , pages(source.array && !contiguous ? &source.array->pages : nullptr)
+            , offset(source.offset)
+            , count(source.count)
+        {
+        }
+
+        Span(InitialValues<T> source)
+            : contiguous(const_cast<T*>(source.begin()))
+            , count(u32(source.size()))
+        {
+        }
+
+        Span(PageVec<T>& source, usize begin, usize end)
+            : pages(&source)
+            , offset(u32(begin))
+            , count(u32(end - begin))
+        {
+            require(begin <= end && end <= source.size(), "page view bounds");
+        }
+
+        T& operator[](Int index) const {
+            require(Uint(index) < count, "view index");
+            const usize at = offset + usize(index);
+            if (contiguous) {
+                return contiguous[at];
+            }
+            return pages->pages.data()[at / PageVec<T>::itemsPerPage][at % PageVec<T>::itemsPerPage];
+        }
+    };
+
+    template <typename T>
+    static Int length(Span<T> view) {
+        return view.count;
+    }
+
+    template <typename T>
+    static Int length(const PageVec<T>& values) {
+        return Int(values.size());
+    }
+
+    template <typename T>
+    static Span<T> subslice(Span<T> source, Int low, Int high) {
+        require(low >= 0 && high >= low && Uint(high) <= source.count, "view bounds");
+        source.offset += u32(low);
+        source.count = u32(high - low);
+        return source;
+    }
+
+    template <typename T>
+    static Span<T> subslice(PageVec<T>& source, Int low, Int high) {
+        return {source, usize(low), usize(high)};
+    }
+
+    template <typename T>
+    static void appendSpan(PageVec<T>& destination, Span<T> source) {
+        destination.reserve(destination.size() + source.count);
+        for (Int i = 0; i < source.count; ++i) {
+            destination.pushBack(source[i]);
+        }
+    }
+
     template <typename T>
     static bool isNil(Slice<T> s) {
         return !s.array;
@@ -1236,6 +1310,30 @@ namespace {
             (*destination.array)[destination.offset + destination.count++] = source[i];
         }
         return destination;
+    }
+
+    template <typename T>
+    static Slice<T> appendSlice(Slice<T> destination, Span<T> source) {
+        growSlice(destination, source.count);
+        for (Int i = 0; i < source.count; ++i) {
+            (*destination.array)[destination.offset + destination.count++] = source[i];
+        }
+        return destination;
+    }
+
+    template <typename T>
+    static Int copySlice(Span<T> destination, Span<T> source) {
+        const Int count = destination.count < source.count ? destination.count : source.count;
+        if (destination.pages == source.pages && destination.contiguous == source.contiguous && destination.offset > source.offset) {
+            for (Int i = count; i > 0; --i) {
+                destination[i - 1] = source[i - 1];
+            }
+        } else {
+            for (Int i = 0; i < count; ++i) {
+                destination[i] = source[i];
+            }
+        }
+        return count;
     }
 
     template <typename T>
@@ -3491,8 +3589,8 @@ namespace {
         Module* module{};
         Int index{};
         FuncType* typ{};
-        Slice<Value> values{};
-        Slice<i32> pool{};
+        PageVec<Value> values{};
+        PageVec<i32> pool{};
         Slice<Block> blocks{};
     };
 
@@ -4468,13 +4566,13 @@ namespace {
 
     static CfgInfo* functionAnalyze(Function* f);
 
-    static Slice<i32> functionArgs(Function* f, i32 v);
+    static Span<i32> functionArgs(Function* f, i32 v);
 
     static void functionComputePreds(Function* f);
 
     static i32 functionNewBlock(Function* f);
 
-    static i32 functionNewValue(Function* f, Op op, ValType typ, i32 block, i64 aux, Slice<i32> args);
+    static i32 functionNewValue(Function* f, Op op, ValType typ, i32 block, i64 aux, Span<i32> args);
 
     static Slice<i32> functionRpo(Function* f);
 
@@ -4767,7 +4865,7 @@ namespace {
 
     static void frontendElseOp(Frontend* fe);
 
-    static i32 frontendEmit(Frontend* fe, Op op, ValType t, i64 aux, Slice<i32> args);
+    static i32 frontendEmit(Frontend* fe, Op op, ValType t, i64 aux, Span<i32> args);
 
     static void frontendEnd(Frontend* fe);
 
@@ -4891,9 +4989,9 @@ namespace {
 
     static void lowererAlu(Lowerer* l, i32 v, Op op, i32 a, i32 b, u8 size);
 
-    static void lowererCall(Lowerer* l, i32 v, Int index, Slice<i32> args);
+    static void lowererCall(Lowerer* l, i32 v, Int index, Span<i32> args);
 
-    static void lowererCallIndirect(Lowerer* l, i32 v, Int typeIndex, Int table, Slice<i32> args);
+    static void lowererCallIndirect(Lowerer* l, i32 v, Int typeIndex, Int table, Span<i32> args);
 
     static void lowererCheckRange(Lowerer* l, VReg a, VReg n, Mem limit, u8 limitSize, i64 code);
 
@@ -4953,11 +5051,11 @@ namespace {
 
     static void lowererMemAddr(Lowerer* l, VReg dst, VReg a);
 
-    static void lowererMemCopy(Lowerer* l, Slice<i32> args);
+    static void lowererMemCopy(Lowerer* l, Span<i32> args);
 
-    static void lowererMemFill(Lowerer* l, Slice<i32> args);
+    static void lowererMemFill(Lowerer* l, Span<i32> args);
 
-    static void lowererMemInit(Lowerer* l, Int seg, Slice<i32> args);
+    static void lowererMemInit(Lowerer* l, Int seg, Span<i32> args);
 
     static void lowererMemStub(Lowerer* l, Int stub, VReg a, VReg b, VReg c);
 
@@ -4965,7 +5063,7 @@ namespace {
 
     static void lowererOutgoing(Lowerer* l, Int stackArgs, Slice<VReg> regs);
 
-    static Tuple2<Slice<VReg>, Int> lowererPlaceArgs(Lowerer* l, Slice<i32> args);
+    static Tuple2<Slice<VReg>, Int> lowererPlaceArgs(Lowerer* l, Span<i32> args);
 
     static void lowererPlaceFloatConstants(Lowerer* l);
 
@@ -4975,7 +5073,7 @@ namespace {
 
     static bool lowererScaledIndex(Lowerer* l, i32 v, i32 block);
 
-    static void lowererSelectValue(Lowerer* l, i32 v, Slice<i32> args);
+    static void lowererSelectValue(Lowerer* l, i32 v, Span<i32> args);
 
     static void lowererSetcc(Lowerer* l, i32 v);
 
@@ -5109,7 +5207,7 @@ namespace {
 
     static void optimizerSelectTriangles(Optimizer* o);
 
-    static void optimizerSetArgs(Optimizer* o, i32 v, Slice<i32> args);
+    static void optimizerSetArgs(Optimizer* o, i32 v, Span<i32> args);
 
     static bool optimizerSimplify(Optimizer* o);
 
@@ -5545,7 +5643,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (((depth > Int(32LL)) || (((val).typ != I32) && ((val).typ != I64)))) {
             return out;
         }
-        Slice<i32> args = functionArgs(f, v);
+        Span<i32> args = functionArgs(f, v);
         {
             auto switch3 = (val).op;
             switch (switch3) {
@@ -5682,7 +5780,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         i32 b = (val).block;
         Int index = length(((f)->blocks[b]).params);
-        i32 p = functionNewValue(f, OpParam, I32, b, convert<i64>(index), sliceOf<i32>({}));
+        i32 p = functionNewValue(f, OpParam, I32, b, convert<i64>(index), Span<i32>({}));
         ((f)->blocks[b]).params = appendValues(((f)->blocks[b]).params, p);
         setMap((n)->values, v, p);
         Slice<Edge*> incoming = optimizerIncoming((n)->o, b);
@@ -5726,7 +5824,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (((op < OpFEq) || (op > OpFGe))) {
             return;
         }
-        Slice<i32> args = functionArgs(f, cond);
+        Span<i32> args = functionArgs(f, cond);
         auto temporary23 = args[Int(0LL)];
         auto temporary24 = args[Int(1LL)];
         i32 v = temporary23;
@@ -5848,7 +5946,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             if (ok) {
                 out = FloatRange{k, k, mathIsNaN(k)};
             } else if ((depth < Int(32LL))) {
-                Slice<i32> args = functionArgs((r)->f, v);
+                Span<i32> args = functionArgs((r)->f, v);
                 {
                     auto switch36 = (val)->op;
                     switch (switch36) {
@@ -5964,7 +6062,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return ci;
     }
 
-    static Slice<i32> functionArgs(Function* f, i32 v) {
+    static Span<i32> functionArgs(Function* f, i32 v) {
         Value* val = (&((f)->values[v]));
         return subslice((f)->pool, (val)->args, ((val)->args + convert<i32>((val)->nargs)));
     }
@@ -6002,11 +6100,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return convert<i32>((length((f)->blocks) - Int(1LL)));
     }
 
-    static i32 functionNewValue(Function* f, Op op, ValType typ, i32 block, i64 aux, Slice<i32> args) {
+    static i32 functionNewValue(Function* f, Op op, ValType typ, i32 block, i64 aux, Span<i32> args) {
         i32 id = convert<i32>(length((f)->values));
         i32 start = convert<i32>(length((f)->pool));
-        (f)->pool = appendSlice((f)->pool, args);
-        (f)->values = appendValues((f)->values, Value{op, typ, convert<u16>(length(args)), start, aux, {}, block});
+        appendSpan((f)->pool, args);
+        (f)->values.pushBack(Value{op, typ, convert<u16>(length(args)), start, aux, {}, block});
         return id;
     }
 
@@ -6416,7 +6514,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     }
                 }
                 if (((((val).block >= i32(0LL)) && (convert<Int>((val).block) < length((l)->members))) && (l)->members[(val).block])) {
-                    i32 n = functionNewValue(f, (val).op, (val).typ, blocks[(val).block], (val).aux, sliceOf<i32>({}));
+                    i32 n = functionNewValue(f, (val).op, (val).typ, blocks[(val).block], (val).aux, Span<i32>({}));
                     ((f)->values[n]).aux2 = (val).aux2;
                     if (proven[convert<i32>(v)]) {
                         ((f)->values[n]).aux2 |= i32(32LL);
@@ -6455,7 +6553,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         if (proven[convert<i32>(v)]) {
                             {
                                 for (; (l)->noWrap[args[Int(0LL)]];) {
-                                    Slice<i32> add = functionArgs(f, args[Int(0LL)]);
+                                    Span<i32> add = functionArgs(f, args[Int(0LL)]);
                                     auto temporary113 = add[Int(0LL)];
                                     auto temporary114 = (f)->values[add[Int(1LL)]];
                                     i32 a = temporary113;
@@ -6480,7 +6578,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             auto range117 = args;
                             for (Int index118 = 0, rangeEnd119 = length(range117); index118 < rangeEnd119; ++index118) {
                                 i32 a = range117[index118];
-                                (f)->pool = appendValues((f)->pool, remap(a));
+                                (f)->pool.pushBack(remap(a));
                             }
                         }
                     }
@@ -6623,7 +6721,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 if ((!(escapes))) {
                     continue;
                 }
-                i32 p = functionNewValue(f, OpParam, ((f)->values[v]).typ, (l)->exit, convert<i64>(length(((f)->blocks[(l)->exit]).params)), sliceOf<i32>({}));
+                i32 p = functionNewValue(f, OpParam, ((f)->values[v]).typ, (l)->exit, convert<i64>(length(((f)->blocks[(l)->exit]).params)), Span<i32>({}));
                 ((f)->blocks[(l)->exit]).params = appendValues(((f)->blocks[(l)->exit]).params, p);
                 setMap(merged, convert<i32>(v), p);
                 {
@@ -6740,7 +6838,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             setMap((out).terms, key, u32(1LL));
         } else {
-            Slice<i32> args = functionArgs(f, v);
+            Span<i32> args = functionArgs(f, v);
             {
                 auto switch187 = (val).op;
                 switch (switch187) {
@@ -7048,7 +7146,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             for (Int index242 = 0, rangeEnd243 = length(range241); index242 < rangeEnd243; ++index242) {
                 Int j = index242;
                 i32 p = range241[index242];
-                i32 v = functionNewValue(f, OpParam, ((f)->values[p]).typ, bulk, convert<i64>(j), sliceOf<i32>({}));
+                i32 v = functionNewValue(f, OpParam, ((f)->values[p]).typ, bulk, convert<i64>(j), Span<i32>({}));
                 ((f)->blocks[bulk]).params = appendValues(((f)->blocks[bulk]).params, v);
             }
         }
@@ -7058,7 +7156,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return v;
         };
         auto constant = [&](ValType typ, i64 x) mutable -> i32 {
-            return functionNewValue(f, OpConst, typ, i32(-1LL), x, sliceOf<i32>({}));
+            return functionNewValue(f, OpConst, typ, i32(-1LL), x, Span<i32>({}));
         };
         i32 iterations = emit(OpExtendU, I64, i64(0LL), sliceOf<i32>({count}));
         if ((((l)->limit < i32(0LL)) && ((((l)->countStep != u64(1LL)) || ((l)->countStop != u64(0LL)))))) {
@@ -7302,7 +7400,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             if (((bound).hi < u64(4294967295LL))) {
                 out = LoopSpan{i32(-1LL), {}, {}, (bound).hi, {}, {}, (bound).lo, {}, true};
             } else {
-                Slice<i32> args = functionArgs((l)->f, v);
+                Span<i32> args = functionArgs((l)->f, v);
                 {
                     auto switch281 = (val)->op;
                     switch (switch281) {
@@ -7566,7 +7664,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return v;
         };
         auto constant = [&](ValType typ, u64 x) mutable -> i32 {
-            return functionNewValue(f, OpConst, typ, i32(-1LL), convert<i64>(x), sliceOf<i32>({}));
+            return functionNewValue(f, OpConst, typ, i32(-1LL), convert<i64>(x), Span<i32>({}));
         };
         i32 pages = emit(OpMemSize, I32, sliceOf<i32>({}));
         i32 size = emit(OpShl, I64, sliceOf<i32>({emit(OpExtendU, I64, sliceOf<i32>({pages})), constant(I64, u64(16LL))}));
@@ -7742,7 +7840,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 i32 specialized = memoryLoopClone(l, proven, invariants, cases);
                 (l)->copies = appendValues((l)->copies, specialized);
                 i32 choice = functionNewBlock(f);
-                i32 eq = functionNewValue(f, OpEqz, I32, choice, i64(0LL), sliceOf<i32>({index}));
+                i32 eq = functionNewValue(f, OpEqz, I32, choice, i64(0LL), Span<i32>({index}));
                 ((f)->blocks[choice]).instrs = appendValues(((f)->blocks[choice]).instrs, eq);
                 ((f)->blocks[choice]).term = Term{TermIf, eq, sliceOf<Edge>({Edge{specialized, appendSlice(Slice<i32>{}, ((l)->entry).args)}, entry}), {}, {}};
                 entry = Edge{choice, {}};
@@ -8049,7 +8147,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return unknown;
         }
         UnsignedRange out = unknown;
-        Slice<i32> args = functionArgs((r)->f, v);
+        Span<i32> args = functionArgs((r)->f, v);
         {
             auto switch362 = (val)->op;
             switch (switch362) {
@@ -10329,7 +10427,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static i32 frontendAddParam(Frontend* fe, i32 b, ValType t) {
         Block* blk = (&(((fe)->f)->blocks[b]));
-        i32 p = functionNewValue((fe)->f, OpParam, t, b, convert<i64>(length((blk)->params)), sliceOf<i32>({}));
+        i32 p = functionNewValue((fe)->f, OpParam, t, b, convert<i64>(length((blk)->params)), Span<i32>({}));
         (blk)->params = appendValues((blk)->params, p);
         return p;
     }
@@ -10347,7 +10445,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         i32 b = frontendPop(fe);
         i32 a = frontendPop(fe);
-        frontendPush(fe, frontendEmit(fe, op, t, i64(0LL), sliceOf<i32>({a, b})));
+        frontendPush(fe, frontendEmit(fe, op, t, i64(0LL), Span<i32>({a, b})));
     }
 
     static Tuple2<Slice<ValType>, Slice<ValType>> frontendBlockType(Frontend* fe) {
@@ -10575,7 +10673,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             i32 cond = frontendPop(fe);
                             i32 b = frontendPop(fe);
                             i32 a = frontendPop(fe);
-                            frontendPush(fe, frontendEmit(fe, OpSelect, frontendTypeOf(fe, a), i64(0LL), sliceOf<i32>({cond, a, b})));
+                            frontendPush(fe, frontendEmit(fe, OpSelect, frontendTypeOf(fe, a), i64(0LL), Span<i32>({cond, a, b})));
                             break;
                         }
                         case u8(32LL): {
@@ -10597,25 +10695,25 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         }
                         case u8(35LL): {
                             u32 index = frontendGlobalIndex(fe);
-                            frontendPush(fe, frontendEmit(fe, OpGlobalGet, (((fe)->m)->globals[index]).typ, convert<i64>(index), sliceOf<i32>({})));
+                            frontendPush(fe, frontendEmit(fe, OpGlobalGet, (((fe)->m)->globals[index]).typ, convert<i64>(index), Span<i32>({})));
                             break;
                         }
                         case u8(36LL): {
                             u32 index = frontendGlobalIndex(fe);
-                            frontendEmit(fe, OpGlobalSet, TNone, convert<i64>(index), sliceOf<i32>({frontendPop(fe)}));
+                            frontendEmit(fe, OpGlobalSet, TNone, convert<i64>(index), Span<i32>({frontendPop(fe)}));
                             break;
                         }
                         case u8(37LL): {
                             u32 table = frontendTableIndex(fe);
                             i32 index = frontendPop(fe);
-                            frontendPush(fe, frontendEmit(fe, OpTableGet, (((fe)->m)->tables[table]).elem, convert<i64>(table), sliceOf<i32>({index})));
+                            frontendPush(fe, frontendEmit(fe, OpTableGet, (((fe)->m)->tables[table]).elem, convert<i64>(table), Span<i32>({index})));
                             break;
                         }
                         case u8(38LL): {
                             u32 table = frontendTableIndex(fe);
                             i32 val = frontendPop(fe);
                             i32 index = frontendPop(fe);
-                            frontendEmit(fe, OpTableSet, TNone, convert<i64>(table), sliceOf<i32>({index, val}));
+                            frontendEmit(fe, OpTableSet, TNone, convert<i64>(table), Span<i32>({index, val}));
                             break;
                         }
                         case u8(40LL): {
@@ -10700,13 +10798,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         }
                         case u8(63LL): {
                             frontendMemIndex(fe);
-                            frontendPush(fe, frontendEmit(fe, OpMemSize, frontendAddrType(fe), i64(0LL), sliceOf<i32>({})));
+                            frontendPush(fe, frontendEmit(fe, OpMemSize, frontendAddrType(fe), i64(0LL), Span<i32>({})));
                             break;
                         }
                         case u8(64LL): {
                             frontendMemIndex(fe);
                             i32 delta = frontendPop(fe);
-                            frontendPush(fe, frontendEmit(fe, OpMemGrow, frontendAddrType(fe), i64(0LL), sliceOf<i32>({delta})));
+                            frontendPush(fe, frontendEmit(fe, OpMemGrow, frontendAddrType(fe), i64(0LL), Span<i32>({delta})));
                             break;
                         }
                         case u8(65LL): {
@@ -10963,7 +11061,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         }
                         case u8(208LL): {
                             ValType t = readerRefType(r);
-                            frontendPush(fe, functionNewValue((fe)->f, OpRefNull, t, i32(-1LL), i64(0LL), sliceOf<i32>({})));
+                            frontendPush(fe, functionNewValue((fe)->f, OpRefNull, t, i32(-1LL), i64(0LL), Span<i32>({})));
                             break;
                         }
                         case u8(209LL): {
@@ -10975,7 +11073,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             if ((convert<Int>(index) >= length(((fe)->m)->funcs))) {
                                 compilerError(String("unknown function %d"));
                             }
-                            frontendPush(fe, frontendEmit(fe, OpRefFunc, FuncRef, convert<i64>(index), sliceOf<i32>({})));
+                            frontendPush(fe, frontendEmit(fe, OpRefFunc, FuncRef, convert<i64>(index), Span<i32>({})));
                             break;
                         }
                         case u8(252LL): {
@@ -11025,7 +11123,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 for (Int index641 = 0, rangeEnd642 = length(range640); index641 < rangeEnd642; ++index641) {
                     Int i = index641;
                     ValType rt = range640[index641];
-                    frontendPush(fe, frontendEmit(fe, OpExtract, rt, convert<i64>(i), sliceOf<i32>({v})));
+                    frontendPush(fe, frontendEmit(fe, OpExtract, rt, convert<i64>(i), Span<i32>({v})));
                 }
             }
         }
@@ -11050,7 +11148,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 return v;
             }
         }
-        i32 v = functionNewValue((fe)->f, OpConst, t, i32(-1LL), bits, sliceOf<i32>({}));
+        i32 v = functionNewValue((fe)->f, OpConst, t, i32(-1LL), bits, Span<i32>({}));
         setMap((fe)->consts, key, v);
         return v;
     }
@@ -11086,7 +11184,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     // emit appends an instruction to the current block.
-    static i32 frontendEmit(Frontend* fe, Op op, ValType t, i64 aux, Slice<i32> args) {
+    static i32 frontendEmit(Frontend* fe, Op op, ValType t, i64 aux, Span<i32> args) {
         i32 v = functionNewValue((fe)->f, op, t, (fe)->cur, aux, args);
         Block* blk = (&(((fe)->f)->blocks[(fe)->cur]));
         (blk)->instrs = appendValues((blk)->instrs, v);
@@ -11191,7 +11289,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return;
         }
         i32 addr = frontendPop(fe);
-        i32 v = frontendEmit(fe, OpLoad, t, offset, sliceOf<i32>({addr}));
+        i32 v = frontendEmit(fe, OpLoad, t, offset, Span<i32>({addr}));
         (((fe)->f)->values[v]).aux2 = convert<i32>(makeMemKind(width, signedValue));
         frontendPush(fe, v);
     }
@@ -11316,13 +11414,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     i32 n = frontendPop(fe);
                     i32 s = frontendPop(fe);
                     i32 d = frontendPop(fe);
-                    frontendEmit(fe, OpMemInit, TNone, convert<i64>(seg), sliceOf<i32>({d, s, n}));
+                    frontendEmit(fe, OpMemInit, TNone, convert<i64>(seg), Span<i32>({d, s, n}));
                     break;
                 }
                 case u32(9LL): {
                     u32 seg = readerU32(r);
                     frontendCheckData(fe, seg);
-                    frontendEmit(fe, OpDataDrop, TNone, convert<i64>(seg), sliceOf<i32>({}));
+                    frontendEmit(fe, OpDataDrop, TNone, convert<i64>(seg), Span<i32>({}));
                     break;
                 }
                 case u32(10LL): {
@@ -11331,7 +11429,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     i32 n = frontendPop(fe);
                     i32 s = frontendPop(fe);
                     i32 d = frontendPop(fe);
-                    frontendEmit(fe, OpMemCopy, TNone, i64(0LL), sliceOf<i32>({d, s, n}));
+                    frontendEmit(fe, OpMemCopy, TNone, i64(0LL), Span<i32>({d, s, n}));
                     break;
                 }
                 case u32(11LL): {
@@ -11339,7 +11437,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     i32 n = frontendPop(fe);
                     i32 val = frontendPop(fe);
                     i32 d = frontendPop(fe);
-                    frontendEmit(fe, OpMemFill, TNone, i64(0LL), sliceOf<i32>({d, val, n}));
+                    frontendEmit(fe, OpMemFill, TNone, i64(0LL), Span<i32>({d, val, n}));
                     break;
                 }
                 case u32(12LL): {
@@ -11351,7 +11449,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     i32 n = frontendPop(fe);
                     i32 s = frontendPop(fe);
                     i32 d = frontendPop(fe);
-                    i32 v = frontendEmit(fe, OpTableInit, TNone, convert<i64>(seg), sliceOf<i32>({d, s, n}));
+                    i32 v = frontendEmit(fe, OpTableInit, TNone, convert<i64>(seg), Span<i32>({d, s, n}));
                     (((fe)->f)->values[v]).aux2 = convert<i32>(table);
                     break;
                 }
@@ -11360,7 +11458,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     if ((convert<Int>(seg) >= length(((fe)->m)->elems))) {
                         compilerError(String("unknown elem segment %d"));
                     }
-                    frontendEmit(fe, OpElemDrop, TNone, convert<i64>(seg), sliceOf<i32>({}));
+                    frontendEmit(fe, OpElemDrop, TNone, convert<i64>(seg), Span<i32>({}));
                     break;
                 }
                 case u32(14LL): {
@@ -11369,7 +11467,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     i32 n = frontendPop(fe);
                     i32 s = frontendPop(fe);
                     i32 d = frontendPop(fe);
-                    i32 v = frontendEmit(fe, OpTableCopy, TNone, convert<i64>(dst), sliceOf<i32>({d, s, n}));
+                    i32 v = frontendEmit(fe, OpTableCopy, TNone, convert<i64>(dst), Span<i32>({d, s, n}));
                     (((fe)->f)->values[v]).aux2 = convert<i32>(src);
                     break;
                 }
@@ -11377,12 +11475,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     u32 table = frontendTableIndex(fe);
                     i32 n = frontendPop(fe);
                     i32 val = frontendPop(fe);
-                    frontendPush(fe, frontendEmit(fe, OpTableGrow, I32, convert<i64>(table), sliceOf<i32>({val, n})));
+                    frontendPush(fe, frontendEmit(fe, OpTableGrow, I32, convert<i64>(table), Span<i32>({val, n})));
                     break;
                 }
                 case u32(16LL): {
                     u32 table = frontendTableIndex(fe);
-                    frontendPush(fe, frontendEmit(fe, OpTableSize, I32, convert<i64>(table), sliceOf<i32>({})));
+                    frontendPush(fe, frontendEmit(fe, OpTableSize, I32, convert<i64>(table), Span<i32>({})));
                     break;
                 }
                 case u32(17LL): {
@@ -11390,7 +11488,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     i32 n = frontendPop(fe);
                     i32 val = frontendPop(fe);
                     i32 d = frontendPop(fe);
-                    frontendEmit(fe, OpTableFill, TNone, convert<i64>(table), sliceOf<i32>({d, val, n}));
+                    frontendEmit(fe, OpTableFill, TNone, convert<i64>(table), Span<i32>({d, val, n}));
                     break;
                 }
                 default: {
@@ -11421,7 +11519,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             } else if ((length((fe)->preds[b]) == Int(1LL))) {
                 v = frontendRead(fe, local, ((fe)->preds[b][Int(0LL)]).block);
             } else if ((length((fe)->preds[b]) == Int(0LL))) {
-                v = functionNewValue((fe)->f, OpUndef, t, i32(-1LL), i64(0LL), sliceOf<i32>({}));
+                v = functionNewValue((fe)->f, OpUndef, t, i32(-1LL), i64(0LL), Span<i32>({}));
             } else {
                 v = frontendAddParam(fe, b, t);
                 frontendWrite(fe, local, b, v);
@@ -11480,7 +11578,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         {
-            auto range657 = (f)->values;
+            auto& range657 = (f)->values;
             for (Int index658 = 0, rangeEnd659 = length(range657); index658 < rangeEnd659; ++index658) {
                 Int v = index658;
                 Value* val = (&((f)->values[v]));
@@ -11743,7 +11841,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         i32 val = frontendPop(fe);
         i32 addr = frontendPop(fe);
-        i32 v = frontendEmit(fe, OpStore, TNone, offset, sliceOf<i32>({addr, val}));
+        i32 v = frontendEmit(fe, OpStore, TNone, offset, Span<i32>({addr, val}));
         (((fe)->f)->values[v]).aux2 = convert<i32>(makeMemKind(width, false));
     }
 
@@ -11782,7 +11880,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         if ((same < i32(0LL))) {
-            same = functionNewValue((fe)->f, OpUndef, (((fe)->f)->values[phi]).typ, i32(-1LL), i64(0LL), sliceOf<i32>({}));
+            same = functionNewValue((fe)->f, OpUndef, (((fe)->f)->values[phi]).typ, i32(-1LL), i64(0LL), Span<i32>({}));
         }
         (fe)->alias[frontendParamSlot(fe, phi)] = same;
         return same;
@@ -11797,7 +11895,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return;
         }
         i32 a = frontendPop(fe);
-        frontendPush(fe, frontendEmit(fe, op, t, i64(0LL), sliceOf<i32>({a})));
+        frontendPush(fe, frontendEmit(fe, op, t, i64(0LL), Span<i32>({a})));
     }
 
     static void frontendWrite(Frontend* fe, i32 local, i32 b, i32 v) {
@@ -11816,7 +11914,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static i32 frontendZero(Frontend* fe, ValType t) {
         if (((t == FuncRef) || (t == ExternRef))) {
-            return functionNewValue((fe)->f, OpRefNull, t, i32(-1LL), i64(0LL), sliceOf<i32>({}));
+            return functionNewValue((fe)->f, OpRefNull, t, i32(-1LL), i64(0LL), Span<i32>({}));
         }
         return frontendConstant(fe, t, i64(0LL));
     }
@@ -12943,7 +13041,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // call calls a function of the module; an imported one through its
     // adapter, which keeps the internal convention, the memory register
     // included.
-    static void lowererCall(Lowerer* l, i32 v, Int index, Slice<i32> args) {
+    static void lowererCall(Lowerer* l, i32 v, Int index, Span<i32> args) {
         FuncType* t = moduleFuncType((l)->m, convert<u32>(index));
         auto temporary745 = lowererPlaceArgs(l, args);
         Slice<VReg> uses = temporary745.v0;
@@ -12964,7 +13062,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         lowererTakeResults(l, v, (t)->results, regs, stack);
     }
 
-    static void lowererCallIndirect(Lowerer* l, i32 v, Int typeIndex, Int table, Slice<i32> args) {
+    static void lowererCallIndirect(Lowerer* l, i32 v, Int typeIndex, Int table, Span<i32> args) {
         FuncType* t = (&(((l)->m)->types[typeIndex]));
         i32 elem = args[(length(args) - Int(1LL))];
         args = subslice(args, Int(0), (length(args) - Int(1LL)));
@@ -13063,7 +13161,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static Tuple2<u8, Int> lowererCompare(Lowerer* l, i32 c) {
         Function* f = (l)->f;
         Value* val = (&((f)->values[c]));
-        Slice<i32> args = functionArgs(f, c);
+        Span<i32> args = functionArgs(f, c);
         if (((val)->op == OpAnd)) {
             lowererTestBits(l, args[Int(0LL)], args[Int(1LL)]);
             return {ccNE, Int(0LL)};
@@ -13083,7 +13181,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (((val)->op == OpEqz)) {
             i32 v = args[Int(0LL)];
             if (((l)->deferred[v] && (((f)->values[v]).op == OpAnd))) {
-                Slice<i32> bits = functionArgs(f, v);
+                Span<i32> bits = functionArgs(f, v);
                 lowererTestBits(l, bits[Int(0LL)], bits[Int(1LL)]);
                 return {ccE, Int(0LL)};
             }
@@ -13537,7 +13635,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         {
-            auto range804 = (f)->values;
+            auto& range804 = (f)->values;
             for (Int index805 = 0, rangeEnd806 = length(range804); index805 < rangeEnd806; ++index805) {
                 Int v = index805;
                 Value* val = (&((f)->values[v]));
@@ -13566,7 +13664,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 if ((((l)->uses[v] == i32(1LL)) && (user[v] >= i32(0LL)))) {
                     i32 u = user[v];
                     if ((((f)->values[u]).op == OpSelect)) {
-                        Slice<i32> args = functionArgs(f, u);
+                        Span<i32> args = functionArgs(f, u);
                         if ((args[Int(1LL)] != args[Int(2LL)])) {
                             floatRangesConstrain(r, args[Int(0LL)], (args[Int(1LL)] == convert<i32>(v)));
                         }
@@ -13690,7 +13788,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             b = temporary809;
         }
         if (((l)->deferred[b] && (((f)->values[b]).op == OpShl))) {
-            Slice<i32> args = functionArgs(f, b);
+            Span<i32> args = functionArgs(f, b);
             scale = shiftLeft(u8(1LL), convert<Uint>((lowererConstBits(l, args[Int(1LL)]) & convert<i64>(u8(u8(size * u8(8LL)) - u8(1LL))))));
             b = args[Int(0LL)];
             folded = true;
@@ -13802,7 +13900,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void lowererLowerValue(Lowerer* l, i32 v) {
         Function* f = (l)->f;
         Value* val = (&((f)->values[v]));
-        Slice<i32> args = functionArgs(f, v);
+        Span<i32> args = functionArgs(f, v);
         u8 size = typeSize((val)->typ);
         {
             auto switch827 = (val)->op;
@@ -14177,7 +14275,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         i32 v = range833[index834];
                         Value* val = (&((f)->values[v]));
                         if (((val)->op == OpAdd)) {
-                            Slice<i32> args = functionArgs(f, v);
+                            Span<i32> args = functionArgs(f, v);
                             {
                                 Int i = (length(args) - Int(1LL));
                                 for (; (i >= Int(0LL)); i--) {
@@ -14217,7 +14315,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         lowererEmit(l, in);
     }
 
-    static void lowererMemCopy(Lowerer* l, Slice<i32> args) {
+    static void lowererMemCopy(Lowerer* l, Span<i32> args) {
         auto temporary836 = lowererUse(l, args[Int(0LL)]);
         auto temporary837 = lowererUse(l, args[Int(1LL)]);
         auto temporary838 = lowererUse(l, args[Int(2LL)]);
@@ -14233,7 +14331,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         lowererMemStub(l, stubMemmove, dst, src, n);
     }
 
-    static void lowererMemFill(Lowerer* l, Slice<i32> args) {
+    static void lowererMemFill(Lowerer* l, Span<i32> args) {
         auto temporary839 = lowererUse(l, args[Int(0LL)]);
         auto temporary840 = lowererUse(l, args[Int(1LL)]);
         auto temporary841 = lowererUse(l, args[Int(2LL)]);
@@ -14246,7 +14344,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         lowererMemStub(l, stubMemset, dst, val, n);
     }
 
-    static void lowererMemInit(Lowerer* l, Int seg, Slice<i32> args) {
+    static void lowererMemInit(Lowerer* l, Int seg, Span<i32> args) {
         auto temporary842 = lowererUse(l, args[Int(0LL)]);
         auto temporary843 = lowererUse(l, args[Int(1LL)]);
         auto temporary844 = lowererUse(l, args[Int(2LL)]);
@@ -14354,7 +14452,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // placeArgs moves call arguments to their registers and stack slots and
     // returns the registers the call reads and the number of stack slots.
-    static Tuple2<Slice<VReg>, Int> lowererPlaceArgs(Lowerer* l, Slice<i32> args) {
+    static Tuple2<Slice<VReg>, Int> lowererPlaceArgs(Lowerer* l, Span<i32> args) {
         Slice<VReg> regs = makeSlice<VReg>(length(args));
         Slice<ValType> types = makeSlice<ValType>(length(args));
         {
@@ -14538,7 +14636,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return (lowererIsConst(l, count) && ((lowererConstBits(l, count) & convert<i64>(u8(u8(typeSize((val)->typ) * u8(8LL)) - u8(1LL)))) <= i64(3LL)));
     }
 
-    static void lowererSelectValue(Lowerer* l, i32 v, Slice<i32> args) {
+    static void lowererSelectValue(Lowerer* l, i32 v, Span<i32> args) {
         Function* f = (l)->f;
         auto temporary881 = args[Int(0LL)];
         auto temporary882 = args[Int(1LL)];
@@ -14550,7 +14648,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         u8 size = typeSize(t);
         if (isFloat(t)) {
             if ((((l)->deferred[cond] && (((f)->values[cond]).op >= OpFEq)) && (((f)->values[cond]).op <= OpFGe))) {
-                Slice<i32> cmp = functionArgs(f, cond);
+                Span<i32> cmp = functionArgs(f, cond);
                 MInst in = inst(mFSelect);
                 (in).dst = lowererDef(l, v);
                 (in).src = lowererUse(l, x);
@@ -16633,7 +16731,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return;
         }
         {
-            auto range1114 = (f)->values;
+            auto& range1114 = (f)->values;
             for (Int index1115 = 0, rangeEnd1116 = length(range1114); index1115 < rangeEnd1116; ++index1115) {
                 Int v = index1115;
                 Value* val = (&((f)->values[v]));
@@ -16884,7 +16982,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 return v;
             }
         }
-        i32 v = functionNewValue((o)->f, OpConst, t, i32(-1LL), bits, sliceOf<i32>({}));
+        i32 v = functionNewValue((o)->f, OpConst, t, i32(-1LL), bits, Span<i32>({}));
         setMap((o)->consts, key, v);
         return v;
     }
@@ -17092,7 +17190,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             auto temporary1216 = a;
             a = temporary1215;
             b = temporary1216;
-            optimizerSetArgs(o, v, sliceOf<i32>({a, b}));
+            optimizerSetArgs(o, v, Span<i32>({a, b}));
         }
         if (optimizerIsConst(o, b)) {
             u64 c = (convert<u64>(optimizerConstOf(o, b)) & mask(t));
@@ -17111,7 +17209,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     return true;
                 } else if ((((c == u64(0LL)) && (op == OpEq)) && (t == I32))) {
                     ((f)->values[v]).op = OpEqz;
-                    optimizerSetArgs(o, v, sliceOf<i32>({a}));
+                    optimizerSetArgs(o, v, Span<i32>({a}));
                     return true;
                 } else if (((c == u64(0LL)) && (op == OpGeU))) {
                     optimizerReplace(o, v, optimizerConstant(o, I32, i64(1LL)));
@@ -17124,7 +17222,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             if (((op == OpMul) && ((c & ((c - u64(1LL)))) == u64(0LL)))) {
                 ((f)->values[v]).op = OpShl;
-                optimizerSetArgs(o, v, sliceOf<i32>({a, optimizerConstant(o, t, convert<i64>(bitsTrailingZeros64(c)))}));
+                optimizerSetArgs(o, v, Span<i32>({a, optimizerConstant(o, t, convert<i64>(bitsTrailingZeros64(c)))}));
                 return true;
             }
             if ((op == OpAnd)) {
@@ -17288,14 +17386,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         FloatIntegerNarrow* n = activePool->make<FloatIntegerNarrow>(FloatIntegerNarrow{o, makeSlice<u8>(length((f)->values)), mapOf<i32, i32>({})});
         bool changed = false;
         {
-            auto range1239 = (f)->values;
+            auto& range1239 = (f)->values;
             for (Int index1240 = 0, rangeEnd1241 = length(range1239); index1240 < rangeEnd1241; ++index1240) {
                 Int v = index1240;
                 Value val = (f)->values[v];
                 if ((((((val).op < OpFEq) || ((val).op > OpFGe)) || ((val).block < i32(0LL))) || ((f)->blocks[(val).block]).dead)) {
                     continue;
                 }
-                Slice<i32> args = functionArgs(f, convert<i32>(v));
+                Span<i32> args = functionArgs(f, convert<i32>(v));
                 if (((!(floatIntegerNarrowCan(n, args[Int(0LL)], Int(0LL)))) || (!(floatIntegerNarrowCan(n, args[Int(1LL)], Int(0LL)))))) {
                     continue;
                 }
@@ -17305,7 +17403,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 i32 b = temporary1243;
                 Array<Op, 6> ops = Array<Op, 6>{{OpEq, OpNe, OpLtU, OpGtU, OpLeU, OpGeU}};
                 ((f)->values[v]).op = ops[Op((val).op - OpFEq)];
-                optimizerSetArgs(o, convert<i32>(v), sliceOf<i32>({a, b}));
+                optimizerSetArgs(o, convert<i32>(v), Span<i32>({a, b}));
                 changed = true;
             }
         }
@@ -17387,7 +17485,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 setMap(preds, b, from);
             }
             if ((length(from) == Int(0LL))) {
-                i32 v = functionNewValue(f, OpUndef, ((f)->values[params[j]]).typ, i32(-1LL), i64(0LL), sliceOf<i32>({}));
+                i32 v = functionNewValue(f, OpUndef, ((f)->values[params[j]]).typ, i32(-1LL), i64(0LL), Span<i32>({}));
                 setMap(memo, key, v);
                 return v;
             }
@@ -17397,7 +17495,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 return v;
             }
             Int at = length(((f)->blocks[b]).params);
-            i32 x = functionNewValue(f, OpParam, ((f)->values[params[j]]).typ, b, convert<i64>(at), sliceOf<i32>({}));
+            i32 x = functionNewValue(f, OpParam, ((f)->values[params[j]]).typ, b, convert<i64>(at), Span<i32>({}));
             ((f)->blocks[b]).params = appendValues(((f)->blocks[b]).params, x);
             setMap(memo, key, x);
             {
@@ -17454,7 +17552,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     auto range1267 = ((f)->blocks[b]).instrs;
                     for (Int index1268 = 0, rangeEnd1269 = length(range1267); index1268 < rangeEnd1269; ++index1268) {
                         i32 v = range1267[index1268];
-                        Slice<i32> args = functionArgs(f, v);
+                        Span<i32> args = functionArgs(f, v);
                         {
                             auto range1270 = args;
                             for (Int index1271 = 0, rangeEnd1272 = length(range1270); index1271 < rangeEnd1272; ++index1271) {
@@ -17631,7 +17729,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                                         i32 x = range1303[index1304];
                                         args[j] = x;
                                         if ((x != no[j])) {
-                                            i32 v = functionNewValue(f, OpSelect, ((f)->values[x]).typ, b, i64(0LL), sliceOf<i32>({(t).value, x, no[j]}));
+                                            i32 v = functionNewValue(f, OpSelect, ((f)->values[x]).typ, b, i64(0LL), Span<i32>({(t).value, x, no[j]}));
                                             (blk)->instrs = appendValues((blk)->instrs, v);
                                             args[j] = v;
                                         }
@@ -17654,7 +17752,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     // setArgs replaces the operands of v.
-    static void optimizerSetArgs(Optimizer* o, i32 v, Slice<i32> args) {
+    static void optimizerSetArgs(Optimizer* o, i32 v, Span<i32> args) {
         Function* f = (o)->f;
         Value* val = (&((f)->values[v]));
         if ((convert<Int>((val)->nargs) >= length(args))) {
@@ -17664,7 +17762,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         (val)->args = convert<i32>(length((f)->pool));
         (val)->nargs = convert<u16>(length(args));
-        (f)->pool = appendSlice((f)->pool, args);
+        appendSpan((f)->pool, args);
     }
 
     // simplify folds constants and rewrites operations into simpler ones.
@@ -17758,7 +17856,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (((convert<Int>(v) < length((o)->alias)) && ((o)->alias[v] >= i32(0LL)))) {
             return false;
         }
-        Slice<i32> args = functionArgs(f, v);
+        Span<i32> args = functionArgs(f, v);
         {
             auto range1315 = args;
             for (Int index1316 = 0, rangeEnd1317 = length(range1315); index1316 < rangeEnd1317; ++index1316) {
@@ -17980,7 +18078,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         keep[k] = true;
                         if (trivial) {
                             if ((same < i32(0LL))) {
-                                same = functionNewValue(f, OpUndef, ((f)->values[param]).typ, i32(-1LL), i64(0LL), sliceOf<i32>({}));
+                                same = functionNewValue(f, OpUndef, ((f)->values[param]).typ, i32(-1LL), i64(0LL), Span<i32>({}));
                             }
                             optimizerReplace(o, param, same);
                             keep[k] = false;
@@ -18013,20 +18111,20 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         Op invert = temporary1346.v0;
                         bool ok = temporary1346.v1;
                         if (((ok && ((o)->uses[a] == i32(1LL))) && ((src)->block == ((f)->values[v]).block))) {
-                            Slice<i32> sa = functionArgs(f, a);
+                            Span<i32> sa = functionArgs(f, a);
                             auto temporary1347 = sa[Int(0LL)];
                             auto temporary1348 = sa[Int(1LL)];
                             i32 x = temporary1347;
                             i32 y = temporary1348;
                             ((f)->values[v]).op = invert;
-                            optimizerSetArgs(o, v, sliceOf<i32>({x, y}));
+                            optimizerSetArgs(o, v, Span<i32>({x, y}));
                             return true;
                         }
                     }
                     if ((((src)->op == OpEqz) && (((f)->values[functionArgs(f, a)[Int(0LL)]]).typ == I32))) {
                         i32 x = functionArgs(f, a)[Int(0LL)];
                         ((f)->values[v]).op = OpNe;
-                        optimizerSetArgs(o, v, sliceOf<i32>({x, optimizerConstant(o, I32, i64(0LL))}));
+                        optimizerSetArgs(o, v, Span<i32>({x, optimizerConstant(o, I32, i64(0LL))}));
                         return true;
                     }
                     break;
@@ -18048,7 +18146,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             case OpOr:
                             case OpXor:
                             case OpShl: {
-                                Slice<i32> sa = functionArgs(f, a);
+                                Span<i32> sa = functionArgs(f, a);
                                 auto temporary1350 = optimizerLow32(o, sa[Int(0LL)]);
                                 i32 x = temporary1350.v0;
                                 bool ok1 = temporary1350.v1;
@@ -18060,7 +18158,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                                         return false;
                                     }
                                     ((f)->values[v]).op = (src)->op;
-                                    optimizerSetArgs(o, v, sliceOf<i32>({x, y}));
+                                    optimizerSetArgs(o, v, Span<i32>({x, y}));
                                     return true;
                                 }
                                 break;
@@ -19390,7 +19488,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return {};
         }
         Value* condition = (&((f)->values[(t)->value]));
-        Slice<i32> args = functionArgs(f, (t)->value);
+        Span<i32> args = functionArgs(f, (t)->value);
         i32 next = {};
         i64 unsignedStop = i64(-1LL);
         bool zeroTest = false;
@@ -19437,7 +19535,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 i32 candidate = temporary1507;
                 i32 bias = temporary1508;
                 if ((((unsignedStop >= i64(0LL)) && ((back).args[j] != next)) && (((f)->values[next]).op == OpAdd))) {
-                    Slice<i32> a = functionArgs(f, next);
+                    Span<i32> a = functionArgs(f, next);
                     {
                         Int k = Int(0LL);
                         for (; (k < Int(2LL)); k++) {
@@ -19886,7 +19984,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static i64 inductionStep(Function* f, i32 phi, i32 next) {
         Value* val = (&((f)->values[next]));
-        Slice<i32> args = functionArgs(f, next);
+        Span<i32> args = functionArgs(f, next);
         if ((((val)->typ != I32) || (((val)->op != OpAdd) && ((val)->op != OpSub)))) {
             return i64(0LL);
         }
@@ -19920,7 +20018,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if ((((depth > Int(16LL)) || (((f)->values[v]).op != OpAdd)) || (((f)->values[v]).typ != I32))) {
             return {{}, false};
         }
-        Slice<i32> args = functionArgs(f, v);
+        Span<i32> args = functionArgs(f, v);
         {
             Int j = Int(0LL);
             for (; (j < Int(2LL)); j++) {
@@ -20314,7 +20412,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void optimize(Function* f) {
         Optimizer* o = activePool->make<Optimizer>(Optimizer{f, {}, mapOf<ConstKey, i32>({}), {}});
         {
-            auto range1583 = (f)->values;
+            auto& range1583 = (f)->values;
             for (Int index1584 = 0, rangeEnd1585 = length(range1583); index1584 < rangeEnd1585; ++index1584) {
                 Int v = index1584;
                 Value* val = (&((f)->values[v]));
@@ -21564,7 +21662,8 @@ namespace {
 namespace {
     static void compileWithOptions(CompileOptions options) {
         ObjPool modulePool;
-        ObjPool workPool;
+        ObjPool ssaPool;
+        ObjPool machinePool;
         PoolScope scope(modulePool);
         initializeCompilerTables();
         Module* module = decodeModule(readInput(modulePool));
@@ -21600,13 +21699,18 @@ namespace {
         objCodeStubs(code);
         objCodeImportAdapters(code);
         for (Int i = module->importedFuncs; i < length(module->funcs); ++i) {
-            PoolScope functionScope(workPool);
-            Function* function = buildFunction(module, i);
-            optimize(function);
+            Function* function;
+            {
+                PoolScope ssaScope(ssaPool);
+                function = buildFunction(module, i);
+                optimize(function);
+            }
+            PoolScope machineScope(machinePool);
             MFunc* machine = lowerFunction(module, code->lay, function);
+            ssaPool.clear();
             Allocator* allocation = allocate(machine);
             objCodeEmitFunction(code, i, machine, allocation);
-            workPool.clear();
+            machinePool.clear();
         }
         objCodeExportThunks(code);
         objCodeInitThunk(code);
