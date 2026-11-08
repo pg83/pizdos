@@ -68,10 +68,13 @@ There are no multi-page object runs or large-object mappings. Every object
 allocation, including input and output storage, is at most 64 KiB.
 Native segments use libc
 `mmap`; WASI segments use `memory.grow`, with metadata outside payload pages.
-Pool chunks still grow geometrically up to 64 KiB. Containers own allocations
-or pages; copied slice and map fields are views into storage owned by ObjPool.
-One pool holds the module and output structures, and a second is cleared
-after each function. `./build test_aot` checks both WASI entry points against wasm2o,
+Pool chunks still grow geometrically up to 64 KiB. SSA values, operands and
+machine code use owning page vectors. Machine blocks and optional instruction
+operands live in ObjPool; their vectors release old buffers on growth and
+replacement. Copied slice and map fields elsewhere remain views into pool
+storage. Separate pools hold module structures, SSA, and machine IR; SSA is
+released before register allocation, and machine IR after each function.
+`./build test_aot` checks both WASI entry points against wasm2o,
 including compilation of the new compiler itself and repeated export calls.
 
 `./build aot_native aot_measure` builds the native compiler and a small

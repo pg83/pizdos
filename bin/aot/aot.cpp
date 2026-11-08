@@ -86,30 +86,15 @@ extern "C" [[noreturn]] void wasiProcExit(u32 code) {
 
 namespace {
     static void copyBytes(void* destination, const void* source, usize size) {
-        auto* out = static_cast<u8*>(destination);
-        const auto* in = static_cast<const u8*>(source);
-        for (usize i = 0; i < size; ++i) {
-            out[i] = in[i];
-        }
+        __builtin_memcpy(destination, source, size);
     }
 
     static void zeroBytes(void* destination, usize size) {
-        auto* out = static_cast<u8*>(destination);
-        for (usize i = 0; i < size; ++i) {
-            out[i] = 0;
-        }
+        __builtin_memset(destination, 0, size);
     }
 
     static void moveBytes(void* destination, const void* source, usize size) {
-        auto* out = static_cast<u8*>(destination);
-        const auto* in = static_cast<const u8*>(source);
-        if (reinterpret_cast<uptr>(out) <= reinterpret_cast<uptr>(in)) {
-            copyBytes(destination, source, size);
-        } else {
-            for (usize i = size; i != 0; --i) {
-                out[i - 1] = in[i - 1];
-            }
-        }
+        __builtin_memmove(destination, source, size);
     }
 
     static void writeAll(u32 fd, const void* data, usize length) {
@@ -1148,15 +1133,26 @@ namespace {
     // A bounded, non-owning view. Its source is either contiguous storage or
     // an owning PageVec; appending and allocation belong to the owner.
     template <typename T>
+    struct Unqualified {
+        using Type = T;
+    };
+
+    template <typename T>
+    struct Unqualified<const T> {
+        using Type = T;
+    };
+
+    template <typename T>
     struct Span {
+        using Value = typename Unqualified<T>::Type;
         T* contiguous = nullptr;
-        PageVec<T>* pages = nullptr;
+        PageVec<Value>* pages = nullptr;
         u32 offset = 0;
         u32 count = 0;
 
         Span() = default;
 
-        Span(Slice<T> source)
+        Span(Slice<Value> source)
             : contiguous(source.array ? source.array->contiguous : nullptr)
             , pages(source.array && !contiguous ? &source.array->pages : nullptr)
             , offset(source.offset)
@@ -1164,18 +1160,38 @@ namespace {
         {
         }
 
-        Span(InitialValues<T> source)
-            : contiguous(const_cast<T*>(source.begin()))
+        Span(InitialValues<Value> source) requires(__is_const(T))
+            : contiguous(source.begin())
             , count(u32(source.size()))
         {
         }
 
-        Span(PageVec<T>& source, usize begin, usize end)
+        Span(PageVec<Value>& source)
+            : Span(source, 0, source.size())
+        {
+        }
+
+        Span(PageVec<Value>& source, usize begin, usize end)
             : pages(&source)
             , offset(u32(begin))
             , count(u32(end - begin))
         {
             require(begin <= end && end <= source.size(), "page view bounds");
+        }
+
+        Span(T* data, usize size)
+            : contiguous(data)
+            , count(u32(size))
+        {
+        }
+
+        template <typename U>
+        Span(Span<U> source) requires(__is_same(T, const U))
+            : contiguous(source.contiguous)
+            , pages(source.pages)
+            , offset(source.offset)
+            , count(source.count)
+        {
         }
 
         T& operator[](Int index) const {
@@ -1184,7 +1200,7 @@ namespace {
             if (contiguous) {
                 return contiguous[at];
             }
-            return pages->pages.data()[at / PageVec<T>::itemsPerPage][at % PageVec<T>::itemsPerPage];
+            return pages->pages.data()[at / PageVec<Value>::itemsPerPage][at % PageVec<Value>::itemsPerPage];
         }
     };
 
@@ -1211,12 +1227,219 @@ namespace {
         return {source, usize(low), usize(high)};
     }
 
+    // Own small storage until it no longer fits in one allocation, then
+    // promote once to pages. Growth releases the previous small buffer.
     template <typename T>
-    static void appendSpan(PageVec<T>& destination, Span<T> source) {
+    struct Vec {
+        SmallVec<T> small;
+        PageVec<T> pages;
+        bool paged = false;
+
+        Vec() = default;
+
+        Vec(InitialValues<T> source) {
+            assign(Span<const T>(source));
+        }
+
+        Vec(Slice<T> source) {
+            assign(Span<const T>(source));
+        }
+
+        Vec(const Vec&) = delete;
+        Vec& operator=(const Vec&) = delete;
+        Vec(Vec&&) = default;
+        Vec& operator=(Vec&&) = default;
+
+        usize size() const {
+            return paged ? pages.size() : small.size();
+        }
+
+        void reserve(usize count) {
+            if (!paged && count <= (pageBytes - sizeof(Buffer::Header)) / sizeof(T)) {
+                small.reserve(count);
+                return;
+            }
+            if (!paged) {
+                pages.append(small.data(), small.size());
+                small = SmallVec<T>{};
+                paged = true;
+            }
+            pages.reserve(count);
+        }
+
+        void resize(usize count) {
+            reserve(count);
+            if (paged) {
+                pages.resize(count);
+            } else {
+                small.resize(count);
+            }
+        }
+
+        void clear() {
+            if (paged) {
+                pages.clear();
+            } else {
+                small.clear();
+            }
+        }
+
+        T& operator[](usize index) {
+            require(index < size(), "Vec index");
+            return paged ? pages.pages.data()[index / PageVec<T>::itemsPerPage][index % PageVec<T>::itemsPerPage] : small.data()[index];
+        }
+
+        const T& operator[](usize index) const {
+            require(index < size(), "Vec index");
+            return paged ? pages.pages.data()[index / PageVec<T>::itemsPerPage][index % PageVec<T>::itemsPerPage] : small.data()[index];
+        }
+
+        Span<T> view() {
+            if (paged) {
+                return {pages, 0, pages.size()};
+            }
+            return {small.data(), small.size()};
+        }
+
+        operator Span<T>() {
+            return view();
+        }
+
+        void pushBack(T value) {
+            reserve(size() + 1);
+            if (paged) {
+                pages.pushBack(value);
+            } else {
+                small.pushBack(value);
+            }
+        }
+
+        void assign(Span<const T> source) {
+            reserve(source.count);
+            resize(source.count);
+            for (usize i = 0; i < source.count; ++i) {
+                (*this)[i] = source[Int(i)];
+            }
+        }
+
+        void append(Span<const T> source) {
+            const usize before = size();
+            const bool internal = source.contiguous && !paged && source.contiguous == small.data();
+            reserve(before + source.count);
+            if (internal) {
+                const u32 begin = source.offset;
+                const u32 count = source.count;
+                source = view();
+                source.offset = begin;
+                source.count = count;
+            }
+            resize(before + source.count);
+            for (usize i = 0; i < source.count; ++i) {
+                (*this)[before + i] = source[Int(i)];
+            }
+        }
+
+        template <typename F>
+        void visit(F f) {
+            for (usize i = 0; i < size(); ++i) {
+                f((*this)[i]);
+            }
+        }
+    };
+
+    template <typename T>
+    static Int length(const Vec<T>& values) {
+        return Int(values.size());
+    }
+
+    // Nodes live in ObjPool; the vector owns only its compact pointer table.
+    template <typename T>
+    struct NodeVec {
+        Vec<T*> nodes;
+        ObjPool* owner = activePool;
+
+        NodeVec() = default;
+        NodeVec(const NodeVec&) = delete;
+        NodeVec& operator=(const NodeVec&) = delete;
+        NodeVec(NodeVec&&) = default;
+        NodeVec& operator=(NodeVec&&) = default;
+
+        usize size() const {
+            return nodes.size();
+        }
+
+        T& operator[](usize index) {
+            return *nodes[index];
+        }
+
+        const T& operator[](usize index) const {
+            return *nodes[index];
+        }
+
+        void pushBack(T value) {
+            nodes.pushBack(owner->make<T>(move(value)));
+        }
+
+        template <typename F>
+        void visit(F f) {
+            nodes.visit([&](T* node) {
+                f(*node);
+            });
+        }
+    };
+
+    template <typename T>
+    static Int length(const NodeVec<T>& values) {
+        return Int(values.size());
+    }
+
+    template <typename T, typename U>
+    static void appendSpan(PageVec<T>& destination, Span<U> source) {
         destination.reserve(destination.size() + source.count);
         for (Int i = 0; i < source.count; ++i) {
             destination.pushBack(source[i]);
         }
+    }
+
+    template <typename T, typename U>
+    static Int copySlice(Span<T> destination, Span<U> source) {
+        static_assert(__is_same(T, typename Unqualified<U>::Type));
+        const usize count = destination.count < source.count ? destination.count : source.count;
+        if (!count) {
+            return 0;
+        }
+        if (destination.contiguous && source.contiguous) {
+            moveBytes(destination.contiguous + destination.offset, source.contiguous + source.offset, count * sizeof(T));
+            return Int(count);
+        }
+        const bool backward = destination.pages == source.pages && destination.offset > source.offset;
+        constexpr usize perPage = PageVec<T>::itemsPerPage;
+        usize remaining = count;
+        while (remaining) {
+            const usize at = backward ? remaining : count - remaining;
+            const usize dst = destination.offset + at;
+            const usize src = source.offset + at;
+            usize take = remaining;
+            if (!destination.contiguous) {
+                const usize available = backward ? (dst - 1) % perPage + 1 : perPage - dst % perPage;
+                if (take > available) {
+                    take = available;
+                }
+            }
+            if (!source.contiguous) {
+                const usize available = backward ? (src - 1) % perPage + 1 : perPage - src % perPage;
+                if (take > available) {
+                    take = available;
+                }
+            }
+            const usize dstBegin = dst - (backward ? take : 0);
+            const usize srcBegin = src - (backward ? take : 0);
+            T* out = destination.contiguous ? destination.contiguous + dstBegin : destination.pages->pages.data()[dstBegin / perPage] + dstBegin % perPage;
+            const T* in = source.contiguous ? source.contiguous + srcBegin : source.pages->pages.data()[srcBegin / perPage] + srcBegin % perPage;
+            moveBytes(out, in, take * sizeof(T));
+            remaining -= take;
+        }
+        return Int(count);
     }
 
     template <typename T>
@@ -1280,9 +1503,7 @@ namespace {
             space = need;
         }
         Slice<T> result = makeSlice<T>(s.count, space);
-        for (Int i = 0; i < s.count; ++i) {
-            result[i] = s[i];
-        }
+        copySlice(Span<T>(result), Span<const T>(s));
         s = result;
     }
 
@@ -1312,8 +1533,8 @@ namespace {
         return destination;
     }
 
-    template <typename T>
-    static Slice<T> appendSlice(Slice<T> destination, Span<T> source) {
+    template <typename T, typename U>
+    static Slice<T> appendSlice(Slice<T> destination, Span<U> source) {
         growSlice(destination, source.count);
         for (Int i = 0; i < source.count; ++i) {
             (*destination.array)[destination.offset + destination.count++] = source[i];
@@ -1322,41 +1543,16 @@ namespace {
     }
 
     template <typename T>
-    static Int copySlice(Span<T> destination, Span<T> source) {
-        const Int count = destination.count < source.count ? destination.count : source.count;
-        if (destination.pages == source.pages && destination.contiguous == source.contiguous && destination.offset > source.offset) {
-            for (Int i = count; i > 0; --i) {
-                destination[i - 1] = source[i - 1];
-            }
-        } else {
-            for (Int i = 0; i < count; ++i) {
-                destination[i] = source[i];
-            }
-        }
-        return count;
-    }
-
-    template <typename T>
     static Int copySlice(Slice<T> destination, Slice<T> source) {
-        Int n = destination.count < source.count ? destination.count : source.count;
-        if (destination.array == source.array && destination.offset > source.offset) {
-            for (Int i = n; i > 0; --i) {
-                destination[i - 1] = source[i - 1];
-            }
-        } else {
-            for (Int i = 0; i < n; ++i) {
-                destination[i] = source[i];
-            }
-        }
-        return n;
+        return copySlice(Span<T>(destination), Span<const T>(source));
     }
 
-    static void writeBytes(u32 fd, Slice<u8> bytes) {
+    static void writeBytes(u32 fd, Span<const u8> bytes) {
         if (!bytes.count) {
             return;
         }
-        if (bytes.array->contiguous) {
-            writeAll(fd, bytes.array->contiguous + bytes.offset, bytes.count);
+        if (bytes.contiguous) {
+            writeAll(fd, bytes.contiguous + bytes.offset, bytes.count);
             return;
         }
         usize at = bytes.offset;
@@ -1365,7 +1561,7 @@ namespace {
             const usize offset = at % pageBytes;
             const usize available = pageBytes - offset;
             const usize take = remaining < available ? remaining : available;
-            writeAll(fd, bytes.array->pages.pages.data()[at / pageBytes] + offset, take);
+            writeAll(fd, bytes.pages->pages.data()[at / pageBytes] + offset, take);
             at += take;
             remaining -= take;
         }
@@ -1937,7 +2133,7 @@ namespace {
     }
 
     template <typename T>
-    static void littleWrite(Slice<u8> bytes, T value) {
+    static void littleWrite(Span<u8> bytes, T value) {
         for (usize i = 0; i < sizeof(T); ++i) {
             bytes[i] = u8(value >> (8 * i));
         }
@@ -1955,15 +2151,15 @@ namespace {
         return littleRead<u64>(bytes);
     }
 
-    static void littlePutUint16(Slice<u8> bytes, u16 value) {
+    static void littlePutUint16(Span<u8> bytes, u16 value) {
         littleWrite(bytes, value);
     }
 
-    static void littlePutUint32(Slice<u8> bytes, u32 value) {
+    static void littlePutUint32(Span<u8> bytes, u32 value) {
         littleWrite(bytes, value);
     }
 
-    static void littlePutUint64(Slice<u8> bytes, u64 value) {
+    static void littlePutUint64(Span<u8> bytes, u64 value) {
         littleWrite(bytes, value);
     }
 
@@ -2961,7 +3157,7 @@ namespace {
     }
 
     struct Asm {
-        Slice<u8> buf{};
+        PageVec<u8> buf{};
         Slice<RipFixup> fixups{};
         i32 sp{};
         Slice<SpEntry> sps{};
@@ -3468,7 +3664,7 @@ namespace {
     struct TableFixup {
         i32 lea{};
         i32 end{};
-        Slice<i32> table{};
+        Span<i32> table{};
     };
 
     struct CseKey {
@@ -3536,7 +3732,7 @@ namespace {
     }
 
     struct MFunc {
-        Slice<MBlock> blocks{};
+        NodeVec<MBlock> blocks{};
         Int nregs{};
         Slice<u8> classValue{};
         Int stackArgs{};
@@ -3544,15 +3740,6 @@ namespace {
         bool hasCalls{};
         bool returnsTwice{};
         Slice<u64> consts{};
-    };
-
-    struct MBlock {
-        Slice<MInst> insts{};
-        Slice<i32> succs{};
-        Slice<i32> preds{};
-        Int depth{};
-        i32 id{};
-        bool cold{};
     };
 
     struct TailRangeRegion {
@@ -3753,6 +3940,14 @@ namespace {
         return result;
     }
 
+    struct MInstExtra {
+        Vec<VReg> uses;
+        Vec<VReg> defs;
+        Vec<VReg> temps;
+        Vec<Move> moves;
+        Vec<i32> table;
+    };
+
     struct MInst {
         MOp op{};
         u8 size{};
@@ -3765,12 +3960,44 @@ namespace {
         i64 imm{};
         Mem mem{};
         i32 target{};
-        Slice<VReg> uses{};
-        Slice<VReg> defs{};
-        Slice<VReg> temps{};
-        Slice<Move> moves{};
-        Slice<i32> table{};
+        MInstExtra* extra = nullptr;
     };
+
+    struct MBlock {
+        Vec<MInst> insts{};
+        Slice<i32> succs{};
+        Slice<i32> preds{};
+        Int depth{};
+        i32 id{};
+        bool cold{};
+    };
+
+    static MInstExtra* mInstExtra(MInst* in) {
+        if (!in->extra) {
+            in->extra = activePool->make<MInstExtra>();
+        }
+        return in->extra;
+    }
+
+    static Span<VReg> mInstUses(MInst* in) {
+        return in->extra ? in->extra->uses.view() : Span<VReg>{};
+    }
+
+    static Span<VReg> mInstDefs(MInst* in) {
+        return in->extra ? in->extra->defs.view() : Span<VReg>{};
+    }
+
+    static Span<VReg> mInstTemps(MInst* in) {
+        return in->extra ? in->extra->temps.view() : Span<VReg>{};
+    }
+
+    static Span<Move> mInstMoves(MInst* in) {
+        return in->extra ? in->extra->moves.view() : Span<Move>{};
+    }
+
+    static Span<i32> mInstTable(MInst* in) {
+        return in->extra ? in->extra->table.view() : Span<i32>{};
+    }
 
     struct Anonymous4 {
         AddressExpression expr{};
@@ -4572,7 +4799,7 @@ namespace {
 
     static i32 functionNewBlock(Function* f);
 
-    static i32 functionNewValue(Function* f, Op op, ValType typ, i32 block, i64 aux, Span<i32> args);
+    static i32 functionNewValue(Function* f, Op op, ValType typ, i32 block, i64 aux, Span<const i32> args);
 
     static Slice<i32> functionRpo(Function* f);
 
@@ -4865,7 +5092,7 @@ namespace {
 
     static void frontendElseOp(Frontend* fe);
 
-    static i32 frontendEmit(Frontend* fe, Op op, ValType t, i64 aux, Span<i32> args);
+    static i32 frontendEmit(Frontend* fe, Op op, ValType t, i64 aux, Span<const i32> args);
 
     static void frontendEnd(Frontend* fe);
 
@@ -4945,7 +5172,7 @@ namespace {
 
     static void funcEmitterMove(FuncEmitter* e, VReg dst, VReg src);
 
-    static void funcEmitterParMove(FuncEmitter* e, Slice<Move> moves);
+    static void funcEmitterParMove(FuncEmitter* e, Span<Move> moves);
 
     static Amem funcEmitterSlotMem(FuncEmitter* e, i32 slot);
 
@@ -4989,9 +5216,9 @@ namespace {
 
     static void lowererAlu(Lowerer* l, i32 v, Op op, i32 a, i32 b, u8 size);
 
-    static void lowererCall(Lowerer* l, i32 v, Int index, Span<i32> args);
+    static void lowererCall(Lowerer* l, i32 v, Int index, Span<const i32> args);
 
-    static void lowererCallIndirect(Lowerer* l, i32 v, Int typeIndex, Int table, Span<i32> args);
+    static void lowererCallIndirect(Lowerer* l, i32 v, Int typeIndex, Int table, Span<const i32> args);
 
     static void lowererCheckRange(Lowerer* l, VReg a, VReg n, Mem limit, u8 limitSize, i64 code);
 
@@ -5051,11 +5278,11 @@ namespace {
 
     static void lowererMemAddr(Lowerer* l, VReg dst, VReg a);
 
-    static void lowererMemCopy(Lowerer* l, Span<i32> args);
+    static void lowererMemCopy(Lowerer* l, Span<const i32> args);
 
-    static void lowererMemFill(Lowerer* l, Span<i32> args);
+    static void lowererMemFill(Lowerer* l, Span<const i32> args);
 
-    static void lowererMemInit(Lowerer* l, Int seg, Span<i32> args);
+    static void lowererMemInit(Lowerer* l, Int seg, Span<const i32> args);
 
     static void lowererMemStub(Lowerer* l, Int stub, VReg a, VReg b, VReg c);
 
@@ -5063,7 +5290,7 @@ namespace {
 
     static void lowererOutgoing(Lowerer* l, Int stackArgs, Slice<VReg> regs);
 
-    static Tuple2<Slice<VReg>, Int> lowererPlaceArgs(Lowerer* l, Span<i32> args);
+    static Tuple2<Slice<VReg>, Int> lowererPlaceArgs(Lowerer* l, Span<const i32> args);
 
     static void lowererPlaceFloatConstants(Lowerer* l);
 
@@ -5073,7 +5300,7 @@ namespace {
 
     static bool lowererScaledIndex(Lowerer* l, i32 v, i32 block);
 
-    static void lowererSelectValue(Lowerer* l, i32 v, Span<i32> args);
+    static void lowererSelectValue(Lowerer* l, i32 v, Span<const i32> args);
 
     static void lowererSetcc(Lowerer* l, i32 v);
 
@@ -5207,7 +5434,7 @@ namespace {
 
     static void optimizerSelectTriangles(Optimizer* o);
 
-    static void optimizerSetArgs(Optimizer* o, i32 v, Span<i32> args);
+    static void optimizerSetArgs(Optimizer* o, i32 v, Span<const i32> args);
 
     static bool optimizerSimplify(Optimizer* o);
 
@@ -5320,7 +5547,7 @@ namespace {
 
     static String displayName(String s);
 
-    static Slice<Move> dropSelfMoves(Slice<Move> moves);
+    static Span<Move> dropSelfMoves(Span<Move> moves);
 
     static Tuple2<Slice<u8>, Slice<u32>> ehFrame(Slice<Region> regions);
 
@@ -5332,7 +5559,7 @@ namespace {
 
     static MemoryLoop* findMemoryLoop(Function* f, CfgInfo* ci, i32 h);
 
-    static Int firstBranch(Slice<MInst> insts);
+    static Int firstBranch(Span<MInst> insts);
 
     static bool flagCondition(Op op);
 
@@ -5493,10 +5720,7 @@ namespace {
     static void moduleCustom(Module*, Reader*);
 
     static void asmBytes(Asm* a, InitialValues<u8> bytes) {
-        growSlice(a->buf, bytes.size());
-        for (u8 byte : bytes) {
-            (*a->buf.array)[a->buf.offset + a->buf.count++] = byte;
-        }
+        a->buf.append(bytes.begin(), bytes.size());
     }
 
     /*
@@ -5780,7 +6004,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         i32 b = (val).block;
         Int index = length(((f)->blocks[b]).params);
-        i32 p = functionNewValue(f, OpParam, I32, b, convert<i64>(index), Span<i32>({}));
+        i32 p = functionNewValue(f, OpParam, I32, b, convert<i64>(index), Span<const i32>({}));
         ((f)->blocks[b]).params = appendValues(((f)->blocks[b]).params, p);
         setMap((n)->values, v, p);
         Slice<Edge*> incoming = optimizerIncoming((n)->o, b);
@@ -6100,7 +6324,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return convert<i32>((length((f)->blocks) - Int(1LL)));
     }
 
-    static i32 functionNewValue(Function* f, Op op, ValType typ, i32 block, i64 aux, Span<i32> args) {
+    static i32 functionNewValue(Function* f, Op op, ValType typ, i32 block, i64 aux, Span<const i32> args) {
         i32 id = convert<i32>(length((f)->values));
         i32 start = convert<i32>(length((f)->pool));
         appendSpan((f)->pool, args);
@@ -6391,17 +6615,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
                 case mParMove: {
                     {
-                        auto range83 = (in)->moves;
+                        auto range83 = mInstMoves(in);
                         for (Int index84 = 0, rangeEnd85 = length(range83); index84 < rangeEnd85; ++index84) {
                             Int i = index84;
-                            cb((&(((in)->moves[i]).src)), roleUse);
+                            cb((&((mInstMoves(in)[i]).src)), roleUse);
                         }
                     }
                     {
-                        auto range86 = (in)->moves;
+                        auto range86 = mInstMoves(in);
                         for (Int index87 = 0, rangeEnd88 = length(range86); index87 < rangeEnd88; ++index87) {
                             Int i = index87;
-                            cb((&(((in)->moves[i]).dst)), roleDef);
+                            cb((&((mInstMoves(in)[i]).dst)), roleDef);
                         }
                     }
                     break;
@@ -6431,10 +6655,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     cb((&((in)->src)), roleUse);
                     cb((&((in)->src2)), roleUse);
                     {
-                        auto range89 = (in)->uses;
+                        auto range89 = mInstUses(in);
                         for (Int index90 = 0, rangeEnd91 = length(range89); index90 < rangeEnd91; ++index90) {
                             Int i = index90;
-                            cb((&((in)->uses[i])), roleUse);
+                            cb((&(mInstUses(in)[i])), roleUse);
                         }
                     }
                     cb((&((in)->dst)), roleDef);
@@ -6449,10 +6673,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         {
-            auto range92 = (in)->temps;
+            auto range92 = mInstTemps(in);
             for (Int index93 = 0, rangeEnd94 = length(range92); index93 < rangeEnd94; ++index93) {
                 Int i = index93;
-                cb((&((in)->temps[i])), roleTemp);
+                cb((&(mInstTemps(in)[i])), roleTemp);
             }
         }
         if ((((((((((in)->op == mDiv) || ((in)->op == mCall)) || ((in)->op == mCallInd)) || ((in)->op == mRet)) || ((in)->op == mSignExtAx)) || ((in)->op == mZeroDx)) || ((in)->op == mGrowMem)) || ((in)->op == mCopyForward))) {
@@ -6460,17 +6684,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 cb((&((in)->src)), roleUse);
             }
             {
-                auto range95 = (in)->uses;
+                auto range95 = mInstUses(in);
                 for (Int index96 = 0, rangeEnd97 = length(range95); index96 < rangeEnd97; ++index96) {
                     Int i = index96;
-                    cb((&((in)->uses[i])), roleUse);
+                    cb((&(mInstUses(in)[i])), roleUse);
                 }
             }
             {
-                auto range98 = (in)->defs;
+                auto range98 = mInstDefs(in);
                 for (Int index99 = 0, rangeEnd100 = length(range98); index99 < rangeEnd100; ++index99) {
                     Int i = index99;
-                    cb((&((in)->defs[i])), roleDef);
+                    cb((&(mInstDefs(in)[i])), roleDef);
                 }
             }
         }
@@ -6484,6 +6708,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Int oldValues = temporary102;
         Map<i32, i32> blocks = mapOf<i32, i32>({});
         Map<i32, i32> values = mapOf<i32, i32>({});
+        Vec<i32> cloned;
         {
             auto range103 = invariants;
             for (Int index104 = 0; index104 < mapSlots(range103); ++index104) {
@@ -6506,6 +6731,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             Int v = Int(0LL);
             for (; (v < oldValues); v++) {
                 Value val = (f)->values[v];
+                if (val.block < 0 || val.block >= length(l->members) || !l->members[val.block]) {
+                    continue;
+                }
                 {
                     auto temporary109 = lookupMap(invariants, convert<i32>(v));
                     bool hoisted = temporary109.v1;
@@ -6514,12 +6742,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     }
                 }
                 if (((((val).block >= i32(0LL)) && (convert<Int>((val).block) < length((l)->members))) && (l)->members[(val).block])) {
-                    i32 n = functionNewValue(f, (val).op, (val).typ, blocks[(val).block], (val).aux, Span<i32>({}));
+                    i32 n = functionNewValue(f, (val).op, (val).typ, blocks[(val).block], (val).aux, Span<const i32>({}));
                     ((f)->values[n]).aux2 = (val).aux2;
                     if (proven[convert<i32>(v)]) {
                         ((f)->values[n]).aux2 |= i32(32LL);
                     }
                     setMap(values, convert<i32>(v), n);
+                    cloned.pushBack(convert<i32>(v));
                 }
             }
         }
@@ -6535,20 +6764,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return v;
         };
         {
-            Int v = Int(0LL);
-            for (; (v < oldValues); v++) {
+            for (usize cloneIndex = 0; cloneIndex < cloned.size(); ++cloneIndex) {
+                i32 v = cloned[cloneIndex];
                 {
-                    auto temporary111 = lookupMap(values, convert<i32>(v));
-                    i32 n = temporary111.v0;
-                    bool ok = temporary111.v1;
-                    if (ok) {
-                        {
-                            auto temporary112 = lookupMap(invariants, convert<i32>(v));
-                            bool hoisted = temporary112.v1;
-                            if (hoisted) {
-                                continue;
-                            }
-                        }
+                    i32 n = values[v];
+                    {
                         Slice<i32> args = appendSlice(Slice<i32>{}, functionArgs(f, convert<i32>(v)));
                         if (proven[convert<i32>(v)]) {
                             {
@@ -6659,6 +6879,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         Slice<bool> escapes = makeSlice<bool>(oldValues);
         auto mark = [&](i32 v) mutable -> void {
+            const i32 block = f->values[v].block;
+            if (block < 0 || block >= length(l->members) || !l->members[block]) {
+                return;
+            }
             {
                 auto temporary141 = lookupMap(values, v);
                 bool ok = temporary141.v1;
@@ -6721,7 +6945,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 if ((!(escapes))) {
                     continue;
                 }
-                i32 p = functionNewValue(f, OpParam, ((f)->values[v]).typ, (l)->exit, convert<i64>(length(((f)->blocks[(l)->exit]).params)), Span<i32>({}));
+                i32 p = functionNewValue(f, OpParam, ((f)->values[v]).typ, (l)->exit, convert<i64>(length(((f)->blocks[(l)->exit]).params)), Span<const i32>({}));
                 ((f)->blocks[(l)->exit]).params = appendValues(((f)->blocks[(l)->exit]).params, p);
                 setMap(merged, convert<i32>(v), p);
                 {
@@ -7146,7 +7370,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             for (Int index242 = 0, rangeEnd243 = length(range241); index242 < rangeEnd243; ++index242) {
                 Int j = index242;
                 i32 p = range241[index242];
-                i32 v = functionNewValue(f, OpParam, ((f)->values[p]).typ, bulk, convert<i64>(j), Span<i32>({}));
+                i32 v = functionNewValue(f, OpParam, ((f)->values[p]).typ, bulk, convert<i64>(j), Span<const i32>({}));
                 ((f)->blocks[bulk]).params = appendValues(((f)->blocks[bulk]).params, v);
             }
         }
@@ -7156,7 +7380,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return v;
         };
         auto constant = [&](ValType typ, i64 x) mutable -> i32 {
-            return functionNewValue(f, OpConst, typ, i32(-1LL), x, Span<i32>({}));
+            return functionNewValue(f, OpConst, typ, i32(-1LL), x, Span<const i32>({}));
         };
         i32 iterations = emit(OpExtendU, I64, i64(0LL), sliceOf<i32>({count}));
         if ((((l)->limit < i32(0LL)) && ((((l)->countStep != u64(1LL)) || ((l)->countStop != u64(0LL)))))) {
@@ -7664,7 +7888,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return v;
         };
         auto constant = [&](ValType typ, u64 x) mutable -> i32 {
-            return functionNewValue(f, OpConst, typ, i32(-1LL), convert<i64>(x), Span<i32>({}));
+            return functionNewValue(f, OpConst, typ, i32(-1LL), convert<i64>(x), Span<const i32>({}));
         };
         i32 pages = emit(OpMemSize, I32, sliceOf<i32>({}));
         i32 size = emit(OpShl, I64, sliceOf<i32>({emit(OpExtendU, I64, sliceOf<i32>({pages})), constant(I64, u64(16LL))}));
@@ -7840,7 +8064,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 i32 specialized = memoryLoopClone(l, proven, invariants, cases);
                 (l)->copies = appendValues((l)->copies, specialized);
                 i32 choice = functionNewBlock(f);
-                i32 eq = functionNewValue(f, OpEqz, I32, choice, i64(0LL), Span<i32>({index}));
+                i32 eq = functionNewValue(f, OpEqz, I32, choice, i64(0LL), Span<const i32>({index}));
                 ((f)->blocks[choice]).instrs = appendValues(((f)->blocks[choice]).instrs, eq);
                 ((f)->blocks[choice]).term = Term{TermIf, eq, sliceOf<Edge>({Edge{specialized, appendSlice(Slice<i32>{}, ((l)->entry).args)}, entry}), {}, {}};
                 entry = Edge{choice, {}};
@@ -8488,7 +8712,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 bitsetEach((a)->liveOut[b], [&](Int x) mutable -> void {
                     intervalAddRange(allocatorInterval(a, (convert<VReg>(x) + firstVirtual)), from, to);
                 });
-                Slice<MInst> insts = ((mf)->blocks[b]).insts;
+                Span<MInst> insts = ((mf)->blocks[b]).insts.view();
                 {
                     Int j = (length(insts) - Int(1LL));
                     for (; (j >= Int(0LL)); j--) {
@@ -8538,7 +8762,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             allocatorHint(a, (in)->dst, (in)->src);
                         }
                         {
-                            auto range409 = (in)->moves;
+                            auto range409 = mInstMoves(in);
                             for (Int index410 = 0, rangeEnd411 = length(range409); index410 < rangeEnd411; ++index410) {
                                 Move m = range409[index410];
                                 allocatorHint(a, (m).dst, (m).src);
@@ -8665,12 +8889,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         };
         {
-            auto range426 = (mf)->blocks;
+            auto& range426 = (mf)->blocks;
             for (Int index427 = 0, rangeEnd428 = length(range426); index427 < rangeEnd428; ++index427) {
                 Int b = index427;
                 Int depth = ((mf)->blocks[b]).depth;
                 {
-                    auto range429 = ((mf)->blocks[b]).insts;
+                    auto range429 = ((mf)->blocks[b]).insts.view();
                     for (Int index430 = 0, rangeEnd431 = length(range429); index430 < rangeEnd431; ++index430) {
                         Int i = index430;
                         MInst* in = (&(((mf)->blocks[b]).insts[i]));
@@ -8679,7 +8903,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             switch (switch432) {
                                 case mParMove: {
                                     {
-                                        auto range433 = (in)->moves;
+                                        auto range433 = mInstMoves(in);
                                         for (Int index434 = 0, rangeEnd435 = length(range433); index434 < rangeEnd435; ++index434) {
                                             Move m = range433[index434];
                                             add((m).dst, (m).src, depth);
@@ -8722,11 +8946,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return false;
         }
         {
-            auto range441 = (mf)->blocks;
+            auto& range441 = (mf)->blocks;
             for (Int index442 = 0, rangeEnd443 = length(range441); index442 < rangeEnd443; ++index442) {
                 Int b = index442;
                 {
-                    auto range444 = ((mf)->blocks[b]).insts;
+                    auto range444 = ((mf)->blocks[b]).insts.view();
                     for (Int index445 = 0, rangeEnd446 = length(range444); index445 < rangeEnd446; ++index445) {
                         Int i = index445;
                         MInst* in = (&(((mf)->blocks[b]).insts[i]));
@@ -8737,7 +8961,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         });
                         {
                             if (((in)->op == mParMove)) {
-                                (in)->moves = dropSelfMoves((in)->moves);
+                                mInstExtra(in)->moves.assign(dropSelfMoves(mInstMoves(in)));
                             } else if (((((((in)->op == mMov) || ((in)->op == mFMov))) && ((in)->dst == (in)->src)) && ((in)->aux == u8(0LL)))) {
                                 (*(in)) = inst(mNop);
                             }
@@ -8892,7 +9116,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 i32 b = range454[index455];
                 (a)->blockFrom[b] = pos;
                 pos += i32(2LL);
-                Slice<MInst> insts = ((mf)->blocks[b]).insts;
+                Span<MInst> insts = ((mf)->blocks[b]).insts.view();
                 (a)->instPos[b] = makeSlice<i32>(length(insts));
                 {
                     auto range457 = insts;
@@ -9126,29 +9350,30 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         }
                     }
                 }
-                Slice<MInst> out = makeSlice<MInst>(Int(0LL), n);
+                Vec<MInst> out;
+                out.reserve(usize(n));
                 Slice<OrigInst> orig = {};
-                auto move = [&](Slice<Move> moves) mutable -> void {
+                auto emitMoves = [&](Slice<Move> moves) mutable -> void {
                     if ((length(moves) == Int(0LL))) {
                         return;
                     }
-                    out = appendValues(out, parMove(moves));
+                    out.pushBack(parMove(moves));
                 };
-                move(atStart[b]);
+                emitMoves(atStart[b]);
                 Int branches = firstBranch((blk)->insts);
                 {
-                    auto range503 = (blk)->insts;
+                    auto range503 = (blk)->insts.view();
                     for (Int index504 = 0, rangeEnd505 = length(range503); index504 < rangeEnd505; ++index504) {
                         Int i = index504;
                         i32 p = (a)->instPos[b][i];
                         if ((i == branches)) {
-                            move(atEnd[b]);
+                            emitMoves(atEnd[b]);
                         }
                         {
                             auto range506 = Array<i32, 2>{{(i32(2LL) * p), ((i32(2LL) * p) + i32(1LL))}};
                             for (Int index507 = 0, rangeEnd508 = length(range506); index507 < rangeEnd508; ++index507) {
                                 i32 key = range506[index507];
-                                move(inner[key]);
+                                emitMoves(inner[key]);
                             }
                         }
                         MInst in = (blk)->insts[i];
@@ -9171,15 +9396,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             }
                         });
                         if (((in).op == mParMove)) {
-                            (in).moves = dropSelfMoves((in).moves);
+                            mInstExtra(&in)->moves.assign(dropSelfMoves(mInstMoves(&in)));
                         }
-                        out = appendValues(out, in);
+                        out.pushBack(in);
                     }
                 }
                 if ((branches == length((blk)->insts))) {
-                    move(atEnd[b]);
+                    emitMoves(atEnd[b]);
                 }
-                (blk)->insts = out;
+                (blk)->insts = move(out);
             }
         }
     }
@@ -9195,7 +9420,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             for (Int index510 = 0, rangeEnd511 = length(range509); index510 < rangeEnd511; ++index510) {
                 i32 b = range509[index510];
                 {
-                    auto range512 = (((a)->mf)->blocks[b]).insts;
+                    auto range512 = (((a)->mf)->blocks[b]).insts.view();
                     for (Int index513 = 0, rangeEnd514 = length(range512); index513 < rangeEnd514; ++index513) {
                         Int i = index513;
                         MInst* in = (&((((a)->mf)->blocks[b]).insts[i]));
@@ -9592,7 +9817,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void asmB(Asm* a, Slice<u8> bytes) {
-        (a)->buf = appendSlice((a)->buf, bytes);
+        appendSpan((a)->buf, Span<const u8>(bytes));
     }
 
     static void asmBitCount(Asm* a, u8 kind, u8 size, VReg dst, VReg src) {
@@ -9911,7 +10136,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         {
             for (; (n > i32(0LL));) {
                 i32 width = minimum(n, i32(9LL));
-                (a)->buf = appendSlice((a)->buf, nopBytes[width]);
+                appendSpan((a)->buf, Span<const u8>(nopBytes[width]));
                 n -= width;
             }
         }
@@ -10176,11 +10401,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void asmU32(Asm* a, u32 x) {
-        (a)->buf = littleAppendUint32((a)->buf, x);
+        u8 bytes[4];
+        storeLittle(bytes, x);
+        a->buf.append(bytes, sizeof(bytes));
     }
 
     static void asmU64(Asm* a, u64 x) {
-        (a)->buf = littleAppendUint64((a)->buf, x);
+        u8 bytes[8];
+        storeLittle(bytes, x);
+        a->buf.append(bytes, sizeof(bytes));
     }
 
     static void asmUd2(Asm* a) {
@@ -10427,7 +10656,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static i32 frontendAddParam(Frontend* fe, i32 b, ValType t) {
         Block* blk = (&(((fe)->f)->blocks[b]));
-        i32 p = functionNewValue((fe)->f, OpParam, t, b, convert<i64>(length((blk)->params)), Span<i32>({}));
+        i32 p = functionNewValue((fe)->f, OpParam, t, b, convert<i64>(length((blk)->params)), Span<const i32>({}));
         (blk)->params = appendValues((blk)->params, p);
         return p;
     }
@@ -10445,7 +10674,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         i32 b = frontendPop(fe);
         i32 a = frontendPop(fe);
-        frontendPush(fe, frontendEmit(fe, op, t, i64(0LL), Span<i32>({a, b})));
+        frontendPush(fe, frontendEmit(fe, op, t, i64(0LL), Span<const i32>({a, b})));
     }
 
     static Tuple2<Slice<ValType>, Slice<ValType>> frontendBlockType(Frontend* fe) {
@@ -10673,7 +10902,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             i32 cond = frontendPop(fe);
                             i32 b = frontendPop(fe);
                             i32 a = frontendPop(fe);
-                            frontendPush(fe, frontendEmit(fe, OpSelect, frontendTypeOf(fe, a), i64(0LL), Span<i32>({cond, a, b})));
+                            frontendPush(fe, frontendEmit(fe, OpSelect, frontendTypeOf(fe, a), i64(0LL), Span<const i32>({cond, a, b})));
                             break;
                         }
                         case u8(32LL): {
@@ -10695,25 +10924,25 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         }
                         case u8(35LL): {
                             u32 index = frontendGlobalIndex(fe);
-                            frontendPush(fe, frontendEmit(fe, OpGlobalGet, (((fe)->m)->globals[index]).typ, convert<i64>(index), Span<i32>({})));
+                            frontendPush(fe, frontendEmit(fe, OpGlobalGet, (((fe)->m)->globals[index]).typ, convert<i64>(index), Span<const i32>({})));
                             break;
                         }
                         case u8(36LL): {
                             u32 index = frontendGlobalIndex(fe);
-                            frontendEmit(fe, OpGlobalSet, TNone, convert<i64>(index), Span<i32>({frontendPop(fe)}));
+                            frontendEmit(fe, OpGlobalSet, TNone, convert<i64>(index), Span<const i32>({frontendPop(fe)}));
                             break;
                         }
                         case u8(37LL): {
                             u32 table = frontendTableIndex(fe);
                             i32 index = frontendPop(fe);
-                            frontendPush(fe, frontendEmit(fe, OpTableGet, (((fe)->m)->tables[table]).elem, convert<i64>(table), Span<i32>({index})));
+                            frontendPush(fe, frontendEmit(fe, OpTableGet, (((fe)->m)->tables[table]).elem, convert<i64>(table), Span<const i32>({index})));
                             break;
                         }
                         case u8(38LL): {
                             u32 table = frontendTableIndex(fe);
                             i32 val = frontendPop(fe);
                             i32 index = frontendPop(fe);
-                            frontendEmit(fe, OpTableSet, TNone, convert<i64>(table), Span<i32>({index, val}));
+                            frontendEmit(fe, OpTableSet, TNone, convert<i64>(table), Span<const i32>({index, val}));
                             break;
                         }
                         case u8(40LL): {
@@ -10798,13 +11027,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         }
                         case u8(63LL): {
                             frontendMemIndex(fe);
-                            frontendPush(fe, frontendEmit(fe, OpMemSize, frontendAddrType(fe), i64(0LL), Span<i32>({})));
+                            frontendPush(fe, frontendEmit(fe, OpMemSize, frontendAddrType(fe), i64(0LL), Span<const i32>({})));
                             break;
                         }
                         case u8(64LL): {
                             frontendMemIndex(fe);
                             i32 delta = frontendPop(fe);
-                            frontendPush(fe, frontendEmit(fe, OpMemGrow, frontendAddrType(fe), i64(0LL), Span<i32>({delta})));
+                            frontendPush(fe, frontendEmit(fe, OpMemGrow, frontendAddrType(fe), i64(0LL), Span<const i32>({delta})));
                             break;
                         }
                         case u8(65LL): {
@@ -11061,7 +11290,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         }
                         case u8(208LL): {
                             ValType t = readerRefType(r);
-                            frontendPush(fe, functionNewValue((fe)->f, OpRefNull, t, i32(-1LL), i64(0LL), Span<i32>({})));
+                            frontendPush(fe, functionNewValue((fe)->f, OpRefNull, t, i32(-1LL), i64(0LL), Span<const i32>({})));
                             break;
                         }
                         case u8(209LL): {
@@ -11073,7 +11302,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             if ((convert<Int>(index) >= length(((fe)->m)->funcs))) {
                                 compilerError(String("unknown function %d"));
                             }
-                            frontendPush(fe, frontendEmit(fe, OpRefFunc, FuncRef, convert<i64>(index), Span<i32>({})));
+                            frontendPush(fe, frontendEmit(fe, OpRefFunc, FuncRef, convert<i64>(index), Span<const i32>({})));
                             break;
                         }
                         case u8(252LL): {
@@ -11123,7 +11352,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 for (Int index641 = 0, rangeEnd642 = length(range640); index641 < rangeEnd642; ++index641) {
                     Int i = index641;
                     ValType rt = range640[index641];
-                    frontendPush(fe, frontendEmit(fe, OpExtract, rt, convert<i64>(i), Span<i32>({v})));
+                    frontendPush(fe, frontendEmit(fe, OpExtract, rt, convert<i64>(i), Span<const i32>({v})));
                 }
             }
         }
@@ -11148,7 +11377,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 return v;
             }
         }
-        i32 v = functionNewValue((fe)->f, OpConst, t, i32(-1LL), bits, Span<i32>({}));
+        i32 v = functionNewValue((fe)->f, OpConst, t, i32(-1LL), bits, Span<const i32>({}));
         setMap((fe)->consts, key, v);
         return v;
     }
@@ -11184,7 +11413,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     // emit appends an instruction to the current block.
-    static i32 frontendEmit(Frontend* fe, Op op, ValType t, i64 aux, Span<i32> args) {
+    static i32 frontendEmit(Frontend* fe, Op op, ValType t, i64 aux, Span<const i32> args) {
         i32 v = functionNewValue((fe)->f, op, t, (fe)->cur, aux, args);
         Block* blk = (&(((fe)->f)->blocks[(fe)->cur]));
         (blk)->instrs = appendValues((blk)->instrs, v);
@@ -11289,7 +11518,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return;
         }
         i32 addr = frontendPop(fe);
-        i32 v = frontendEmit(fe, OpLoad, t, offset, Span<i32>({addr}));
+        i32 v = frontendEmit(fe, OpLoad, t, offset, Span<const i32>({addr}));
         (((fe)->f)->values[v]).aux2 = convert<i32>(makeMemKind(width, signedValue));
         frontendPush(fe, v);
     }
@@ -11414,13 +11643,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     i32 n = frontendPop(fe);
                     i32 s = frontendPop(fe);
                     i32 d = frontendPop(fe);
-                    frontendEmit(fe, OpMemInit, TNone, convert<i64>(seg), Span<i32>({d, s, n}));
+                    frontendEmit(fe, OpMemInit, TNone, convert<i64>(seg), Span<const i32>({d, s, n}));
                     break;
                 }
                 case u32(9LL): {
                     u32 seg = readerU32(r);
                     frontendCheckData(fe, seg);
-                    frontendEmit(fe, OpDataDrop, TNone, convert<i64>(seg), Span<i32>({}));
+                    frontendEmit(fe, OpDataDrop, TNone, convert<i64>(seg), Span<const i32>({}));
                     break;
                 }
                 case u32(10LL): {
@@ -11429,7 +11658,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     i32 n = frontendPop(fe);
                     i32 s = frontendPop(fe);
                     i32 d = frontendPop(fe);
-                    frontendEmit(fe, OpMemCopy, TNone, i64(0LL), Span<i32>({d, s, n}));
+                    frontendEmit(fe, OpMemCopy, TNone, i64(0LL), Span<const i32>({d, s, n}));
                     break;
                 }
                 case u32(11LL): {
@@ -11437,7 +11666,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     i32 n = frontendPop(fe);
                     i32 val = frontendPop(fe);
                     i32 d = frontendPop(fe);
-                    frontendEmit(fe, OpMemFill, TNone, i64(0LL), Span<i32>({d, val, n}));
+                    frontendEmit(fe, OpMemFill, TNone, i64(0LL), Span<const i32>({d, val, n}));
                     break;
                 }
                 case u32(12LL): {
@@ -11449,7 +11678,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     i32 n = frontendPop(fe);
                     i32 s = frontendPop(fe);
                     i32 d = frontendPop(fe);
-                    i32 v = frontendEmit(fe, OpTableInit, TNone, convert<i64>(seg), Span<i32>({d, s, n}));
+                    i32 v = frontendEmit(fe, OpTableInit, TNone, convert<i64>(seg), Span<const i32>({d, s, n}));
                     (((fe)->f)->values[v]).aux2 = convert<i32>(table);
                     break;
                 }
@@ -11458,7 +11687,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     if ((convert<Int>(seg) >= length(((fe)->m)->elems))) {
                         compilerError(String("unknown elem segment %d"));
                     }
-                    frontendEmit(fe, OpElemDrop, TNone, convert<i64>(seg), Span<i32>({}));
+                    frontendEmit(fe, OpElemDrop, TNone, convert<i64>(seg), Span<const i32>({}));
                     break;
                 }
                 case u32(14LL): {
@@ -11467,7 +11696,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     i32 n = frontendPop(fe);
                     i32 s = frontendPop(fe);
                     i32 d = frontendPop(fe);
-                    i32 v = frontendEmit(fe, OpTableCopy, TNone, convert<i64>(dst), Span<i32>({d, s, n}));
+                    i32 v = frontendEmit(fe, OpTableCopy, TNone, convert<i64>(dst), Span<const i32>({d, s, n}));
                     (((fe)->f)->values[v]).aux2 = convert<i32>(src);
                     break;
                 }
@@ -11475,12 +11704,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     u32 table = frontendTableIndex(fe);
                     i32 n = frontendPop(fe);
                     i32 val = frontendPop(fe);
-                    frontendPush(fe, frontendEmit(fe, OpTableGrow, I32, convert<i64>(table), Span<i32>({val, n})));
+                    frontendPush(fe, frontendEmit(fe, OpTableGrow, I32, convert<i64>(table), Span<const i32>({val, n})));
                     break;
                 }
                 case u32(16LL): {
                     u32 table = frontendTableIndex(fe);
-                    frontendPush(fe, frontendEmit(fe, OpTableSize, I32, convert<i64>(table), Span<i32>({})));
+                    frontendPush(fe, frontendEmit(fe, OpTableSize, I32, convert<i64>(table), Span<const i32>({})));
                     break;
                 }
                 case u32(17LL): {
@@ -11488,7 +11717,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     i32 n = frontendPop(fe);
                     i32 val = frontendPop(fe);
                     i32 d = frontendPop(fe);
-                    frontendEmit(fe, OpTableFill, TNone, convert<i64>(table), Span<i32>({d, val, n}));
+                    frontendEmit(fe, OpTableFill, TNone, convert<i64>(table), Span<const i32>({d, val, n}));
                     break;
                 }
                 default: {
@@ -11519,7 +11748,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             } else if ((length((fe)->preds[b]) == Int(1LL))) {
                 v = frontendRead(fe, local, ((fe)->preds[b][Int(0LL)]).block);
             } else if ((length((fe)->preds[b]) == Int(0LL))) {
-                v = functionNewValue((fe)->f, OpUndef, t, i32(-1LL), i64(0LL), Span<i32>({}));
+                v = functionNewValue((fe)->f, OpUndef, t, i32(-1LL), i64(0LL), Span<const i32>({}));
             } else {
                 v = frontendAddParam(fe, b, t);
                 frontendWrite(fe, local, b, v);
@@ -11841,7 +12070,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         i32 val = frontendPop(fe);
         i32 addr = frontendPop(fe);
-        i32 v = frontendEmit(fe, OpStore, TNone, offset, Span<i32>({addr, val}));
+        i32 v = frontendEmit(fe, OpStore, TNone, offset, Span<const i32>({addr, val}));
         (((fe)->f)->values[v]).aux2 = convert<i32>(makeMemKind(width, false));
     }
 
@@ -11880,7 +12109,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         if ((same < i32(0LL))) {
-            same = functionNewValue((fe)->f, OpUndef, (((fe)->f)->values[phi]).typ, i32(-1LL), i64(0LL), Span<i32>({}));
+            same = functionNewValue((fe)->f, OpUndef, (((fe)->f)->values[phi]).typ, i32(-1LL), i64(0LL), Span<const i32>({}));
         }
         (fe)->alias[frontendParamSlot(fe, phi)] = same;
         return same;
@@ -11895,7 +12124,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return;
         }
         i32 a = frontendPop(fe);
-        frontendPush(fe, frontendEmit(fe, op, t, i64(0LL), Span<i32>({a})));
+        frontendPush(fe, frontendEmit(fe, op, t, i64(0LL), Span<const i32>({a})));
     }
 
     static void frontendWrite(Frontend* fe, i32 local, i32 b, i32 v) {
@@ -11914,14 +12143,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static i32 frontendZero(Frontend* fe, ValType t) {
         if (((t == FuncRef) || (t == ExternRef))) {
-            return functionNewValue((fe)->f, OpRefNull, t, i32(-1LL), i64(0LL), Span<i32>({}));
+            return functionNewValue((fe)->f, OpRefNull, t, i32(-1LL), i64(0LL), Span<const i32>({}));
         }
         return frontendConstant(fe, t, i64(0LL));
     }
 
     static void funcEmitterBlock(FuncEmitter* e, MBlock* blk, i32 next) {
         (e)->cold = (blk)->cold;
-        Slice<MInst> insts = (blk)->insts;
+        Span<MInst> insts = (blk)->insts.view();
         Int n = length(insts);
         {
             Int i = Int(0LL);
@@ -11987,8 +12216,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         auto temporary694 = (in)->src;
         VReg d = temporary693;
         VReg s = temporary694;
-        auto temporary695 = (in)->temps[Int(0LL)];
-        auto temporary696 = (in)->temps[Int(1LL)];
+        auto temporary695 = mInstTemps(in)[Int(0LL)];
+        auto temporary696 = mInstTemps(in)[Int(1LL)];
         VReg t1 = temporary695;
         VReg t2 = temporary696;
         asmTest(a, u8(8LL), s, s);
@@ -12199,9 +12428,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     break;
                 }
                 case mFSelect: {
-                    VReg mask = (in)->temps[Int(0LL)];
+                    VReg mask = mInstTemps(in)[Int(0LL)];
                     Array<u8, 6> predicates = Array<u8, 6>{{u8(0LL), u8(4LL), u8(17LL), u8(30LL), u8(18LL), u8(29LL)}};
-                    asmFcmpMask(a, (in)->dsize, mask, (in)->uses[Int(0LL)], (in)->uses[Int(1LL)], predicates[(in)->aux]);
+                    asmFcmpMask(a, (in)->dsize, mask, mInstUses(in)[Int(0LL)], mInstUses(in)[Int(1LL)], predicates[(in)->aux]);
                     if ((((in)->dsize == u8(4LL)) && ((in)->size == u8(8LL)))) {
                         asmVexRR(a, pp66, u8(1LL), false, u8(112LL), regNum(mask), Int(-1LL), regNum(mask));
                         asmBytes(a, {u8(u8(0LL))});
@@ -12306,7 +12535,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     break;
                 }
                 case mParMove: {
-                    funcEmitterParMove(e, (in)->moves);
+                    funcEmitterParMove(e, mInstMoves(in));
                     break;
                 }
                 case mStackArg: {
@@ -12443,7 +12672,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // parMove performs moves between registers and stack slots as if all at
     // once.
-    static void funcEmitterParMove(FuncEmitter* e, Slice<Move> moves) {
+    static void funcEmitterParMove(FuncEmitter* e, Span<Move> moves) {
         Slice<Move> pending = makeSlice<Move>(Int(0LL), length(moves));
         {
             auto range705 = moves;
@@ -12558,17 +12787,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void funcEmitterSwitchTable(FuncEmitter* e, MInst* in) {
         Asm* a = (e)->a;
-        Int n = (length((in)->table) - Int(1LL));
-        i32 def = (in)->table[n];
+        Int n = (length(mInstTable(in)) - Int(1LL));
+        i32 def = mInstTable(in)[n];
         if ((n == Int(0LL))) {
             funcEmitterJumpTo(e, Int(-1LL), def);
             return;
         }
-        if (((((in)->aux == u8(0LL)) && (n >= Int(4LL))) && ((in)->table[Int(0LL)] != def))) {
+        if (((((in)->aux == u8(0LL)) && (n >= Int(4LL))) && (mInstTable(in)[Int(0LL)] != def))) {
             asmTest(a, u8(4LL), (in)->src, (in)->src);
-            funcEmitterJumpTo(e, ccE, (in)->table[Int(0LL)]);
+            funcEmitterJumpTo(e, ccE, mInstTable(in)[Int(0LL)]);
         }
-        VReg t0 = (in)->temps[Int(0LL)];
+        VReg t0 = mInstTemps(in)[Int(0LL)];
         asmAluRI(a, aluCmp, u8(4LL), (in)->src, convert<i64>(n));
         funcEmitterJumpTo(e, ccAE, def);
         asmRex(a, true, convert<Int>(t0), Int(-1LL), Int(-1LL), false);
@@ -12576,7 +12805,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         i32 leaAt = asmPos(a);
         asmU32(a, u32(0LL));
         asmOpRM(a, false, sliceOf<u8>({u8(255LL)}), Int(4LL), Amem{convert<Int>(t0), convert<Int>((in)->src), u8(8LL), {}, i32(-1LL), {}}, Int(0LL), false);
-        (e)->tables = appendValues((e)->tables, TableFixup{leaAt, (leaAt + i32(4LL)), (in)->table});
+        (e)->tables = appendValues((e)->tables, TableFixup{leaAt, (leaAt + i32(4LL)), mInstTable(in)});
     }
 
     static void funcEmitterTrapJcc(FuncEmitter* e, u8 cc, i64 code) {
@@ -12637,7 +12866,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return;
         }
         if ((isize == u8(4LL))) {
-            VReg tg = (in)->temps[Int(0LL)];
+            VReg tg = mInstTemps(in)[Int(0LL)];
             asmCvtFI(a, u8(8LL), fsize, dst, src);
             asmMovRR(a, u8(8LL), tg, dst);
             asmShiftImm(a, shiftShr, u8(8LL), tg, i64(32LL));
@@ -12663,8 +12892,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             });
             return;
         }
-        auto temporary728 = (in)->temps[Int(0LL)];
-        auto temporary729 = (in)->temps[Int(1LL)];
+        auto temporary728 = mInstTemps(in)[Int(0LL)];
+        auto temporary729 = mInstTemps(in)[Int(1LL)];
         VReg tx = temporary728;
         VReg tg = temporary729;
         asmFcmpM(a, fsize, src, objCodeFloatConst((e)->oc, high, fsize));
@@ -13041,7 +13270,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // call calls a function of the module; an imported one through its
     // adapter, which keeps the internal convention, the memory register
     // included.
-    static void lowererCall(Lowerer* l, i32 v, Int index, Span<i32> args) {
+    static void lowererCall(Lowerer* l, i32 v, Int index, Span<const i32> args) {
         FuncType* t = moduleFuncType((l)->m, convert<u32>(index));
         auto temporary745 = lowererPlaceArgs(l, args);
         Slice<VReg> uses = temporary745.v0;
@@ -13051,8 +13280,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         MInst in = inst(mCall);
         (in).aux = calleeFunc;
         (in).imm = convert<i64>(index);
-        (in).uses = uses;
-        (in).defs = assigned(regs);
+        mInstExtra(&in)->uses.assign(uses);
+        mInstExtra(&in)->defs.assign(assigned(regs));
         ((l)->mf)->hasCalls = true;
         if ((((l)->m)->funcs[index]).returnsTwice) {
             (in).aux = calleeJump;
@@ -13062,7 +13291,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         lowererTakeResults(l, v, (t)->results, regs, stack);
     }
 
-    static void lowererCallIndirect(Lowerer* l, i32 v, Int typeIndex, Int table, Span<i32> args) {
+    static void lowererCallIndirect(Lowerer* l, i32 v, Int typeIndex, Int table, Span<const i32> args) {
         FuncType* t = (&(((l)->m)->types[typeIndex]));
         i32 elem = args[(length(args) - Int(1LL))];
         args = subslice(args, Int(0), (length(args) - Int(1LL)));
@@ -13105,8 +13334,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         lowererOutgoing(l, stack, regs);
         MInst in = inst(mCallInd);
         (in).src = code;
-        (in).uses = uses;
-        (in).defs = assigned(regs);
+        mInstExtra(&in)->uses.assign(uses);
+        mInstExtra(&in)->defs.assign(assigned(regs));
         ((l)->mf)->hasCalls = true;
         lowererEmit(l, in);
         lowererTakeResults(l, v, (t)->results, regs, stack);
@@ -13291,7 +13520,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             (in).src = src;
             (in).dsize = size;
             (in).size = u8(8LL);
-            (in).temps = sliceOf<VReg>({mFuncNewReg((l)->mf, classGPR), mFuncNewReg((l)->mf, classGPR)});
+            mInstExtra(&in)->temps.assign(Span<const VReg>({mFuncNewReg((l)->mf, classGPR), mFuncNewReg((l)->mf, classGPR)}));
             lowererEmit(l, in);
             return;
         }
@@ -13447,19 +13676,19 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (signedValue) {
             MInst in = inst(mSignExtAx);
             (in).size = size;
-            (in).uses = sliceOf<VReg>({RAX});
-            (in).defs = sliceOf<VReg>({RDX});
+            mInstExtra(&in)->uses.assign(Span<const VReg>({RAX}));
+            mInstExtra(&in)->defs.assign(Span<const VReg>({RDX}));
             lowererEmit(l, in);
         } else {
             MInst in = inst(mZeroDx);
-            (in).defs = sliceOf<VReg>({RDX});
+            mInstExtra(&in)->defs.assign(Span<const VReg>({RDX}));
             lowererEmit(l, in);
         }
         MInst in = inst(mDiv);
         (in).src = rb;
         (in).size = size;
-        (in).uses = sliceOf<VReg>({RAX, RDX});
-        (in).defs = sliceOf<VReg>({RAX, RDX});
+        mInstExtra(&in)->uses.assign(Span<const VReg>({RAX, RDX}));
+        mInstExtra(&in)->defs.assign(Span<const VReg>({RAX, RDX}));
         if (signedValue) {
             (in).aux = u8(1LL);
         }
@@ -13490,7 +13719,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         i32 s = convert<i32>(length(((l)->mf)->blocks));
-        ((l)->mf)->blocks = appendValues(((l)->mf)->blocks, MBlock{{}, {}, {}, (((l)->mf)->blocks[(l)->cur]).depth, i32(-1LL), {}});
+        ((l)->mf)->blocks.pushBack(MBlock{{}, {}, {}, (((l)->mf)->blocks[(l)->cur]).depth, i32(-1LL), {}});
         setMap((l)->split, key, s);
         i32 saved = (l)->cur;
         (l)->cur = s;
@@ -13516,18 +13745,18 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 VReg src = lowererUse(l, a);
                 VReg dst = (l)->vregs[params[i]];
                 if ((src != dst)) {
-                    (in).moves = appendValues((in).moves, Move{dst, src});
+                    mInstExtra(&in)->moves.pushBack(Move{dst, src});
                 }
             }
         }
-        if ((length((in).moves) > Int(0LL))) {
+        if ((length(mInstMoves(&in)) > Int(0LL))) {
             lowererEmit(l, in);
         }
     }
 
     static MInst* lowererEmit(Lowerer* l, MInst in) {
         MBlock* blk = (&(((l)->mf)->blocks[(l)->cur]));
-        (blk)->insts = appendValues((blk)->insts, in);
+        (blk)->insts.pushBack(in);
         return (&((blk)->insts[(length((blk)->insts) - Int(1LL))]));
     }
 
@@ -13548,12 +13777,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 VReg r = (l)->vregs[p];
                 if (isFloat(t)) {
                     if ((xi < length(argXMMs))) {
-                        (pm).moves = appendValues((pm).moves, Move{r, argXMMs[xi]});
+                        mInstExtra(&pm)->moves.pushBack(Move{r, argXMMs[xi]});
                         xi++;
                         continue;
                     }
                 } else if ((gi < length(argGPRs))) {
-                    (pm).moves = appendValues((pm).moves, Move{r, argGPRs[gi]});
+                    mInstExtra(&pm)->moves.pushBack(Move{r, argGPRs[gi]});
                     gi++;
                     continue;
                 }
@@ -13565,7 +13794,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 stack++;
             }
         }
-        if ((length((pm).moves) > Int(0LL))) {
+        if ((length(mInstMoves(&pm)) > Int(0LL))) {
             lowererEmit(l, pm);
         }
         ((l)->mf)->incoming = stack;
@@ -13820,12 +14049,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void lowererLinkBlocks(Lowerer* l) {
         MFunc* mf = (l)->mf;
         {
-            auto range811 = (mf)->blocks;
+            auto& range811 = (mf)->blocks;
             for (Int index812 = 0, rangeEnd813 = length(range811); index812 < rangeEnd813; ++index812) {
                 Int b = index812;
                 MBlock* blk = (&((mf)->blocks[b]));
                 {
-                    auto range814 = (blk)->insts;
+                    auto range814 = (blk)->insts.view();
                     for (Int index815 = 0, rangeEnd816 = length(range814); index815 < rangeEnd816; ++index815) {
                         Int i = index815;
                         MInst* in = (&((blk)->insts[i]));
@@ -13839,7 +14068,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                                 }
                                 case mSwitch: {
                                     {
-                                        auto range818 = (in)->table;
+                                        auto range818 = mInstTable(in);
                                         for (Int index819 = 0, rangeEnd820 = length(range818); index819 < rangeEnd820; ++index819) {
                                             i32 t = range818[index819];
                                             (blk)->succs = appendUnique((blk)->succs, t);
@@ -13854,7 +14083,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         {
-            auto range821 = (mf)->blocks;
+            auto& range821 = (mf)->blocks;
             for (Int index822 = 0, rangeEnd823 = length(range821); index822 < rangeEnd823; ++index822) {
                 Int b = index822;
                 {
@@ -14079,9 +14308,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     if ((((val)->op == OpTruncU) || ((val)->op == OpTruncSatU))) {
                         (in).aux |= truncUnsigned;
                         if ((size == u8(4LL))) {
-                            (in).temps = sliceOf<VReg>({mFuncNewReg((l)->mf, classGPR)});
+                            mInstExtra(&in)->temps.assign(Span<const VReg>({mFuncNewReg((l)->mf, classGPR)}));
                         } else {
-                            (in).temps = sliceOf<VReg>({mFuncNewReg((l)->mf, classXMM), mFuncNewReg((l)->mf, classGPR)});
+                            mInstExtra(&in)->temps.assign(Span<const VReg>({mFuncNewReg((l)->mf, classXMM), mFuncNewReg((l)->mf, classGPR)}));
                         }
                     }
                     if ((((val)->op == OpTruncSatS) || ((val)->op == OpTruncSatU))) {
@@ -14159,11 +14388,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     lowererMemAddr(l, dst, lowererUse(l, args[Int(0LL)]));
                     lowererMemAddr(l, src, lowererUse(l, args[Int(1LL)]));
                     MInst pm = inst(mParMove);
-                    (pm).moves = sliceOf<Move>({Move{RDI, dst}, Move{RSI, src}, Move{RCX, lowererUse(l, args[Int(2LL)])}});
+                    mInstExtra(&pm)->moves.assign(Span<const Move>({Move{RDI, dst}, Move{RSI, src}, Move{RCX, lowererUse(l, args[Int(2LL)])}}));
                     lowererEmit(l, pm);
                     MInst in = inst(mCopyForward);
-                    (in).uses = sliceOf<VReg>({RDI, RSI, RCX});
-                    (in).defs = sliceOf<VReg>({RAX, RDI, RSI, RCX});
+                    mInstExtra(&in)->uses.assign(Span<const VReg>({RDI, RSI, RCX}));
+                    mInstExtra(&in)->defs.assign(Span<const VReg>({RAX, RDI, RSI, RCX}));
                     lowererEmit(l, in);
                     break;
                 }
@@ -14315,7 +14544,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         lowererEmit(l, in);
     }
 
-    static void lowererMemCopy(Lowerer* l, Span<i32> args) {
+    static void lowererMemCopy(Lowerer* l, Span<const i32> args) {
         auto temporary836 = lowererUse(l, args[Int(0LL)]);
         auto temporary837 = lowererUse(l, args[Int(1LL)]);
         auto temporary838 = lowererUse(l, args[Int(2LL)]);
@@ -14331,7 +14560,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         lowererMemStub(l, stubMemmove, dst, src, n);
     }
 
-    static void lowererMemFill(Lowerer* l, Span<i32> args) {
+    static void lowererMemFill(Lowerer* l, Span<const i32> args) {
         auto temporary839 = lowererUse(l, args[Int(0LL)]);
         auto temporary840 = lowererUse(l, args[Int(1LL)]);
         auto temporary841 = lowererUse(l, args[Int(2LL)]);
@@ -14344,7 +14573,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         lowererMemStub(l, stubMemset, dst, val, n);
     }
 
-    static void lowererMemInit(Lowerer* l, Int seg, Span<i32> args) {
+    static void lowererMemInit(Lowerer* l, Int seg, Span<const i32> args) {
         auto temporary842 = lowererUse(l, args[Int(0LL)]);
         auto temporary843 = lowererUse(l, args[Int(1LL)]);
         auto temporary844 = lowererUse(l, args[Int(2LL)]);
@@ -14412,12 +14641,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             second = RAX;
         }
         MInst pm = inst(mParMove);
-        (pm).moves = sliceOf<Move>({Move{RDI, a}, Move{second, b}, Move{RCX, c}});
+        mInstExtra(&pm)->moves.assign(Span<const Move>({Move{RDI, a}, Move{second, b}, Move{RCX, c}}));
         lowererEmit(l, pm);
         MInst in = inst(mCall);
         (in).aux = calleeStub;
         (in).imm = convert<i64>(stub);
-        (in).uses = sliceOf<VReg>({RDI, second, RCX});
+        mInstExtra(&in)->uses.assign(Span<const VReg>({RDI, second, RCX}));
         ((l)->mf)->hasCalls = true;
         lowererEmit(l, in);
     }
@@ -14452,7 +14681,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // placeArgs moves call arguments to their registers and stack slots and
     // returns the registers the call reads and the number of stack slots.
-    static Tuple2<Slice<VReg>, Int> lowererPlaceArgs(Lowerer* l, Span<i32> args) {
+    static Tuple2<Slice<VReg>, Int> lowererPlaceArgs(Lowerer* l, Span<const i32> args) {
         Slice<VReg> regs = makeSlice<VReg>(length(args));
         Slice<ValType> types = makeSlice<ValType>(length(args));
         {
@@ -14570,13 +14799,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 ValType t = types[i];
                 if (isFloat(t)) {
                     if ((xi < length(argXMMs))) {
-                        (pm).moves = appendValues((pm).moves, Move{argXMMs[xi], r});
+                        mInstExtra(&pm)->moves.pushBack(Move{argXMMs[xi], r});
                         uses = appendValues(uses, argXMMs[xi]);
                         xi++;
                         continue;
                     }
                 } else if ((gi < length(argGPRs))) {
-                    (pm).moves = appendValues((pm).moves, Move{argGPRs[gi], r});
+                    mInstExtra(&pm)->moves.pushBack(Move{argGPRs[gi], r});
                     uses = appendValues(uses, argGPRs[gi]);
                     gi++;
                     continue;
@@ -14589,7 +14818,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 stack++;
             }
         }
-        if ((length((pm).moves) > Int(0LL))) {
+        if ((length(mInstMoves(&pm)) > Int(0LL))) {
             lowererEmit(l, pm);
         }
         return {uses, stack};
@@ -14636,7 +14865,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return (lowererIsConst(l, count) && ((lowererConstBits(l, count) & convert<i64>(u8(u8(typeSize((val)->typ) * u8(8LL)) - u8(1LL)))) <= i64(3LL)));
     }
 
-    static void lowererSelectValue(Lowerer* l, i32 v, Span<i32> args) {
+    static void lowererSelectValue(Lowerer* l, i32 v, Span<const i32> args) {
         Function* f = (l)->f;
         auto temporary881 = args[Int(0LL)];
         auto temporary882 = args[Int(1LL)];
@@ -14653,8 +14882,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 (in).dst = lowererDef(l, v);
                 (in).src = lowererUse(l, x);
                 (in).src2 = lowererUse(l, y);
-                (in).uses = sliceOf<VReg>({lowererUse(l, cmp[Int(0LL)]), lowererUse(l, cmp[Int(1LL)])});
-                (in).temps = sliceOf<VReg>({mFuncNewReg((l)->mf, classXMM)});
+                mInstExtra(&in)->uses.assign(Span<const VReg>({lowererUse(l, cmp[Int(0LL)]), lowererUse(l, cmp[Int(1LL)])}));
+                mInstExtra(&in)->temps.assign(Span<const VReg>({mFuncNewReg((l)->mf, classXMM)}));
                 (in).aux = convert<u8>(Op(((f)->values[cond]).op - OpFEq));
                 (in).size = size;
                 (in).dsize = typeSize(((f)->values[cmp[Int(0LL)]]).typ);
@@ -14838,9 +15067,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         MInst in = inst(mCall);
         (in).aux = calleeStub;
         (in).imm = convert<i64>(stub);
-        (in).uses = uses;
+        mInstExtra(&in)->uses.assign(uses);
         if ((result >= i32(0LL))) {
-            (in).defs = sliceOf<VReg>({RAX});
+            mInstExtra(&in)->defs.assign(Span<const VReg>({RAX}));
         }
         ((l)->mf)->hasCalls = true;
         lowererEmit(l, in);
@@ -14958,11 +15187,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     continue;
                 }
                 if ((d != noReg)) {
-                    (pm).moves = appendValues((pm).moves, Move{d, regs[i]});
+                    mInstExtra(&pm)->moves.pushBack(Move{d, regs[i]});
                 }
             }
         }
-        if ((length((pm).moves) > Int(0LL))) {
+        if ((length(mInstMoves(&pm)) > Int(0LL))) {
             lowererEmit(l, pm);
         }
     }
@@ -15047,20 +15276,20 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 case TermSwitch: {
                     MInst in = inst(mSwitch);
                     (in).src = lowererUse(l, (t)->value);
-                    (in).temps = sliceOf<VReg>({mFuncNewReg((l)->mf, classGPR)});
+                    mInstExtra(&in)->temps.assign(Span<const VReg>({mFuncNewReg((l)->mf, classGPR)}));
                     {
                         auto range901 = (t)->edges;
                         for (Int index902 = 0, rangeEnd903 = length(range901); index902 < rangeEnd903; ++index902) {
                             Int i = index902;
-                            (in).table = appendValues((in).table, lowererEdgeBlock(l, b, i));
+                            mInstExtra(&in)->table.pushBack(lowererEdgeBlock(l, b, i));
                         }
                     }
-                    if (((length((in).table) >= Int(5LL)) && ((in).table[Int(0LL)] != (in).table[(length((in).table) - Int(1LL))]))) {
+                    if (((length(mInstTable(&in)) >= Int(5LL)) && (mInstTable(&in)[Int(0LL)] != mInstTable(&in)[(length(mInstTable(&in)) - Int(1LL))]))) {
                         i32 dispatch = convert<i32>(length(((l)->mf)->blocks));
-                        i32 first = (in).table[Int(0LL)];
-                        (in).table[Int(0LL)] = (in).table[(length((in).table) - Int(1LL))];
+                        i32 first = mInstTable(&in)[Int(0LL)];
+                        mInstTable(&in)[Int(0LL)] = mInstTable(&in)[(length(mInstTable(&in)) - Int(1LL))];
                         (in).aux = u8(1LL);
-                        ((l)->mf)->blocks = appendValues(((l)->mf)->blocks, MBlock{sliceOf<MInst>({in}), {}, {}, (((l)->mf)->blocks[(l)->cur]).depth, i32(-1LL), {}});
+                        ((l)->mf)->blocks.pushBack(MBlock{Vec<MInst>({in}), {}, {}, (((l)->mf)->blocks[(l)->cur]).depth, i32(-1LL), {}});
                         MInst test = inst(mTest);
                         auto temporary904 = (in).src;
                         auto temporary905 = (in).src;
@@ -15094,7 +15323,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             Int i = index910;
                             i32 v = range909[index910];
                             if ((regs[i] != noReg)) {
-                                (pm).moves = appendValues((pm).moves, Move{regs[i], lowererUse(l, v)});
+                                mInstExtra(&pm)->moves.pushBack(Move{regs[i], lowererUse(l, v)});
                                 continue;
                             }
                             MInst in = inst(mStoreRet);
@@ -15105,11 +15334,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             slot++;
                         }
                     }
-                    if ((length((pm).moves) > Int(0LL))) {
+                    if ((length(mInstMoves(&pm)) > Int(0LL))) {
                         lowererEmit(l, pm);
                     }
                     MInst in = inst(mRet);
-                    (in).uses = assigned(regs);
+                    mInstExtra(&in)->uses.assign(assigned(regs));
                     lowererEmit(l, in);
                     break;
                 }
@@ -15240,7 +15469,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         {
             Int b = Int(0LL);
             for (; (b < n); b++) {
-                MBlock original = (mf)->blocks[b];
+                struct BlockView {
+                    Span<MInst> insts;
+                    Slice<i32> succs;
+                    Int depth;
+                };
+
+                BlockView original{mf->blocks[b].insts.view(), mf->blocks[b].succs, mf->blocks[b].depth};
                 Map<Array<AddressTerm, 4>, Slice<TailRangeGroup*>> active = mapOf<Array<AddressTerm, 4>, Slice<TailRangeGroup*>>({});
                 Slice<TailRangeGroup*> groups = {};
                 {
@@ -15310,6 +15545,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 if ((length(selected) == Int(0LL))) {
                     continue;
                 }
+                Vec<MInst> originalInsts = move(mf->blocks[b].insts);
+                original.insts = originalInsts.view();
                 changed = true;
                 Slice<TailRangeRegion> regions = {};
                 {
@@ -15345,18 +15582,20 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             for (Int index941 = 0, rangeEnd942 = length(range940); index941 < rangeEnd942; ++index941) {
                                 Int j = index941;
                                 guards[j] = convert<i32>(length((mf)->blocks));
-                                (mf)->blocks = appendValues((mf)->blocks, MBlock{{}, {}, {}, (original).depth, i32(-1LL), {}});
+                                (mf)->blocks.pushBack(MBlock{{}, {}, {}, (original).depth, i32(-1LL), {}});
                                 fast[j] = convert<i32>(length((mf)->blocks));
-                                (mf)->blocks = appendValues((mf)->blocks, MBlock{{}, {}, {}, (original).depth, i32(-1LL), {}});
+                                (mf)->blocks.pushBack(MBlock{{}, {}, {}, (original).depth, i32(-1LL), {}});
                                 cold[j] = convert<i32>(length((mf)->blocks));
-                                (mf)->blocks = appendValues((mf)->blocks, MBlock{{}, {}, {}, (original).depth, i32(-1LL), true});
+                                (mf)->blocks.pushBack(MBlock{{}, {}, {}, (original).depth, i32(-1LL), true});
                             }
                         }
-                        Slice<MInst> prefix = appendSlice(Slice<MInst>{}, subslice((original).insts, start, (region).start));
-                        ((mf)->blocks[continuation]).insts = appendValues(prefix, jump(guards[Int(0LL)]));
+                        Vec<MInst> prefix;
+                        prefix.assign(subslice((original).insts, start, (region).start));
+                        prefix.pushBack(jump(guards[Int(0LL)]));
+                        ((mf)->blocks[continuation]).insts = move(prefix);
                         ((mf)->blocks[continuation]).succs = sliceOf<i32>({guards[Int(0LL)]});
                         continuation = convert<i32>(length((mf)->blocks));
-                        (mf)->blocks = appendValues((mf)->blocks, MBlock{{}, {}, {}, (original).depth, i32(-1LL), {}});
+                        (mf)->blocks.pushBack(MBlock{{}, {}, {}, (original).depth, i32(-1LL), {}});
                         {
                             auto range943 = (region).groups;
                             for (Int index944 = 0, rangeEnd945 = length(range943); index944 < rangeEnd945; ++index944) {
@@ -15386,43 +15625,49 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                                 auto temporary954 = cold[j];
                                 (branch).cc = temporary953;
                                 (branch).target = temporary954;
-                                ((mf)->blocks[guards[j]]).insts = sliceOf<MInst>({cmp, branch, jump(fast[j])});
+                                ((mf)->blocks[guards[j]]).insts.assign(Span<const MInst>({cmp, branch, jump(fast[j])}));
                                 ((mf)->blocks[guards[j]]).succs = sliceOf<i32>({fast[j], cold[j]});
                                 if (((l)->m)->tailProfile) {
                                     MInst counter = lowererTailCounter(l, i32(0LL), i64(1LL));
-                                    ((mf)->blocks[guards[j]]).insts = appendSlice(sliceOf<MInst>({counter}), ((mf)->blocks[guards[j]]).insts);
+                                    Vec<MInst> counted({counter});
+                                    counted.append(((mf)->blocks[guards[j]]).insts.view());
+                                    ((mf)->blocks[guards[j]]).insts = move(counted);
                                     i32 miss = convert<i32>(length((mf)->blocks));
-                                    (mf)->blocks = appendValues((mf)->blocks, MBlock{sliceOf<MInst>({lowererTailCounter(l, i32(8LL), i64(1LL)), jump(cold[j])}), sliceOf<i32>({cold[j]}), {}, (original).depth, i32(-1LL), true});
+                                    (mf)->blocks.pushBack(MBlock{Vec<MInst>({lowererTailCounter(l, i32(8LL), i64(1LL)), jump(cold[j])}), sliceOf<i32>({cold[j]}), {}, (original).depth, i32(-1LL), true});
                                     (((mf)->blocks[guards[j]]).insts[Int(2LL)]).target = miss;
                                     ((mf)->blocks[guards[j]]).succs[Int(1LL)] = miss;
                                 }
-                                Slice<MInst> fastBody = {};
-                                Slice<MInst> coldBody = {};
+                                Vec<MInst> fastBody;
+                                Vec<MInst> coldBody;
                                 i64 omitted = i64(0LL);
                                 {
                                     Int k = (group)->start;
                                     for (; (k < end); k++) {
                                         MInst in = (original).insts[k];
-                                        coldBody = appendValues(coldBody, copyMachineInst(in));
+                                        coldBody.pushBack(copyMachineInst(in));
                                         if (skip[k]) {
                                             omitted++;
                                         } else {
-                                            fastBody = appendValues(fastBody, copyMachineInst(in));
+                                            fastBody.pushBack(copyMachineInst(in));
                                         }
                                     }
                                 }
                                 if (((l)->m)->tailProfile) {
-                                    fastBody = appendSlice(sliceOf<MInst>({lowererTailCounter(l, i32(16LL), omitted)}), fastBody);
+                                    Vec<MInst> counted({lowererTailCounter(l, i32(16LL), omitted)});
+                                    counted.append(fastBody.view());
+                                    fastBody = move(counted);
                                 }
-                                ((mf)->blocks[fast[j]]).insts = appendValues(fastBody, jump(nextFast));
-                                ((mf)->blocks[cold[j]]).insts = appendValues(coldBody, jump(nextCold));
+                                fastBody.pushBack(jump(nextFast));
+                                ((mf)->blocks[fast[j]]).insts = move(fastBody);
+                                coldBody.pushBack(jump(nextCold));
+                                ((mf)->blocks[cold[j]]).insts = move(coldBody);
                                 ((mf)->blocks[fast[j]]).succs = sliceOf<i32>({nextFast});
                                 ((mf)->blocks[cold[j]]).succs = sliceOf<i32>({nextCold});
                             }
                         }
                         start = (region).end;
                         if (((r + Int(1LL)) == length(regions))) {
-                            ((mf)->blocks[continuation]).insts = appendSlice(Slice<MInst>{}, subslice((original).insts, start, length((original).insts)));
+                            ((mf)->blocks[continuation]).insts.assign(subslice((original).insts, start, length((original).insts)));
                             ((mf)->blocks[continuation]).succs = appendSlice(Slice<i32>{}, (original).succs);
                         }
                     }
@@ -15431,14 +15676,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         if (changed) {
             {
-                auto range955 = (mf)->blocks;
+                auto& range955 = (mf)->blocks;
                 for (Int index956 = 0, rangeEnd957 = length(range955); index956 < rangeEnd957; ++index956) {
                     Int b = index956;
                     ((mf)->blocks[b]).preds = {};
                 }
             }
             {
-                auto range958 = (mf)->blocks;
+                auto& range958 = (mf)->blocks;
                 for (Int index959 = 0, rangeEnd960 = length(range958); index959 < rangeEnd960; ++index959) {
                     Int b = index959;
                     {
@@ -15468,10 +15713,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             i32 edge = convert<i32>(length((mf)->blocks));
                             MInst jump = inst(mJmp);
                             (jump).target = succ;
-                            (mf)->blocks = appendValues((mf)->blocks, MBlock{sliceOf<MInst>({jump}), sliceOf<i32>({succ}), sliceOf<i32>({convert<i32>(b)}), ((mf)->blocks[b]).depth, i32(-1LL), (((mf)->blocks[b]).cold || ((mf)->blocks[succ]).cold)});
+                            (mf)->blocks.pushBack(MBlock{Vec<MInst>({jump}), sliceOf<i32>({succ}), sliceOf<i32>({convert<i32>(b)}), ((mf)->blocks[b]).depth, i32(-1LL), (((mf)->blocks[b]).cold || ((mf)->blocks[succ]).cold)});
                             ((mf)->blocks[b]).succs[j] = edge;
                             {
-                                auto range967 = ((mf)->blocks[b]).insts;
+                                auto range967 = ((mf)->blocks[b]).insts.view();
                                 for (Int index968 = 0, rangeEnd969 = length(range967); index968 < rangeEnd969; ++index968) {
                                     Int k = index968;
                                     MInst* in = (&(((mf)->blocks[b]).insts[k]));
@@ -15487,11 +15732,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                                             }
                                             case mSwitch: {
                                                 {
-                                                    auto range971 = (in)->table;
+                                                    auto range971 = mInstTable(in);
                                                     for (Int index972 = 0, rangeEnd973 = length(range971); index972 < rangeEnd973; ++index972) {
                                                         Int t = index972;
-                                                        if (((in)->table[t] == succ)) {
-                                                            (in)->table[t] = edge;
+                                                        if ((mInstTable(in)[t] == succ)) {
+                                                            mInstTable(in)[t] = edge;
                                                         }
                                                     }
                                                 }
@@ -16982,7 +17227,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 return v;
             }
         }
-        i32 v = functionNewValue((o)->f, OpConst, t, i32(-1LL), bits, Span<i32>({}));
+        i32 v = functionNewValue((o)->f, OpConst, t, i32(-1LL), bits, Span<const i32>({}));
         setMap((o)->consts, key, v);
         return v;
     }
@@ -17190,7 +17435,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             auto temporary1216 = a;
             a = temporary1215;
             b = temporary1216;
-            optimizerSetArgs(o, v, Span<i32>({a, b}));
+            optimizerSetArgs(o, v, Span<const i32>({a, b}));
         }
         if (optimizerIsConst(o, b)) {
             u64 c = (convert<u64>(optimizerConstOf(o, b)) & mask(t));
@@ -17209,7 +17454,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     return true;
                 } else if ((((c == u64(0LL)) && (op == OpEq)) && (t == I32))) {
                     ((f)->values[v]).op = OpEqz;
-                    optimizerSetArgs(o, v, Span<i32>({a}));
+                    optimizerSetArgs(o, v, Span<const i32>({a}));
                     return true;
                 } else if (((c == u64(0LL)) && (op == OpGeU))) {
                     optimizerReplace(o, v, optimizerConstant(o, I32, i64(1LL)));
@@ -17222,7 +17467,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             if (((op == OpMul) && ((c & ((c - u64(1LL)))) == u64(0LL)))) {
                 ((f)->values[v]).op = OpShl;
-                optimizerSetArgs(o, v, Span<i32>({a, optimizerConstant(o, t, convert<i64>(bitsTrailingZeros64(c)))}));
+                optimizerSetArgs(o, v, Span<const i32>({a, optimizerConstant(o, t, convert<i64>(bitsTrailingZeros64(c)))}));
                 return true;
             }
             if ((op == OpAnd)) {
@@ -17403,7 +17648,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 i32 b = temporary1243;
                 Array<Op, 6> ops = Array<Op, 6>{{OpEq, OpNe, OpLtU, OpGtU, OpLeU, OpGeU}};
                 ((f)->values[v]).op = ops[Op((val).op - OpFEq)];
-                optimizerSetArgs(o, convert<i32>(v), Span<i32>({a, b}));
+                optimizerSetArgs(o, convert<i32>(v), Span<const i32>({a, b}));
                 changed = true;
             }
         }
@@ -17485,7 +17730,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 setMap(preds, b, from);
             }
             if ((length(from) == Int(0LL))) {
-                i32 v = functionNewValue(f, OpUndef, ((f)->values[params[j]]).typ, i32(-1LL), i64(0LL), Span<i32>({}));
+                i32 v = functionNewValue(f, OpUndef, ((f)->values[params[j]]).typ, i32(-1LL), i64(0LL), Span<const i32>({}));
                 setMap(memo, key, v);
                 return v;
             }
@@ -17495,7 +17740,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 return v;
             }
             Int at = length(((f)->blocks[b]).params);
-            i32 x = functionNewValue(f, OpParam, ((f)->values[params[j]]).typ, b, convert<i64>(at), Span<i32>({}));
+            i32 x = functionNewValue(f, OpParam, ((f)->values[params[j]]).typ, b, convert<i64>(at), Span<const i32>({}));
             ((f)->blocks[b]).params = appendValues(((f)->blocks[b]).params, x);
             setMap(memo, key, x);
             {
@@ -17729,7 +17974,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                                         i32 x = range1303[index1304];
                                         args[j] = x;
                                         if ((x != no[j])) {
-                                            i32 v = functionNewValue(f, OpSelect, ((f)->values[x]).typ, b, i64(0LL), Span<i32>({(t).value, x, no[j]}));
+                                            i32 v = functionNewValue(f, OpSelect, ((f)->values[x]).typ, b, i64(0LL), Span<const i32>({(t).value, x, no[j]}));
                                             (blk)->instrs = appendValues((blk)->instrs, v);
                                             args[j] = v;
                                         }
@@ -17752,7 +17997,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     // setArgs replaces the operands of v.
-    static void optimizerSetArgs(Optimizer* o, i32 v, Span<i32> args) {
+    static void optimizerSetArgs(Optimizer* o, i32 v, Span<const i32> args) {
         Function* f = (o)->f;
         Value* val = (&((f)->values[v]));
         if ((convert<Int>((val)->nargs) >= length(args))) {
@@ -18078,7 +18323,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         keep[k] = true;
                         if (trivial) {
                             if ((same < i32(0LL))) {
-                                same = functionNewValue(f, OpUndef, ((f)->values[param]).typ, i32(-1LL), i64(0LL), Span<i32>({}));
+                                same = functionNewValue(f, OpUndef, ((f)->values[param]).typ, i32(-1LL), i64(0LL), Span<const i32>({}));
                             }
                             optimizerReplace(o, param, same);
                             keep[k] = false;
@@ -18117,14 +18362,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             i32 x = temporary1347;
                             i32 y = temporary1348;
                             ((f)->values[v]).op = invert;
-                            optimizerSetArgs(o, v, Span<i32>({x, y}));
+                            optimizerSetArgs(o, v, Span<const i32>({x, y}));
                             return true;
                         }
                     }
                     if ((((src)->op == OpEqz) && (((f)->values[functionArgs(f, a)[Int(0LL)]]).typ == I32))) {
                         i32 x = functionArgs(f, a)[Int(0LL)];
                         ((f)->values[v]).op = OpNe;
-                        optimizerSetArgs(o, v, Span<i32>({x, optimizerConstant(o, I32, i64(0LL))}));
+                        optimizerSetArgs(o, v, Span<const i32>({x, optimizerConstant(o, I32, i64(0LL))}));
                         return true;
                     }
                     break;
@@ -18158,7 +18403,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                                         return false;
                                     }
                                     ((f)->values[v]).op = (src)->op;
-                                    optimizerSetArgs(o, v, Span<i32>({x, y}));
+                                    optimizerSetArgs(o, v, Span<const i32>({x, y}));
                                     return true;
                                 }
                                 break;
@@ -19034,11 +19279,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static MInst copyMachineInst(MInst in) {
-        (in).uses = appendSlice(Slice<VReg>{}, (in).uses);
-        (in).defs = appendSlice(Slice<VReg>{}, (in).defs);
-        (in).temps = appendSlice(Slice<VReg>{}, (in).temps);
-        (in).moves = appendSlice(Slice<Move>{}, (in).moves);
-        (in).table = appendSlice(Slice<i32>{}, (in).table);
+        if (auto* old = in.extra) {
+            in.extra = nullptr;
+            auto* copy = mInstExtra(&in);
+            copy->uses.assign(old->uses.view());
+            copy->defs.assign(old->defs.view());
+            copy->temps.assign(old->temps.view());
+            copy->moves.assign(old->moves.view());
+            copy->table.assign(old->table.view());
+        }
         return in;
     }
 
@@ -19244,18 +19493,18 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return asString(b);
     }
 
-    static Slice<Move> dropSelfMoves(Slice<Move> moves) {
-        Slice<Move> out = subslice(moves, Int(0), Int(0LL));
+    static Span<Move> dropSelfMoves(Span<Move> moves) {
+        Int count = 0;
         {
             auto range1463 = moves;
             for (Int index1464 = 0, rangeEnd1465 = length(range1463); index1464 < rangeEnd1465; ++index1464) {
                 Move m = range1463[index1464];
                 if (((m).dst != (m).src)) {
-                    out = appendValues(out, m);
+                    moves[count++] = m;
                 }
             }
         }
-        return out;
+        return subslice(moves, 0, count);
     }
 
     // ehFrame writes a CIE and an FDE per region, and the offsets of the FDEs'
@@ -19605,7 +19854,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     // firstBranch returns the index of the branch sequence ending a block.
-    static Int firstBranch(Slice<MInst> insts) {
+    static Int firstBranch(Span<MInst> insts) {
         Int i = length(insts);
         {
             for (; (i > Int(0LL));) {
@@ -20051,7 +20300,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static MInst inst(MOp op) {
-        return MInst{op, {}, {}, {}, {}, noReg, noReg, noReg, {}, Mem{noReg, noReg, {}, {}, i32(-1LL)}, i32(-1LL), {}, {}, {}, {}, {}};
+        return MInst{op, {}, {}, {}, {}, noReg, noReg, noReg, {}, Mem{noReg, noReg, {}, {}, i32(-1LL)}, i32(-1LL), nullptr};
     }
 
     // internalLocs gives the internal convention's places of values: a
@@ -20138,7 +20387,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             for (Int index1554 = 0, rangeEnd1555 = length(range1553); index1554 < rangeEnd1555; ++index1554) {
                 i32 b = range1553[index1554];
                 (l)->mblk[b] = convert<i32>(length(((l)->mf)->blocks));
-                ((l)->mf)->blocks = appendValues(((l)->mf)->blocks, MBlock{{}, {}, {}, convert<Int>(((l)->ci)->depth[b]), b, {}});
+                ((l)->mf)->blocks.pushBack(MBlock{{}, {}, {}, convert<Int>(((l)->ci)->depth[b]), b, {}});
             }
         }
         {
@@ -20521,7 +20770,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static MInst parMove(Slice<Move> moves) {
         MInst in = inst(mParMove);
-        (in).moves = moves;
+        mInstExtra(&in)->moves.assign(moves);
         return in;
     }
 
@@ -21470,7 +21719,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         Array<u64, 11> offsets{};
         Array<u64, 11> sizes{};
-        Array<Slice<u8>, 11> contents{};
+        Array<Span<const u8>, 11> contents{};
         u64 position = 64;
         auto reserveSection = [&](Int section, u64 bytes, usize alignment) {
             position = alignUp(usize(position), alignment);
@@ -21478,7 +21727,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             sizes[section] = bytes;
             position += bytes;
         };
-        auto place = [&](Int section, Slice<u8> data, usize alignment) {
+        auto place = [&](Int section, Span<const u8> data, usize alignment) {
             reserveSection(section, length(data), alignment);
             contents[section] = data;
         };
@@ -21675,7 +21924,6 @@ namespace {
         ObjCode* code = modulePool.make<ObjCode>();
         code->pool = &modulePool;
         code->m = module;
-        code->a.buf = makeSlice<u8>(0);
         code->a.fixups = makeSlice<RipFixup>(0);
         code->a.sps = makeSlice<SpEntry>(0);
         code->funcAt = makeSlice<i32>(0);
@@ -21913,6 +22161,17 @@ namespace {
         require(large.size() == 50000, "paged resize shrink");
         PageVec<u64> moved(move(large));
         require(large.empty() && moved.size() == 50000, "paged vector move");
+        Vec<u32> promoted;
+        for (u32 i = 0; i < 40000; ++i) {
+            promoted.pushBack(i * 3);
+        }
+        require(promoted.paged && promoted.small.empty(), "vector promotion releases small storage");
+        promoted.assign(subslice(promoted.view(), 123, 33000));
+        require(promoted.size() == 33000 - 123, "vector view assignment size");
+        for (usize i = 0; i < promoted.size(); ++i) {
+            require(promoted[i] == (i + 123) * 3, "vector view assignment across pages");
+        }
+        static_assert(sizeof(MInst) <= 72);
         u64 total = 0;
         moved.visit([&](u64 value) {
             total += value;
