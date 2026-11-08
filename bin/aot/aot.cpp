@@ -226,6 +226,10 @@ namespace {
 
 void* SmallObjAllocator::allocate(usize size) {
     const usize index = allocationClass(size);
+    // A full-page object shares the page freelist with PageVec storage.
+    if ((objectAlignment << index) == pageBytes) {
+        return allocPage();
+    }
     auto& state = classes[index];
     if (state.free != nullptr) {
         auto* result = state.free;
@@ -244,6 +248,10 @@ void* SmallObjAllocator::allocate(usize size) {
 
 void SmallObjAllocator::deallocate(void* object, usize size) {
     if (object == nullptr) {
+        return;
+    }
+    if (size > pageBytes / 2) {
+        freePage(object);
         return;
     }
     auto& state = classes[allocationClass(size)];
@@ -823,7 +831,7 @@ namespace {
     template <typename T>
     struct ArrayData {
         ObjPool* owner;
-        T* borrowed = nullptr;
+        T* contiguous = nullptr;
         SmallVec<T> small;
         PageVec<T> pages;
         Int count = 0;
@@ -840,8 +848,10 @@ namespace {
             paged = Uint(size) * sizeof(T) > pageBytes - sizeof(Buffer::Header);
             if (paged) {
                 pages.resize(usize(size));
+                contiguous = nullptr;
             } else {
                 small.resize(usize(size));
+                contiguous = small.data();
             }
             for (Int i = 0; i < size; ++i) {
                 (*this)[i] = T{};
@@ -849,10 +859,13 @@ namespace {
         }
 
         T& operator[](Int i) {
-            if (borrowed) {
-                return borrowed[i];
+            if (contiguous) {
+                return contiguous[i];
             }
-            return paged ? pages[usize(i)] : small[usize(i)];
+            // Slice validates the logical index; fixed-capacity storage
+            // already contains every position below offset + capacity.
+            const usize index = usize(i);
+            return pages.pages.data()[index / PageVec<T>::itemsPerPage][index % PageVec<T>::itemsPerPage];
         }
     };
 
@@ -913,7 +926,7 @@ namespace {
     template <typename T>
     static Slice<T> borrowSlice(T* pointer, Int size) {
         auto* data = activePool->make<ArrayData<T>>(activePool);
-        data->borrowed = pointer;
+        data->contiguous = pointer;
         data->count = size;
         return {data, 0, u32(size), u32(size)};
     }
@@ -1054,8 +1067,8 @@ namespace {
         if (!s.count) {
             return {};
         }
-        if (s.array->borrowed) {
-            return {s.array->borrowed + s.offset, s.count};
+        if (s.array->contiguous) {
+            return {s.array->contiguous + s.offset, s.count};
         }
         if (!s.array->paged) {
             return {s.array->small.data() + s.offset, s.count};
@@ -1925,7 +1938,97 @@ namespace {
 
     using SortedHint = Int;
 
-    using Bitset = Slice<u64>;
+    // Liveness sets are sparse across virtual-register numbers. Allocate
+    // 256-bit chunks lazily, grouped under 16-Kibit directory nodes.
+    struct BitChunk {
+        u64 words[4]{};
+    };
+
+    struct BitNode {
+        u64 occupied = 0;
+        BitChunk* chunks[64]{};
+    };
+
+    struct BitsetData {
+        SmallVec<BitNode*> nodes;
+        ObjPool* pool = nullptr;
+        usize bits = 0;
+    };
+
+    struct Bitset {
+        BitsetData* data = nullptr;
+    };
+
+    static u64 bitsetWord(Bitset set, usize index) {
+        if (!set.data || index / 256 >= set.data->nodes.size()) {
+            return 0;
+        }
+        BitNode* node = set.data->nodes[index / 256];
+        if (!node) {
+            return 0;
+        }
+        BitChunk* chunk = node->chunks[index / 4 % 64];
+        return chunk ? chunk->words[index % 4] : 0;
+    }
+
+    static bool bitsetAddWord(Bitset set, usize index, u64 bits) {
+        if (bits == 0) {
+            return false;
+        }
+        require(set.data && index < (set.data->bits + 63) / 64, "bitset index");
+        BitNode*& node = set.data->nodes[index / 256];
+        if (!node) {
+            node = set.data->pool->make<BitNode>();
+        }
+        BitChunk*& chunk = node->chunks[index / 4 % 64];
+        if (!chunk) {
+            chunk = set.data->pool->make<BitChunk>();
+            node->occupied |= u64(1) << (index / 4 % 64);
+        }
+        u64& word = chunk->words[index % 4];
+        const u64 before = word;
+        word |= bits;
+        return before != word;
+    }
+
+    template <typename F>
+    static void visitBitsetWords(Bitset set, F visitor) {
+        if (!set.data) {
+            return;
+        }
+        for (usize n = 0; n < set.data->nodes.size(); ++n) {
+            BitNode* node = set.data->nodes[n];
+            if (!node) {
+                continue;
+            }
+            for (u64 occupied = node->occupied; occupied; occupied &= occupied - 1) {
+                usize c = usize(bitsTrailingZeros64(occupied));
+                BitChunk* chunk = node->chunks[c];
+                for (usize w = 0; w < 4; ++w) {
+                    if (chunk->words[w]) {
+                        visitor(n * 256 + c * 4 + w, chunk->words[w]);
+                    }
+                }
+            }
+        }
+    }
+
+    // Compute in |= gen | (out & ~kill), without materializing a dense
+    // temporary or scanning words with no live virtual registers.
+    static bool bitsetPropagate(Bitset in, Bitset gen, Bitset out, Bitset kill) {
+        bool changed = false;
+        visitBitsetWords(gen, [&](usize index, u64 word) {
+            if (bitsetAddWord(in, index, word)) {
+                changed = true;
+            }
+        });
+        visitBitsetWords(out, [&](usize index, u64 word) {
+            if (bitsetAddWord(in, index, word & ~bitsetWord(kill, index))) {
+                changed = true;
+            }
+        });
+        return changed;
+    }
 
     using ValType = u8;
 
@@ -4104,7 +4207,8 @@ namespace {
 
     static Slice<VReg> mInstClobberSet(MInst* in);
 
-    static void mInstForEachOperand(MInst* in, Fn<void(VReg*, Int)> cb);
+    template <typename F>
+    static void mInstForEachOperand(MInst* in, F cb);
 
     static i32 memoryLoopClone(MemoryLoop* l, Map<i32, bool> proven, Map<i32, i32> invariants, Map<i32, Int> cases);
 
@@ -4776,7 +4880,8 @@ namespace {
 
     static bool vRegIsXMM(VReg r);
 
-    static void bitsetEach(Bitset s, Fn<void(Int)> cb);
+    template <typename F>
+    static void bitsetEach(Bitset s, F cb);
 
     static bool bitsetHas(Bitset s, Int i);
 
@@ -5789,8 +5894,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // forEachOperand calls cb for every register operand of an instruction with
     // its role, uses before defs.
-    static void mInstForEachOperand(MInst* in, Fn<void(VReg*, Int)> cb) {
-        Fn<void()> mem = [&]() mutable -> void {
+    template <typename F>
+    static void mInstForEachOperand(MInst* in, F cb) {
+        auto mem = [&]() mutable -> void {
             if ((((in)->mem).base != noReg)) {
                 cb((&(((in)->mem).base)), roleUse);
             }
@@ -6034,7 +6140,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
             }
         }
-        Fn<i32(i32)> remap = [&](i32 v) mutable -> i32 {
+        auto remap = [&](i32 v) mutable -> i32 {
             {
                 auto temporary110 = lookupMap(values, v);
                 i32 n = temporary110.v0;
@@ -6169,7 +6275,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         Slice<bool> escapes = makeSlice<bool>(oldValues);
-        Fn<void(i32)> mark = [&](i32 v) mutable -> void {
+        auto mark = [&](i32 v) mutable -> void {
             {
                 auto temporary141 = lookupMap(values, v);
                 bool ok = temporary141.v1;
@@ -6261,7 +6367,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
             }
         }
-        Fn<void(i32*)> rewrite = [&](i32* v) mutable -> void {
+        auto rewrite = [&](i32* v) mutable -> void {
             {
                 auto temporary169 = lookupMap(merged, (*(v)));
                 i32 n = temporary169.v0;
@@ -6534,7 +6640,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         u64 width = convert<u64>(length(loads));
         Map<i32, CopyAddress> addresses = mapOf<i32, CopyAddress>({});
-        Fn<bool(Slice<i32>)> contiguous = [&](Slice<i32> values) mutable -> bool {
+        auto contiguous = [&](Slice<i32> values) mutable -> bool {
             CopyAddress first = {};
             {
                 auto range218 = values;
@@ -6630,7 +6736,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (((fastExit).block == fast)) {
             fastExit = (((f)->blocks[fast]).term).edges[Int(1LL)];
         }
-        Fn<i32(i32)> original = [&](i32 v) mutable -> i32 {
+        auto original = [&](i32 v) mutable -> i32 {
             {
                 auto temporary237 = lookupMap(reverse, v);
                 i32 old = temporary237.v0;
@@ -6661,12 +6767,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 ((f)->blocks[bulk]).params = appendValues(((f)->blocks[bulk]).params, v);
             }
         }
-        Fn<i32(Op, ValType, i64, Slice<i32>)> emit = [&](Op op, ValType typ, i64 aux, Slice<i32> args) mutable -> i32 {
+        auto emit = [&](Op op, ValType typ, i64 aux, Slice<i32> args) mutable -> i32 {
             i32 v = functionNewValue(f, op, typ, current, aux, args);
             ((f)->blocks[current]).instrs = appendValues(((f)->blocks[current]).instrs, v);
             return v;
         };
-        Fn<i32(ValType, i64)> constant = [&](ValType typ, i64 x) mutable -> i32 {
+        auto constant = [&](ValType typ, i64 x) mutable -> i32 {
             return functionNewValue(f, OpConst, typ, i32(-1LL), x, sliceOf<i32>({}));
         };
         i32 iterations = emit(OpExtendU, I64, i64(0LL), sliceOf<i32>({count}));
@@ -6778,7 +6884,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // would need an undefined argument on that bypass, so leave that case alone.
     static bool memoryLoopHasLiveOut(MemoryLoop* l) {
         Function* f = (l)->f;
-        Fn<bool(i32)> inside = [&](i32 v) mutable -> bool {
+        auto inside = [&](i32 v) mutable -> bool {
             i32 b = ((f)->values[v]).block;
             return ((b >= i32(0LL)) && (l)->members[b]);
         };
@@ -7028,7 +7134,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         Slice<LoopSpan> writes = {};
         Map<RangeKeyLoop_version570, Int> writeIndex = mapOf<RangeKeyLoop_version570, Int>({});
-        Fn<RangeKeyLoop_version570(LoopSpan)> keyOf = [&](LoopSpan bound) mutable -> RangeKeyLoop_version570 {
+        auto keyOf = [&](LoopSpan bound) mutable -> RangeKeyLoop_version570 {
             return RangeKeyLoop_version570{(bound).base, (bound).base2, (bound).stride, (bound).mul, (bound).mul2, (bound).factor};
         };
         {
@@ -7169,12 +7275,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         i32 guard = functionNewBlock(f);
         i32 current = guard;
-        Fn<i32(Op, ValType, Slice<i32>)> emit = [&](Op op, ValType typ, Slice<i32> args) mutable -> i32 {
+        auto emit = [&](Op op, ValType typ, Slice<i32> args) mutable -> i32 {
             i32 v = functionNewValue(f, op, typ, current, i64(0LL), args);
             ((f)->blocks[current]).instrs = appendValues(((f)->blocks[current]).instrs, v);
             return v;
         };
-        Fn<i32(ValType, u64)> constant = [&](ValType typ, u64 x) mutable -> i32 {
+        auto constant = [&](ValType typ, u64 x) mutable -> i32 {
             return functionNewValue(f, OpConst, typ, i32(-1LL), convert<i64>(x), sliceOf<i32>({}));
         };
         i32 pages = emit(OpMemSize, I32, sliceOf<i32>({}));
@@ -7192,7 +7298,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         Map<i32, i32> invariants = mapOf<i32, i32>({});
-        Fn<i32(i32)> mapValue = [&](i32 v) mutable -> i32 {
+        auto mapValue = [&](i32 v) mutable -> i32 {
             {
                 auto temporary319 = lookupMap(invariants, v);
                 i32 mapped = temporary319.v0;
@@ -7270,7 +7376,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         i32 count = emit(OpExtendU, I64, sliceOf<i32>({countValue}));
         i32 iterations = emit(OpSub, I64, sliceOf<i32>({count, constant(I64, u64(1LL))}));
-        Fn<Tuple2<i32, i32>(LoopSpan)> evaluate = [&](LoopSpan bound) mutable -> Tuple2<i32, i32> {
+        auto evaluate = [&](LoopSpan bound) mutable -> Tuple2<i32, i32> {
             i32 end = constant(I64, (bound).offset);
             i32 begin = constant(I64, (bound).lo);
             {
@@ -7376,7 +7482,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Slice<u8> code = sliceOf<u8>({u8(0LL)});
         Slice<Slice<u8>> parts = {};
         Int steps = Int(0LL);
-        Fn<void()> next = [&]() mutable -> void {
+        auto next = [&]() mutable -> void {
             if ((steps == Int(128LL))) {
                 parts = appendValues(parts, appendValues(code, u8(11LL)));
                 code = sliceOf<u8>({u8(0LL)});
@@ -8167,7 +8273,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return x;
         };
         Slice<CopyPairCoalesce41> copies = {};
-        Fn<void(VReg, VReg, Int)> add = [&](VReg dst, VReg src, Int depth) mutable -> void {
+        auto add = [&](VReg dst, VReg src, Int depth) mutable -> void {
             if (((((vRegIsPhys(dst) || vRegIsPhys(src)) || (dst == noReg)) || (src == noReg)) || (dst == src))) {
                 return;
             }
@@ -8432,71 +8538,56 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void allocatorLiveness(Allocator* a) {
-        MFunc* mf = (a)->mf;
-        Int n = length((mf)->blocks);
-        Int nv = (mf)->nregs;
-        Slice<Bitset> gen = makeSlice<Bitset>(n);
-        Slice<Bitset> kill = makeSlice<Bitset>(n);
-        (a)->liveIn = makeSlice<Bitset>(n);
-        (a)->liveOut = makeSlice<Bitset>(n);
+        MFunc* mf = a->mf;
+        const Int n = length(mf->blocks);
+        const Int nv = mf->nregs;
+        // Gen/kill sets and operand callbacks have no users after dataflow.
+        ObjPool temporary;
+        Slice<Bitset> gen;
+        Slice<Bitset> kill;
         {
-            auto range463 = (a)->order;
-            for (Int index464 = 0, rangeEnd465 = length(range463); index464 < rangeEnd465; ++index464) {
-                i32 b = range463[index464];
+            PoolScope scope(temporary);
+            gen = makeSlice<Bitset>(n);
+            kill = makeSlice<Bitset>(n);
+        }
+        a->liveIn = makeSlice<Bitset>(n);
+        a->liveOut = makeSlice<Bitset>(n);
+        for (Int index = 0; index < length(a->order); ++index) {
+            const i32 b = a->order[index];
+            {
+                PoolScope scope(temporary);
                 Bitset g = newBitset(nv);
                 Bitset k = newBitset(nv);
-                {
-                    auto range466 = ((mf)->blocks[b]).insts;
-                    for (Int index467 = 0, rangeEnd468 = length(range466); index467 < rangeEnd468; ++index467) {
-                        Int i = index467;
-                        mInstForEachOperand(&(((mf)->blocks[b]).insts[i]), [&](VReg* r, Int role) mutable -> void {
-                            if ((vRegIsPhys(*(r)) || ((*(r)) == noReg))) {
-                                return;
-                            }
-                            Int x = allocatorVindex(a, (*(r)));
-                            if (((((role & roleUse) != Int(0LL)) && (role != roleTemp)) && (!(bitsetHas(k, x))))) {
-                                bitsetSet(g, x);
-                            }
-                            if ((((role & roleDef) != Int(0LL)) || (role == roleTemp))) {
-                                bitsetSet(k, x);
-                            }
-                        });
-                    }
+                for (Int i = 0; i < length(mf->blocks[b].insts); ++i) {
+                    mInstForEachOperand(&mf->blocks[b].insts[i], [&](VReg* r, Int role) {
+                        if (vRegIsPhys(*r) || *r == noReg) {
+                            return;
+                        }
+                        const Int x = allocatorVindex(a, *r);
+                        if ((role & roleUse) != 0 && role != roleTemp && !bitsetHas(k, x)) {
+                            bitsetSet(g, x);
+                        }
+                        if ((role & roleDef) != 0 || role == roleTemp) {
+                            bitsetSet(k, x);
+                        }
+                    });
                 }
                 gen[b] = g;
                 kill[b] = k;
-                (a)->liveIn[b] = newBitset(nv);
-                (a)->liveOut[b] = newBitset(nv);
             }
+            a->liveIn[b] = newBitset(nv);
+            a->liveOut[b] = newBitset(nv);
         }
-        Bitset tmp = newBitset(nv);
-        {
-            bool changed = true;
-            for (; changed;) {
-                changed = false;
-                {
-                    Int i = (length((a)->order) - Int(1LL));
-                    for (; (i >= Int(0LL)); i--) {
-                        i32 b = (a)->order[i];
-                        Bitset out = (a)->liveOut[b];
-                        {
-                            auto range469 = ((mf)->blocks[b]).succs;
-                            for (Int index470 = 0, rangeEnd471 = length(range469); index470 < rangeEnd471; ++index470) {
-                                i32 s = range469[index470];
-                                bitsetUnion(out, (a)->liveIn[s]);
-                            }
-                        }
-                        {
-                            auto range472 = tmp;
-                            for (Int index473 = 0, rangeEnd474 = length(range472); index473 < rangeEnd474; ++index473) {
-                                Int j = index473;
-                                tmp[j] = (gen[b][j] | ((out[j] & ~(kill[b][j]))));
-                            }
-                        }
-                        if (bitsetUnion((a)->liveIn[b], tmp)) {
-                            changed = true;
-                        }
-                    }
+        for (bool changed = true; changed;) {
+            changed = false;
+            for (Int i = length(a->order) - 1; i >= 0; --i) {
+                const i32 b = a->order[i];
+                Bitset out = a->liveOut[b];
+                for (Int j = 0; j < length(mf->blocks[b].succs); ++j) {
+                    bitsetUnion(out, a->liveIn[mf->blocks[b].succs[j]]);
+                }
+                if (bitsetPropagate(a->liveIn[b], gen[b], out, kill[b])) {
+                    changed = true;
                 }
             }
         }
@@ -8654,7 +8745,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
                 Slice<MInst> out = makeSlice<MInst>(Int(0LL), n);
                 Slice<OrigInst> orig = {};
-                Fn<void(Slice<Move>)> move = [&](Slice<Move> moves) mutable -> void {
+                auto move = [&](Slice<Move> moves) mutable -> void {
                     if ((length(moves) == Int(0LL))) {
                         return;
                     }
@@ -8750,7 +8841,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         Slice<bool> save = makeSlice<bool>(length(defs));
-        Fn<void(Slice<Move>, i32)> consider = [&](Slice<Move> moves, i32 b) mutable -> void {
+        auto consider = [&](Slice<Move> moves, i32 b) mutable -> void {
             {
                 auto range518 = moves;
                 for (Int index519 = 0, rangeEnd520 = length(range518); index519 < rangeEnd520; ++index519) {
@@ -8799,7 +8890,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 consider(moves, b);
             }
         }
-        Fn<Slice<Move>(Slice<Move>)> filter = [&](Slice<Move> moves) mutable -> Slice<Move> {
+        auto filter = [&](Slice<Move> moves) mutable -> Slice<Move> {
             Slice<Move> out = subslice(moves, Int(0), Int(0LL));
             {
                 auto range531 = moves;
@@ -14006,7 +14097,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 homes[v] = i32(-1LL);
             }
         }
-        Fn<void(i32, i32)> use = [&](i32 b, i32 v) mutable -> void {
+        auto use = [&](i32 b, i32 v) mutable -> void {
             Value* val = (&((f)->values[v]));
             if ((((((val)->op != OpConst) || (!(isFloat((val)->typ)))) || ((val)->aux == i64(0LL))) || ((l)->uses[v] < i32(2LL)))) {
                 return;
@@ -14755,7 +14846,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
             }
         }
-        Fn<AddressExpression(VReg)> address = [&](VReg reg) mutable -> AddressExpression {
+        auto address = [&](VReg reg) mutable -> AddressExpression {
             if (((reg >= firstVirtual) && (values[(reg - firstVirtual)] >= i32(0LL)))) {
                 return addressExpressionsOf(ranges, values[(reg - firstVirtual)], Int(0LL));
             }
@@ -14851,7 +14942,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         (region)->groups = appendValues((region)->groups, group);
                     }
                 }
-                Fn<MInst(i32)> jump = [&](i32 target) mutable -> MInst {
+                auto jump = [&](i32 target) mutable -> MInst {
                     MInst in = inst(mJmp);
                     (in).target = target;
                     return in;
@@ -15071,7 +15162,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void objCodeAddFixedBlobs(ObjCode* oc) {
-        Fn<Slice<u8>(u64, u64)> mask = [&](u64 lo, u64 hi) mutable -> Slice<u8> {
+        auto mask = [&](u64 lo, u64 hi) mutable -> Slice<u8> {
             Slice<u8> b = makeSlice<u8>(Int(16LL));
             littlePutUint64(b, lo);
             littlePutUint64(subslice(b, Int(8LL), length(b)), hi);
@@ -15399,7 +15490,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // that only reads the stack, it may be preempted anywhere.
     static void objCodeFramesStub(ObjCode* oc) {
         Asm* a = (&((oc)->a));
-        Fn<Amem(i32)> word = [&](i32 k) mutable -> Amem {
+        auto word = [&](i32 k) mutable -> Amem {
             return baseAt(RAX, k);
         };
         i32 start = objCodeBeginRegion(oc, symFrames);
@@ -15790,7 +15881,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // from the landing site, whose return address it stores at the new top.
     static void objCodeLandStub(ObjCode* oc) {
         Asm* a = (&((oc)->a));
-        Fn<Amem(i32)> word = [&](i32 k) mutable -> Amem {
+        auto word = [&](i32 k) mutable -> Amem {
             return baseAt(RAX, (i32(8LL) * k));
         };
         i32 start = objCodeBeginRegion(oc, symLand);
@@ -15871,7 +15962,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // is still zero.
     static void objCodeRecordFrame(ObjCode* oc) {
         Asm* a = (&((oc)->a));
-        Fn<Amem(i32)> word = [&](i32 k) mutable -> Amem {
+        auto word = [&](i32 k) mutable -> Amem {
             return baseAt(ctxReg, (offJump + (i32(8LL) * k)));
         };
         asmLoad(a, u8(8LL), u8(8LL), false, RAX, baseAt(RBP, i32(8LL)));
@@ -15964,7 +16055,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // (gort.go); first it grows the stack until the frames fit.
     static void objCodeResumeStub(ObjCode* oc) {
         Asm* a = (&((oc)->a));
-        Fn<Amem(i32)> word = [&](i32 k) mutable -> Amem {
+        auto word = [&](i32 k) mutable -> Amem {
             return baseAt(RAX, k);
         };
         i32 start = objCodeBeginRegion(oc, symResume);
@@ -16975,7 +17066,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Map<Array<i32, 2>, i32> memo = mapOf<Array<i32, 2>, i32>({});
         Map<i32, Slice<i32>> preds = mapOf<i32, Slice<i32>>({});
         Fn<i32(i32, Int)> value = {};
-        Fn<i32(i32, i32)> seen = [&](i32 b, i32 v) mutable -> i32 {
+        auto seen = [&](i32 b, i32 v) mutable -> i32 {
             v = optimizerResolve(o, v);
             {
                 auto temporary1250 = lookupMap(index, v);
@@ -17073,7 +17164,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
                 auto temporary1266 = lookupMap(bypasses, b);
                 bool isBypass = temporary1266.v1;
-                Fn<i32(i32)> at = [&](i32 v) mutable -> i32 {
+                auto at = [&](i32 v) mutable -> i32 {
                     if (isBypass) {
                         return seen((bypasses[b]).pred, v);
                     }
@@ -17991,45 +18082,33 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return ((r >= XMM0) && (r < firstVirtual));
     }
 
-    static void bitsetEach(Bitset s, Fn<void(Int)> cb) {
-        {
-            auto range1360 = s;
-            for (Int index1361 = 0, rangeEnd1362 = length(range1360); index1361 < rangeEnd1362; ++index1361) {
-                Int i = index1361;
-                u64 w = range1360[index1361];
-                {
-                    for (; (w != u64(0LL));) {
-                        Int b = bitsTrailingZeros64(w);
-                        cb(((i * Int(64LL)) + b));
-                        w &= (w - u64(1LL));
-                    }
-                }
+    template <typename F>
+    static void bitsetEach(Bitset s, F cb) {
+        // Preserve ascending register order for identical interval allocation.
+        visitBitsetWords(s, [&](usize index, u64 word) {
+            while (word) {
+                cb(Int(index * 64 + bitsTrailingZeros64(word)));
+                word &= word - 1;
             }
-        }
+        });
     }
 
     static bool bitsetHas(Bitset s, Int i) {
-        return ((s[shiftRight(i, Int(6LL))] & (shiftLeft(u64(1LL), convert<Uint>((i & Int(63LL)))))) != u64(0LL));
+        require(i >= 0 && s.data && usize(i) < s.data->bits, "bitset index");
+        return (bitsetWord(s, usize(i) / 64) & (u64(1) << (usize(i) % 64))) != 0;
     }
 
     static void bitsetSet(Bitset s, Int i) {
-        s[shiftRight(i, Int(6LL))] |= shiftLeft(u64(1LL), convert<Uint>((i & Int(63LL))));
+        require(i >= 0 && s.data && usize(i) < s.data->bits, "bitset index");
+        bitsetAddWord(s, usize(i) / 64, u64(1) << (usize(i) % 64));
     }
 
     // union adds o to s and reports whether s changed.
     static bool bitsetUnion(Bitset s, Bitset o) {
         bool changed = false;
-        {
-            auto range1363 = s;
-            for (Int index1364 = 0, rangeEnd1365 = length(range1363); index1364 < rangeEnd1365; ++index1364) {
-                Int i = index1364;
-                u64 n = (s[i] | o[i]);
-                if ((n != s[i])) {
-                    s[i] = n;
-                    changed = true;
-                }
-            }
-        }
+        visitBitsetWords(o, [&](usize index, u64 word) {
+            if (bitsetAddWord(s, index, word)) { changed = true; }
+        });
         return changed;
     }
 
@@ -18183,12 +18262,21 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static Allocator* allocate(MFunc* mf) {
-        Allocator* a = activePool->make<Allocator>(Allocator{mf, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}});
+        // The first allocation is discarded after copy coalescing. Its
+        // intervals and liveness facts must not overlap the second pass.
+        ObjPool* arena = activePool->make<ObjPool>();
+        PoolScope scope(*arena);
+        Allocator* a = arena->make<Allocator>();
+        a->mf = mf;
         allocatorLinearize(a);
         allocatorLiveness(a);
         allocatorBuildIntervals(a);
         if (allocatorCoalesce(a)) {
-            a = activePool->make<Allocator>(Allocator{mf, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}});
+            // Coalescing stores register numbers and views of the original
+            // move arrays in mf; none of this arena's objects escape to it.
+            arena->clear();
+            a = arena->make<Allocator>();
+            a->mf = mf;
             allocatorLinearize(a);
             allocatorLiveness(a);
             allocatorBuildIntervals(a);
@@ -18376,7 +18464,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         Slice<i64> out = makeSlice<i64>((n * length((f)->blocks)));
         Slice<i64> cur = makeSlice<i64>(n);
-        Fn<void(i32)> entry = [&](i32 b) mutable -> void {
+        auto entry = [&](i32 b) mutable -> void {
             bool first = true;
             if ((b != i32(0LL))) {
                 {
@@ -18795,7 +18883,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static Tuple2<Slice<u8>, Slice<u32>> ehFrame(Slice<Region> regions) {
         Slice<u8> out = {};
         Slice<u32> starts = {};
-        Fn<void(Slice<u8>)> entry = [&](Slice<u8> body) mutable -> void {
+        auto entry = [&](Slice<u8> body) mutable -> void {
             {
                 for (; ((((Int(4LL) + length(body))) % Int(8LL)) != Int(0LL));) {
                     body = appendValues(body, u8(0LL));
@@ -19188,7 +19276,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         i64 sa = shiftRight(convert<i64>(shiftLeft(a, ((Uint(64LL) - w)))), ((Uint(64LL) - w)));
         i64 sb = shiftRight(convert<i64>(shiftLeft(b, ((Uint(64LL) - w)))), ((Uint(64LL) - w)));
         u64 sh = (b & convert<u64>((w - Uint(1LL))));
-        Fn<Tuple2<u64, bool>(bool)> boolean = [&](bool c) mutable -> Tuple2<u64, bool> {
+        auto boolean = [&](bool c) mutable -> Tuple2<u64, bool> {
             if (c) {
                 return {u64(1LL), true};
             }
@@ -19393,7 +19481,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static GoFrame goAssign(Slice<ValType> params, Slice<ValType> results) {
         GoFrame f = {};
         i32 off = i32(0LL);
-        Fn<Slice<GoLoc>(Slice<ValType>, Int)> assign = [&](Slice<ValType> types, Int ints) mutable -> Slice<GoLoc> {
+        auto assign = [&](Slice<ValType> types, Int ints) mutable -> Slice<GoLoc> {
             Int floats = Int(0LL);
             Slice<GoLoc> locs = makeSlice<GoLoc>(length(types));
             {
@@ -19883,7 +19971,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static Bitset newBitset(Int n) {
-        return makeSlice<u64>((((n + Int(63LL))) / Int(64LL)));
+        require(n >= 0, "bitset size");
+        auto* data = activePool->make<BitsetData>();
+        data->pool = activePool;
+        data->bits = usize(n);
+        data->nodes.resize((usize(n) + 16383) / 16384);
+        data->nodes.visit([](BitNode*& node) { node = nullptr; });
+        return {data};
     }
 
     static Layout* newLayout(Module* m) {
@@ -20682,7 +20776,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static u64 typeID(FuncType* t) {
         u64 id = u64(1LL);
         Int bits = Int(1LL);
-        Fn<void(u64)> push = [&](u64 code) mutable -> void {
+        auto push = [&](u64 code) mutable -> void {
             id = (shiftLeft(id, Int(3LL)) | code);
             bits += Int(3LL);
         };
@@ -20870,7 +20964,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         constexpr Int secNoteStack = {};
         constexpr Int secCount = {};
         Slice<u8> strtab = {};
-        Fn<u32(String)> str = [&](String s) mutable -> u32 {
+        auto str = [&](String s) mutable -> u32 {
             u32 off = convert<u32>(length(strtab));
             strtab = appendSlice(strtab, s);
             strtab = appendValues(strtab, u8(0LL));
@@ -20878,7 +20972,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         };
         str(String(""));
         Slice<u8> symtab = {};
-        Fn<void(u32, u8, u16, u64, u64)> sym = [&](u32 name, u8 info, u16 shndx, u64 value, u64 size) mutable -> void {
+        auto sym = [&](u32 name, u8 info, u16 shndx, u64 value, u64 size) mutable -> void {
             symtab = littleAppendUint32(symtab, name);
             symtab = appendValues(symtab, info, u8(0LL));
             symtab = littleAppendUint16(symtab, shndx);
@@ -20925,7 +21019,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 sym(str(name), u8(16LL), u16(0LL), u64(0LL), u64(0LL));
             }
         }
-        Fn<Slice<u8>(Slice<u8>, u64, Int, u32, i64)> rela = [&](Slice<u8> out, u64 at, Int symbol, u32 typ, i64 addend) mutable -> Slice<u8> {
+        auto rela = [&](Slice<u8> out, u64 at, Int symbol, u32 typ, i64 addend) mutable -> Slice<u8> {
             out = littleAppendUint64(out, at);
             out = littleAppendUint64(out, (shiftLeft(convert<u64>(symbol), Int(32LL)) | convert<u64>(typ)));
             return littleAppendUint64(out, convert<u64>(addend));
@@ -20977,7 +21071,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         Slice<u8> shstrtab = {};
-        Fn<u32(String)> sh = [&](String s) mutable -> u32 {
+        auto sh = [&](String s) mutable -> u32 {
             u32 off = convert<u32>(length(shstrtab));
             shstrtab = appendSlice(shstrtab, s);
             shstrtab = appendValues(shstrtab, u8(0LL));
@@ -20995,7 +21089,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Slice<u8> out = makeSlice<u8>(Int(64LL));
         Array<u64, 11> offsets = {};
         Array<u64, 11> sizes = {};
-        Fn<void(Int, Slice<u8>, Int)> place = [&](Int sec, Slice<u8> data, Int align) mutable -> void {
+        auto place = [&](Int sec, Slice<u8> data, Int align) mutable -> void {
             {
                 for (; ((length(out) % align) != Int(0LL));) {
                     out = appendValues(out, u8(0LL));
@@ -21021,7 +21115,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         u64 shoff = convert<u64>(length(out));
-        Fn<void(Int, u32, u64, u32, u32, u64, u64)> header = [&](Int sec, u32 typ, u64 flags, u32 link, u32 info, u64 align, u64 entsize) mutable -> void {
+        auto header = [&](Int sec, u32 typ, u64 flags, u32 link, u32 info, u64 align, u64 entsize) mutable -> void {
             out = littleAppendUint32(out, names[sec]);
             out = littleAppendUint32(out, typ);
             out = littleAppendUint64(out, flags);
@@ -21379,6 +21473,32 @@ namespace {
             total += value;
         });
         require(total == u64(49999) * 50000 / 2 * 7, "paged visitor");
+        {
+            ObjPool pool;
+            PoolScope scope(pool);
+            Bitset live = newBitset(70001);
+            Bitset gen = newBitset(70001);
+            Bitset out = newBitset(70001);
+            Bitset kill = newBitset(70001);
+            bitsetSet(gen, 0);
+            bitsetSet(gen, 16383);
+            bitsetSet(gen, 65536);
+            bitsetSet(out, 64);
+            bitsetSet(out, 16384);
+            bitsetSet(out, 70000);
+            bitsetSet(kill, 16384);
+            require(bitsetPropagate(live, gen, out, kill), "liveness changes");
+            require(!bitsetPropagate(live, gen, out, kill), "liveness convergence");
+            require(!bitsetHas(live, 16384), "liveness kill");
+            const Int expected[] = {0, 64, 16383, 65536, 70000};
+            usize seen = 0;
+            bitsetEach(live, [&](Int bit) {
+                require(seen < 5 && expected[seen++] == bit, "sparse bitset order");
+            });
+            require(seen == 5, "sparse bitset contents");
+            require(bitsetUnion(live, out) && bitsetHas(live, 16384), "sparse union");
+            require(!bitsetUnion(live, out), "sparse union convergence");
+        }
         int count = 0;
         int order[3]{};
         {
