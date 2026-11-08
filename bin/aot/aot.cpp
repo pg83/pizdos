@@ -967,8 +967,10 @@ namespace std {
 }
 
 namespace {
-    using Int = i64;
-    using Uint = u64;
+    // All containers and inputs are bounded by INT32_MAX. Wasm scalar
+    // values and ELF sizes use their explicit i64/u64 types.
+    using Int = i32;
+    using Uint = u32;
     template <typename T>
     using InitialValues = std::initializer_list<T>;
 
@@ -1097,7 +1099,7 @@ namespace {
         void initialize(Int size, Int clearFrom = 0) {
             require(size >= 0 && Uint(size) <= 0x7fffffff && clearFrom >= 0 && clearFrom <= size, "array too large");
             count = size;
-            paged = Uint(size) * sizeof(T) > pageBytes - sizeof(Buffer::Header);
+            paged = u64(size) * sizeof(T) > pageBytes - sizeof(Buffer::Header);
             if (paged) {
                 pages.resize(usize(size));
                 contiguous = nullptr;
@@ -1786,7 +1788,7 @@ namespace {
 
     template <typename T, typename U>
     static T shiftLeft(T value, U amount) {
-        if (Uint(amount) >= sizeof(T) * 8) {
+        if (u64(amount) >= sizeof(T) * 8) {
             return T(0);
         }
         using Unsigned = u64;
@@ -1795,7 +1797,7 @@ namespace {
 
     template <typename T, typename U>
     static T shiftRight(T value, U amount) {
-        if (Uint(amount) >= sizeof(T) * 8) {
+        if (u64(amount) >= sizeof(T) * 8) {
             return value < T(0) ? T(-1) : T(0);
         }
         return T(value >> amount);
@@ -7040,7 +7042,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         continue;
                     }
                 }
-                if (((((val).block >= i32(0LL)) && (convert<Int>((val).block) < length((l)->members))) && (l)->members[(val).block])) {
+                if (((((val).block >= i32(0LL)) && (convert<i64>((val).block) < length((l)->members))) && (l)->members[(val).block])) {
                     i32 n = functionNewValue(f, (val).op, (val).typ, blocks[(val).block], (val).aux, Span<const i32>({}));
                     ((f)->values[n]).aux2 = (val).aux2;
                     if (proven[convert<i32>(v)]) {
@@ -8494,7 +8496,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         }
                     }
                 }
-                (d).bytes = readerBytes(r, convert<Int>(readerU32(r)));
+                (d).bytes = readerBytes(r, convert<i64>(readerU32(r)));
                 (m)->datas = appendValues((m)->datas, d);
             }
         }
@@ -10066,16 +10068,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static Int allocatorVindex(Allocator* a, VReg r) {
-        return convert<Int>((r - firstVirtual));
+        return convert<i64>((r - firstVirtual));
     }
 
     static void asmAluMI(Asm* a, AluOp op, u8 size, Amem m, i64 x) {
         if ((x == convert<i64>(convert<i8>(x)))) {
-            asmOpRM(a, (size == u8(8LL)), Span<const u8>({u8(131LL)}), convert<Int>(op), m, Int(1LL), false);
+            asmOpRM(a, (size == u8(8LL)), Span<const u8>({u8(131LL)}), convert<i64>(op), m, Int(1LL), false);
             asmBytes(a, {u8(convert<u8>(x))});
             return;
         }
-        asmOpRM(a, (size == u8(8LL)), Span<const u8>({u8(129LL)}), convert<Int>(op), m, Int(4LL), false);
+        asmOpRM(a, (size == u8(8LL)), Span<const u8>({u8(129LL)}), convert<i64>(op), m, Int(4LL), false);
         asmU32(a, convert<u32>(x));
     }
 
@@ -10106,35 +10108,35 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void asmAluRIRaw(Asm* a, AluOp op, u8 size, VReg dst, i64 x) {
-        Int d = convert<Int>(dst);
+        Int d = convert<i64>(dst);
         if ((x == convert<i64>(convert<i8>(x)))) {
             asmRex(a, (size == u8(8LL)), Int(-1LL), Int(-1LL), d, false);
             asmBytes(a, {u8(u8(131LL))});
-            asmModrmReg(a, convert<Int>(op), d);
+            asmModrmReg(a, convert<i64>(op), d);
             asmBytes(a, {u8(convert<u8>(x))});
             return;
         }
         asmRex(a, (size == u8(8LL)), Int(-1LL), Int(-1LL), d, false);
         asmBytes(a, {u8(u8(129LL))});
-        asmModrmReg(a, convert<Int>(op), d);
+        asmModrmReg(a, convert<i64>(op), d);
         asmU32(a, convert<u32>(x));
     }
 
     static void asmAluRM(Asm* a, AluOp op, u8 size, VReg dst, Amem m) {
         if ((op == aluImul)) {
-            asmOpRM(a, (size == u8(8LL)), Span<const u8>({u8(15LL), u8(175LL)}), convert<Int>(dst), m, Int(0LL), false);
+            asmOpRM(a, (size == u8(8LL)), Span<const u8>({u8(15LL), u8(175LL)}), convert<i64>(dst), m, Int(0LL), false);
             return;
         }
-        asmOpRM(a, (size == u8(8LL)), Span<const u8>({u8(shiftLeft(convert<u8>(op), Int(3LL)) | u8(3LL))}), convert<Int>(dst), m, Int(0LL), false);
+        asmOpRM(a, (size == u8(8LL)), Span<const u8>({u8(shiftLeft(convert<u8>(op), Int(3LL)) | u8(3LL))}), convert<i64>(dst), m, Int(0LL), false);
     }
 
     // aluRR emits "op dst, src" for add, or, adc, sbb, and, sub, xor, cmp.
     static void asmAluRR(Asm* a, AluOp op, u8 size, VReg dst, VReg src) {
         if ((op == aluImul)) {
-            asmOpRR(a, (size == u8(8LL)), Span<const u8>({u8(15LL), u8(175LL)}), convert<Int>(dst), convert<Int>(src), false);
+            asmOpRR(a, (size == u8(8LL)), Span<const u8>({u8(15LL), u8(175LL)}), convert<i64>(dst), convert<i64>(src), false);
             return;
         }
-        asmOpRR(a, (size == u8(8LL)), Span<const u8>({u8(shiftLeft(convert<u8>(op), Int(3LL)) | u8(3LL))}), convert<Int>(dst), convert<Int>(src), false);
+        asmOpRR(a, (size == u8(8LL)), Span<const u8>({u8(shiftLeft(convert<u8>(op), Int(3LL)) | u8(3LL))}), convert<i64>(dst), convert<i64>(src), false);
     }
 
     static void asmB(Asm* a, Span<const u8> bytes) {
@@ -10153,9 +10155,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void asmCallReg(Asm* a, VReg r) {
-        asmRex(a, false, Int(-1LL), Int(-1LL), convert<Int>(r), false);
+        asmRex(a, false, Int(-1LL), Int(-1LL), convert<i64>(r), false);
         asmBytes(a, {u8(u8(255LL))});
-        asmModrmReg(a, Int(2LL), convert<Int>(r));
+        asmModrmReg(a, Int(2LL), convert<i64>(r));
     }
 
     static i32 asmCallRel(Asm* a) {
@@ -10165,7 +10167,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void asmCmov(Asm* a, u8 cc, u8 size, VReg dst, VReg src) {
-        asmOpRR(a, (size == u8(8LL)), Span<const u8>({u8(15LL), u8(u8(64LL) + cc)}), convert<Int>(dst), convert<Int>(src), false);
+        asmOpRR(a, (size == u8(8LL)), Span<const u8>({u8(15LL), u8(u8(64LL) + cc)}), convert<i64>(dst), convert<i64>(src), false);
     }
 
     static void asmCvtFF(Asm* a, u8 from, VReg dst, VReg src) {
@@ -10175,17 +10177,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // cvtFI truncates a float of fsize bytes to a signed integer of isize bytes.
     static void asmCvtFI(Asm* a, u8 isize, u8 fsize, VReg dst, VReg src) {
-        asmVexRR(a, scalarPP(fsize), u8(1LL), (isize == u8(8LL)), u8(44LL), convert<Int>(dst), Int(-1LL), regNum(src));
+        asmVexRR(a, scalarPP(fsize), u8(1LL), (isize == u8(8LL)), u8(44LL), convert<i64>(dst), Int(-1LL), regNum(src));
     }
 
     // cvtIF converts a signed integer of isize bytes to a float of fsize bytes.
     static void asmCvtIF(Asm* a, u8 isize, u8 fsize, VReg dst, VReg src) {
         Int d = regNum(dst);
-        asmVexRR(a, scalarPP(fsize), u8(1LL), (isize == u8(8LL)), u8(42LL), d, Int(15LL), convert<Int>(src));
+        asmVexRR(a, scalarPP(fsize), u8(1LL), (isize == u8(8LL)), u8(42LL), d, Int(15LL), convert<i64>(src));
     }
 
     static void asmDiv(Asm* a, bool signedValue, u8 size, VReg src) {
-        Int s = convert<Int>(src);
+        Int s = convert<i64>(src);
         asmRex(a, (size == u8(8LL)), Int(-1LL), Int(-1LL), s, false);
         asmBytes(a, {u8(u8(247LL))});
         if (signedValue) {
@@ -10196,8 +10198,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void asmExt(Asm* a, u8 width, u8 dsize, bool signedValue, VReg dst, VReg src) {
-        auto temporary574 = convert<Int>(dst);
-        auto temporary575 = convert<Int>(src);
+        auto temporary574 = convert<i64>(dst);
+        auto temporary575 = convert<i64>(src);
         Int d = temporary574;
         Int s = temporary575;
         {
@@ -10292,11 +10294,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void asmImul3(Asm* a, u8 size, VReg dst, VReg src, i64 x) {
         if ((x == convert<i64>(convert<i8>(x)))) {
-            asmOpRR(a, (size == u8(8LL)), Span<const u8>({u8(107LL)}), convert<Int>(dst), convert<Int>(src), false);
+            asmOpRR(a, (size == u8(8LL)), Span<const u8>({u8(107LL)}), convert<i64>(dst), convert<i64>(src), false);
             asmBytes(a, {u8(convert<u8>(x))});
             return;
         }
-        asmOpRR(a, (size == u8(8LL)), Span<const u8>({u8(105LL)}), convert<Int>(dst), convert<Int>(src), false);
+        asmOpRR(a, (size == u8(8LL)), Span<const u8>({u8(105LL)}), convert<i64>(dst), convert<i64>(src), false);
         asmU32(a, convert<u32>(x));
     }
 
@@ -10323,7 +10325,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void asmLea(Asm* a, u8 size, VReg dst, Amem m) {
-        asmOpRM(a, (size == u8(8LL)), Span<const u8>({u8(141LL)}), convert<Int>(dst), m, Int(0LL), false);
+        asmOpRM(a, (size == u8(8LL)), Span<const u8>({u8(141LL)}), convert<i64>(dst), m, Int(0LL), false);
         if ((dst == RSP)) {
             if (((((m).base != Int(4LL)) || ((m).index >= Int(0LL))) || ((m).label >= i32(0LL)))) {
                 compilerError(String("internal error: untracked change of rsp"));
@@ -10334,7 +10336,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // load emits a load of width bytes into a register of dsize bytes.
     static void asmLoad(Asm* a, u8 width, u8 dsize, bool signedValue, VReg dst, Amem m) {
-        Int d = convert<Int>(dst);
+        Int d = convert<i64>(dst);
         {
             if ((width == u8(8LL))) {
                 asmOpRM(a, true, Span<const u8>({u8(139LL)}), d, m, Int(0LL), false);
@@ -10416,11 +10418,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void asmMovGX(Asm* a, u8 size, VReg dst, VReg src) {
-        asmVexRR(a, pp66, u8(1LL), (size == u8(8LL)), u8(110LL), regNum(dst), Int(-1LL), convert<Int>(src));
+        asmVexRR(a, pp66, u8(1LL), (size == u8(8LL)), u8(110LL), regNum(dst), Int(-1LL), convert<i64>(src));
     }
 
     static void asmMovImm(Asm* a, u8 size, VReg dst, i64 x) {
-        Int d = convert<Int>(dst);
+        Int d = convert<i64>(dst);
         {
             if ((x == i64(0LL))) {
                 asmOpRR(a, false, Span<const u8>({u8(51LL)}), d, d, false);
@@ -10443,11 +10445,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void asmMovRR(Asm* a, u8 size, VReg dst, VReg src) {
-        asmOpRR(a, (size == u8(8LL)), Span<const u8>({u8(139LL)}), convert<Int>(dst), convert<Int>(src), false);
+        asmOpRR(a, (size == u8(8LL)), Span<const u8>({u8(139LL)}), convert<i64>(dst), convert<i64>(src), false);
     }
 
     static void asmMovXG(Asm* a, u8 size, VReg dst, VReg src) {
-        asmVexRR(a, pp66, u8(1LL), (size == u8(8LL)), u8(126LL), regNum(src), Int(-1LL), convert<Int>(dst));
+        asmVexRR(a, pp66, u8(1LL), (size == u8(8LL)), u8(126LL), regNum(src), Int(-1LL), convert<i64>(dst));
     }
 
     static void asmMoveSP(Asm* a, i32 by) {
@@ -10493,8 +10495,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void asmPop(Asm* a, VReg r) {
-        asmRex(a, false, Int(-1LL), Int(-1LL), convert<Int>(r), false);
-        asmBytes(a, {u8(u8(u8(88LL) + lo3(convert<Int>(r))))});
+        asmRex(a, false, Int(-1LL), Int(-1LL), convert<i64>(r), false);
+        asmBytes(a, {u8(u8(u8(88LL) + lo3(convert<i64>(r))))});
         asmMoveSP(a, i32(-8LL));
     }
 
@@ -10519,8 +10521,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void asmPush(Asm* a, VReg r) {
-        asmRex(a, false, Int(-1LL), Int(-1LL), convert<Int>(r), false);
-        asmBytes(a, {u8(u8(u8(80LL) + lo3(convert<Int>(r))))});
+        asmRex(a, false, Int(-1LL), Int(-1LL), convert<i64>(r), false);
+        asmBytes(a, {u8(u8(u8(80LL) + lo3(convert<i64>(r))))});
         asmMoveSP(a, i32(8LL));
     }
 
@@ -10584,7 +10586,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void asmSetcc(Asm* a, u8 cc, VReg dst) {
-        Int d = convert<Int>(dst);
+        Int d = convert<i64>(dst);
         asmRex(a, false, Int(-1LL), Int(-1LL), d, (d >= Int(4LL)));
         asmBytes(a, {u8(u8(15LL)), u8(u8(u8(144LL) + cc))});
         asmModrmReg(a, Int(0LL), d);
@@ -10594,22 +10596,22 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void asmShiftCL(Asm* a, u8 kind, u8 size, VReg dst) {
-        Int d = convert<Int>(dst);
+        Int d = convert<i64>(dst);
         asmRex(a, (size == u8(8LL)), Int(-1LL), Int(-1LL), d, false);
         asmBytes(a, {u8(u8(211LL))});
-        asmModrmReg(a, convert<Int>(kind), d);
+        asmModrmReg(a, convert<i64>(kind), d);
     }
 
     static void asmShiftImm(Asm* a, u8 kind, u8 size, VReg dst, i64 n) {
-        Int d = convert<Int>(dst);
+        Int d = convert<i64>(dst);
         asmRex(a, (size == u8(8LL)), Int(-1LL), Int(-1LL), d, false);
         if ((n == i64(1LL))) {
             asmBytes(a, {u8(u8(209LL))});
-            asmModrmReg(a, convert<Int>(kind), d);
+            asmModrmReg(a, convert<i64>(kind), d);
             return;
         }
         asmBytes(a, {u8(u8(193LL))});
-        asmModrmReg(a, convert<Int>(kind), d);
+        asmModrmReg(a, convert<i64>(kind), d);
         asmBytes(a, {u8(convert<u8>(n))});
     }
 
@@ -10628,7 +10630,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
             }
         }
-        asmVexRR(a, pp, u8(2LL), (size == u8(8LL)), u8(247LL), convert<Int>(dst), convert<Int>(count), convert<Int>(src));
+        asmVexRR(a, pp, u8(2LL), (size == u8(8LL)), u8(247LL), convert<i64>(dst), convert<i64>(count), convert<i64>(src));
     }
 
     // spTable returns the deltas of the region [start, end): the one at its
@@ -10657,7 +10659,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void asmStore(Asm* a, u8 width, VReg src, Amem m) {
-        Int s = convert<Int>(src);
+        Int s = convert<i64>(src);
         {
             auto switch591 = width;
             switch (switch591) {
@@ -10712,13 +10714,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void asmTest(Asm* a, u8 size, VReg x, VReg y) {
-        asmOpRR(a, (size == u8(8LL)), Span<const u8>({u8(133LL)}), convert<Int>(y), convert<Int>(x), false);
+        asmOpRR(a, (size == u8(8LL)), Span<const u8>({u8(133LL)}), convert<i64>(y), convert<i64>(x), false);
     }
 
     static void asmTestImm(Asm* a, u8 size, VReg x, i64 imm) {
-        asmRex(a, (size == u8(8LL)), Int(-1LL), Int(-1LL), convert<Int>(x), false);
+        asmRex(a, (size == u8(8LL)), Int(-1LL), Int(-1LL), convert<i64>(x), false);
         asmBytes(a, {u8(u8(247LL))});
-        asmModrmReg(a, Int(0LL), convert<Int>(x));
+        asmModrmReg(a, Int(0LL), convert<i64>(x));
         asmU32(a, convert<u32>(imm));
     }
 
@@ -10739,10 +10741,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void asmUnary(Asm* a, u8 kind, u8 size, VReg dst) {
-        Int d = convert<Int>(dst);
+        Int d = convert<i64>(dst);
         asmRex(a, (size == u8(8LL)), Int(-1LL), Int(-1LL), d, false);
         asmBytes(a, {u8(u8(247LL))});
-        asmModrmReg(a, (Int(3LL) - convert<Int>(kind)), d);
+        asmModrmReg(a, (Int(3LL) - convert<i64>(kind)), d);
     }
 
     // vex emits a VEX prefix: pp selects 66/F3/F2, mmmmm the opcode map,
@@ -10796,7 +10798,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void asmXchg(Asm* a, VReg x, VReg y) {
-        asmOpRR(a, true, Span<const u8>({u8(135LL)}), convert<Int>(x), convert<Int>(y), false);
+        asmOpRR(a, true, Span<const u8>({u8(135LL)}), convert<i64>(x), convert<i64>(y), false);
     }
 
     // children lists the immediate dominator's children in a stable order.
@@ -11026,7 +11028,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         i64 index = readerSleb(r, Uint(33LL));
-        if (((index < i64(0LL)) || (convert<Int>(index) >= length(((fe)->m)->types)))) {
+        if (((index < i64(0LL)) || (convert<i64>(index) >= length(((fe)->m)->types)))) {
             compilerError(String("unknown type %d"));
         }
         FuncType* t = (&(((fe)->m)->types[index]));
@@ -11187,7 +11189,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         }
                         case u8(16LL): {
                             u32 index = readerU32(r);
-                            if ((convert<Int>(index) >= length(((fe)->m)->funcs))) {
+                            if ((convert<i64>(index) >= length(((fe)->m)->funcs))) {
                                 compilerError(String("unknown function %d"));
                             }
                             frontendCall(fe, OpCall, moduleFuncType((fe)->m, index), convert<i64>(index), i32(0LL), {});
@@ -11196,10 +11198,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         case u8(17LL): {
                             u32 typeIndex = readerU32(r);
                             u32 table = readerU32(r);
-                            if ((convert<Int>(typeIndex) >= length(((fe)->m)->types))) {
+                            if ((convert<i64>(typeIndex) >= length(((fe)->m)->types))) {
                                 compilerError(String("unknown type %d"));
                             }
-                            if ((convert<Int>(table) >= length(((fe)->m)->tables))) {
+                            if ((convert<i64>(table) >= length(((fe)->m)->tables))) {
                                 compilerError(String("unknown table %d"));
                             }
                             i32 elem = frontendPop(fe);
@@ -11621,7 +11623,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         }
                         case u8(210LL): {
                             u32 index = readerU32(r);
-                            if ((convert<Int>(index) >= length(((fe)->m)->funcs))) {
+                            if ((convert<i64>(index) >= length(((fe)->m)->funcs))) {
                                 compilerError(String("unknown function %d"));
                             }
                             frontendPush(fe, frontendEmit(fe, OpRefFunc, FuncRef, convert<i64>(index), Span<const i32>({})));
@@ -11806,7 +11808,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static u32 frontendGlobalIndex(Frontend* fe) {
         u32 index = readerU32(&((fe)->r));
-        if ((convert<Int>(index) >= length(((fe)->m)->globals))) {
+        if ((convert<i64>(index) >= length(((fe)->m)->globals))) {
             compilerError(String("unknown global %d"));
         }
         return index;
@@ -11818,10 +11820,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static Control* frontendLabel(Frontend* fe, u32 depth) {
-        if ((convert<Int>(depth) >= length((fe)->ctrls))) {
+        if ((convert<i64>(depth) >= length((fe)->ctrls))) {
             compilerError(String("unknown label %d"));
         }
-        return (&((fe)->ctrls[((length((fe)->ctrls) - Int(1LL)) - convert<Int>(depth))]));
+        return (&((fe)->ctrls[((length((fe)->ctrls) - Int(1LL)) - convert<i64>(depth))]));
     }
 
     // branchArgs are the values a branch to frame c passes: a loop's parameters
@@ -11847,7 +11849,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static i32 frontendLocalIndex(Frontend* fe) {
         u32 index = readerU32(&((fe)->r));
-        if ((convert<Int>(index) >= length((fe)->locals))) {
+        if ((convert<i64>(index) >= length((fe)->locals))) {
             compilerError(String("unknown local %d"));
         }
         return convert<i32>(index);
@@ -11904,7 +11906,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // value; values created after the parameter grow the table on demand.
     static i32 frontendParamSlot(Frontend* fe, i32 v) {
         {
-            for (; (convert<Int>(v) >= length((fe)->alias));) {
+            for (; (convert<i64>(v) >= length((fe)->alias));) {
                 (fe)->alias = appendValues((fe)->alias, i32(-1LL));
             }
         }
@@ -11994,7 +11996,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 case u32(12LL): {
                     u32 seg = readerU32(r);
                     u32 table = frontendTableIndex(fe);
-                    if ((convert<Int>(seg) >= length(((fe)->m)->elems))) {
+                    if ((convert<i64>(seg) >= length(((fe)->m)->elems))) {
                         compilerError(String("unknown elem segment %d"));
                     }
                     i32 n = frontendPop(fe);
@@ -12006,7 +12008,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
                 case u32(13LL): {
                     u32 seg = readerU32(r);
-                    if ((convert<Int>(seg) >= length(((fe)->m)->elems))) {
+                    if ((convert<i64>(seg) >= length(((fe)->m)->elems))) {
                         compilerError(String("unknown elem segment %d"));
                     }
                     frontendEmit(fe, OpElemDrop, TNone, convert<i64>(seg), Span<const i32>({}));
@@ -12084,7 +12086,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static i32 frontendResolve(Frontend* fe, i32 v) {
         {
-            for (; ((convert<Int>(v) < length((fe)->alias)) && ((fe)->alias[v] >= i32(0LL)));) {
+            for (; ((convert<i64>(v) < length((fe)->alias)) && ((fe)->alias[v] >= i32(0LL)));) {
                 v = (fe)->alias[v];
             }
         }
@@ -12398,7 +12400,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static u32 frontendTableIndex(Frontend* fe) {
         u32 index = readerU32(&((fe)->r));
-        if ((convert<Int>(index) >= length(((fe)->m)->tables))) {
+        if ((convert<i64>(index) >= length(((fe)->m)->tables))) {
             compilerError(String("unknown table %d"));
         }
         return index;
@@ -12489,11 +12491,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         }
                         case mJcc: {
                             if (((((i + Int(1LL)) == (n - Int(1LL))) && ((insts[(i + Int(1LL))]).op == mJmp)) && ((in)->target == next))) {
-                                funcEmitterJumpTo(e, convert<Int>(u8((in)->cc ^ u8(1LL))), (insts[(i + Int(1LL))]).target);
+                                funcEmitterJumpTo(e, convert<i64>(u8((in)->cc ^ u8(1LL))), (insts[(i + Int(1LL))]).target);
                                 i++;
                                 continue;
                             }
-                            funcEmitterJumpTo(e, convert<Int>((in)->cc), (in)->target);
+                            funcEmitterJumpTo(e, convert<i64>((in)->cc), (in)->target);
                             break;
                         }
                         default: {
@@ -12672,7 +12674,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
                 case mTestImm: {
                     if (((((in)->aux == u8(1LL)) && ((in)->imm >= i64(0LL))) && ((in)->imm <= i64(255LL)))) {
-                        asmOpRR(a, false, Span<const u8>({u8(246LL)}), Int(0LL), convert<Int>((in)->src), true);
+                        asmOpRR(a, false, Span<const u8>({u8(246LL)}), Int(0LL), convert<i64>((in)->src), true);
                         asmBytes(a, {u8(convert<u8>((in)->imm))});
                     } else {
                         asmTestImm(a, (in)->size, (in)->src, (in)->imm);
@@ -12805,7 +12807,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         auto switch698 = (in)->aux;
                         switch (switch698) {
                             case calleeStub: {
-                                objCodeCallStub((e)->oc, convert<Int>((in)->imm));
+                                objCodeCallStub((e)->oc, convert<i64>((in)->imm));
                                 break;
                             }
                             case calleeJump: {
@@ -12813,7 +12815,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                                 break;
                             }
                             default: {
-                                objCodeCallFunc((e)->oc, convert<Int>((in)->imm));
+                                objCodeCallFunc((e)->oc, convert<i64>((in)->imm));
                                 break;
                             }
                         }
@@ -13122,11 +13124,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         VReg t0 = mInstTemps(in)[Int(0LL)];
         asmAluRI(a, aluCmp, u8(4LL), (in)->src, convert<i64>(n));
         funcEmitterJumpTo(e, ccAE, def);
-        asmRex(a, true, convert<Int>(t0), Int(-1LL), Int(-1LL), false);
-        asmBytes(a, {u8(u8(141LL)), u8(u8(shiftLeft(lo3(convert<Int>(t0)), Int(3LL)) | u8(5LL)))});
+        asmRex(a, true, convert<i64>(t0), Int(-1LL), Int(-1LL), false);
+        asmBytes(a, {u8(u8(141LL)), u8(u8(shiftLeft(lo3(convert<i64>(t0)), Int(3LL)) | u8(5LL)))});
         i32 leaAt = asmPos(a);
         asmU32(a, u32(0LL));
-        asmOpRM(a, false, Span<const u8>({u8(255LL)}), Int(4LL), Amem{convert<Int>(t0), convert<Int>((in)->src), u8(8LL), {}, i32(-1LL), {}}, Int(0LL), false);
+        asmOpRM(a, false, Span<const u8>({u8(255LL)}), Int(4LL), Amem{t0, (in)->src, u8(8LL), {}, i32(-1LL), {}}, Int(0LL), false);
         (e)->tables = appendValues((e)->tables, TableFixup{leaAt, (leaAt + i32(4LL)), mInstTable(in)});
     }
 
@@ -14251,7 +14253,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     }
                 }
                 FloatRange bound = floatRangesOf(r, functionArgs(f, convert<i32>(v))[Int(0LL)], Int(0LL));
-                double hi = mathLdexp(double(1.0), ((convert<Int>(typeSize((val)->typ)) * Int(8LL)) - Int(1LL)));
+                double hi = mathLdexp(double(1.0), ((convert<i64>(typeSize((val)->typ)) * Int(8LL)) - Int(1LL)));
                 double lo = (-(hi));
                 if (((val)->op == OpTruncSatU)) {
                     lo = double(0.0);
@@ -14752,31 +14754,31 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     break;
                 }
                 case OpMemInit: {
-                    lowererMemInit(l, convert<Int>((val)->aux), args);
+                    lowererMemInit(l, convert<i64>((val)->aux), args);
                     break;
                 }
                 case OpDataDrop: {
                     MInst in = inst(mStoreImm);
-                    (in).mem = memAt(ctxReg, layoutDataDropped((l)->lay, convert<Int>((val)->aux)));
+                    (in).mem = memAt(ctxReg, layoutDataDropped((l)->lay, convert<i64>((val)->aux)));
                     (in).size = u8(1LL);
                     (in).imm = i64(1LL);
                     lowererEmit(l, in);
                     break;
                 }
                 case OpGlobalGet: {
-                    lowererGlobalGet(l, v, convert<Int>((val)->aux));
+                    lowererGlobalGet(l, v, convert<i64>((val)->aux));
                     break;
                 }
                 case OpGlobalSet: {
-                    lowererGlobalSet(l, convert<Int>((val)->aux), args[Int(0LL)]);
+                    lowererGlobalSet(l, convert<i64>((val)->aux), args[Int(0LL)]);
                     break;
                 }
                 case OpCall: {
-                    lowererCall(l, v, convert<Int>((val)->aux), args);
+                    lowererCall(l, v, convert<i64>((val)->aux), args);
                     break;
                 }
                 case OpCallIndirect: {
-                    lowererCallIndirect(l, v, convert<Int>((val)->aux), convert<Int>((val)->aux2), args);
+                    lowererCallIndirect(l, v, convert<i64>((val)->aux), convert<i64>((val)->aux2), args);
                     break;
                 }
                 case OpExtract: {
@@ -14785,7 +14787,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 case OpRefFunc: {
                     MInst in = inst(mLea);
                     (in).dst = lowererDef(l, v);
-                    (in).mem = memAt(ctxReg, layoutDesc((l)->lay, convert<Int>((val)->aux)));
+                    (in).mem = memAt(ctxReg, layoutDesc((l)->lay, convert<i64>((val)->aux)));
                     (in).size = u8(8LL);
                     lowererEmit(l, in);
                     break;
@@ -14804,11 +14806,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     break;
                 }
                 case OpTableGet: {
-                    lowererTableGet(l, v, convert<Int>((val)->aux), args[Int(0LL)]);
+                    lowererTableGet(l, v, convert<i64>((val)->aux), args[Int(0LL)]);
                     break;
                 }
                 case OpTableSet: {
-                    lowererTableSet(l, convert<Int>((val)->aux), args[Int(0LL)], args[Int(1LL)]);
+                    lowererTableSet(l, convert<i64>((val)->aux), args[Int(0LL)], args[Int(1LL)]);
                     break;
                 }
                 case OpTableSize: {
@@ -16416,7 +16418,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     FuncType* t = moduleFuncType(m, (e).index);
                     String sym = exportSymbol((e).name, t);
                     setMap((oc)->globals, sym, true);
-                    objCodeThunk(oc, sym, (t)->params, (t)->results, convert<Int>((e).index), {});
+                    objCodeThunk(oc, sym, (t)->params, (t)->results, convert<i64>((e).index), {});
                 }
             }
         }
@@ -16453,7 +16455,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             } else {
                 littlePutUint64(b, bits);
             }
-            label = objCodeAddBlob(oc, b, convert<Int>(size));
+            label = objCodeAddBlob(oc, b, convert<i64>(size));
             setMap((oc)->floatIx, key, label);
         }
         return Amem{Int(-1LL), Int(-1LL), {}, {}, label, labelModule};
@@ -16751,7 +16753,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                                 i32 d = {};
                                 if ((x[Int(0LL)] == u8(210LL))) {
                                     Reader* r = activePool->make<Reader>(Reader{subslice(x, Int(1LL), length(x)), {}});
-                                    d = layoutDesc(lay, convert<Int>(readerU32(r)));
+                                    d = layoutDesc(lay, convert<i64>(readerU32(r)));
                                 }
                                 arr = littleAppendUint32(arr, convert<u32>(d));
                             }
@@ -18226,7 +18228,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static i32 optimizerResolve(Optimizer* o, i32 v) {
         {
-            for (; ((convert<Int>(v) < length((o)->alias)) && ((o)->alias[v] >= i32(0LL)));) {
+            for (; ((convert<i64>(v) < length((o)->alias)) && ((o)->alias[v] >= i32(0LL)));) {
                 v = (o)->alias[v];
             }
         }
@@ -18370,7 +18372,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void optimizerSetArgs(Optimizer* o, i32 v, Span<const i32> args) {
         Function* f = (o)->f;
         Value* val = (&((f)->values[v]));
-        if ((convert<Int>((val)->nargs) >= length(args))) {
+        if ((convert<i64>((val)->nargs) >= length(args))) {
             copySlice(subslice((f)->pool, (val)->args, length((f)->pool)), args);
             (val)->nargs = convert<u16>(length(args));
             return;
@@ -18468,7 +18470,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static bool optimizerSimplifyValue(Optimizer* o, i32 v) {
         Function* f = (o)->f;
         Value* val = (&((f)->values[v]));
-        if (((convert<Int>(v) < length((o)->alias)) && ((o)->alias[v] >= i32(0LL)))) {
+        if (((convert<i64>(v) < length((o)->alias)) && ((o)->alias[v] >= i32(0LL)))) {
             return false;
         }
         Span<i32> args = functionArgs(f, v);
@@ -18979,7 +18981,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static String readerName(Reader* r) {
         u32 n = readerU32(r);
-        Slice<u8> b = readerBytes(r, convert<Int>(n));
+        Slice<u8> b = readerBytes(r, convert<i64>(n));
         if ((!(utf8Valid(b)))) {
             compilerError(String("malformed UTF-8 encoding at offset %d"));
         }
@@ -19112,7 +19114,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static Int memKindWidth(MemKind k) {
-        return convert<Int>(MemKind(k & MemKind(15LL)));
+        return convert<i64>(MemKind(k & MemKind(15LL)));
     }
 
     static Tuple2<AddressExpression, bool> addAddressExpression(AddressExpression a, AddressExpression b, u32 factor) {
@@ -19339,7 +19341,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static Amem baseAt(VReg base, i32 disp) {
-        return Amem{convert<Int>(base), Int(-1LL), u8(1LL), disp, i32(-1LL), {}};
+        return Amem{base, Int(-1LL), u8(1LL), disp, i32(-1LL), {}};
     }
 
     // breakPatterns_func scatters some elements around in an attempt to break some patterns
@@ -19353,7 +19355,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             {
                 Int idx = ((a + (((lengthValue / Int(4LL))) * Int(2LL))) - Int(1LL));
                 for (; (idx <= ((a + (((lengthValue / Int(4LL))) * Int(2LL))) + Int(1LL))); idx++) {
-                    Int other = convert<Int>((convert<Uint>(xorshiftNext(&(random))) & ((modulus - Uint(1LL)))));
+                    Int other = convert<i64>((convert<Uint>(xorshiftNext(&(random))) & ((modulus - Uint(1LL)))));
                     if ((other >= lengthValue)) {
                         other -= lengthValue;
                     }
@@ -19473,7 +19475,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         if (((ci)->rpoIndex[p] < i32(0LL))) {
                             continue;
                         }
-                        Slice<i64> row = subslice(out, (convert<Int>(p) * n), (((convert<Int>(p) + Int(1LL))) * n));
+                        Slice<i64> row = subslice(out, (convert<i64>(p) * n), (((convert<i64>(p) + Int(1LL))) * n));
                         {
                             auto range1424 = cur;
                             for (Int index1425 = 0, rangeEnd1426 = length(range1424); index1425 < rangeEnd1426; ++index1425) {
@@ -19513,7 +19515,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         for (Int index1434 = 0, rangeEnd1435 = length(range1433); index1434 < rangeEnd1435; ++index1434) {
                             CheckedEdge e = range1433[index1434];
                             i32 arg = tracked[((e).edge)->args[((f)->values[p]).aux]];
-                            end = minimum(end, out[((convert<Int>((e).pred) * n) + convert<Int>(arg))]);
+                            end = minimum(end, out[((convert<i64>((e).pred) * n) + convert<i64>(arg))]);
                         }
                     }
                     cur[j] = end;
@@ -19544,7 +19546,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                                 }
                             }
                         }
-                        Slice<i64> row = subslice(out, (convert<Int>(b) * n), (((convert<Int>(b) + Int(1LL))) * n));
+                        Slice<i64> row = subslice(out, (convert<i64>(b) * n), (((convert<i64>(b) + Int(1LL))) * n));
                         {
                             auto range1442 = cur;
                             for (Int index1443 = 0, rangeEnd1444 = length(range1442); index1443 < rangeEnd1444; ++index1443) {
@@ -19686,8 +19688,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             for (; (!(readerEof(r)));) {
                 u8 id = readerByte(r);
                 u32 size = readerU32(r);
-                Reader* body = activePool->make<Reader>(Reader{readerBytes(r, convert<Int>(size)), {}});
-                Int base = ((r)->pos - convert<Int>(size));
+                Reader* body = activePool->make<Reader>(Reader{readerBytes(r, convert<i64>(size)), {}});
+                Int base = ((r)->pos - convert<i64>(size));
                 if ((id != u8(0LL))) {
                     if ((order(id) <= order(last))) {
                         compilerError(String("unexpected content after last section"));
@@ -19766,14 +19768,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             break;
                         }
                         case u8(10LL): {
-                            Int n = convert<Int>(readerU32(body));
+                            Int n = convert<i64>(readerU32(body));
                             if ((n != length(funcTypes))) {
                                 compilerError(String("function and code section have inconsistent lengths"));
                             }
                             {
                                 Int i = Int(0LL);
                                 for (; (i < n); i++) {
-                                    Int size = convert<Int>(readerU32(body));
+                                    Int size = convert<i64>(readerU32(body));
                                     Int offset = (base + (body)->pos);
                                     (m)->funcs = appendValues((m)->funcs, Func{funcTypes[i], {}, {}, {}, readerBytes(body, size), offset});
                                 }
@@ -19803,14 +19805,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if ((codes != length(funcTypes))) {
             compilerError(String("function and code section have inconsistent lengths"));
         }
-        if ((((m)->dataCount >= i64(0LL)) && (convert<Int>((m)->dataCount) != length((m)->datas)))) {
+        if ((((m)->dataCount >= i64(0LL)) && (convert<i64>((m)->dataCount) != length((m)->datas)))) {
             compilerError(String("data count and data section have inconsistent lengths"));
         }
         {
             auto range1454 = (m)->funcs;
             for (Int index1455 = 0, rangeEnd1456 = length(range1454); index1455 < rangeEnd1456; ++index1455) {
                 Int i = index1455;
-                if ((convert<Int>(((m)->funcs[i]).typ) >= length((m)->types))) {
+                if ((convert<i64>(((m)->funcs[i]).typ) >= length((m)->types))) {
                     compilerError(String("unknown type %d"));
                 }
             }
@@ -20325,16 +20327,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
                 case OpRotl: {
                     if ((w == Uint(32LL))) {
-                        return {convert<u64>(bitsRotateLeft32(convert<u32>(a), convert<Int>(sh))), true};
+                        return {convert<u64>(bitsRotateLeft32(convert<u32>(a), convert<i64>(sh))), true};
                     }
-                    return {bitsRotateLeft64(a, convert<Int>(sh)), true};
+                    return {bitsRotateLeft64(a, convert<i64>(sh)), true};
                     break;
                 }
                 case OpRotr: {
                     if ((w == Uint(32LL))) {
-                        return {convert<u64>(bitsRotateLeft32(convert<u32>(a), (-(convert<Int>(sh))))), true};
+                        return {convert<u64>(bitsRotateLeft32(convert<u32>(a), (-(convert<i64>(sh))))), true};
                     }
-                    return {bitsRotateLeft64(a, (-(convert<Int>(sh)))), true};
+                    return {bitsRotateLeft64(a, (-(convert<i64>(sh)))), true};
                     break;
                 }
                 case OpDivU: {
@@ -20602,7 +20604,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // indexed is [base+index].
     static Amem indexed(VReg base, VReg index) {
-        return Amem{convert<Int>(base), convert<Int>(index), u8(1LL), {}, i32(-1LL), {}};
+        return Amem{base, index, u8(1LL), {}, i32(-1LL), {}};
     }
 
     static i64 inductionStep(Function* f, i32 phi, i32 next) {
@@ -20762,7 +20764,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             for (Int index1554 = 0, rangeEnd1555 = length(range1553); index1554 < rangeEnd1555; ++index1554) {
                 i32 b = range1553[index1554];
                 (l)->mblk[b] = convert<i32>(length(((l)->mf)->blocks));
-                ((l)->mf)->blocks.pushBack(MBlock{{}, {}, {}, convert<Int>(((l)->ci)->depth[b]), b, {}});
+                ((l)->mf)->blocks.pushBack(MBlock{{}, {}, {}, ((l)->ci)->depth[b], b, {}});
             }
         }
         {
@@ -21098,12 +21100,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
                 case u8(10LL):
                 case u8(11LL): {
-                    return (convert<Int>(id) + Int(1LL));
+                    return (convert<i64>(id) + Int(1LL));
                     break;
                 }
             }
         }
-        return convert<Int>(id);
+        return convert<i64>(id);
     }
 
     // order2_func returns x,y where data[x] <= data[y], where x,y=a,b or x,y=b,a.
@@ -21384,9 +21386,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static Int regNum(VReg r) {
         if (vRegIsXMM(r)) {
-            return convert<Int>((r - XMM0));
+            return convert<i64>((r - XMM0));
         }
-        return convert<Int>(r);
+        return convert<i64>(r);
     }
 
     // resultRegs assigns results to the result registers in order; one that
@@ -21678,7 +21680,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             Int j = b;
             {
                 for (; (i < j);) {
-                    Int h = convert<Int>(shiftRight(convert<Uint>((i + j)), Int(1LL)));
+                    Int h = convert<i64>(shiftRight(convert<Uint>((i + j)), Int(1LL)));
                     if ((data).Less(h, a)) {
                         i = (h + Int(1LL));
                     } else {
@@ -21699,7 +21701,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             Int j = m;
             {
                 for (; (i < j);) {
-                    Int h = convert<Int>(shiftRight(convert<Uint>((i + j)), Int(1LL)));
+                    Int h = convert<i64>(shiftRight(convert<Uint>((i + j)), Int(1LL)));
                     if ((!((data).Less(m, h)))) {
                         i = (h + Int(1LL));
                     } else {
@@ -21715,7 +21717,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             return;
         }
-        Int mid = convert<Int>(shiftRight(convert<Uint>((a + b)), Int(1LL)));
+        Int mid = convert<i64>(shiftRight(convert<Uint>((a + b)), Int(1LL)));
         Int n = (mid + m);
         Int start = {};
         Int r = {};
@@ -21729,7 +21731,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Int p = (n - Int(1LL));
         {
             for (; (start < r);) {
-                Int c = convert<Int>(shiftRight(convert<Uint>((start + r)), Int(1LL)));
+                Int c = convert<i64>(shiftRight(convert<Uint>((start + r)), Int(1LL)));
                 if ((!((data).Less((p - c), c)))) {
                     start = (c + Int(1LL));
                 } else {
@@ -22064,7 +22066,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 if (((r).sym < i32(0LL))) {
                     relaText = rela(relaText, convert<u64>((r).at), Int(2LL), rX86_64_PC32, (r).addend);
                 } else {
-                    relaText = rela(relaText, convert<u64>((r).at), (externBase + convert<Int>((r).sym)), rX86_64_GOTPCREL, (r).addend);
+                    relaText = rela(relaText, convert<u64>((r).at), (externBase + convert<i64>((r).sym)), rX86_64_GOTPCREL, (r).addend);
                 }
             }
         }
@@ -22535,6 +22537,11 @@ namespace {
     }
 
     static void selfTest() {
+        static_assert(sizeof(Int) == 4 && sizeof(Uint) == 4);
+        require(shiftLeft(u64(1), u64(1) << 32) == 0, "wide left shift count");
+        require(shiftRight(u64(1), u64(1) << 32) == 0, "wide unsigned shift count");
+        require(shiftRight(i64(-1), u64(1) << 32) == -1, "wide signed shift count");
+        require(hashValue(Int(-1)) == hashValue(i64(-1)), "signed index hash");
         allocatorSelfTest();
         void* page = allocPage();
         freePage(page);
