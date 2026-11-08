@@ -3525,6 +3525,63 @@ namespace {
         return result;
     }
 
+    struct IntervalQueue {
+        struct Entry {
+            Interval* interval;
+            i32 start;
+            u32 order;
+        };
+
+        static bool before(const Entry& a, const Entry& b);
+        void push(Interval* interval, i32 start);
+        Interval* pop();
+
+        PageVec<Entry> entries;
+        u32 nextOrder = 0;
+    };
+
+    bool IntervalQueue::before(const Entry& a, const Entry& b) {
+        return a.start < b.start || (a.start == b.start && a.order < b.order);
+    }
+
+    void IntervalQueue::push(Interval* interval, i32 start) {
+        require(nextOrder != 0xffffffffu, "too many pending intervals");
+        Entry entry{interval, start, nextOrder++};
+        usize at = entries.size();
+        entries.pushBack(entry);
+        while (at) {
+            const usize parent = (at - 1) / 2;
+            if (!before(entry, entries[parent])) {
+                break;
+            }
+            entries[at] = entries[parent];
+            at = parent;
+        }
+        entries[at] = entry;
+    }
+
+    Interval* IntervalQueue::pop() {
+        require(!entries.empty(), "empty interval queue");
+        Interval* result = entries[0].interval;
+        const Entry last = entries.popBack();
+        const usize count = entries.size();
+        if (count) {
+            usize at = 0;
+            for (usize child = 1; child < count; child = at * 2 + 1) {
+                if (child + 1 < count && before(entries[child + 1], entries[child])) {
+                    ++child;
+                }
+                if (!before(entries[child], last)) {
+                    break;
+                }
+                entries[at] = entries[child];
+                at = child;
+            }
+            entries[at] = last;
+        }
+        return result;
+    }
+
     struct Allocator {
         MFunc* mf{};
         Slice<i32> order{};
@@ -3535,7 +3592,7 @@ namespace {
         Slice<Bitset> liveOut{};
         Slice<Interval*> intervals{};
         Array<Interval*, 32> fixed{};
-        Slice<Interval*> unhandled{};
+        IntervalQueue unhandled{};
         Slice<Interval*> active{};
         Slice<Interval*> inactive{};
         Slice<i32> slots{};
@@ -5807,6 +5864,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // Preserve Go sort's ordering of ties, which affects register allocation.
     template <typename T, typename F>
     static void sortValues(Slice<T> values, F less) {
+        LessSwap data{less, [values](Int a, Int b) {
+            T old = values[a];
+            values[a] = values[b];
+            values[b] = old;
+        }};
+        pdqsort_func(data, 0, length(values), 64 - bitsLeadingZeros64(length(values)));
+    }
+
+    template <typename T, typename F>
+    static void sortValues(Span<T> values, F less) {
         LessSwap data{less, [values](Int a, Int b) {
             T old = values[a];
             values[a] = values[b];
@@ -8563,13 +8630,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void allocatorAddUnhandled(Allocator* a, Interval* it) {
-        i32 s = intervalStart(it);
-        Int k = sortSearch(length((a)->unhandled), [&](Int i) mutable -> bool {
-            return (intervalStart((a)->unhandled[i]) > s);
-        });
-        (a)->unhandled = appendValues((a)->unhandled, zeroValue<Interval*>());
-        copySlice(subslice((a)->unhandled, (k + Int(1LL)), length((a)->unhandled)), subslice((a)->unhandled, k, length((a)->unhandled)));
-        (a)->unhandled[k] = it;
+        a->unhandled.push(it, intervalStart(it));
     }
 
     static void allocatorAdvance(Allocator* a, i32 pos) {
@@ -9635,13 +9696,19 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             for (Int index548 = 0, rangeEnd549 = length(range547); index548 < rangeEnd549; ++index548) {
                 Interval* it = range547[index548];
                 if (((!isNil(it)) && (length((it)->ranges) > Int(0LL)))) {
-                    (a)->unhandled = appendValues((a)->unhandled, it);
+                    a->unhandled.entries.pushBack({it, intervalStart(it), 0});
                 }
             }
         }
-        sortValues((a)->unhandled, [&](Int i, Int j) mutable -> bool {
-            return (intervalStart((a)->unhandled[i]) < intervalStart((a)->unhandled[j]));
+        sortValues(Span<IntervalQueue::Entry>(a->unhandled.entries), [&](Int i, Int j) {
+            return a->unhandled.entries[usize(i)].start < a->unhandled.entries[usize(j)].start;
         });
+        // Preserve the previous sort's ties. Future insertions used an upper
+        // bound, so they follow all existing entries with the same start.
+        for (usize i = 0; i < a->unhandled.entries.size(); ++i) {
+            a->unhandled.entries[i].order = u32(i);
+        }
+        a->unhandled.nextOrder = u32(a->unhandled.entries.size());
         {
             auto range550 = (a)->fixed;
             for (Int index551 = 0, rangeEnd552 = length(range550); index551 < rangeEnd552; ++index551) {
@@ -9660,9 +9727,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         {
-            for (; (length((a)->unhandled) > Int(0LL));) {
-                Interval* cur = (a)->unhandled[Int(0LL)];
-                (a)->unhandled = subslice((a)->unhandled, Int(1LL), length((a)->unhandled));
+            for (; !a->unhandled.entries.empty();) {
+                Interval* cur = a->unhandled.pop();
                 i32 pos = intervalStart(cur);
                 allocatorAdvance(a, pos);
                 if ((!(allocatorTryFree(a, cur)))) {
@@ -22271,6 +22337,21 @@ namespace {
             require(promoted[i] == (i + 123) * 3, "vector view assignment across pages");
         }
         static_assert(sizeof(MInst) <= 72);
+        {
+            Interval intervals[5]{};
+            IntervalQueue queue;
+            queue.push(&intervals[0], 5);
+            queue.push(&intervals[1], 3);
+            queue.push(&intervals[2], 5);
+            require(queue.pop() == &intervals[1], "interval queue priority");
+            queue.push(&intervals[3], 5);
+            queue.push(&intervals[4], 1);
+            require(queue.pop() == &intervals[4], "interval queue insertion");
+            require(queue.pop() == &intervals[0], "interval queue first tie");
+            require(queue.pop() == &intervals[2], "interval queue second tie");
+            require(queue.pop() == &intervals[3], "interval queue later tie");
+            require(queue.entries.empty(), "interval queue drain");
+        }
         u64 total = 0;
         moved.visit([&](u64 value) {
             total += value;
