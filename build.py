@@ -116,30 +116,6 @@ busybox_abi = command(
     color="magenta",
 )
 
-# bin/wasm2o: the compiler, a Go program with no dependencies, built
-# natively, its loader and kernel with our fork of Go's runtime
-# (lib/goruntime), and as a WASI module.
-WASM2O_SOURCES = [*build.glob("$(S)/bin/wasm2o/*.go"), "$(S)/bin/wasm2o/go.mod", "$(S)/dev/go.py"]
-GO_RUNTIME = [*build.glob("$(S)/lib/goruntime/*.go"), "$(S)/lib/goruntime/edits.py"]
-
-wasm2o = command(
-    name="wasm2o",
-    inputs=[*WASM2O_SOURCES, *GO_RUNTIME],
-    outputs=["$(B)/bin/wasm2o/wasm2o"],
-    cmd=["python3", "$(S)/dev/go.py", "build", GO, "$(S)/bin/wasm2o", "$(B)/bin/wasm2o/wasm2o", "--runtime", "$(S)/lib/goruntime"],
-    descr="GO",
-    color="light-blue",
-)
-
-wasm2o_wasm = command(
-    name="wasm2o_wasm",
-    inputs=WASM2O_SOURCES,
-    outputs=["$(B)/bin/wasm2o/wasm2o.wasm"],
-    cmd=["python3", "$(S)/dev/go.py", "build", GO, "$(S)/bin/wasm2o", "$(B)/bin/wasm2o/wasm2o.wasm", "--wasip1"],
-    descr="GO",
-    color="light-blue",
-)
-
 # bin/aot is a single freestanding C++ translation unit. The WASI reactor
 # exports compile(), reading fd 0 and writing fd 1; the command adds _start.
 AOT_FLAGS = ["-x", "c++", "-std=c++20", "-O2", "-fno-exceptions", "-fno-rtti", "-fno-builtin", "-fwrapv", "-ffp-contract=off", "-Wno-parentheses-equality"]
@@ -187,15 +163,36 @@ aot_measure = command(
     descr="CC", color="green",
 )
 
-# wasm2o.wasm compiled by wasm2o: the compiler as its own output, which
-# `wasm2o run` executes on a goroutine stack.
-wasm2o_o = command(
-    name="wasm2o_o",
-    outputs=["$(B)/bin/wasm2o/wasm2o.o"],
-    deps=[wasm2o, wasm2o_wasm],
-    cmd=[wasm2o.outputs[0], "-o", "$(B)/bin/wasm2o/wasm2o.o", wasm2o_wasm.outputs[0]],
-    descr="AO",
-    color="light-cyan",
+# Bootstrap without an existing wasm2o: the native C++ compiler compiles the
+# WASI reactor to the machine-code object embedded in the Go loader.
+aot_aot = command(
+    name="aot_aot",
+    inputs=["$(S)/dev/aot.py"],
+    outputs=["$(B)/bin/aot/aot.aot"],
+    deps=[aot_native, aot],
+    cmd=["python3", "$(S)/dev/aot.py", aot_native.outputs[0], aot.outputs[0], "$(B)/bin/aot/aot.aot"],
+    descr="AO", color="light-cyan",
+)
+
+aot_command_aot = command(
+    name="aot_command_aot",
+    inputs=["$(S)/dev/aot.py"],
+    outputs=["$(B)/bin/aot/aot-command.aot"],
+    deps=[aot_native, aot_command],
+    cmd=["python3", "$(S)/dev/aot.py", aot_native.outputs[0], aot_command.outputs[0], "$(B)/bin/aot/aot-command.aot"],
+    descr="AO", color="light-cyan",
+)
+
+WASM2O_SOURCES = [*build.glob("$(S)/bin/wasm2o/*.go"), "$(S)/bin/wasm2o/go.mod", "$(S)/dev/go.py"]
+GO_RUNTIME = [*build.glob("$(S)/lib/goruntime/*.go"), "$(S)/lib/goruntime/edits.py"]
+
+wasm2o = command(
+    name="wasm2o",
+    inputs=[*WASM2O_SOURCES, *GO_RUNTIME],
+    outputs=["$(B)/bin/wasm2o/wasm2o"],
+    deps=[aot_aot],
+    cmd=["python3", "$(S)/dev/go.py", "build", GO, "$(S)/bin/wasm2o", "$(B)/bin/wasm2o/wasm2o", "--runtime", "$(S)/lib/goruntime", "--embed", aot_aot.outputs[0]],
+    descr="GO", color="light-blue",
 )
 
 # busybox.wasm compiled by wasm2o: what `wasm2o run` runs in the kernel's
@@ -209,15 +206,13 @@ busybox_o = command(
     color="light-cyan",
 )
 
-# wasm2o.o through an ordinary linker: ld.lld -r combines and relocates it
-# again, and the loader runs what comes out.
-wasm2o_relinked = command(
-    name="wasm2o_relinked",
-    outputs=["$(B)/bin/wasm2o/wasm2o.relinked.o"],
-    deps=[wasm2o_o],
-    cmd=[LD_LLD, "-r", wasm2o_o.outputs[0], "-o", "$(B)/bin/wasm2o/wasm2o.relinked.o"],
-    descr="LD",
-    color="green",
+# Exercise an ordinary linker's relocations on the self-compiled command.
+aot_relinked = command(
+    name="aot_relinked",
+    outputs=["$(B)/bin/aot/aot-command.relinked.aot"],
+    deps=[aot_command_aot],
+    cmd=[LD_LLD, "-r", aot_command_aot.outputs[0], "-o", "$(B)/bin/aot/aot-command.relinked.aot"],
+    descr="LD", color="green",
 )
 
 # wasm2o's own tests: the loader drives Go's runtime through native frames.
@@ -225,7 +220,8 @@ wasm2o_go_test = command(
     name="test_wasm2o_go",
     inputs=[*build.glob("$(S)/bin/wasm2o/*.go"), "$(S)/bin/wasm2o/go.mod", "$(S)/dev/go.py", *GO_RUNTIME],
     outputs=["$(B)/tst/wasm2o_go.stamp"],
-    cmd=["python3", "$(S)/dev/go.py", "test", GO, "$(S)/bin/wasm2o", "$(B)/tst/wasm2o_go.stamp", "--runtime", "$(S)/lib/goruntime"],
+    deps=[aot_aot],
+    cmd=["python3", "$(S)/dev/go.py", "test", GO, "$(S)/bin/wasm2o", "$(B)/tst/wasm2o_go.stamp", "--runtime", "$(S)/lib/goruntime", "--embed", aot_aot.outputs[0]],
     descr="TS",
     color="green",
 )
@@ -277,7 +273,7 @@ wazero = command(
     color="light-blue",
 )
 
-# The stand: wasm2o.wasm as wasm2c and clang make it, in the mode that
+# The stand: aot-command.wasm as wasm2c and clang make it, in the mode that
 # matches wasm2o's code (explicit bounds checks, memory reserved with mmap
 # and grown in place, a counted call depth) and at its best otherwise: -O3,
 # ThinLTO across the parts, no frame pointer. Its host is dev/stand. It
@@ -298,9 +294,9 @@ STAND_FLAGS = [
 
 stand_src = command(
     name="stand_src",
-    deps=[wasm2o_wasm],
+    deps=[aot_command],
     outputs=["$(B)/stand/prog.h", "$(B)/stand/prog-impl.h", *[f"$(B)/stand/prog_{i}.c" for i in range(STAND_PARTS)]],
-    cmd=[WASM2C, "--num-outputs", str(STAND_PARTS), "-n", "prog", "-o", "$(B)/stand/prog.c", wasm2o_wasm.outputs[0]],
+    cmd=[WASM2C, "--num-outputs", str(STAND_PARTS), "-n", "prog", "-o", "$(B)/stand/prog.c", aot_command.outputs[0]],
     descr="WC",
     color="magenta",
 )
@@ -321,8 +317,8 @@ stand = command(
     name="stand_bin",
     deps=[stand_src, *stand_parts],
     inputs=STAND_HOST,
-    outputs=["$(B)/stand/wasm2o"],
-    cmd=[CLANG, *STAND_FLAGS, "-I$(S)/dev/stand", "-o", "$(B)/stand/wasm2o", "$(S)/dev/stand/host_w2c.c", "$(S)/dev/stand/wasi.c",
+    outputs=["$(B)/stand/aot"],
+    cmd=[CLANG, *STAND_FLAGS, "-I$(S)/dev/stand", "-o", "$(B)/stand/aot", "$(S)/dev/stand/host_w2c.c", "$(S)/dev/stand/wasi.c",
          *STAND_RT, *[p.outputs[0] for p in stand_parts], *build.ldflags],
     descr="LD",
     color="green",
@@ -368,7 +364,6 @@ for kind, (module, digest, source, source_digest) in DECODE.items():
         deps=[wasm2o, wasm],
         outputs=[f"{folder}/module.o"],
         cmd=[wasm2o.outputs[0], "-o", f"{folder}/module.o", wasm.outputs[0]],
-        env={"W2X_CHECK": "1"},
         descr="AO", color="light-cyan",
     )
     wrapper = fetch(f"stand_{kind}_source", f"https://raw.githubusercontent.com/pg83/ix/{DECODE_IX}/pkgs/{source}", source_digest, f"{folder}/wrapper" + os.path.splitext(source)[1])
@@ -419,7 +414,7 @@ TESTED = {
     "aot": [aot, aot_command, wazero, wasm2o, busybox, aot_selftest],
     "busybox_abi": [busybox],
     "busybox": [wasm2o, busybox_o, busybox],
-    "wasm2o": [wasm2o, wasm2o_wasm, wasm2o_o, wasm2o_relinked, wazero, busybox],
+    "wasm2o": [wasm2o, aot_native, aot, aot_command, aot_command_aot, aot_relinked, wazero, busybox],
 }
 tests = []
 
@@ -441,6 +436,6 @@ for test in build.glob("$(S)/tst/test_*.py"):
         color="green",
     ))
 
-group("install", busybox, busybox_abi, busybox_o, wasm2o, wasm2o_wasm, wasm2o_o, wazero)
+group("install", busybox, busybox_abi, busybox_o, wasm2o, aot_native, aot, aot_aot, wazero)
 group("test", *tests, wasm2o_go_test, wasm2o_spec_test)
-group("stand", stand, wasm2o, wasm2o_wasm, wasm2o_o, busybox, stand_corpus, *decode_stand)
+group("stand", stand, wasm2o, aot_native, aot, aot_command, aot_aot, busybox, stand_corpus, *decode_stand)

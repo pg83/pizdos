@@ -2,8 +2,8 @@
 """Fetch a Go program's modules, or build the program.
 
     go.py download <go> <source dir> <modules.tar>
-    go.py build <go> <source dir> <output> [--wasip1] [--modules <modules.tar>] [--runtime <dir>]
-    go.py test <go> <source dir> <stamp> [--runtime <dir>]
+    go.py build <go> <source dir> <output> [--wasip1] [--modules <modules.tar>] [--runtime <dir>] [--embed <file>]
+    go.py test <go> <source dir> <stamp> [--runtime <dir>] [--embed <file>]
 
 download runs `go mod download` on the directory's go.mod and go.sum, which
 checks every module against go.sum, and keeps the module cache's download
@@ -13,7 +13,8 @@ WASI module; its modules come from that tarball as the module proxy, with no
 network. test runs the directory's tests, its _test.go files included, and
 touches the stamp when they pass. --runtime builds with a fork of package
 runtime: the directory's .go files join it and its edits.py edits its
-files, as an overlay.
+files, as an overlay. --embed stages a dependency output next to the Go
+sources for go:embed; it never modifies the source directory.
 """
 import json
 import os
@@ -121,10 +122,17 @@ def take(flags, name):
     return value
 
 
+def embed(flags, tree):
+    while "--embed" in flags:
+        path = Path(take(flags, "--embed"))
+        shutil.copyfile(path, tree / path.name)
+
+
 def build(go, source, output, *flags, work):
     flags = list(flags)
     tree = work / "src"
     copy(source, tree)
+    embed(flags, tree)
     env = environment(work)
     fork = take(flags, "--runtime")
 
@@ -154,11 +162,12 @@ def build(go, source, output, *flags, work):
 def test(go, source, stamp, *flags, work):
     flags = list(flags)
     fork = take(flags, "--runtime")
+    copy(source, work / "src", tests=True)
+    embed(flags, work / "src")
 
     if flags:
         raise SystemExit(f"unknown arguments {flags}")
 
-    copy(source, work / "src", tests=True)
     env = environment(work)
     overlay = [runtime_overlay(go, fork, work, env)] if fork else []
     subprocess.run([go, "test", "-count=1", "-timeout=300s", *overlay, "."], cwd=work / "src", env=env, check=True)

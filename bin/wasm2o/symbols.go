@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 )
@@ -38,22 +37,6 @@ const (
 
 var typeLetters = map[ValType]byte{I32: 'i', I64: 'I', F32: 'f', F64: 'F', V128: 'v', FuncRef: 'r', ExternRef: 'e'}
 
-func typesPart(ts []ValType) string {
-	b := make([]byte, len(ts))
-
-	for i, t := range ts {
-		c, ok := typeLetters[t]
-
-		if !ok {
-			throwFmt("unsupported: a %s at the boundary", typeName(t))
-		}
-
-		b[i] = c
-	}
-
-	return string(b)
-}
-
 func parseTypes(s string) ([]ValType, bool) {
 	ts := make([]ValType, len(s))
 
@@ -72,26 +55,6 @@ func parseTypes(s string) ([]ValType, bool) {
 	}
 
 	return ts, true
-}
-
-// symbolPart spells a wasm name in a symbol: letters and digits as they
-// are, every other byte, underscores too, as _XX. The spelling is one to
-// one and leaves "." to join parts.
-func symbolPart(s string) string {
-	b := make([]byte, 0, len(s))
-
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-
-		switch {
-		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
-			b = append(b, c)
-		default:
-			b = append(b, fmt.Sprintf("_%02X", c)...)
-		}
-	}
-
-	return string(b)
 }
 
 func parseSymbolPart(s string) (string, bool) {
@@ -119,30 +82,6 @@ func parseSymbolPart(s string) (string, bool) {
 	}
 
 	return string(b), true
-}
-
-// displayName keeps a name readable in tracebacks: only control bytes,
-// which a symbol table cannot hold or show, become _XX.
-func displayName(s string) string {
-	b := make([]byte, 0, len(s))
-
-	for i := 0; i < len(s); i++ {
-		if c := s[i]; c < 0x20 || c == 0x7f {
-			b = append(b, fmt.Sprintf("_%02X", c)...)
-		} else {
-			b = append(b, c)
-		}
-	}
-
-	return string(b)
-}
-
-func importSymbol(module, name string, t *FuncType) string {
-	return symImport + symbolPart(module) + "." + symbolPart(name) + "." + typesPart(t.params) + "." + typesPart(t.results)
-}
-
-func exportSymbol(name string, t *FuncType) string {
-	return symExport + symbolPart(name) + "." + typesPart(t.params) + "." + typesPart(t.results)
 }
 
 // parseFuncSymbol takes an import or export symbol apart: its names, then

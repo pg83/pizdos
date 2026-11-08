@@ -240,9 +240,7 @@ func TestRoundingCorrection(t *testing.T) {
 			get(1), i32c(1), []byte{0x71, opIf, blockEmpty},
 			get(1), []byte{0xb2}, get(0), []byte{0x93, 0x8b}, f32c(0.5), []byte{0x5b, opIf, blockEmpty},
 			get(1), i32c(1), i32c(-1), negative, []byte{0x1b, opI32Add, opLocalSet, 1, 0x0b, 0x0b}, get(1))}}}
-	f := buildFunction(decodeModule(m.encode()), 0)
-	optimize(f)
-	checkSSA(f)
+
 	i := load(t, m, nil)
 	fn, _ := i.export("round")
 	round := fn.Interface().(func(uintptr, float32) uint32)
@@ -317,22 +315,6 @@ func TestGuardedLoopFallback(t *testing.T) {
 	m := &testModule{memMin: 1, memMax: 1, funcs: []testFunc{{params: []ValType{I32, I32}, results: i32, export: "fill",
 		code: cat([]byte{opLoop, blockEmpty}, stores, get(0), i32c(16), []byte{opI32Add, opLocalSet, 0},
 			get(1), i32c(1), []byte{opI32Sub, opLocalTee, 1, opBrIf, 0, 0x0b}, get(0))}}}
-	f := buildFunction(decodeModule(m.encode()), 0)
-	optimize(f)
-	checkSSA(f)
-	proved := 0
-
-	for _, b := range f.rpo() {
-		for _, v := range f.blocks[b].instrs {
-			if f.values[v].op == OpStore && memKind(f.values[v].aux2)&memProven != 0 {
-				proved++
-			}
-		}
-	}
-
-	if proved != 4 {
-		t.Fatalf("guarded loop has %d proved stores", proved)
-	}
 
 	i := load(t, m, nil)
 	fn, _ := i.export("fill")
@@ -387,9 +369,7 @@ func TestLoopMetadataAlias(t *testing.T) {
 		}
 
 		m := &testModule{memMin: 1, memMax: 1, funcs: []testFunc{{params: []ValType{I32, I32}, results: i32, export: "fill", code: cat(code, get(0))}}}
-		f := buildFunction(decodeModule(m.encode()), 0)
-		optimize(f)
-		checkSSA(f)
+
 		i := load(t, m, nil)
 		fn, _ := i.export("fill")
 		fill := fn.Interface().(func(uintptr, uint32, uint32) uint32)
@@ -459,9 +439,7 @@ func TestAscendingLoop(t *testing.T) {
 		m := &testModule{memMin: 1, memMax: 1, funcs: []testFunc{{params: []ValType{I32, I32, I32}, results: i32, export: "fill",
 			code: cat([]byte{opLoop, blockEmpty}, stores, get(0), i32c(16), []byte{opI32Add, opLocalSet, 0},
 				get(1), i32c(1), []byte{opI32Add, opLocalTee, 1}, get(2), []byte{opI32Load, 2, 0, less, opBrIf, 0, 0x0b}, get(0))}}}
-		f := buildFunction(decodeModule(m.encode()), 0)
-		optimize(f)
-		checkSSA(f)
+
 		i := load(t, m, nil)
 		fn, _ := i.export("fill")
 		fill := fn.Interface().(func(uintptr, uint32, uint32, uint32) uint32)
@@ -515,9 +493,7 @@ func TestLoopFormatDispatch(t *testing.T) {
 	m := &testModule{memMin: 1, memMax: 1, funcs: []testFunc{{params: []ValType{I32, I32, I32}, results: i32, export: "fill",
 		code: cat([]byte{opLoop, blockEmpty}, choose(0), choose(2), get(0), i32c(4), []byte{opI32Add, opLocalSet, 0},
 			get(2), i32c(1), []byte{opI32Sub, opLocalTee, 2, opBrIf, 0, 0x0b}, get(0))}}}
-	f := buildFunction(decodeModule(m.encode()), 0)
-	optimize(f)
-	checkSSA(f)
+
 	i := load(t, m, nil)
 	fn, _ := i.export("fill")
 	fill := fn.Interface().(func(uintptr, uint32, uint32, uint32) uint32)

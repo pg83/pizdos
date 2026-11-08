@@ -3,12 +3,10 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"math"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -266,23 +264,8 @@ func (r *specRunner) table(imp *ImportMeta) uintptr {
 	return src.ctx() + uintptr(src.obj.meta.tables[e.index].offset)
 }
 
-// specCompile can exercise another compiler through its stdin/stdout ABI,
-// while retaining this loader and the exact same spec assertions.
+// Spec assertions always select exact Wasm bounds in the embedded compiler.
 func specCompile(data []byte) []byte {
-	if compiler := os.Getenv("W2X_SPEC_COMPILER"); compiler != "" {
-		command := exec.Command(compiler, "--strict")
-		command.Stdin = bytes.NewReader(data)
-		var diagnostic bytes.Buffer
-		command.Stderr = &diagnostic
-		object, err := command.Output()
-
-		if err != nil {
-			throwFmt("external compiler: %s: %s", err, strings.TrimSpace(diagnostic.String()))
-		}
-
-		return object
-	}
-
 	return compileModuleWithOptions(data, CompileOptions{})
 }
 

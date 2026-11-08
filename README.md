@@ -8,8 +8,8 @@ hardware, not a different kernel.
 ## layout
 
 ```
-bin/wasm2o/   wasm to x86-64 (Go): a module in, an ELF object out; `wasm2o run` loads one onto a goroutine, a program of lib/c into its kernel
-bin/aot/      the same compiler in one freestanding C++ file, targeting WASI preview1
+bin/wasm2o/   Go loader and kernel; invokes its embedded aot.aot to compile wasm
+bin/aot/      wasm to x86-64 compiler in one freestanding C++ file, targeting WASI preview1
 bin/busybox/  busybox for the system: our config and the generator that replaces kconfig
 bin/kernel/   the kernel (Go), not yet
 bin/rootfs/   the root filesystem service (Go, wasm), not yet
@@ -53,12 +53,30 @@ WASI preview1 fd 0 and writes ELF to fd 1. Input is stored in 64 KiB pages;
 output is streamed by section, including data segments borrowed from input.
 The host supplies the two descriptors through WASI, with no guest-memory ABI.
 
+`./build wasm2o` constructs the complete bootstrap through `build.py`:
+
+```
+aot.cpp --host clang--> native aot
+        --wasm clang--> aot.wasm
+native aot < aot.wasm > aot.aot
+wasm2o = Go loader + embedded aot.aot
+```
+
+The `aot_aot` node creates `aot.aot`; `dev/go.py --embed` copies it into the
+Go build tree for `go:embed`. No pre-existing wasm2o binary is needed.
+At run time wasm2o links the object once, creates an instance for each
+compilation, calls its `compile` export, and releases the instance and its
+linear memory. The CLI streams its input and output files through WASI fd
+0 and fd 1. It needs no external compiler, wasm interpreter or temporary
+compiler executable.
+
 `aot-command.wasm` also exports `_start`: wasm on stdin, ELF on stdout.
-`./build aot_native` builds the equivalent native command using host libc
-and the usual `CPPFLAGS`/`LDFLAGS`. Its optional `--strict` selects exact
-Wasm bounds for spec tests; normal compilation enables the same 64 KiB tail
-and optimizations as wasm2o. `W2X_SPEC_COMPILER=/absolute/path/to/aot`
-makes the existing `wasm2o spec` runner use this compiler with `--strict`.
+`./build aot_native` builds the equivalent native bootstrap command using
+host libc and the usual `CPPFLAGS`/`LDFLAGS`. Its optional `--strict`
+selects exact Wasm bounds. The reactor's `compileOptions(flags)` export
+selects the tail, range optimization and profiling with bits 0, 1 and 2;
+`compile()` uses flags 3. The spec runner calls the embedded compiler with
+flags 0 for exact Wasm semantics.
 
 The C++ implementation adapts `trustme/bin/rustc/malloc.cpp`: 2 MiB segments,
 64 KiB payload pages, class-local bump allocation and intrusive free lists.
@@ -86,15 +104,16 @@ children directly and emits moves without a separate counting pass.
 `./build test_aot` checks both WASI entry points against wasm2o,
 including compilation of the new compiler itself and repeated export calls.
 
-`./build aot_native aot_measure` builds the native compiler and a small
-`wait4` measurement parent with the same host flags. Run
+`./build aot_native aot_measure wasm2o` builds both compiler forms and a
+small `wait4` measurement parent. Run
 `python3 dev/aot_perf.py --json .build/aot-perf.json --check` to compare all
-seven main inputs with native Go. Each output must match byte for byte.
-Three fresh-process runs alternate compiler order; the gate requires median
-user+system CPU at most 0.5 times Go and maximum RSS at most Go on every input.
+seven main inputs using native C++ and the embedded AOT. Every ELF must
+match byte for byte. Three fresh-process runs alternate compiler order;
+the report records user+system CPU and peak RSS. Optional
+`--max-cpu-ratio` and `--max-rss-ratio` bound embedded/native overhead.
 
 - `wasm2o` compiles a module ahead of time to an ordinary x86-64 ELF
-  relocatable object (`bin/wasm2o/elf.go`): code in `.text`, constants and
+  relocatable object (written by `bin/aot/aot.cpp`, read by `bin/wasm2o/elf.go`): code in `.text`, constants and
   segments in `.rodata`, stack pointer tables as `.eh_frame`, calls of Go
   through the GOT, imports and exports of functions as symbols that carry
   their wasm types (`bin/wasm2o/symbols.go`), and the rest of the module's
@@ -109,7 +128,7 @@ user+system CPU at most 0.5 times Go and maximum RSS at most Go on every input.
   needed. `W2X_MEMORY_TAIL=strict` selects exact Wasm bounds for diagnostics,
   and the spec runner always uses those bounds.
 - The code runs on a goroutine's stack under Go 1.25 amd64 ABIInternal
-  (`bin/wasm2o/goabi.go`): exports are functions Go calls, imports are Go
+  (the ABI in `bin/aot/aot.cpp`): exports are functions Go calls, imports are Go
   function values, prologues grow the stack through Go's morestack, and the
   loader registers every code region with Go's runtime, so the garbage
   collector, stack copying, panics, tracebacks and asynchronous preemption
@@ -122,15 +141,14 @@ user+system CPU at most 0.5 times Go and maximum RSS at most Go on every input.
   goroutines, paths resolve inside the root, exec runs objects of wasm2o and
   `#!` scripts; `fork` copies a process into a goroutine of its own, a child
   of `vfork` borrows its parent's. The
-  build makes `wasm2o` natively, `wasm2o.wasm` (the same compiler for wasip1)
-  and `wasm2o.o`, wasm2o.wasm compiled by wasm2o: run by `wasm2o run` and
-  under wazero, it compiles wasm2o.wasm and busybox.wasm to the bytes
-  `wasm2o` produces.
+  build makes native `wasm2o` with `aot.aot` embedded. Fixed-point tests
+  compare native C++, embedded AOT, self-compiled and relinked commands,
+  and the reactor under wazero on aot.wasm and busybox.wasm.
 
 ## building
 
 ```
-./build          # libc.a, busybox, wasm2o, wasm2o.wasm, wasm2o.o, the wazero runner
+./build          # libc.a, busybox, native aot, aot.wasm, aot.aot, wasm2o, wazero
 ./build test     # the tests in tst/, the spec testsuite included
 sh dev/stand/build.sh
                  # the full stand, with its pinned ix toolchain and libraries
@@ -170,8 +188,9 @@ It carries `MANIFEST` with sources and conversions, and `SHA256SUMS`.
 generated with ix `5cea87b37c702d257c19fba698dea94aa4ce6dd2`, and two
 complete builds with that toolchain produced identical archives.
 
-For Go the stand runs wasm2o.wasm compiling busybox.wasm and itself, checking
-the complete output objects against native wasm2o. These times include
+For compilation the stand compares native C++, the embedded AOT in wasm2o,
+and aot-command.wasm through wasm2c, compiling busybox.wasm and aot.wasm.
+The complete ELF outputs must match. These times include
 startup. For decode it opens each file in the same process and decodes an
 image or renders up to 16 pages at a longest side of 1600 pixels; libmagic
 classifies all 89 files. The measured work includes input allocation and

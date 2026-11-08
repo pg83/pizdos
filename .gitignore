@@ -8,12 +8,13 @@ __pycache__/
 /busybox_abi
 /busybox_o
 /wasm2o
-/wasm2o_wasm
-/wasm2o_o
 /wazero
 /libc
 /aot
 /aot_command
+/aot_aot
+/aot_command_aot
+/aot_relinked
 /aot_native
 /aot_measure
 /aot_selftest

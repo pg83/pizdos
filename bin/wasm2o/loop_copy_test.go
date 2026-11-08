@@ -92,27 +92,6 @@ func TestForwardByteLoops(t *testing.T) {
 		code: cat([]byte{opLoop, blockEmpty}, gapped, get(3), i32c(4), []byte{opI32Add, opLocalSet, 3},
 			get(2), i32c(1), []byte{opI32Sub, opLocalTee, 2, opBrIf, 0, 0x0b}, get(3))})
 	cases = append(cases, CopyCase{"gapped", 2, 6, 4, false})
-	module := decodeModule(m.encode())
-
-	for j, c := range cases {
-		f := buildFunction(module, j+1)
-		optimize(f)
-		checkSSA(f)
-		bulk := 0
-
-		for _, b := range f.rpo() {
-			for _, v := range f.blocks[b].instrs {
-				if f.values[v].op == OpCopyForward {
-					bulk++
-				}
-			}
-		}
-
-		if (bulk > 0) != c.bulk {
-			t.Fatalf("%s: %d forward-copy operations, want bulk %t", c.name, bulk, c.bulk)
-		}
-	}
-
 	i := load(t, m, testImports{"env.noop": func(uintptr) {}})
 
 	for _, c := range cases {

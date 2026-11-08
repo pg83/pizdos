@@ -22,28 +22,6 @@ func TestCheckedAddressMerges(t *testing.T) {
 			get(0), i32c(pageSize), []byte{opI32Add, opLocalSet, 0},
 			get(1), i32c(1), []byte{opI32Sub, opLocalTee, 1, opBrIf, 0, 0x0b}, i32c(0))},
 	}}
-	module := decodeModule(m.encode())
-
-	for fn, want := range []int{2, 3} {
-		f := buildFunction(module, fn)
-		optimize(f)
-		checkSSA(f)
-		mf := lowerFunction(module, newLayout(module), f)
-		checks := 0
-
-		for _, b := range mf.blocks {
-			for _, in := range b.insts {
-				if in.op == mCheck {
-					checks++
-				}
-			}
-		}
-
-		if checks != want {
-			t.Fatalf("function %d: %d bounds checks, want %d", fn, checks, want)
-		}
-	}
-
 	i := load(t, m, nil)
 	binary.LittleEndian.PutUint32(i.memory.bytes()[256:], 17)
 	binary.LittleEndian.PutUint32(i.memory.bytes()[pageSize-4:], 23)

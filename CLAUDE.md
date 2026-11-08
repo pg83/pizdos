@@ -7,11 +7,11 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
 
 - `./build` builds `libc.a`, `busybox.wasm`, `busybox.links`,
   `bin/busybox/abi.txt` (every kernel import busybox uses), `wasm2o`,
-  `wasm2o.wasm`, `wasm2o.o` and the wazero runner.
+  native `aot`, `aot.wasm`, `aot.aot` and the wazero runner.
 - `./build test` runs `tst/test_*.py`, each with the outputs of the nodes
   `TESTED` names for it in build.py.
 - `sh dev/stand/build.sh` supplies the pinned ix revision's libraries and
-  tools and runs `./build stand`: wasm2o.wasm through wasm2c, plus decode's
+  tools and runs `./build stand`: aot-command.wasm through wasm2c, plus decode's
   im, pdf, djvu, svg and magic modules through wasm2o, wasm2c and native
   libraries with the same wrappers. `dev/stand.py --runs 5 --json FILE`
   runs native (A), our AOT (C) and wasm2c (R) interleaved; C/A <= 1.2 is the
@@ -44,24 +44,23 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
 
 ## bin/wasm2o
 
-- The compiler is Go with no dependencies, one `package main`: a module's
-  bytes in, an ELF object out (`compileModule`); file access stays in
-  `main.go`. The object is ordinary ELF a linker can take (`elf.go`):
-  symbols name imports and exports with their types (`symbols.go`),
-  `.eh_frame` holds the stack pointer tables, `.note.wasm2o` only what ELF
-  cannot say (`meta.go`). `goabi.go` is the contract with Go: code runs on a goroutine's stack under Go 1.25 amd64
-  ABIInternal, R14 is g, RBP the frame pointer, X15 untouched, and the stack
-  pointer table must be exact at every instruction, since Go preempts the
-  code by signals and copies its stack.
-- The pipeline: SSA from the locals (`frontend.go`), the SSA optimizer
-  (`opt.go`: folding, jump threading with SSA repair, which turns the
-  dispatch loop of a Go function into direct jumps, trivial parameters,
-  dead code), lowering (`lower.go`), copy coalescing (`coalesce.go`),
-  linear scan (`regalloc.go`), emission (`emit.go`). `W2X_DUMP=<function>`
-  prints each stage, `W2X_CHECK=1` verifies the SSA after the optimizer and
-  every allocation, `W2X_OPT_FUNCS=lo-hi` optimizes only those functions,
-  for bisecting a miscompilation; `W2O_PERFMAP=<dir>` makes the loader
-  write perf-<pid>.map for perf.
+- The compiler is `bin/aot/aot.cpp`, one freestanding C++ translation unit.
+  `build.py` builds native `aot` and `aot.wasm`, then native aot compiles the
+  reactor to `aot.aot`. `wasm2o` embeds that object through `go:embed`;
+  `dev/go.py --embed` stages it for both native builds and Go tests. There is
+  no Go compiler implementation or wasm2o.wasm bootstrap.
+- `bin/wasm2o` is the Go loader, kernel and WASI host. `compile.go` links
+  embedded code once and gives each invocation its own instance, memory and
+  fd streams. `compile()` reads fd 0 and writes ELF to fd 1;
+  `compileOptions(flags)` selects tail, range optimization and profiling
+  with bits 0, 1 and 2. The default is 3, strict spec compilation is 0.
+  Every invocation releases its instance even on compiler or I/O failure.
+- The object is ordinary x86-64 ELF: `aot.cpp` writes it, `elf.go` reads it,
+  `symbols.go` parses typed boundary symbols and `meta.go` reads the note.
+  `abi.go` and `format.go` hold the loader's shared ABI constants and types.
+  Generated code follows Go 1.25 amd64 ABIInternal: R14 is g, RBP the frame
+  pointer, X15 untouched, and the stack pointer table is exact at every
+  instruction. `W2O_PERFMAP=<dir>` makes the loader write perf-<pid>.map.
 - Compilation enables a physical 64 KiB readable and writable tail beyond
   the logical memory size by default, with machine-code range versioning:
   one address guard covers related accesses within 64 KiB on the fast path,
@@ -80,7 +79,7 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   ordinary checks. Profiled objects are for counting, not timing.
 - Speed is measured against wasm2c in its bounds-checked mode (clang -O3,
   `WASM_RT_MEMCHECK_BOUNDS_CHECK`, memory on mmap, counted call depth) by
-  the stand: both run wasm2o.wasm compiling busybox.wasm and wasm2o.wasm,
+  the stand: both run the C++ compiler compiling busybox.wasm and aot.wasm,
   and the scalar modules of decode release 16 on their file corpora. A
   native column compiles the same wrappers against the pinned ix libraries.
 - An import named setjmp, _setjmp, sigsetjmp, vfork or fork returns twice:
@@ -97,8 +96,8 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   values living across a call are in R10-R12, which the frame keeps, or in
   their vreg's own spill slot.
 - The loader (`load.go`, `gort.go`, `wasi.go`, `run.go`, `jump.go`) is linux/amd64
-  only and pinned to Go 1.25's moduledata; the compiler alone builds for
-  wasip1 too. Code and its registration live as long as the process.
+  only and pinned to Go 1.25's moduledata. The C++ compiler targets WASI
+  preview1. Code and its registration live as long as the process.
 - `lib/goruntime` is our fork of Go's runtime, an overlay of files and
   anchored edits (`edits.py`) that `dev/go.py --runtime` applies to the
   native builds of wasm2o: `runtime.SetInterrupt` and `runtime.Interrupt`
@@ -140,9 +139,10 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   file failing more, or crashing, fails the test. Unsupported features are
   refused at decoding, never compiled approximately: memory64 and multiple
   memories are refused because the bounds checks assume one 32-bit memory.
-- `test_wasm2o` is the fixed point: wasm2o.o under `wasm2o run`, the same
-  object relinked by `ld.lld -r`, and wasm2o.wasm under wazero compile
-  wasm2o.wasm and busybox.wasm to the bytes of the native `wasm2o`. A change to the compiler keeps it.
+- `test_wasm2o` checks the fixed point against native C++: embedded AOT,
+  self-compiled and ld.lld-relinked commands, and aot.wasm under wazero
+  compile aot.wasm and busybox.wasm to identical bytes. `test_aot` also
+  checks both WASI entry points, malformed modules and repeated reactor calls.
 - Go modules (the wazero runner's) are pinned by `go.mod` and `go.sum`;
   `dev/go.py download` fetches them in a node of its own and the build runs
   offline.

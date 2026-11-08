@@ -40,6 +40,19 @@ func leb(out []byte, x uint64) []byte {
 	return binary.AppendUvarint(out, x)
 }
 
+func appendSleb(b []byte, v int64) []byte {
+	for {
+		c := byte(v & 0x7f)
+		v >>= 7
+
+		if (v == 0 && c&0x40 == 0) || (v == -1 && c&0x40 != 0) {
+			return append(b, c)
+		}
+
+		b = append(b, c|0x80)
+	}
+}
+
 func sleb(out []byte, x int64) []byte {
 	return appendSleb(out, x)
 }

@@ -2,7 +2,7 @@
 """The stand: native (A), our AOT (C), and bounds-checked wasm2c (R).
 
     sh dev/stand/build.sh
-    dev/stand.py [--runs N] [--only go,im,pdf,djvu,svg,magic] [--json FILE]
+    dev/stand.py [--runs N] [--only aot,im,pdf,djvu,svg,magic] [--json FILE]
 
 Compiler workloads measure end-to-end wall and CPU time. Decode workloads
 measure work inside each driver, excluding startup, linking, file I/O and
@@ -11,7 +11,7 @@ agree exactly; native must agree on status, dimensions and page count, but
 its pixels may differ with libm and floating-point arithmetic.
 
 The original positional form is accepted for compiler workloads alone:
-    stand.py [--runs N] <wasm2o> <wasm2o.o> <stand> <input.wasm>...
+    stand.py [--runs N] <aot-native> <wasm2o> <stand> <input.wasm>...
 """
 import argparse
 import hashlib
@@ -37,24 +37,28 @@ def environment():
     return dict(os.environ, GOMAXPROCS="1", MAGICK_THREAD_LIMIT="1", OMP_NUM_THREADS="1")
 
 
-def compile_run(command, wasm, out):
+def compile_run(command, wasm, out, streams=False):
     before = resource.getrusage(resource.RUSAGE_CHILDREN)
     start = time.perf_counter()
-    subprocess.run([*command, "-o", str(out), str(wasm)], check=True, env=environment())
+    if streams:
+        with open(wasm, "rb") as inp, open(out, "wb") as output:
+            subprocess.run(command, stdin=inp, stdout=output, check=True, env=environment())
+    else:
+        subprocess.run([*command, "-o", str(out), str(wasm)], check=True, env=environment())
     wall = time.perf_counter() - start
     after = resource.getrusage(resource.RUSAGE_CHILDREN)
 
     return wall, after.ru_utime - before.ru_utime + after.ru_stime - before.ru_stime
 
 
-def compile_work(wasm2o, wasm2o_o, stand, inputs, runs, work):
+def compile_work(native, wasm2o, stand, inputs, runs, work):
     rows = []
 
     for wasm in inputs:
         expected = work / "want.o"
-        compile_run([str(wasm2o)], wasm, expected)
+        compile_run([str(native)], wasm, expected, streams=True)
         want = expected.read_bytes()
-        commands = {"A": [str(wasm2o)], "C": [str(wasm2o), "run", str(wasm2o_o), "--"], "R": [str(stand)]}
+        commands = {"A": ([str(native)], True), "C": ([str(wasm2o)], False), "R": ([str(stand)], True)}
         samples = {name: [] for name in commands}
 
         for run in range(runs):
@@ -63,16 +67,17 @@ def compile_work(wasm2o, wasm2o_o, stand, inputs, runs, work):
 
             for name in order:
                 out = work / (name + ".o")
-                samples[name].append(compile_run(commands[name], wasm, out))
+                command, streams = commands[name]
+                samples[name].append(compile_run(command, wasm, out, streams))
 
                 if out.read_bytes() != want:
-                    raise SystemExit(f"{name} compiles {wasm} to other bytes than native wasm2o")
+                    raise SystemExit(f"{name} compiles {wasm} to other bytes than native C++ AOT")
 
         wall = {name: statistics.median(t[0] for t in values) for name, values in samples.items()}
         cpu = {name: statistics.median(t[1] for t in values) for name, values in samples.items()}
-        print(f"go/{Path(wasm).name:16s} A {wall['A']:7.3f}s  C {wall['C']:7.3f}s  R {wall['R']:7.3f}s"
+        print(f"aot/{Path(wasm).name:16s} A {wall['A']:7.3f}s  C {wall['C']:7.3f}s  R {wall['R']:7.3f}s"
               f"  C/R {wall['C'] / wall['R']:.3f}  C/A {wall['C'] / wall['A']:.3f}  identical", flush=True)
-        rows.append({"work": "go/" + Path(wasm).name, "wall": wall, "cpu": cpu, "samples": samples, "identical": True})
+        rows.append({"work": "aot/" + Path(wasm).name, "wall": wall, "cpu": cpu, "samples": samples, "identical": True})
 
     return rows
 
@@ -183,7 +188,7 @@ def main():
     parser.add_argument("paths", nargs="*")
     parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--build-dir", type=Path, default=Path(".build"))
-    parser.add_argument("--only", default="go," + ",".join(KINDS))
+    parser.add_argument("--only", default="aot," + ",".join(KINDS))
     parser.add_argument("--min-time", type=float, default=0.25, help="minimum reference time per decode sample")
     parser.add_argument("--json", type=Path, help="write samples and per-file results")
     args = parser.parse_args()
@@ -192,7 +197,7 @@ def main():
     if args.runs < 1 or not math.isfinite(args.min_time) or args.min_time <= 0:
         parser.error("runs and min-time must be positive")
 
-    if set(selected) - {"go", *KINDS}:
+    if set(selected) - {"aot", *KINDS}:
         parser.error("unknown workload in --only")
 
     build = args.build_dir.resolve()
@@ -205,14 +210,14 @@ def main():
 
         if args.paths:
             if len(args.paths) < 4:
-                parser.error("positional form needs wasm2o, wasm2o.o, reference and input.wasm")
+                parser.error("positional form needs aot-native, wasm2o, reference and input.wasm")
 
-            compiler, obj, reference, *inputs = (Path(p).absolute() for p in args.paths)
-            rows.extend(compile_work(compiler, obj, reference, inputs, args.runs, work))
+            native, compiler, reference, *inputs = (Path(p).absolute() for p in args.paths)
+            rows.extend(compile_work(native, compiler, reference, inputs, args.runs, work))
         else:
-            if "go" in selected:
-                rows.extend(compile_work(wasm2o, build / "bin/wasm2o/wasm2o.o", build / "stand/wasm2o",
-                                         [build / "bin/busybox/busybox.wasm", build / "bin/wasm2o/wasm2o.wasm"], args.runs, work))
+            if "aot" in selected:
+                rows.extend(compile_work(build / "bin/aot/aot", wasm2o, build / "stand/aot",
+                                         [build / "bin/busybox/busybox.wasm", build / "bin/aot/aot.wasm"], args.runs, work))
 
             kinds = [kind for kind in KINDS if kind in selected]
 

@@ -27,14 +27,6 @@ func TestFloatIntegerMerges(t *testing.T) {
 	m.funcs = append(m.funcs, testFunc{params: []ValType{I32, I32}, results: []ValType{I32, I64}, locals: []ValType{F64}, export: "bits",
 		code: cat(get(0), []byte{opIf, byte(F64)}, get(1), []byte{0xb8, opElse}, f64c(math.Copysign(0, -1)),
 			[]byte{0x0b, opLocalTee, 2}, f64c(0), []byte{0x61}, get(2), []byte{0xbd})})
-	module := decodeModule(m.encode())
-
-	for fn := range module.funcs {
-		f := buildFunction(module, fn)
-		optimize(f)
-		checkSSA(f)
-	}
-
 	i := load(t, m, nil)
 
 	for j, k := range constants {

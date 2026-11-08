@@ -189,27 +189,6 @@ func TestMemoryTailRanges(t *testing.T) {
 		t.Fatal("i64 address normalization changed wrapped addresses")
 	}
 
-	m := decodeModule(memoryTailModule().encode())
-	m.memoryTail, m.tailRanges = boundSlack, true
-	mf := lowerFunction(m, newLayout(m), buildFunction(m, 6))
-	allocate(mf)
-	guards := 0
-
-	for _, b := range mf.blocks {
-		if len(b.insts) == 3 && b.insts[0].op == mCmpMem && b.insts[0].mem.disp == offMemSize && b.insts[1].op == mJcc {
-			guards++
-
-			for _, in := range mf.blocks[b.succs[0]].insts {
-				if in.op == mCheck {
-					t.Fatal("fast region retained a covered check")
-				}
-			}
-		}
-	}
-
-	if guards == 0 {
-		t.Fatal("no memory tail guards were generated")
-	}
 }
 
 func TestMemoryTailClone(t *testing.T) {
@@ -278,26 +257,6 @@ func TestMemoryTailProfile(t *testing.T) {
 	t.Fatal("missing chain profile")
 }
 
-func TestMemoryTailColdOrder(t *testing.T) {
-	m := decodeModule(memoryTailModule().encode())
-	m.memoryTail, m.tailRanges = boundSlack, true
-	mf := lowerFunction(m, newLayout(m), buildFunction(m, 6))
-	al := allocate(mf)
-	cold := false
-
-	for _, b := range mf.hotOrder(al.order) {
-		if mf.blocks[b].cold {
-			cold = true
-		} else if cold {
-			t.Fatal("hot block follows a fallback")
-		}
-	}
-
-	if !cold {
-		t.Fatal("no fallback blocks")
-	}
-}
-
 func TestMemoryTailSharedContinuation(t *testing.T) {
 	m := memoryTailModule()
 	m.funcs = append(m.funcs, testFunc{params: []ValType{I32, I32}, results: i32, locals: i32, export: "islands", code: cat(
@@ -317,20 +276,4 @@ func TestMemoryTailSharedContinuation(t *testing.T) {
 		}
 	}
 
-	decoded := decodeModule(m.encode())
-	decoded.memoryTail, decoded.tailRanges = boundSlack, true
-	mf := lowerFunction(decoded, newLayout(decoded), buildFunction(decoded, len(m.funcs)-1))
-	allocate(mf)
-
-	for _, b := range mf.blocks {
-		if !b.cold {
-			continue
-		}
-
-		for _, in := range b.insts {
-			if in.op == mCall || in.op == mCallInd || in.op == mRet {
-				t.Fatal("fallback copied a call or the shared epilogue")
-			}
-		}
-	}
 }

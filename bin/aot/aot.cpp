@@ -22355,6 +22355,15 @@ extern "C"
     compileWithOptions(CompileOptions{true, true, false});
 }
 
+extern "C"
+#if defined(__wasm__) || defined(wasm)
+    __attribute__((export_name("compileOptions")))
+#endif
+    void compileOptions(u32 flags) {
+    require((flags & ~u32(7)) == 0, "invalid compile options");
+    compileWithOptions(CompileOptions{bool(flags & 1), bool(flags & 2), bool(flags & 4)});
+}
+
 namespace {
     static void compilerCommand(bool strict = false) {
 #ifdef AOT_STRICT

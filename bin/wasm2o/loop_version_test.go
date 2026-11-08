@@ -98,23 +98,6 @@ func TestLoopEarlyExit(t *testing.T) {
 			tail, get(0), i32c(4), []byte{opI32Add, opLocalSet, 0}, get(1), i32c(4), []byte{opI32Add, opLocalSet, 1},
 			get(2), i32c(1), []byte{opI32Sub, opLocalTee, 2, opBrIf, 0, 0x0b}, i32c(0)),
 	}}}
-	f := buildFunction(decodeModule(m.encode()), 1)
-	optimize(f)
-	checkSSA(f)
-	proved := 0
-
-	for _, b := range f.rpo() {
-		for _, v := range f.blocks[b].instrs {
-			if f.values[v].op == OpStore && memKind(f.values[v].aux2)&memProven != 0 {
-				proved++
-			}
-		}
-	}
-
-	if proved < 4 {
-		t.Fatalf("early-exit loop has %d proved stores", proved)
-	}
-
 	hits := 0
 	i := load(t, m, testImports{"env.hit": func(uintptr) { hits++ }})
 	fn, _ := i.export("copy")
@@ -148,25 +131,6 @@ func TestGuardedAddressDisplacements(t *testing.T) {
 		code: cat([]byte{opLoop, blockEmpty}, body, get(3), i32c(8), []byte{opI32Add, opLocalSet, 3},
 			get(2), i32c(1), []byte{opI32Sub, opLocalTee, 2, opBrIf, 0, 0x0b}, get(3)),
 	}}}
-	f := buildFunction(decodeModule(m.encode()), 0)
-	optimize(f)
-	checkSSA(f)
-	folded := 0
-
-	for _, b := range f.rpo() {
-		for _, v := range f.blocks[b].instrs {
-			val := f.values[v]
-
-			if (val.op == OpLoad || val.op == OpStore) && memKind(val.aux2)&memProven != 0 && (val.aux == 4 || val.aux == 8) {
-				folded++
-			}
-		}
-	}
-
-	if folded != 4 {
-		t.Fatalf("guarded accesses with folded displacements = %d, want 4", folded)
-	}
-
 	i := load(t, m, nil)
 	fn, _ := i.export("offsets")
 	offsets := fn.Interface().(func(uintptr, uint32, uint32, uint32) uint32)

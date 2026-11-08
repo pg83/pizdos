@@ -1,8 +1,11 @@
+//go:build linux && amd64
+
 package main
 
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime/pprof"
 	"time"
 )
@@ -75,7 +78,14 @@ func compileCommand(args []string) {
 		usage()
 	}
 
-	data := throw2(os.ReadFile(input))
+	source := throw2(os.Open(input))
+
+	defer source.Close()
+
+	destination := throw2(os.CreateTemp(filepath.Dir(output), ".wasm2o-*"))
+
+	defer destination.Close()
+	defer os.Remove(destination.Name())
 
 	if path := os.Getenv("W2X_PROFILE"); path != "" {
 		f := throw2(os.Create(path))
@@ -85,12 +95,14 @@ func compileCommand(args []string) {
 	}
 
 	start := time.Now()
-	obj := compileModule(data)
+	compileStreams(source, destination, compileOptions())
 	elapsed := time.Since(start)
-	throw(os.WriteFile(output, obj, 0o644))
+	throw(destination.Chmod(0o644))
+	throw(destination.Close())
+	throw(os.Rename(destination.Name(), output))
 
 	if verbose {
-		fmt.Fprintf(os.Stderr, "wasm2o: %d bytes -> %d bytes in %s\n", len(data), len(obj), elapsed)
+		fmt.Fprintf(os.Stderr, "wasm2o: %d bytes -> %d bytes in %s\n", throw2(source.Stat()).Size(), throw2(os.Stat(output)).Size(), elapsed)
 	}
 }
 
