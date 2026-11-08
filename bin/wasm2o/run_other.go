@@ -15,3 +15,9 @@ func specCommand(args []string) int {
 
 	return 1
 }
+
+func standCommand(args []string) int {
+	throwFmt("stand needs linux/amd64")
+
+	return 1
+}

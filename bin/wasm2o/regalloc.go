@@ -978,11 +978,15 @@ func (a *allocator) evict(it *interval, pos int32) {
 			at = a.splitPos(lo, pos)
 		}
 
-		if at < 0 || at <= it.start() {
+		switch {
+		case at >= 0 && at > it.start():
+			tail = it.split(at)
+		case it.prevUse(pos) < it.start():
+			// nothing before pos needs it in a register: all of it goes to
+			// the stack, as an operand of a parallel move may
+		default:
 			throwFmt("internal error: cannot evict %s at %d", it.vreg, pos)
 		}
-
-		tail = it.split(at)
 	}
 
 	a.spill(tail)
@@ -1037,11 +1041,14 @@ func (a *allocator) canEvict(it *interval, pos int32) bool {
 			at = a.splitPos(lo, pos)
 		}
 
-		if at < 0 || at <= start {
+		switch {
+		case at >= 0 && at > start:
+			// a split in a hole makes a tail that starts where it next
+			// covers
+			start = it.covered(at)
+		case it.prevUse(pos) >= start:
 			return false
 		}
-
-		start = at
 	}
 
 	u := it.nextUse(pos)

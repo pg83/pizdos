@@ -8,7 +8,7 @@ import (
 )
 
 func usage() {
-	throwFmt("usage: wasm2o [-v] -o output.o input.wasm\n       wasm2o run [--root dir] [-a argv0] object.o [-- arg...]\n       wasm2o spec test.json")
+	throwFmt("usage: wasm2o [-v] -o output.o input.wasm\n       wasm2o run [--root dir] [-a argv0] object.o [-- arg...]\n       wasm2o spec test.json\n       wasm2o stand [--repeat N] im|pdf|djvu|svg|magic object.o file...")
 }
 
 func main() {
@@ -25,6 +25,12 @@ func main() {
 
 		if len(args) > 0 && args[0] == "spec" {
 			code = specCommand(args[1:])
+
+			return
+		}
+
+		if len(args) > 0 && args[0] == "stand" {
+			code = standCommand(args[1:])
 
 			return
 		}

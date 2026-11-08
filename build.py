@@ -1,4 +1,5 @@
 import build
+import json
 import os
 import shutil
 
@@ -234,7 +235,7 @@ wazero = command(
 # and grown in place, a counted call depth) and at its best otherwise: -O3,
 # ThinLTO across the parts, no frame pointer. Its host is dev/stand. It
 # takes a host C library, `ix run lib/c bld/compiler bld/wabt -- ./build
-# stand`; dev/stand.py times wasm2o.wasm under `wasm2o run` against it.
+# stand_bin`; the full stand below also adds native decoder libraries.
 WASM2C = shutil.which("wasm2c") or ""
 WASM2C_RT = os.path.join(os.path.dirname(WASM2C), "../share/wabt/wasm2c") if WASM2C else ""
 STAND_PARTS = 16
@@ -280,6 +281,91 @@ stand = command(
     color="green",
 )
 
+# decode release 16 is pure C/C++ wasm; its native column uses the same
+# wrappers and the libraries of the ix revision that built that release.
+# dev/stand/build.sh supplies those libraries and the host toolchain.
+DECODE_IX = "53f12e265c480e7849bfa58eedf608db63020b1b"
+DECODE = {
+    "im": ("im", "0a168cb80eb61c6540a4e445a509f0d57b086565e99da0605671fb8d61b99783", "lib/image/magick/wasm/decode.c", "06a48395995911dc4f6ddeaf5fd07b13232de1872eb5d5f340fc01cad735a8c1"),
+    "pdf": ("pdf", "ab2c0067403b605b2bdc2009e4bb0a48df80511a19c5ccca9785f27dd9d4df0d", "lib/pdf/ium/wasm/pdf.c", "e6ae5484e10deb16e338a4dbc7dc9d9f0d8834b51f9bff397eba6b4eb6282e65"),
+    "djvu": ("djvu", "82468c78dcc7d9a3a5f2cd2d9a7cc961b215e485f09104cdefa3da11e32137a3", "lib/djvulibre/wasm/djvu.cpp", "68cecb4c5947fdb340e56a9d8627f7a16ce1f286279e43826aeff8f253ae5e5c"),
+    "svg": ("svg_simple", "377cdcf753d46b07c749a2a593edbd7bc3c6539537779591f6ba9af93ee48ebb", "lib/svg/wasm/simple/svg.c", "054cb55d74726ef04be7c03af517b016d5207ab2854f0f6b5dffbec785af33b8"),
+    "magic": ("magic", "3d5a2a4a148126b587836004d1e09e0c90d2c062b6b94179c4f40c57b092d41e", "lib/magic/wasm/magic.c", "9caceafefa48fed7ef7ca358f249c0b4347f595f79b5976d133ca90738e9a658"),
+}
+NATIVE_CONFIG = json.dumps({
+    "cc": CLANG,
+    "cxx": shutil.which("clang++") or "clang++",
+    "pkg_config": shutil.which("pkg-config") or "pkg-config",
+    "cppflags": build.cppflags,
+    "cflags": build.cflags,
+    "cxxflags": build.cxxflags,
+    "ldflags": build.ldflags,
+    "magic_data": os.environ.get("MAGIC_DATA", ""),
+    "ix": os.environ.get("STAND_IX_REV", ""),
+}, sort_keys=True)
+decode_stand = []
+
+for kind, (module, digest, source, source_digest) in DECODE.items():
+    folder = f"$(B)/stand/decode/{kind}"
+    packed = fetch(f"stand_{kind}_download", f"https://github.com/impulse-desktop/decode/releases/download/16/{module}.wasm.zstd", digest, f"{folder}/input.wasm.zstd")
+    wasm = command(
+        name=f"stand_{kind}_wasm",
+        deps=[packed],
+        outputs=[f"{folder}/input.wasm"],
+        cmd=[shutil.which("zstd") or "zstd", "-d", "-q", "-f", packed.outputs[0], "-o", f"{folder}/input.wasm"],
+        descr="UZ", color="blue",
+    )
+    obj = command(
+        name=f"stand_{kind}_aot",
+        deps=[wasm2o, wasm],
+        outputs=[f"{folder}/module.o"],
+        cmd=[wasm2o.outputs[0], "-o", f"{folder}/module.o", wasm.outputs[0]],
+        env={"W2X_CHECK": "1"},
+        descr="AO", color="light-cyan",
+    )
+    wrapper = fetch(f"stand_{kind}_source", f"https://raw.githubusercontent.com/pg83/ix/{DECODE_IX}/pkgs/{source}", source_digest, f"{folder}/wrapper" + os.path.splitext(source)[1])
+    native = command(
+        name=f"stand_{kind}_native",
+        inputs=["$(S)/dev/stand/native.py", "$(S)/dev/stand/native.h", "$(S)/dev/stand/decode.c"],
+        deps=[wrapper],
+        outputs=[f"{folder}/native"],
+        cmd=["python3", "$(S)/dev/stand/native.py", kind, wrapper.outputs[0], f"{folder}/native", NATIVE_CONFIG],
+        env={"PKG_CONFIG_PATH": os.environ.get("PKG_CONFIG_PATH", "")},
+        descr="CC", color="green",
+    )
+    parts = 8
+    src = command(
+        name=f"stand_{kind}_src",
+        deps=[wasm],
+        outputs=[f"{folder}/mod.h", f"{folder}/mod-impl.h", *[f"{folder}/mod_{i}.c" for i in range(parts)]],
+        cmd=[WASM2C, "--num-outputs", str(parts), "-n", "mod", "-o", f"{folder}/mod.c", wasm.outputs[0]],
+        descr="WC", color="magenta",
+    )
+    objects = [command(
+        name=f"stand_{kind}_part{i}",
+        deps=[src],
+        outputs=[f"{folder}/mod_{i}.o"],
+        cmd=[CLANG, *STAND_FLAGS, "-I" + folder, "-w", "-c", f"{folder}/mod_{i}.c", "-o", f"{folder}/mod_{i}.o"],
+        descr="CC", color="green",
+    ) for i in range(parts)]
+    reference = command(
+        name=f"stand_{kind}_reference",
+        inputs=["$(S)/dev/stand/decode.c"],
+        deps=[src, *objects],
+        outputs=[f"{folder}/reference"],
+        cmd=[CLANG, *STAND_FLAGS, "-I" + folder, "-DSTAND_W2C", "-DSTAND_KIND_" + kind.upper(),
+             "$(S)/dev/stand/decode.c", *STAND_RT, *[p.outputs[0] for p in objects], "-o", f"{folder}/reference", *build.ldflags, "-lm"],
+        descr="LD", color="green",
+    )
+    decode_stand.extend([obj, native, reference])
+
+stand_corpus = fetch(
+    "stand_corpus",
+    "https://raw.githubusercontent.com/pg83/store/1a4411b2ee6fdf6c3a05b7ddafd4d71ab79dbb54/decode-corpus-1.tgz",
+    "0d6a8975159dd12a0a8d6bee270659791780bef806151790054205326c6d2685",
+    "$(B)/stand/decode-corpus-1.tgz",
+)
+
 # What each test runs against: its arguments are the outputs of these nodes.
 TESTED = {
     "busybox_abi": [busybox],
@@ -308,4 +394,4 @@ for test in build.glob("$(S)/tst/test_*.py"):
 
 group("install", busybox, busybox_abi, busybox_o, wasm2o, wasm2o_wasm, wasm2o_o, wazero)
 group("test", *tests, wasm2o_go_test, wasm2o_spec_test)
-group("stand", stand)
+group("stand", stand, wasm2o, wasm2o_wasm, wasm2o_o, busybox, stand_corpus, *decode_stand)

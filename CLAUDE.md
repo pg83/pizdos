@@ -10,11 +10,16 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   `wasm2o.wasm`, `wasm2o.o` and the wazero runner.
 - `./build test` runs `tst/test_*.py`, each with the outputs of the nodes
   `TESTED` names for it in build.py.
-- `./build stand`, under `ix run lib/c bld/compiler bld/wabt`, builds the
-  reference: wasm2o.wasm through wasm2c and clang (dev/stand is its WASI
-  host). `dev/stand.py` times it against wasm2o.o under `wasm2o run`, both
-  compiling inputs to the bytes of the native wasm2o; wasm2o's code must not
-  be the slower.
+- `sh dev/stand/build.sh` supplies the pinned ix revision's libraries and
+  tools and runs `./build stand`: wasm2o.wasm through wasm2c, plus decode's
+  im, pdf, djvu, svg and magic modules through wasm2o, wasm2c and native
+  libraries with the same wrappers. `dev/stand.py --runs 5 --json FILE`
+  runs native (A), our AOT (C) and wasm2c (R) interleaved; C/R <= 1 is the
+  goal. Decode excludes startup, I/O and host hashing and repeats short
+  workloads. C and R must agree exactly; native agrees on status and sizes,
+  with pixel hash differences counted separately. The 89-file corpus is
+  pinned by hash in build.py and fetched from pg83/store; corpus.sh makes
+  it reproducibly with the same encoder toolchain (README.md).
 - A node that consumes another node's output names it in `deps=`: the engine
   restores only dependency outputs into a node's work directory.
 - Commit messages in English.
@@ -55,7 +60,9 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   write perf-<pid>.map for perf.
 - Speed is measured against wasm2c in its bounds-checked mode (clang -O3,
   `WASM_RT_MEMCHECK_BOUNDS_CHECK`, memory on mmap, counted call depth) by
-  the stand: both run wasm2o.wasm compiling busybox.wasm and wasm2o.wasm.
+  the stand: both run wasm2o.wasm compiling busybox.wasm and wasm2o.wasm,
+  and the scalar modules of decode release 16 on their file corpora. A
+  native column compiles the same wrappers against the pinned ix libraries.
 - An import named setjmp, _setjmp, sigsetjmp, vfork or fork returns twice:
   its direct calls go through an adapter that writes the caller's frame to
   the instance header (`abi.go`), and the caller keeps an invocation token

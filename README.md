@@ -79,17 +79,50 @@ build.py      the build graph
 ```
 ./build          # libc.a, busybox, wasm2o, wasm2o.wasm, wasm2o.o, the wazero runner
 ./build test     # the tests in tst/, the spec testsuite included
-ix run lib/c bld/compiler bld/wabt -- ./build stand
-                 # wasm2o.wasm through wasm2c and clang -O3, bounds-checked
-dev/stand.py .build/bin/wasm2o/wasm2o .build/bin/wasm2o/wasm2o.o .build/stand/wasm2o \
-    .build/bin/busybox/busybox.wasm .build/bin/wasm2o/wasm2o.wasm
-                 # wasm2o's code against wasm2c's: the goal is C/R <= 1
+sh dev/stand/build.sh
+                 # the full stand, with its pinned ix toolchain and libraries
+dev/stand.py --runs 5 --json .build/stand/results.json
+                 # native (A), wasm2o (C), wasm2c (R); the goal is C/R <= 1
+dev/stand.py --only im,pdf,djvu,svg,magic
+                 # just the C/C++ decoder workloads
 ```
 
 Needs `clang` with the wasm32 target, `wasm-ld`, `llvm-ar`, Go 1.25 and
 `python3` on `PATH`, and `wast2json` for the spec testsuite;
-`ix run bld/compiler bld/wabt` provides them; the stand also needs `wasm2c`
-and a host C library, `lib/c`. The musl and
+`ix run bld/compiler bld/wabt` provides them. The musl and
 busybox tarballs are fetched by the graph and checked against their sha256;
 the wazero runner's Go modules come from `go mod download`, checked against
 `tst/wazero/go.sum`.
+
+The stand's build script keeps a private ix checkout in `.build-stand/ix`,
+at the revision that produced [decode release 16](https://github.com/impulse-desktop/decode/releases/tag/16).
+It supplies the native ImageMagick, PDFium, DjVuLibre, SVG and libmagic
+libraries, wasm2c and the host compiler, then runs `./build stand`.
+The graph fetches the release's scalar wasm modules and the same revision's
+wrappers, checks their hashes and builds each through wasm2o, bounds-checked
+wasm2c with clang -O3 and ThinLTO, and the native libraries. Normal builds
+and tests do not need these native libraries.
+
+The [corpus](https://github.com/pg83/store/blob/1a4411b2ee6fdf6c3a05b7ddafd4d71ab79dbb54/decode-corpus-1.tgz)
+is 89 files (36 images, 6 PDFs, 3 DjVus, 44 SVGs), about 49 MiB compressed.
+It carries `MANIFEST` with sources and conversions, and `SHA256SUMS`.
+`dev/stand/corpus.sh` regenerates it with the encoders it names; v1 was
+generated with ix `5cea87b37c702d257c19fba698dea94aa4ce6dd2`, and two
+complete builds with that toolchain produced identical archives.
+
+For Go the stand runs wasm2o.wasm compiling busybox.wasm and itself, checking
+the complete output objects against native wasm2o. These times include
+startup. For decode it opens each file in the same process and decodes an
+image or renders up to 16 pages at a longest side of 1600 pixels; libmagic
+classifies all 89 files. The measured work includes input allocation and
+copying, calls and freeing their results; startup, linking, file I/O and
+host pixel hashing are excluded. Short workloads repeat in the same instance to
+reach at least 0.25 seconds per reference sample. A, C and R run interleaved,
+with `GOMAXPROCS=1`, `MAGICK_THREAD_LIMIT=1` and `OMP_NUM_THREADS=1`.
+
+C and R must agree exactly on every result, including the hashes of rendered
+RGBA pixels. Native must agree on success, dimensions and page counts;
+its pixel hashes can differ with native SIMD, floating point and libm, and
+the report states how many match exactly. `--json` saves the samples and
+every file's result. The original positional `dev/stand.py` invocation still
+runs the Go workloads alone; `./build stand_bin` builds their wasm2c reference.

@@ -558,7 +558,16 @@ func (e *funcEmitter) swap(x, y VReg) {
 
 	switch {
 	case isSlot(x):
-		throwFmt("internal error: swap of two stack slots")
+		// Through the stack: a pop addresses its operand with the stack
+		// pointer it leaves.
+		mx, my := e.slotMem(slotOf(x)), e.slotMem(slotOf(y))
+		a.pushMem(mx)
+		my.disp += 8
+		a.pushMem(my)
+		mx.disp += 8
+		a.popMem(mx)
+		my.disp -= 8
+		a.popMem(my)
 	case isSlot(y):
 		m := e.slotMem(slotOf(y))
 		a.pushMem(m)
