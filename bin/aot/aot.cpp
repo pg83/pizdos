@@ -1240,20 +1240,50 @@ namespace {
 
     // A view can be copied freely. Its storage belongs to exactly one ObjPool.
     // Backing arrays are fixed after creation: Small buffers become direct
-    // Contiguous views, and only Paged storage needs a container lookup.
+    // Contiguous views, and only Paged storage needs a container lookup. A
+    // contiguous view holds the address of its first element, so reading one
+    // is a single load; a paged view holds its first index instead, and the
+    // low bit of its array pointer tells them apart.
     template <typename T>
     struct Slice {
-        ArrayData<T>* array = nullptr;
-        u32 offset = 0;
+        uptr tagged = 0;
+
+        union {
+            T* data = nullptr;
+            u32 offset;
+        };
+
         u32 count = 0;
         u32 space = 0;
 
-        T& unchecked(u32 i) const {
-            const usize at = usize(offset) + i;
-            if (array->kind == ArrayData<T>::Kind::Contiguous) {
-                return static_cast<T*>(array->storage)[at];
+        static Slice of(ArrayData<T>* array, u32 first, u32 count, u32 space) {
+            Slice s;
+            if (array && array->kind == ArrayData<T>::Kind::Paged) {
+                s.tagged = reinterpret_cast<uptr>(array) | 1;
+                s.offset = first;
+            } else {
+                s.tagged = reinterpret_cast<uptr>(array);
+                s.data = array ? static_cast<T*>(array->storage) + first : nullptr;
             }
-            return static_cast<PageVec<T>*>(array->storage)->pages.data()[at / PageVec<T>::itemsPerPage][at % PageVec<T>::itemsPerPage];
+            s.count = count;
+            s.space = space;
+            return s;
+        }
+
+        ArrayData<T>* array() const {
+            return reinterpret_cast<ArrayData<T>*>(tagged & ~uptr(1));
+        }
+
+        bool paged() const {
+            return tagged & 1;
+        }
+
+        T& unchecked(u32 i) const {
+            if (!paged()) {
+                return data[i];
+            }
+            const usize at = usize(offset) + i;
+            return static_cast<PageVec<T>*>(array()->storage)->pages.data()[at / PageVec<T>::itemsPerPage][at % PageVec<T>::itemsPerPage];
         }
 
         T& operator[](Int i) const {
@@ -1309,9 +1339,9 @@ namespace {
         }
 
         Span(Slice<Value> source)
-            : contiguous(source.array && source.array->kind == ArrayData<Value>::Kind::Contiguous ? static_cast<T*>(source.array->storage) : nullptr)
-            , pages(source.array ? source.array->pages() : nullptr)
-            , offset(source.offset)
+            : contiguous(source.paged() ? nullptr : source.data)
+            , pages(source.paged() ? source.array()->pages() : nullptr)
+            , offset(source.paged() ? source.offset : 0)
             , count(source.count)
         {
         }
@@ -1836,7 +1866,7 @@ namespace {
 
     template <typename T>
     static bool isNil(Slice<T> s) {
-        return !s.array;
+        return !s.tagged;
     }
 
     template <typename T>
@@ -1848,7 +1878,7 @@ namespace {
     static Slice<T> makeSlice(Int size, Int space) {
         require(size >= 0 && space >= size && Uint(space) <= 0x7fffffff, "invalid slice size");
         auto* data = makeArrayData<T>(*activePool, space);
-        return {data, 0, u32(size), u32(space)};
+        return Slice<T>::of(data, 0, u32(size), u32(space));
     }
 
     template <typename T>
@@ -1861,13 +1891,21 @@ namespace {
         auto* data = activePool->make<ArrayData<T>>(activePool);
         data->storage = pointer;
         data->count = size;
-        return {data, 0, u32(size), u32(size)};
+        return Slice<T>::of(data, 0, u32(size), u32(size));
     }
 
     template <typename T>
     static Slice<T> subslice(Slice<T> s, Int low, Int high, Int space) {
         require(low >= 0 && high >= low && space >= high && Uint(space) <= s.space, "slice bounds");
-        return {s.array, s.offset + u32(low), u32(high - low), u32(space - low)};
+        Slice<T> result = s;
+        if (s.paged()) {
+            result.offset = s.offset + u32(low);
+        } else if (low) {
+            result.data = s.data + low;
+        }
+        result.count = u32(high - low);
+        result.space = u32(space - low);
+        return result;
     }
 
     template <typename T>
@@ -1887,14 +1925,14 @@ namespace {
         if (need <= s.space) {
             return;
         }
-        ObjPool* owner = s.array ? s.array->owner : activePool;
+        ObjPool* owner = s.tagged ? s.array()->owner : activePool;
         PoolScope scope(*owner);
         Int space = s.space ? s.space * 2 : 4;
         if (space < need) {
             space = need;
         }
         auto* data = makeArrayData<T>(*owner, space, s.count);
-        Slice<T> result{data, 0, s.count, u32(space)};
+        Slice<T> result = Slice<T>::of(data, 0, s.count, u32(space));
         copySlice(Span<T>(result), Span<const T>(s));
         s = result;
     }
@@ -2034,12 +2072,12 @@ namespace {
         if (!s.count) {
             return {};
         }
-        if (s.array->kind == ArrayData<u8>::Kind::Contiguous) {
-            return {static_cast<u8*>(s.array->storage) + s.offset, s.count};
+        if (!s.paged()) {
+            return {s.data, s.count};
         }
         const usize first = s.offset / pageBytes;
         if ((usize(s.offset) + s.count - 1) / pageBytes == first) {
-            return {s.array->pages()->pages.data()[first] + s.offset % pageBytes, s.count};
+            return {s.array()->pages()->pages.data()[first] + s.offset % pageBytes, s.count};
         }
         require(s.count <= pageBytes - 32, "large internal string");
         auto* p = static_cast<u8*>(activePool->allocate(s.count, 1));
@@ -17189,7 +17227,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static i32 objCodeAddBlob(ObjCode* oc, Slice<u8> b, Int align) {
-        if (b.array && b.array->owner != oc->pool) {
+        if (b.tagged && b.array()->owner != oc->pool) {
             PoolScope persistent(*oc->pool);
             b = slicesClone(b);
         }
@@ -23549,7 +23587,7 @@ namespace {
         }
         require(pages->size() <= 0x7fffffff, "input exceeds address space");
         input->count = Int(pages->size());
-        return {input, 0, u32(input->count), u32(input->count)};
+        return Slice<u8>::of(input, 0, u32(input->count), u32(input->count));
     }
 
     static void writeNumber(u64 value) {
