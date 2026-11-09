@@ -109,6 +109,11 @@ multibyte/wcstombs.c
 multibyte/wctob.c
 multibyte/wctomb.c
 fenv/fenv.c
+fenv/fegetexceptflag.c
+fenv/feholdexcept.c
+fenv/fesetexceptflag.c
+fenv/fesetround.c
+fenv/feupdateenv.c
 math/__cos.c
 math/__cosdf.c
 math/__cosl.c
