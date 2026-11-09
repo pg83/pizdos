@@ -6489,8 +6489,17 @@ namespace {
 
     static void moduleCustom(Module*, Reader*);
 
-    static void asmBytes(Asm* a, InitialValues<u8> bytes) {
-        a->buf.append(bytes.begin(), bytes.size());
+    template <usize size>
+    static void asmBytes(Asm* a, const u8 (&bytes)[size]) {
+        const usize at = a->buf.size();
+        const usize offset = at % pageBytes;
+        if (__builtin_expect(size <= pageBytes && offset <= pageBytes - size, true)) {
+            a->buf.reserve(checkedAdd(at, size));
+            copyBytes(a->buf.pages.data()[at / pageBytes] + offset, bytes, size);
+            a->buf.count = at + size;
+        } else {
+            a->buf.append(bytes, size);
+        }
     }
 
     /*
@@ -23322,6 +23331,27 @@ namespace {
     }
 
     static void selfTest() {
+        for (usize prefix : {usize(0), pageBytes - 1, pageBytes - 2, pageBytes - 3, pageBytes - 7}) {
+            Asm assembler;
+            assembler.buf.resize(prefix);
+            if (prefix) {
+                assembler.buf[prefix - 1] = 0xa5;
+            }
+            auto emit = [&]<usize size>(const u8(&bytes)[size]) {
+                assembler.buf.count = prefix;
+                asmBytes(&assembler, bytes);
+                require(assembler.buf.size() == prefix + size, "fixed assembler insertion size");
+                for (usize i = 0; i < size; ++i) {
+                    require(assembler.buf[prefix + i] == bytes[i], "fixed assembler bytes across page boundaries");
+                }
+                require(!prefix || assembler.buf[prefix - 1] == 0xa5, "assembler insertion preserves previous bytes");
+            };
+            emit({0x11});
+            emit({0x22, 0x33});
+            emit({0x44, 0x55, 0x66});
+            emit({0x11, 0x22, 0x33, 0x44});
+            emit({0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88});
+        }
         static_assert(sizeof(Int) == 4 && sizeof(Uint) == 4);
         require(shiftLeft(u64(1), u64(1) << 32) == 0, "wide left shift count");
         require(shiftRight(u64(1), u64(1) << 32) == 0, "wide unsigned shift count");
