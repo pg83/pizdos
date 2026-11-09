@@ -320,6 +320,26 @@ python_o = command(
     color="light-cyan",
 )
 
+# test_libc's program: lib/c's functions with deterministic results.
+libc_check = command(
+    name="libc_check",
+    inputs=[*LIBC_HEADERS, "$(S)/tst/libc/check.c", "$(S)/tst/libc/make.py", "$(S)/dev/wasm.py"],
+    outputs=["$(B)/tst/libc/check.wasm"],
+    deps=[libc],
+    cmd=["python3", "$(S)/tst/libc/make.py", CLANG, WASM_LD, "$(S)/tst/libc/check.c", "$(S)/lib/c/include", libc.outputs[0], "$(B)/tst/libc/check.wasm"],
+    descr="CC",
+    color="green",
+)
+
+libc_check_o = command(
+    name="libc_check_o",
+    outputs=["$(B)/tst/libc/check.o"],
+    deps=[wasm2o, libc_check],
+    cmd=[wasm2o.outputs[0], "-o", "$(B)/tst/libc/check.o", libc_check.outputs[0]],
+    descr="AO",
+    color="light-cyan",
+)
+
 # Exercise an ordinary linker's relocations on the self-compiled command.
 aot_relinked = command(
     name="aot_relinked",
@@ -468,6 +488,7 @@ TESTED = {
     "busybox_abi": [busybox],
     "busybox": [wasm2o, busybox_o, busybox],
     "doom": [wasm2o, doom_o, doom_wad],
+    "libc": [wasm2o, libc_check_o],
     "python": [wasm2o, python_o, python, python_tarball, busybox_o, busybox],
     "wasm2o": [wasm2o, aot_native, aot, aot_command, aot_command_aot, aot_relinked, wazero, busybox],
 }

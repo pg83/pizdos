@@ -45,6 +45,8 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   because the kernel reads and writes them.
 - The link has no `--allow-undefined`: a missing function is a link error,
   not a silent import.
+- `test_libc` runs tst/libc/check.c, built against lib/c, in the kernel:
+  one line of results per area, compared with the test's expected text.
 
 ## bin/wasm2o
 

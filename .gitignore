@@ -31,3 +31,5 @@ __pycache__/
 /python_core
 /python_o
 /python_tarball
+/libc_check
+/libc_check_o
