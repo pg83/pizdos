@@ -6808,67 +6808,61 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return out;
         }
         Span<i32> args = functionArgs(f, v);
-        {
-            auto switch3 = val.op;
-            switch (switch3) {
-                case OpConst: {
-                    out = AddressExpression{{}, convert<u32>(val.aux)};
-                    break;
+        auto switch3 = val.op;
+        switch (switch3) {
+            case OpConst: {
+                out = AddressExpression{{}, convert<u32>(val.aux)};
+                break;
+            }
+            case OpWrap:
+            case OpExtendU:
+            case OpExtendS: {
+                out = addressExpressionsOf(r, args[Int(0LL)], depth + Int(1LL));
+                break;
+            }
+            case OpAdd:
+            case OpSub: {
+                u32 factor = u32(1LL);
+                if (val.op == OpSub) {
+                    factor = u32(4294967295LL);
                 }
-                case OpWrap:
-                case OpExtendU:
-                case OpExtendS: {
-                    out = addressExpressionsOf(r, args[Int(0LL)], depth + Int(1LL));
-                    break;
+                auto temporary4 = addAddressExpression(addressExpressionsOf(r, args[Int(0LL)], depth + Int(1LL)), addressExpressionsOf(r, args[Int(1LL)], depth + Int(1LL)), factor);
+                AddressExpression sum = temporary4.v0;
+                bool ok = temporary4.v1;
+                if (ok) {
+                    out = sum;
                 }
-                case OpAdd:
-                case OpSub: {
-                    u32 factor = u32(1LL);
-                    if (val.op == OpSub) {
-                        factor = u32(4294967295LL);
-                    }
-                    {
-                        auto temporary4 = addAddressExpression(addressExpressionsOf(r, args[Int(0LL)], depth + Int(1LL)), addressExpressionsOf(r, args[Int(1LL)], depth + Int(1LL)), factor);
-                        AddressExpression sum = temporary4.v0;
-                        bool ok = temporary4.v1;
-                        if (ok) {
-                            out = sum;
+                break;
+            }
+            case OpMul:
+            case OpShl: {
+                auto temporary5 = args[Int(0LL)];
+                auto temporary6 = f->values[args[Int(1LL)]];
+                i32 a = temporary5;
+                Value k = temporary6;
+                if (val.op == OpMul && k.op != OpConst) {
+                    auto temporary7 = args[Int(1LL)];
+                    auto temporary8 = f->values[args[Int(0LL)]];
+                    a = temporary7;
+                    k = temporary8;
+                }
+                if (k.op == OpConst) {
+                    u32 factor = convert<u32>(k.aux);
+                    if (val.op == OpShl) {
+                        u64 shift = convert<u64>(k.aux) & convert<u64>(u8(u8(typeSize(val.typ) * u8(8LL)) - u8(1LL)));
+                        factor = u32(0LL);
+                        if (shift < u64(32LL)) {
+                            factor = shiftLeft(u32(1LL), shift);
                         }
                     }
-                    break;
-                }
-                case OpMul:
-                case OpShl: {
-                    auto temporary5 = args[Int(0LL)];
-                    auto temporary6 = f->values[args[Int(1LL)]];
-                    i32 a = temporary5;
-                    Value k = temporary6;
-                    if (val.op == OpMul && k.op != OpConst) {
-                        auto temporary7 = args[Int(1LL)];
-                        auto temporary8 = f->values[args[Int(0LL)]];
-                        a = temporary7;
-                        k = temporary8;
+                    auto temporary9 = addAddressExpression(AddressExpression{}, addressExpressionsOf(r, a, depth + Int(1LL)), factor);
+                    AddressExpression product = temporary9.v0;
+                    bool ok = temporary9.v1;
+                    if (ok) {
+                        out = product;
                     }
-                    if (k.op == OpConst) {
-                        u32 factor = convert<u32>(k.aux);
-                        if (val.op == OpShl) {
-                            u64 shift = convert<u64>(k.aux) & convert<u64>(u8(u8(typeSize(val.typ) * u8(8LL)) - u8(1LL)));
-                            factor = u32(0LL);
-                            if (shift < u64(32LL)) {
-                                factor = shiftLeft(u32(1LL), shift);
-                            }
-                        }
-                        {
-                            auto temporary9 = addAddressExpression(AddressExpression{}, addressExpressionsOf(r, a, depth + Int(1LL)), factor);
-                            AddressExpression product = temporary9.v0;
-                            bool ok = temporary9.v1;
-                            if (ok) {
-                                out = product;
-                            }
-                        }
-                    }
-                    break;
                 }
+                break;
             }
         }
         r->cache[v] = out;
@@ -6886,30 +6880,26 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         n->valid[v] = u8(1LL);
         bool ok = false;
-        {
-            auto switch10 = val->op;
-            switch (switch10) {
-                case OpConst: {
-                    double x = mathFloat64frombits(convert<u64>(val->aux));
-                    ok = x >= double(0.0) && x <= double(4294967295.0) && mathTrunc(x) == x;
-                    break;
+        auto switch10 = val->op;
+        switch (switch10) {
+            case OpConst: {
+                double x = mathFloat64frombits(convert<u64>(val->aux));
+                ok = x >= double(0.0) && x <= double(4294967295.0) && mathTrunc(x) == x;
+                break;
+            }
+            case OpConvertU: {
+                ok = f->values[functionArgs(f, v)[Int(0LL)]].typ == I32;
+                break;
+            }
+            case OpParam: {
+                Vec<Edge*> incoming = optimizerIncoming(n->o, val->block);
+                ok = val->block != i32(0LL) && length(incoming) > Int(0LL);
+                auto range11 = incoming.view();
+                for (Int index12 = 0, rangeEnd13 = length(range11); index12 < rangeEnd13; ++index12) {
+                    Edge* e = range11[index12];
+                    ok = ok && floatIntegerNarrowCan(n, e->args[val->aux], depth + Int(1LL));
                 }
-                case OpConvertU: {
-                    ok = f->values[functionArgs(f, v)[Int(0LL)]].typ == I32;
-                    break;
-                }
-                case OpParam: {
-                    Vec<Edge*> incoming = optimizerIncoming(n->o, val->block);
-                    ok = val->block != i32(0LL) && length(incoming) > Int(0LL);
-                    {
-                        auto range11 = incoming.view();
-                        for (Int index12 = 0, rangeEnd13 = length(range11); index12 < rangeEnd13; ++index12) {
-                            Edge* e = range11[index12];
-                            ok = ok && floatIntegerNarrowCan(n, e->args[val->aux], depth + Int(1LL));
-                        }
-                    }
-                    break;
-                }
+                break;
             }
         }
         if (ok) {
@@ -6919,27 +6909,23 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static i32 floatIntegerNarrowInteger(FloatIntegerNarrow* n, i32 v) {
-        {
-            auto temporary14 = lookupMap(n->values, v);
-            i32 mapped = temporary14.v0;
-            bool ok = temporary14.v1;
-            if (ok) {
-                return mapped;
-            }
+        auto temporary14 = lookupMap(n->values, v);
+        i32 mapped = temporary14.v0;
+        bool ok = temporary14.v1;
+        if (ok) {
+            return mapped;
         }
         Function* f = n->o->f;
         Value val = f->values[v];
-        {
-            auto switch15 = val.op;
-            switch (switch15) {
-                case OpConst: {
-                    return optimizerConstant(n->o, I32, convert<i64>(mathFloat64frombits(convert<u64>(val.aux))));
-                    break;
-                }
-                case OpConvertU: {
-                    return functionArgs(f, v)[Int(0LL)];
-                    break;
-                }
+        auto switch15 = val.op;
+        switch (switch15) {
+            case OpConst: {
+                return optimizerConstant(n->o, I32, convert<i64>(mathFloat64frombits(convert<u64>(val.aux))));
+                break;
+            }
+            case OpConvertU: {
+                return functionArgs(f, v)[Int(0LL)];
+                break;
             }
         }
         i32 b = val.block;
@@ -6948,32 +6934,26 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         f->blocks[b].params = appendValues(f->blocks[b].params, p);
         setMap(n->values, v, p);
         Vec<Edge*> incoming = optimizerIncoming(n->o, b);
-        {
-            auto range16 = incoming.view();
-            for (Int index17 = 0, rangeEnd18 = length(range16); index17 < rangeEnd18; ++index17) {
-                Edge* e = range16[index17];
-                e->args = appendValues(e->args, i32(-1LL));
-            }
+        auto range16 = incoming.view();
+        for (Int index17 = 0, rangeEnd18 = length(range16); index17 < rangeEnd18; ++index17) {
+            Edge* e = range16[index17];
+            e->args = appendValues(e->args, i32(-1LL));
         }
-        {
-            auto range19 = incoming.view();
-            for (Int index20 = 0, rangeEnd21 = length(range19); index20 < rangeEnd21; ++index20) {
-                Edge* e = range19[index20];
-                i32 arg = e->args[val.aux];
-                e->args[index] = floatIntegerNarrowInteger(n, arg);
-            }
+        auto range19 = incoming.view();
+        for (Int index20 = 0, rangeEnd21 = length(range19); index20 < rangeEnd21; ++index20) {
+            Edge* e = range19[index20];
+            i32 arg = e->args[val.aux];
+            e->args[index] = floatIntegerNarrowInteger(n, arg);
         }
         return p;
     }
 
     static void floatRangesAdd(FloatRanges* r, i32 v, FloatRange bound) {
-        {
-            auto temporary22 = lookupMap(r->facts, v);
-            FloatRange prior = temporary22.v0;
-            bool ok = temporary22.v1;
-            if (ok) {
-                bound = meetFloatRange(prior, bound);
-            }
+        auto temporary22 = lookupMap(r->facts, v);
+        FloatRange prior = temporary22.v0;
+        bool ok = temporary22.v1;
+        if (ok) {
+            bound = meetFloatRange(prior, bound);
         }
         setMap(r->facts, v, bound);
     }
@@ -7001,25 +6981,23 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             k = temporary26.v0;
             ok = temporary26.v1;
             v = c;
-            {
-                auto switch27 = op;
-                switch (switch27) {
-                    case OpFLt: {
-                        op = OpFGt;
-                        break;
-                    }
-                    case OpFLe: {
-                        op = OpFGe;
-                        break;
-                    }
-                    case OpFGt: {
-                        op = OpFLt;
-                        break;
-                    }
-                    case OpFGe: {
-                        op = OpFLe;
-                        break;
-                    }
+            auto switch27 = op;
+            switch (switch27) {
+                case OpFLt: {
+                    op = OpFGt;
+                    break;
+                }
+                case OpFLe: {
+                    op = OpFGe;
+                    break;
+                }
+                case OpFGt: {
+                    op = OpFLt;
+                    break;
+                }
+                case OpFGe: {
+                    op = OpFLe;
+                    break;
                 }
             }
         }
@@ -7036,54 +7014,52 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         FloatRange bound = unknownFloatRange();
         bound.nan = !truth;
-        {
-            auto switch30 = op;
-            switch (switch30) {
-                case OpFEq:
-                case OpFNe: {
-                    if (truth != (op == OpFEq)) {
-                        return;
-                    }
-                    auto temporary31 = k;
-                    auto temporary32 = k;
-                    auto temporary33 = false;
-                    bound.lo = temporary31;
-                    bound.hi = temporary32;
-                    bound.nan = temporary33;
-                    break;
+        auto switch30 = op;
+        switch (switch30) {
+            case OpFEq:
+            case OpFNe: {
+                if (truth != (op == OpFEq)) {
+                    return;
                 }
-                case OpFLt: {
-                    if (truth) {
-                        bound.hi = prev;
-                    } else {
-                        bound.lo = k;
-                    }
-                    break;
+                auto temporary31 = k;
+                auto temporary32 = k;
+                auto temporary33 = false;
+                bound.lo = temporary31;
+                bound.hi = temporary32;
+                bound.nan = temporary33;
+                break;
+            }
+            case OpFLt: {
+                if (truth) {
+                    bound.hi = prev;
+                } else {
+                    bound.lo = k;
                 }
-                case OpFLe: {
-                    if (truth) {
-                        bound.hi = k;
-                    } else {
-                        bound.lo = next;
-                    }
-                    break;
+                break;
+            }
+            case OpFLe: {
+                if (truth) {
+                    bound.hi = k;
+                } else {
+                    bound.lo = next;
                 }
-                case OpFGt: {
-                    if (truth) {
-                        bound.lo = next;
-                    } else {
-                        bound.hi = k;
-                    }
-                    break;
+                break;
+            }
+            case OpFGt: {
+                if (truth) {
+                    bound.lo = next;
+                } else {
+                    bound.hi = k;
                 }
-                case OpFGe: {
-                    if (truth) {
-                        bound.lo = k;
-                    } else {
-                        bound.hi = prev;
-                    }
-                    break;
+                break;
+            }
+            case OpFGe: {
+                if (truth) {
+                    bound.lo = k;
+                } else {
+                    bound.hi = prev;
                 }
+                break;
             }
         }
         floatRangesAdd(r, v, bound);
@@ -7111,74 +7087,70 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 out = FloatRange{k, k, mathIsNaN(k)};
             } else if (depth < Int(32LL)) {
                 Span<i32> args = functionArgs(r->f, v);
-                {
-                    auto switch36 = val->op;
-                    switch (switch36) {
-                        case OpFAdd:
-                        case OpFSub:
-                        case OpFMul:
-                        case OpFDiv: {
-                            auto temporary37 = floatRangesOf(r, args[Int(0LL)], depth + Int(1LL));
-                            auto temporary38 = floatRangesOf(r, args[Int(1LL)], depth + Int(1LL));
-                            FloatRange a = temporary37;
-                            FloatRange b = temporary38;
-                            bool finiteB = !b.nan && !mathIsInf(b.lo, Int(0LL)) && !mathIsInf(b.hi, Int(0LL));
-                            if (finiteB && (val->op == OpFAdd || val->op == OpFSub || (b.lo == b.hi && b.lo > double(0.0)))) {
-                                out.nan = a.nan;
-                                {
-                                    auto switch39 = val->op;
-                                    switch (switch39) {
-                                        case OpFAdd: {
-                                            auto temporary40 = a.lo + b.lo;
-                                            auto temporary41 = a.hi + b.hi;
-                                            out.lo = temporary40;
-                                            out.hi = temporary41;
-                                            break;
-                                        }
-                                        case OpFSub: {
-                                            auto temporary42 = a.lo - b.hi;
-                                            auto temporary43 = a.hi - b.lo;
-                                            out.lo = temporary42;
-                                            out.hi = temporary43;
-                                            break;
-                                        }
-                                        case OpFMul: {
-                                            auto temporary44 = a.lo * b.lo;
-                                            auto temporary45 = a.hi * b.hi;
-                                            out.lo = temporary44;
-                                            out.hi = temporary45;
-                                            break;
-                                        }
-                                        case OpFDiv: {
-                                            auto temporary46 = a.lo / b.lo;
-                                            auto temporary47 = a.hi / b.hi;
-                                            out.lo = temporary46;
-                                            out.hi = temporary47;
-                                            break;
-                                        }
-                                    }
+                auto switch36 = val->op;
+                switch (switch36) {
+                    case OpFAdd:
+                    case OpFSub:
+                    case OpFMul:
+                    case OpFDiv: {
+                        auto temporary37 = floatRangesOf(r, args[Int(0LL)], depth + Int(1LL));
+                        auto temporary38 = floatRangesOf(r, args[Int(1LL)], depth + Int(1LL));
+                        FloatRange a = temporary37;
+                        FloatRange b = temporary38;
+                        bool finiteB = !b.nan && !mathIsInf(b.lo, Int(0LL)) && !mathIsInf(b.hi, Int(0LL));
+                        if (finiteB && (val->op == OpFAdd || val->op == OpFSub || (b.lo == b.hi && b.lo > double(0.0)))) {
+                            out.nan = a.nan;
+                            auto switch39 = val->op;
+                            switch (switch39) {
+                                case OpFAdd: {
+                                    auto temporary40 = a.lo + b.lo;
+                                    auto temporary41 = a.hi + b.hi;
+                                    out.lo = temporary40;
+                                    out.hi = temporary41;
+                                    break;
+                                }
+                                case OpFSub: {
+                                    auto temporary42 = a.lo - b.hi;
+                                    auto temporary43 = a.hi - b.lo;
+                                    out.lo = temporary42;
+                                    out.hi = temporary43;
+                                    break;
+                                }
+                                case OpFMul: {
+                                    auto temporary44 = a.lo * b.lo;
+                                    auto temporary45 = a.hi * b.hi;
+                                    out.lo = temporary44;
+                                    out.hi = temporary45;
+                                    break;
+                                }
+                                case OpFDiv: {
+                                    auto temporary46 = a.lo / b.lo;
+                                    auto temporary47 = a.hi / b.hi;
+                                    out.lo = temporary46;
+                                    out.hi = temporary47;
+                                    break;
                                 }
                             }
-                            break;
                         }
-                        case OpFAbs: {
-                            FloatRange a = floatRangesOf(r, args[Int(0LL)], depth + Int(1LL));
-                            out = FloatRange{double(0.0), maximum(mathAbs(a.lo), mathAbs(a.hi)), a.nan};
-                            break;
-                        }
-                        case OpFNeg: {
-                            FloatRange a = floatRangesOf(r, args[Int(0LL)], depth + Int(1LL));
-                            out = FloatRange{-a.hi, -a.lo, a.nan};
-                            break;
-                        }
-                        case OpSelect: {
-                            auto temporary48 = floatRangesOf(r, args[Int(1LL)], depth + Int(1LL));
-                            auto temporary49 = floatRangesOf(r, args[Int(2LL)], depth + Int(1LL));
-                            FloatRange a = temporary48;
-                            FloatRange b = temporary49;
-                            out = FloatRange{minimum(a.lo, b.lo), maximum(a.hi, b.hi), a.nan || b.nan};
-                            break;
-                        }
+                        break;
+                    }
+                    case OpFAbs: {
+                        FloatRange a = floatRangesOf(r, args[Int(0LL)], depth + Int(1LL));
+                        out = FloatRange{double(0.0), maximum(mathAbs(a.lo), mathAbs(a.hi)), a.nan};
+                        break;
+                    }
+                    case OpFNeg: {
+                        FloatRange a = floatRangesOf(r, args[Int(0LL)], depth + Int(1LL));
+                        out = FloatRange{-a.hi, -a.lo, a.nan};
+                        break;
+                    }
+                    case OpSelect: {
+                        auto temporary48 = floatRangesOf(r, args[Int(1LL)], depth + Int(1LL));
+                        auto temporary49 = floatRangesOf(r, args[Int(2LL)], depth + Int(1LL));
+                        FloatRange a = temporary48;
+                        FloatRange b = temporary49;
+                        out = FloatRange{minimum(a.lo, b.lo), maximum(a.hi, b.hi), a.nan || b.nan};
+                        break;
                     }
                 }
             }
@@ -7189,13 +7161,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             out.lo = temporary50;
             out.hi = temporary51;
         }
-        {
-            auto temporary52 = lookupMap(r->facts, v);
-            FloatRange bound = temporary52.v0;
-            bool ok = temporary52.v1;
-            if (ok) {
-                out = meetFloatRange(out, bound);
-            }
+        auto temporary52 = lookupMap(r->facts, v);
+        FloatRange bound = temporary52.v0;
+        bool ok = temporary52.v1;
+        if (ok) {
+            out = meetFloatRange(out, bound);
         }
         setMap(r->cache, v, out);
         return out;
@@ -7205,20 +7175,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         CfgInfo* ci = activePool->make<CfgInfo>(CfgInfo{functionRpo(f), {}, {}, {}, {}});
         Int n = length(f->blocks);
         ci->rpoIndex = makeSlice<i32>(n);
-        {
-            auto range53 = ci->rpoIndex;
-            for (Int index54 = 0, rangeEnd55 = length(range53); index54 < rangeEnd55; ++index54) {
-                Int i = index54;
-                ci->rpoIndex[i] = i32(-1LL);
-            }
+        auto range53 = ci->rpoIndex;
+        for (Int index54 = 0, rangeEnd55 = length(range53); index54 < rangeEnd55; ++index54) {
+            Int i = index54;
+            ci->rpoIndex[i] = i32(-1LL);
         }
-        {
-            auto range56 = ci->order;
-            for (Int index57 = 0, rangeEnd58 = length(range56); index57 < rangeEnd58; ++index57) {
-                Int i = index57;
-                i32 b = range56[index57];
-                ci->rpoIndex[b] = convert<i32>(i);
-            }
+        auto range56 = ci->order;
+        for (Int index57 = 0, rangeEnd58 = length(range56); index57 < rangeEnd58; ++index57) {
+            Int i = index57;
+            i32 b = range56[index57];
+            ci->rpoIndex[b] = convert<i32>(i);
         }
         functionComputePreds(f);
         cfgInfoDominators(ci, f);
@@ -7243,27 +7209,21 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         // Predecessors belong to the graph even when the caller is building
         // a short-lived analysis in another pool.
         PoolScope graphScope(*f->blocks.owner);
-        {
-            auto& range59 = f->blocks;
-            for (Int index60 = 0, rangeEnd61 = length(range59); index60 < rangeEnd61; ++index60) {
-                Int i = index60;
-                f->blocks[i].preds = subslice(f->blocks[i].preds, Int(0), Int(0LL));
-            }
+        auto& range59 = f->blocks;
+        for (Int index60 = 0, rangeEnd61 = length(range59); index60 < rangeEnd61; ++index60) {
+            Int i = index60;
+            f->blocks[i].preds = subslice(f->blocks[i].preds, Int(0), Int(0LL));
         }
-        {
-            auto& range62 = f->blocks;
-            for (Int index63 = 0, rangeEnd64 = length(range62); index63 < rangeEnd64; ++index63) {
-                Int i = index63;
-                if (f->blocks[i].dead) {
-                    continue;
-                }
-                {
-                    auto range65 = f->blocks[i].term.edges;
-                    for (Int index66 = 0, rangeEnd67 = length(range65); index66 < rangeEnd67; ++index66) {
-                        Edge e = range65[index66];
-                        f->blocks[e.block].preds = appendValues(f->blocks[e.block].preds, convert<i32>(i));
-                    }
-                }
+        auto& range62 = f->blocks;
+        for (Int index63 = 0, rangeEnd64 = length(range62); index63 < rangeEnd64; ++index63) {
+            Int i = index63;
+            if (f->blocks[i].dead) {
+                continue;
+            }
+            auto range65 = f->blocks[i].term.edges;
+            for (Int index66 = 0, rangeEnd67 = length(range65); index66 < rangeEnd67; ++index66) {
+                Edge e = range65[index66];
+                f->blocks[e.block].preds = appendValues(f->blocks[e.block].preds, convert<i32>(i));
             }
         }
     }
@@ -7287,39 +7247,35 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Slice<i32> post = makeSlice<i32>(Int(0LL), n);
         Slice<FrameCfg34> stack = sliceOf<FrameCfg34>({FrameCfg34{i32(0LL), Int(0LL)}});
         visited[Int(0LL)] = true;
-        {
-            for (; length(stack) > Int(0LL);) {
-                FrameCfg34* top = &stack[length(stack) - Int(1LL)];
-                Slice<Edge> edges = f->blocks[top->b].term.edges;
-                if (top->i < length(edges)) {
-                    i32 s = edges[length(edges) - Int(1LL) - top->i].block;
-                    top->i++;
-                    if (!visited[s]) {
-                        visited[s] = true;
-                        stack = appendValues(stack, FrameCfg34{s, Int(0LL)});
-                    }
-                    continue;
+        for (; length(stack) > Int(0LL);) {
+            FrameCfg34* top = &stack[length(stack) - Int(1LL)];
+            Slice<Edge> edges = f->blocks[top->b].term.edges;
+            if (top->i < length(edges)) {
+                i32 s = edges[length(edges) - Int(1LL) - top->i].block;
+                top->i++;
+                if (!visited[s]) {
+                    visited[s] = true;
+                    stack = appendValues(stack, FrameCfg34{s, Int(0LL)});
                 }
-                post = appendValues(post, top->b);
-                stack = subslice(stack, Int(0), length(stack) - Int(1LL));
+                continue;
             }
+            post = appendValues(post, top->b);
+            stack = subslice(stack, Int(0), length(stack) - Int(1LL));
         }
-        {
-            auto temporary68 = Int(0LL);
-            auto temporary69 = length(post) - Int(1LL);
-            Int i = temporary68;
-            Int j = temporary69;
-            for (; i < j; [&]() {
-                auto temporary70 = i + Int(1LL);
-                auto temporary71 = j - Int(1LL);
-                i = temporary70;
-                j = temporary71;
-            }()) {
-                auto temporary72 = post[j];
-                auto temporary73 = post[i];
-                post[i] = temporary72;
-                post[j] = temporary73;
-            }
+        auto temporary68 = Int(0LL);
+        auto temporary69 = length(post) - Int(1LL);
+        Int i = temporary68;
+        Int j = temporary69;
+        for (; i < j; [&]() {
+            auto temporary70 = i + Int(1LL);
+            auto temporary71 = j - Int(1LL);
+            i = temporary70;
+            j = temporary71;
+        }()) {
+            auto temporary72 = post[j];
+            auto temporary73 = post[i];
+            post[i] = temporary72;
+            post[j] = temporary73;
         }
         return post;
     }
@@ -7341,15 +7297,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // the allocator's exact order.
     static Span<i32> mFuncHotOrder(MFunc* mf, Span<i32> order) {
         Int first = Int(-1LL);
-        {
-            auto range74 = order;
-            for (Int index75 = 0, rangeEnd76 = length(range74); index75 < rangeEnd76; ++index75) {
-                Int j = index75;
-                i32 b = range74[index75];
-                if (mf->blocks[b].cold) {
-                    first = j;
-                    break;
-                }
+        auto range74 = order;
+        for (Int index75 = 0, rangeEnd76 = length(range74); index75 < rangeEnd76; ++index75) {
+            Int j = index75;
+            i32 b = range74[index75];
+            if (mf->blocks[b].cold) {
+                first = j;
+                break;
             }
         }
         if (first < Int(0LL)) {
@@ -7359,37 +7313,31 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         seen[Int(0LL)] = true;
         Slice<VisitMir346> stack = sliceOf<VisitMir346>({VisitMir346{i32(0LL), {}}});
         Slice<i32> post = {};
-        {
-            for (; length(stack) > Int(0LL);) {
-                VisitMir346* top = &stack[length(stack) - Int(1LL)];
-                Slice<i32> succs = mf->blocks[top->block].succs;
-                if (top->edge < length(succs)) {
-                    i32 s = succs[length(succs) - Int(1LL) - top->edge];
-                    top->edge++;
-                    if (!seen[s] && !mf->blocks[s].cold) {
-                        seen[s] = true;
-                        stack = appendValues(stack, VisitMir346{s, {}});
-                    }
-                    continue;
+        for (; length(stack) > Int(0LL);) {
+            VisitMir346* top = &stack[length(stack) - Int(1LL)];
+            Slice<i32> succs = mf->blocks[top->block].succs;
+            if (top->edge < length(succs)) {
+                i32 s = succs[length(succs) - Int(1LL) - top->edge];
+                top->edge++;
+                if (!seen[s] && !mf->blocks[s].cold) {
+                    seen[s] = true;
+                    stack = appendValues(stack, VisitMir346{s, {}});
                 }
-                post = appendValues(post, top->block);
-                stack = subslice(stack, Int(0), length(stack) - Int(1LL));
+                continue;
             }
+            post = appendValues(post, top->block);
+            stack = subslice(stack, Int(0), length(stack) - Int(1LL));
         }
         Slice<i32> out = makeSlice<i32>(Int(0LL), length(order));
-        {
-            Int j = length(post) - Int(1LL);
-            for (; j >= Int(0LL); j--) {
-                out = appendValues(out, post[j]);
-            }
+        Int j = length(post) - Int(1LL);
+        for (; j >= Int(0LL); j--) {
+            out = appendValues(out, post[j]);
         }
-        {
-            auto range77 = order;
-            for (Int index78 = 0, rangeEnd79 = length(range77); index78 < rangeEnd79; ++index78) {
-                i32 b = range77[index78];
-                if (mf->blocks[b].cold) {
-                    out = appendValues(out, b);
-                }
+        auto range77 = order;
+        for (Int index78 = 0, rangeEnd79 = length(range77); index78 < rangeEnd79; ++index78) {
+            i32 b = range77[index78];
+            if (mf->blocks[b].cold) {
+                out = appendValues(out, b);
             }
         }
         return out;
@@ -7449,191 +7397,177 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 cb(&in->mem.index, roleUse);
             }
         };
-        {
-            auto switch82 = in->op;
-            switch (switch82) {
-                case mMov:
-                case mFMov:
-                case mExt:
-                case mBitCount:
-                case mCvtIF:
-                case mCvtFI:
-                case mCvtFF:
-                case mMovGX:
-                case mMovXG:
-                case mFUnary: {
-                    cb(&in->src, roleUse);
-                    cb(&in->dst, roleDef);
-                    break;
+        auto switch82 = in->op;
+        switch (switch82) {
+            case mMov:
+            case mFMov:
+            case mExt:
+            case mBitCount:
+            case mCvtIF:
+            case mCvtFI:
+            case mCvtFF:
+            case mMovGX:
+            case mMovXG:
+            case mFUnary: {
+                cb(&in->src, roleUse);
+                cb(&in->dst, roleDef);
+                break;
+            }
+            case mMovImm:
+            case mSetcc:
+            case mFConst: {
+                cb(&in->dst, roleDef);
+                break;
+            }
+            case mLoad:
+            case mFLoad:
+            case mLea: {
+                mem();
+                cb(&in->dst, roleDef);
+                break;
+            }
+            case mStore:
+            case mFStore: {
+                mem();
+                cb(&in->src, roleUse);
+                break;
+            }
+            case mStoreImm:
+            case mCmpMemImm:
+            case mCounter: {
+                mem();
+                break;
+            }
+            case mAlu: {
+                cb(&in->src, roleUse);
+                cb(&in->dst, roleUseDef);
+                break;
+            }
+            case mAluImm:
+            case mShiftImm:
+            case mUnary: {
+                cb(&in->dst, roleUseDef);
+                break;
+            }
+            case mAluMem: {
+                mem();
+                cb(&in->dst, roleUseDef);
+                break;
+            }
+            case mImul3: {
+                cb(&in->src, roleUse);
+                cb(&in->dst, roleDef);
+                break;
+            }
+            case mCmp:
+            case mTest:
+            case mFCmp: {
+                cb(&in->src, roleUse);
+                cb(&in->src2, roleUse);
+                break;
+            }
+            case mCmpImm:
+            case mTestImm:
+            case mCheck:
+            case mSwitch:
+            case mCallInd:
+            case mStackArg:
+            case mStoreRet: {
+                cb(&in->src, roleUse);
+                break;
+            }
+            case mCmpMem: {
+                mem();
+                cb(&in->src, roleUse);
+                break;
+            }
+            case mCmov: {
+                cb(&in->src, roleUse);
+                cb(&in->dst, roleUseDef);
+                break;
+            }
+            case mShiftX:
+            case mFAlu: {
+                cb(&in->src, roleUse);
+                cb(&in->src2, roleUse);
+                cb(&in->dst, roleDef);
+                break;
+            }
+            case mRotCL: {
+                cb(&in->src, roleUse);
+                cb(&in->dst, roleUseDef);
+                break;
+            }
+            case mParMove: {
+                auto range83 = mInstMoves(in);
+                for (Int index84 = 0, rangeEnd85 = length(range83); index84 < rangeEnd85; ++index84) {
+                    Int i = index84;
+                    cb(&mInstMoves(in)[i].src, roleUse);
                 }
-                case mMovImm:
-                case mSetcc:
-                case mFConst: {
-                    cb(&in->dst, roleDef);
-                    break;
+                auto range86 = mInstMoves(in);
+                for (Int index87 = 0, rangeEnd88 = length(range86); index87 < rangeEnd88; ++index87) {
+                    Int i = index87;
+                    cb(&mInstMoves(in)[i].dst, roleDef);
                 }
-                case mLoad:
-                case mFLoad:
-                case mLea: {
-                    mem();
-                    cb(&in->dst, roleDef);
-                    break;
+                break;
+            }
+            case mLoadArg: {
+                cb(&in->dst, roleDef);
+                break;
+            }
+            case mDivOvf: {
+                cb(&in->src, roleUse);
+                cb(&in->src2, roleUse);
+                break;
+            }
+            case mTruncF:
+            case mCvtU64F: {
+                cb(&in->src, roleUse);
+                cb(&in->dst, roleDef);
+                break;
+            }
+            case mFMinMax: {
+                cb(&in->src, roleUse);
+                cb(&in->src2, roleUse);
+                cb(&in->dst, roleDef);
+                break;
+            }
+            case mFSelect: {
+                cb(&in->src, roleUse);
+                cb(&in->src2, roleUse);
+                auto range89 = mInstUses(in);
+                for (Int index90 = 0, rangeEnd91 = length(range89); index90 < rangeEnd91; ++index90) {
+                    Int i = index90;
+                    cb(&mInstUses(in)[i], roleUse);
                 }
-                case mStore:
-                case mFStore: {
-                    mem();
-                    cb(&in->src, roleUse);
-                    break;
-                }
-                case mStoreImm:
-                case mCmpMemImm:
-                case mCounter: {
-                    mem();
-                    break;
-                }
-                case mAlu: {
-                    cb(&in->src, roleUse);
-                    cb(&in->dst, roleUseDef);
-                    break;
-                }
-                case mAluImm:
-                case mShiftImm:
-                case mUnary: {
-                    cb(&in->dst, roleUseDef);
-                    break;
-                }
-                case mAluMem: {
-                    mem();
-                    cb(&in->dst, roleUseDef);
-                    break;
-                }
-                case mImul3: {
-                    cb(&in->src, roleUse);
-                    cb(&in->dst, roleDef);
-                    break;
-                }
-                case mCmp:
-                case mTest:
-                case mFCmp: {
-                    cb(&in->src, roleUse);
-                    cb(&in->src2, roleUse);
-                    break;
-                }
-                case mCmpImm:
-                case mTestImm:
-                case mCheck:
-                case mSwitch:
-                case mCallInd:
-                case mStackArg:
-                case mStoreRet: {
-                    cb(&in->src, roleUse);
-                    break;
-                }
-                case mCmpMem: {
-                    mem();
-                    cb(&in->src, roleUse);
-                    break;
-                }
-                case mCmov: {
-                    cb(&in->src, roleUse);
-                    cb(&in->dst, roleUseDef);
-                    break;
-                }
-                case mShiftX:
-                case mFAlu: {
-                    cb(&in->src, roleUse);
-                    cb(&in->src2, roleUse);
-                    cb(&in->dst, roleDef);
-                    break;
-                }
-                case mRotCL: {
-                    cb(&in->src, roleUse);
-                    cb(&in->dst, roleUseDef);
-                    break;
-                }
-                case mParMove: {
-                    {
-                        auto range83 = mInstMoves(in);
-                        for (Int index84 = 0, rangeEnd85 = length(range83); index84 < rangeEnd85; ++index84) {
-                            Int i = index84;
-                            cb(&mInstMoves(in)[i].src, roleUse);
-                        }
-                    }
-                    {
-                        auto range86 = mInstMoves(in);
-                        for (Int index87 = 0, rangeEnd88 = length(range86); index87 < rangeEnd88; ++index87) {
-                            Int i = index87;
-                            cb(&mInstMoves(in)[i].dst, roleDef);
-                        }
-                    }
-                    break;
-                }
-                case mLoadArg: {
-                    cb(&in->dst, roleDef);
-                    break;
-                }
-                case mDivOvf: {
-                    cb(&in->src, roleUse);
-                    cb(&in->src2, roleUse);
-                    break;
-                }
-                case mTruncF:
-                case mCvtU64F: {
-                    cb(&in->src, roleUse);
-                    cb(&in->dst, roleDef);
-                    break;
-                }
-                case mFMinMax: {
-                    cb(&in->src, roleUse);
-                    cb(&in->src2, roleUse);
-                    cb(&in->dst, roleDef);
-                    break;
-                }
-                case mFSelect: {
-                    cb(&in->src, roleUse);
-                    cb(&in->src2, roleUse);
-                    {
-                        auto range89 = mInstUses(in);
-                        for (Int index90 = 0, rangeEnd91 = length(range89); index90 < rangeEnd91; ++index90) {
-                            Int i = index90;
-                            cb(&mInstUses(in)[i], roleUse);
-                        }
-                    }
-                    cb(&in->dst, roleDef);
-                    break;
-                }
-                case mFAluMem: {
-                    mem();
-                    cb(&in->src, roleUse);
-                    cb(&in->dst, roleDef);
-                    break;
-                }
+                cb(&in->dst, roleDef);
+                break;
+            }
+            case mFAluMem: {
+                mem();
+                cb(&in->src, roleUse);
+                cb(&in->dst, roleDef);
+                break;
             }
         }
-        {
-            auto range92 = mInstTemps(in);
-            for (Int index93 = 0, rangeEnd94 = length(range92); index93 < rangeEnd94; ++index93) {
-                Int i = index93;
-                cb(&mInstTemps(in)[i], roleTemp);
-            }
+        auto range92 = mInstTemps(in);
+        for (Int index93 = 0, rangeEnd94 = length(range92); index93 < rangeEnd94; ++index93) {
+            Int i = index93;
+            cb(&mInstTemps(in)[i], roleTemp);
         }
         if (in->op == mDiv || in->op == mCall || in->op == mCallInd || in->op == mRet || in->op == mSignExtAx || in->op == mZeroDx || in->op == mGrowMem || in->op == mCopyForward) {
             if (in->op == mDiv || in->op == mGrowMem) {
                 cb(&in->src, roleUse);
             }
-            {
-                auto range95 = mInstUses(in);
-                for (Int index96 = 0, rangeEnd97 = length(range95); index96 < rangeEnd97; ++index96) {
-                    Int i = index96;
-                    cb(&mInstUses(in)[i], roleUse);
-                }
+            auto range95 = mInstUses(in);
+            for (Int index96 = 0, rangeEnd97 = length(range95); index96 < rangeEnd97; ++index96) {
+                Int i = index96;
+                cb(&mInstUses(in)[i], roleUse);
             }
-            {
-                auto range98 = mInstDefs(in);
-                for (Int index99 = 0, rangeEnd100 = length(range98); index99 < rangeEnd100; ++index99) {
-                    Int i = index99;
-                    cb(&mInstDefs(in)[i], roleDef);
-                }
+            auto range98 = mInstDefs(in);
+            for (Int index99 = 0, rangeEnd100 = length(range98); index99 < rangeEnd100; ++index99) {
+                Int i = index99;
+                cb(&mInstDefs(in)[i], roleDef);
             }
         }
     }
@@ -7918,13 +7852,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static CopyAddress memoryLoopCopyAddress(MemoryLoop* l, i32 v, Slice<i64> steps, Map<i32, i32> invariants, Map<i32, CopyAddress> cache, Int depth) {
-        {
-            auto temporary185 = lookupMap(cache, v);
-            CopyAddress known = temporary185.v0;
-            bool ok = temporary185.v1;
-            if (ok) {
-                return known;
-            }
+        auto temporary185 = lookupMap(cache, v);
+        CopyAddress known = temporary185.v0;
+        bool ok = temporary185.v1;
+        if (ok) {
+            return known;
         }
         Function* f = l->f;
         Value val = f->values[v];
@@ -7948,106 +7880,96 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             setMap(out.terms, key, u32(1LL));
         } else {
             Span<i32> args = functionArgs(f, v);
-            {
-                auto switch187 = val.op;
-                switch (switch187) {
-                    case OpAdd:
-                    case OpSub: {
-                        CopyAddress a = memoryLoopCopyAddress(l, args[Int(0LL)], steps, invariants, cache, depth + Int(1LL));
-                        CopyAddress b = memoryLoopCopyAddress(l, args[Int(1LL)], steps, invariants, cache, depth + Int(1LL));
-                        if (!a.valid || !b.valid) {
-                            return bad;
-                        }
-                        u32 mul = u32(1LL);
-                        if (val.op == OpSub) {
-                            mul = u32(4294967295LL);
-                        }
-                        auto temporary188 = a.offset + mul * b.offset;
-                        auto temporary189 = a.step + mul * b.step;
-                        out.offset = temporary188;
-                        out.step = temporary189;
-                        {
-                            auto range190 = a.terms;
-                            for (Int index191 = 0; index191 < mapSlots(range190); ++index191) {
-                                if (!mapOccupied(range190, index191)) {
-                                    continue;
-                                }
-                                i32 v = mapKey(range190, index191);
-                                u32 k = mapValue(range190, index191);
-                                setMap(out.terms, v, k);
-                            }
-                        }
-                        {
-                            auto range193 = b.terms;
-                            for (Int index194 = 0; index194 < mapSlots(range193); ++index194) {
-                                if (!mapOccupied(range193, index194)) {
-                                    continue;
-                                }
-                                i32 v = mapKey(range193, index194);
-                                u32 k = mapValue(range193, index194);
-                                setMap(out.terms, v, out.terms[v] + mul * k);
-                            }
-                        }
-                        break;
-                    }
-                    case OpShl:
-                    case OpMul: {
-                        auto temporary196 = args[Int(0LL)];
-                        auto temporary197 = f->values[args[Int(1LL)]];
-                        i32 a = temporary196;
-                        Value k = temporary197;
-                        if (val.op == OpMul && k.op != OpConst) {
-                            auto temporary198 = args[Int(1LL)];
-                            auto temporary199 = f->values[args[Int(0LL)]];
-                            a = temporary198;
-                            k = temporary199;
-                        }
-                        if (k.op != OpConst) {
-                            return bad;
-                        }
-                        CopyAddress base = memoryLoopCopyAddress(l, a, steps, invariants, cache, depth + Int(1LL));
-                        if (!base.valid) {
-                            return bad;
-                        }
-                        u32 mul = convert<u32>(k.aux);
-                        if (val.op == OpShl) {
-                            mul = shiftLeft(u32(1LL), mul & u32(31LL));
-                        }
-                        auto temporary200 = base.offset * mul;
-                        auto temporary201 = base.step * mul;
-                        out.offset = temporary200;
-                        out.step = temporary201;
-                        {
-                            auto range202 = base.terms;
-                            for (Int index203 = 0; index203 < mapSlots(range202); ++index203) {
-                                if (!mapOccupied(range202, index203)) {
-                                    continue;
-                                }
-                                i32 v = mapKey(range202, index203);
-                                u32 k = mapValue(range202, index203);
-                                setMap(out.terms, v, k * mul);
-                            }
-                        }
-                        break;
-                    }
-                    default: {
+            auto switch187 = val.op;
+            switch (switch187) {
+                case OpAdd:
+                case OpSub: {
+                    CopyAddress a = memoryLoopCopyAddress(l, args[Int(0LL)], steps, invariants, cache, depth + Int(1LL));
+                    CopyAddress b = memoryLoopCopyAddress(l, args[Int(1LL)], steps, invariants, cache, depth + Int(1LL));
+                    if (!a.valid || !b.valid) {
                         return bad;
-                        break;
                     }
+                    u32 mul = u32(1LL);
+                    if (val.op == OpSub) {
+                        mul = u32(4294967295LL);
+                    }
+                    auto temporary188 = a.offset + mul * b.offset;
+                    auto temporary189 = a.step + mul * b.step;
+                    out.offset = temporary188;
+                    out.step = temporary189;
+                    auto range190 = a.terms;
+                    for (Int index191 = 0; index191 < mapSlots(range190); ++index191) {
+                        if (!mapOccupied(range190, index191)) {
+                            continue;
+                        }
+                        i32 v = mapKey(range190, index191);
+                        u32 k = mapValue(range190, index191);
+                        setMap(out.terms, v, k);
+                    }
+                    auto range193 = b.terms;
+                    for (Int index194 = 0; index194 < mapSlots(range193); ++index194) {
+                        if (!mapOccupied(range193, index194)) {
+                            continue;
+                        }
+                        i32 v = mapKey(range193, index194);
+                        u32 k = mapValue(range193, index194);
+                        setMap(out.terms, v, out.terms[v] + mul * k);
+                    }
+                    break;
+                }
+                case OpShl:
+                case OpMul: {
+                    auto temporary196 = args[Int(0LL)];
+                    auto temporary197 = f->values[args[Int(1LL)]];
+                    i32 a = temporary196;
+                    Value k = temporary197;
+                    if (val.op == OpMul && k.op != OpConst) {
+                        auto temporary198 = args[Int(1LL)];
+                        auto temporary199 = f->values[args[Int(0LL)]];
+                        a = temporary198;
+                        k = temporary199;
+                    }
+                    if (k.op != OpConst) {
+                        return bad;
+                    }
+                    CopyAddress base = memoryLoopCopyAddress(l, a, steps, invariants, cache, depth + Int(1LL));
+                    if (!base.valid) {
+                        return bad;
+                    }
+                    u32 mul = convert<u32>(k.aux);
+                    if (val.op == OpShl) {
+                        mul = shiftLeft(u32(1LL), mul & u32(31LL));
+                    }
+                    auto temporary200 = base.offset * mul;
+                    auto temporary201 = base.step * mul;
+                    out.offset = temporary200;
+                    out.step = temporary201;
+                    auto range202 = base.terms;
+                    for (Int index203 = 0; index203 < mapSlots(range202); ++index203) {
+                        if (!mapOccupied(range202, index203)) {
+                            continue;
+                        }
+                        i32 v = mapKey(range202, index203);
+                        u32 k = mapValue(range202, index203);
+                        setMap(out.terms, v, k * mul);
+                    }
+                    break;
+                }
+                default: {
+                    return bad;
+                    break;
                 }
             }
         }
-        {
-            auto range205 = out.terms;
-            for (Int index206 = 0; index206 < mapSlots(range205); ++index206) {
-                if (!mapOccupied(range205, index206)) {
-                    continue;
-                }
-                i32 v = mapKey(range205, index206);
-                u32 k = mapValue(range205, index206);
-                if (k == u32(0LL)) {
-                    eraseMap(out.terms, v);
-                }
+        auto range205 = out.terms;
+        for (Int index206 = 0; index206 < mapSlots(range205); ++index206) {
+            if (!mapOccupied(range205, index206)) {
+                continue;
+            }
+            i32 v = mapKey(range205, index206);
+            u32 k = mapValue(range205, index206);
+            if (k == u32(0LL)) {
+                eraseMap(out.terms, v);
             }
         }
         setMap(cache, v, out);
@@ -8065,37 +7987,33 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Slice<i32> loads = {};
         Slice<i32> stores = {};
         i32 pending = i32(-1LL);
-        {
-            auto range208 = f->blocks[l->header].instrs.view();
-            for (Int index209 = 0, rangeEnd210 = length(range208); index209 < rangeEnd210; ++index209) {
-                i32 v = range208[index209];
-                Value* val = &f->values[v];
-                {
-                    auto switch211 = val->op;
-                    switch (switch211) {
-                        case OpLoad: {
-                            if (pending >= i32(0LL) || !proven[v] || memKindWidth(convert<MemKind>(val->aux2)) != Int(1LL)) {
-                                return i32(-1LL);
-                            }
-                            loads = appendValues(loads, v);
-                            pending = v;
-                            break;
-                        }
-                        case OpStore: {
-                            if (pending < i32(0LL) || !proven[v] || memKindWidth(convert<MemKind>(val->aux2)) != Int(1LL) || functionArgs(f, v)[Int(1LL)] != pending) {
-                                return i32(-1LL);
-                            }
-                            stores = appendValues(stores, v);
-                            pending = i32(-1LL);
-                            break;
-                        }
-                        default: {
-                            if (readsState(val->op)) {
-                                return i32(-1LL);
-                            }
-                            break;
-                        }
+        auto range208 = f->blocks[l->header].instrs.view();
+        for (Int index209 = 0, rangeEnd210 = length(range208); index209 < rangeEnd210; ++index209) {
+            i32 v = range208[index209];
+            Value* val = &f->values[v];
+            auto switch211 = val->op;
+            switch (switch211) {
+                case OpLoad: {
+                    if (pending >= i32(0LL) || !proven[v] || memKindWidth(convert<MemKind>(val->aux2)) != Int(1LL)) {
+                        return i32(-1LL);
                     }
+                    loads = appendValues(loads, v);
+                    pending = v;
+                    break;
+                }
+                case OpStore: {
+                    if (pending < i32(0LL) || !proven[v] || memKindWidth(convert<MemKind>(val->aux2)) != Int(1LL) || functionArgs(f, v)[Int(1LL)] != pending) {
+                        return i32(-1LL);
+                    }
+                    stores = appendValues(stores, v);
+                    pending = i32(-1LL);
+                    break;
+                }
+                default: {
+                    if (readsState(val->op)) {
+                        return i32(-1LL);
+                    }
+                    break;
                 }
             }
         }
@@ -8104,63 +8022,55 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         Edge back = {};
         Edge exit = {};
-        {
-            auto range212 = f->blocks[l->header].term.edges;
-            for (Int index213 = 0, rangeEnd214 = length(range212); index213 < rangeEnd214; ++index213) {
-                Edge e = range212[index213];
-                if (e.block == l->header) {
-                    back = e;
-                } else {
-                    exit = e;
-                }
+        auto range212 = f->blocks[l->header].term.edges;
+        for (Int index213 = 0, rangeEnd214 = length(range212); index213 < rangeEnd214; ++index213) {
+            Edge e = range212[index213];
+            if (e.block == l->header) {
+                back = e;
+            } else {
+                exit = e;
             }
         }
         Slice<i64> steps = makeSlice<i64>(length(f->blocks[l->header].params));
-        {
-            auto range215 = f->blocks[l->header].params;
-            for (Int index216 = 0, rangeEnd217 = length(range215); index216 < rangeEnd217; ++index216) {
-                Int j = index216;
-                i32 p = range215[index216];
-                if (f->values[p].typ != I32) {
-                    return i32(-1LL);
-                }
-                steps[j] = inductionStep(f, p, back.args[j]);
-                if (steps[j] == i64(0LL) && back.args[j] != p) {
-                    return i32(-1LL);
-                }
+        auto range215 = f->blocks[l->header].params;
+        for (Int index216 = 0, rangeEnd217 = length(range215); index216 < rangeEnd217; ++index216) {
+            Int j = index216;
+            i32 p = range215[index216];
+            if (f->values[p].typ != I32) {
+                return i32(-1LL);
+            }
+            steps[j] = inductionStep(f, p, back.args[j]);
+            if (steps[j] == i64(0LL) && back.args[j] != p) {
+                return i32(-1LL);
             }
         }
         u64 width = convert<u64>(length(loads));
         Map<i32, CopyAddress> addresses = mapOf<i32, CopyAddress>({});
         auto contiguous = [&](Slice<i32> values) mutable -> bool {
             CopyAddress first = {};
-            {
-                auto range218 = values;
-                for (Int index219 = 0, rangeEnd220 = length(range218); index219 < rangeEnd220; ++index219) {
-                    Int j = index219;
-                    i32 v = range218[index219];
-                    CopyAddress addr = memoryLoopCopyAddress(l, functionArgs(f, v)[Int(0LL)], steps, invariants, addresses, Int(0LL));
-                    addr.offset += convert<u32>(f->values[v].aux);
-                    if (!addr.valid || addr.step != convert<u32>(width)) {
-                        return false;
+            auto range218 = values;
+            for (Int index219 = 0, rangeEnd220 = length(range218); index219 < rangeEnd220; ++index219) {
+                Int j = index219;
+                i32 v = range218[index219];
+                CopyAddress addr = memoryLoopCopyAddress(l, functionArgs(f, v)[Int(0LL)], steps, invariants, addresses, Int(0LL));
+                addr.offset += convert<u32>(f->values[v].aux);
+                if (!addr.valid || addr.step != convert<u32>(width)) {
+                    return false;
+                }
+                if (j == Int(0LL)) {
+                    first = addr;
+                } else if (addr.offset != first.offset + convert<u32>(j) || length(addr.terms) != length(first.terms)) {
+                    return false;
+                }
+                auto range221 = first.terms;
+                for (Int index222 = 0; index222 < mapSlots(range221); ++index222) {
+                    if (!mapOccupied(range221, index222)) {
+                        continue;
                     }
-                    if (j == Int(0LL)) {
-                        first = addr;
-                    } else if (addr.offset != first.offset + convert<u32>(j) || length(addr.terms) != length(first.terms)) {
+                    i32 v = mapKey(range221, index222);
+                    u32 mul = mapValue(range221, index222);
+                    if (addr.terms[v] != mul) {
                         return false;
-                    }
-                    {
-                        auto range221 = first.terms;
-                        for (Int index222 = 0; index222 < mapSlots(range221); ++index222) {
-                            if (!mapOccupied(range221, index222)) {
-                                continue;
-                            }
-                            i32 v = mapKey(range221, index222);
-                            u32 mul = mapValue(range221, index222);
-                            if (addr.terms[v] != mul) {
-                                return false;
-                            }
-                        }
                     }
                 }
             }
@@ -8170,49 +8080,39 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return i32(-1LL);
         }
         Map<i32, i32> reverse = mapOf<i32, i32>({});
-        {
-            auto range224 = f->blocks[l->header].params;
-            for (Int index225 = 0, rangeEnd226 = length(range224); index225 < rangeEnd226; ++index225) {
-                Int j = index225;
-                i32 p = range224[index225];
-                setMap(reverse, f->blocks[fast].params[j], p);
-            }
+        auto range224 = f->blocks[l->header].params;
+        for (Int index225 = 0, rangeEnd226 = length(range224); index225 < rangeEnd226; ++index225) {
+            Int j = index225;
+            i32 p = range224[index225];
+            setMap(reverse, f->blocks[fast].params[j], p);
         }
         Int index = Int(0LL);
-        {
-            auto range227 = f->blocks[l->header].instrs.view();
-            for (Int index228 = 0, rangeEnd229 = length(range227); index228 < rangeEnd229; ++index228) {
-                i32 v = range227[index228];
-                {
-                    auto temporary230 = lookupMap(invariants, v);
-                    bool hoisted = temporary230.v1;
-                    if (!hoisted) {
-                        setMap(reverse, f->blocks[fast].instrs[index], v);
-                        index++;
-                    }
-                }
+        auto range227 = f->blocks[l->header].instrs.view();
+        for (Int index228 = 0, rangeEnd229 = length(range227); index228 < rangeEnd229; ++index228) {
+            i32 v = range227[index228];
+            auto temporary230 = lookupMap(invariants, v);
+            bool hoisted = temporary230.v1;
+            if (!hoisted) {
+                setMap(reverse, f->blocks[fast].instrs[index], v);
+                index++;
             }
         }
         Fn<bool(i32, Int)> can = {};
         can = [&](i32 v, Int depth) mutable -> bool {
             Value* val = &f->values[v];
-            {
-                auto temporary231 = lookupMap(invariants, v);
-                bool hoisted = temporary231.v1;
-                if (hoisted || val->block != l->header || val->op == OpParam) {
-                    return true;
-                }
+            auto temporary231 = lookupMap(invariants, v);
+            bool hoisted = temporary231.v1;
+            if (hoisted || val->block != l->header || val->op == OpParam) {
+                return true;
             }
             if (depth > Int(24LL) || readsState(val->op)) {
                 return false;
             }
-            {
-                auto range232 = functionArgs(f, v);
-                for (Int index233 = 0, rangeEnd234 = length(range232); index233 < rangeEnd234; ++index233) {
-                    i32 a = range232[index233];
-                    if (!can(a, depth + Int(1LL))) {
-                        return false;
-                    }
+            auto range232 = functionArgs(f, v);
+            for (Int index233 = 0, rangeEnd234 = length(range232); index233 < rangeEnd234; ++index233) {
+                i32 a = range232[index233];
+                if (!can(a, depth + Int(1LL))) {
+                    return false;
                 }
             }
             return true;
@@ -8229,35 +8129,29 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             fastExit = f->blocks[fast].term.edges[Int(1LL)];
         }
         auto original = [&](i32 v) mutable -> i32 {
-            {
-                auto temporary237 = lookupMap(reverse, v);
-                i32 old = temporary237.v0;
-                bool ok = temporary237.v1;
-                if (ok) {
-                    return old;
-                }
+            auto temporary237 = lookupMap(reverse, v);
+            i32 old = temporary237.v0;
+            bool ok = temporary237.v1;
+            if (ok) {
+                return old;
             }
             return v;
         };
-        {
-            auto range238 = fastExit.args;
-            for (Int index239 = 0, rangeEnd240 = length(range238); index239 < rangeEnd240; ++index239) {
-                i32 v = range238[index239];
-                if (!can(original(v), Int(0LL))) {
-                    return i32(-1LL);
-                }
+        auto range238 = fastExit.args;
+        for (Int index239 = 0, rangeEnd240 = length(range238); index239 < rangeEnd240; ++index239) {
+            i32 v = range238[index239];
+            if (!can(original(v), Int(0LL))) {
+                return i32(-1LL);
             }
         }
         i32 bulk = functionNewBlock(f);
         i32 current = bulk;
-        {
-            auto range241 = f->blocks[fast].params;
-            for (Int index242 = 0, rangeEnd243 = length(range241); index242 < rangeEnd243; ++index242) {
-                Int j = index242;
-                i32 p = range241[index242];
-                i32 v = functionNewValue(f, OpParam, f->values[p].typ, bulk, convert<i64>(j), Span<const i32>({}));
-                f->blocks[bulk].params = appendValues(f->blocks[bulk].params, v);
-            }
+        auto range241 = f->blocks[fast].params;
+        for (Int index242 = 0, rangeEnd243 = length(range241); index242 < rangeEnd243; ++index242) {
+            Int j = index242;
+            i32 p = range241[index242];
+            i32 v = functionNewValue(f, OpParam, f->values[p].typ, bulk, convert<i64>(j), Span<const i32>({}));
+            f->blocks[bulk].params = appendValues(f->blocks[bulk].params, v);
         }
         auto emit = [&](Op op, ValType typ, i64 aux, Slice<i32> args) mutable -> i32 {
             i32 v = functionNewValue(f, op, typ, current, aux, args);
@@ -8309,13 +8203,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
             } else {
                 Slice<i32> args = appendSlice(Slice<i32>{}, functionArgs(f, v));
-                {
-                    auto range246 = args;
-                    for (Int index247 = 0, rangeEnd248 = length(range246); index247 < rangeEnd248; ++index247) {
-                        Int j = index247;
-                        i32 a = range246[index247];
-                        args[j] = evaluate(a, final, cache);
-                    }
+                auto range246 = args;
+                for (Int index247 = 0, rangeEnd248 = length(range246); index247 < rangeEnd248; ++index247) {
+                    Int j = index247;
+                    i32 a = range246[index247];
+                    args[j] = evaluate(a, final, cache);
                 }
                 mapped = emit(val.op, val.typ, val.aux, args);
                 f->values[mapped].aux2 = val.aux2;
@@ -8334,11 +8226,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 src = emit(OpAdd, I32, i64(0LL), sliceOf<i32>({src, constant(I32, off)}));
             }
         }
-        {
-            i64 off = f->values[stores[Int(0LL)]].aux;
-            if (off != i64(0LL)) {
-                dst = emit(OpAdd, I32, i64(0LL), sliceOf<i32>({dst, constant(I32, off)}));
-            }
+        i64 off = f->values[stores[Int(0LL)]].aux;
+        if (off != i64(0LL)) {
+            dst = emit(OpAdd, I32, i64(0LL), sliceOf<i32>({dst, constant(I32, off)}));
         }
         i32 lengthValue = emit(OpMul, I64, i64(0LL), sliceOf<i32>({iterations, constant(I64, convert<i64>(width))}));
         i32 condition = emit(OpGeU, I32, i64(0LL), sliceOf<i32>({lengthValue, constant(I64, i64(16LL))}));
@@ -8346,26 +8236,22 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             i32 positive = emit(OpLeU, I32, i64(0LL), sliceOf<i32>({count, constant(I32, i64(2147483647LL))}));
             condition = emit(OpAnd, I32, i64(0LL), sliceOf<i32>({condition, positive}));
         }
-        {
-            auto range251 = Array<i32, 2>{{src, dst}};
-            for (Int index252 = 0, rangeEnd253 = length(range251); index252 < rangeEnd253; ++index252) {
-                i32 addr = range251[index252];
-                i32 end = emit(OpAdd, I64, i64(0LL), sliceOf<i32>({emit(OpExtendU, I64, i64(0LL), sliceOf<i32>({addr})), lengthValue}));
-                condition = emit(OpAnd, I32, i64(0LL), sliceOf<i32>({condition, emit(OpLeU, I32, i64(0LL), sliceOf<i32>({end, size}))}));
-            }
+        auto range251 = Array<i32, 2>{{src, dst}};
+        for (Int index252 = 0, rangeEnd253 = length(range251); index252 < rangeEnd253; ++index252) {
+            i32 addr = range251[index252];
+            i32 end = emit(OpAdd, I64, i64(0LL), sliceOf<i32>({emit(OpExtendU, I64, i64(0LL), sliceOf<i32>({addr})), lengthValue}));
+            condition = emit(OpAnd, I32, i64(0LL), sliceOf<i32>({condition, emit(OpLeU, I32, i64(0LL), sliceOf<i32>({end, size}))}));
         }
         current = functionNewBlock(f);
         f->blocks[bulk].term = Term{TermIf, condition, sliceOf<Edge>({Edge{current, {}}, Edge{fast, appendSlice(Slice<i32>{}, f->blocks[bulk].params)}}), {}, {}};
         emit(OpCopyForward, TNone, i64(0LL), sliceOf<i32>({dst, src, lengthValue}));
         Map<i32, i32> final = mapOf<i32, i32>({});
         Slice<i32> args = makeSlice<i32>(length(fastExit.args));
-        {
-            auto range254 = fastExit.args;
-            for (Int index255 = 0, rangeEnd256 = length(range254); index255 < rangeEnd256; ++index255) {
-                Int j = index255;
-                i32 v = range254[index255];
-                args[j] = evaluate(original(v), true, final);
-            }
+        auto range254 = fastExit.args;
+        for (Int index255 = 0, rangeEnd256 = length(range254); index255 < rangeEnd256; ++index255) {
+            Int j = index255;
+            i32 v = range254[index255];
+            args[j] = evaluate(original(v), true, final);
         }
         f->blocks[current].term = Term{TermJump, {}, sliceOf<Edge>({Edge{exit.block, args}}), {}, {}};
         return bulk;
@@ -8380,57 +8266,45 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             i32 b = f->values[v].block;
             return b >= i32(0LL) && l->members[b];
         };
-        {
-            auto& range257 = f->blocks;
-            for (Int index258 = 0, rangeEnd259 = length(range257); index258 < rangeEnd259; ++index258) {
-                Int b = index258;
-                // The header dominates every definition in the loop and
-                // therefore every direct use. Merged exit parameters have
-                // their own definitions outside the loop.
-                if (l->members[b] || f->blocks[b].dead || !cfgInfoDominates(l->ci, l->header, i32(b))) {
-                    continue;
-                }
-                Block* blk = &f->blocks[b];
-                {
-                    auto range260 = blk->instrs.view();
-                    for (Int index261 = 0, rangeEnd262 = length(range260); index261 < rangeEnd262; ++index261) {
-                        i32 v = range260[index261];
-                        {
-                            auto range263 = functionArgs(f, v);
-                            for (Int index264 = 0, rangeEnd265 = length(range263); index264 < rangeEnd265; ++index264) {
-                                i32 a = range263[index264];
-                                if (inside(a)) {
-                                    return true;
-                                }
-                            }
-                        }
+        auto& range257 = f->blocks;
+        for (Int index258 = 0, rangeEnd259 = length(range257); index258 < rangeEnd259; ++index258) {
+            Int b = index258;
+            // The header dominates every definition in the loop and
+            // therefore every direct use. Merged exit parameters have
+            // their own definitions outside the loop.
+            if (l->members[b] || f->blocks[b].dead || !cfgInfoDominates(l->ci, l->header, i32(b))) {
+                continue;
+            }
+            Block* blk = &f->blocks[b];
+            auto range260 = blk->instrs.view();
+            for (Int index261 = 0, rangeEnd262 = length(range260); index261 < rangeEnd262; ++index261) {
+                i32 v = range260[index261];
+                auto range263 = functionArgs(f, v);
+                for (Int index264 = 0, rangeEnd265 = length(range263); index264 < rangeEnd265; ++index264) {
+                    i32 a = range263[index264];
+                    if (inside(a)) {
+                        return true;
                     }
                 }
-                if ((blk->term.kind == TermIf || blk->term.kind == TermSwitch) && inside(blk->term.value)) {
+            }
+            if ((blk->term.kind == TermIf || blk->term.kind == TermSwitch) && inside(blk->term.value)) {
+                return true;
+            }
+            auto range266 = blk->term.values;
+            for (Int index267 = 0, rangeEnd268 = length(range266); index267 < rangeEnd268; ++index267) {
+                i32 v = range266[index267];
+                if (inside(v)) {
                     return true;
                 }
-                {
-                    auto range266 = blk->term.values;
-                    for (Int index267 = 0, rangeEnd268 = length(range266); index267 < rangeEnd268; ++index267) {
-                        i32 v = range266[index267];
-                        if (inside(v)) {
-                            return true;
-                        }
-                    }
-                }
-                {
-                    auto range269 = blk->term.edges;
-                    for (Int index270 = 0, rangeEnd271 = length(range269); index270 < rangeEnd271; ++index270) {
-                        Edge e = range269[index270];
-                        {
-                            auto range272 = e.args;
-                            for (Int index273 = 0, rangeEnd274 = length(range272); index273 < rangeEnd274; ++index273) {
-                                i32 v = range272[index273];
-                                if (inside(v)) {
-                                    return true;
-                                }
-                            }
-                        }
+            }
+            auto range269 = blk->term.edges;
+            for (Int index270 = 0, rangeEnd271 = length(range269); index270 < rangeEnd271; ++index270) {
+                Edge e = range269[index270];
+                auto range272 = e.args;
+                for (Int index273 = 0, rangeEnd274 = length(range272); index273 < rangeEnd274; ++index273) {
+                    i32 v = range272[index273];
+                    if (inside(v)) {
+                        return true;
                     }
                 }
             }
@@ -8446,13 +8320,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (!l->members[val->block]) {
             return cfgInfoDominates(l->ci, val->block, l->header);
         }
-        {
-            auto temporary275 = lookupMap(l->invariantCache, v);
-            bool known = temporary275.v0;
-            bool ok = temporary275.v1;
-            if (ok) {
-                return known;
-            }
+        auto temporary275 = lookupMap(l->invariantCache, v);
+        bool known = temporary275.v0;
+        bool ok = temporary275.v1;
+        if (ok) {
+            return known;
         }
         setMap(l->invariantCache, v, false);
         if (depth > Int(32LL) || (val->typ != I32 && val->typ != I64 && val->typ != F32 && val->typ != F64)) {
@@ -8465,13 +8337,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         } else if (readsState(val->op)) {
             return false;
         }
-        {
-            auto range276 = functionArgs(l->f, v);
-            for (Int index277 = 0, rangeEnd278 = length(range276); index277 < rangeEnd278; ++index277) {
-                i32 a = range276[index277];
-                if (!memoryLoopInvariant(l, a, depth + Int(1LL))) {
-                    return false;
-                }
+        auto range276 = functionArgs(l->f, v);
+        for (Int index277 = 0, rangeEnd278 = length(range276); index277 < rangeEnd278; ++index277) {
+            i32 a = range276[index277];
+            if (!memoryLoopInvariant(l, a, depth + Int(1LL))) {
+                return false;
             }
         }
         setMap(l->invariantCache, v, true);
@@ -8513,34 +8383,32 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 out = LoopSpan{i32(-1LL), {}, {}, bound.hi, {}, {}, bound.lo, {}, true};
             } else {
                 Span<i32> args = functionArgs(l->f, v);
-                {
-                    auto switch281 = val->op;
-                    switch (switch281) {
-                        case OpAdd: {
-                            auto temporary282 = memoryLoopSpan(l, args[Int(0LL)], depth + Int(1LL));
-                            auto temporary283 = memoryLoopSpan(l, args[Int(1LL)], depth + Int(1LL));
-                            LoopSpan a = temporary282;
-                            LoopSpan b = temporary283;
-                            out = addLoopSpans(a, b);
-                            if (out.valid) {
-                                setMap(l->noWrap, v, true);
-                            }
-                            break;
+                auto switch281 = val->op;
+                switch (switch281) {
+                    case OpAdd: {
+                        auto temporary282 = memoryLoopSpan(l, args[Int(0LL)], depth + Int(1LL));
+                        auto temporary283 = memoryLoopSpan(l, args[Int(1LL)], depth + Int(1LL));
+                        LoopSpan a = temporary282;
+                        LoopSpan b = temporary283;
+                        out = addLoopSpans(a, b);
+                        if (out.valid) {
+                            setMap(l->noWrap, v, true);
                         }
-                        case OpShl: {
-                            if (l->f->values[args[Int(1LL)]].op == OpConst) {
-                                u32 n = convert<u32>(l->f->values[args[Int(1LL)]].aux) & u32(31LL);
-                                if (n <= u32(16LL)) {
-                                    out = memoryLoopSpan(l, args[Int(0LL)], depth + Int(1LL));
-                                    out.mul = shiftLeft(out.mul, n);
-                                    out.mul2 = shiftLeft(out.mul2, n);
-                                    out.factor = shiftLeft(out.factor, n);
-                                    out.offset = shiftLeft(out.offset, n);
-                                    out.lo = shiftLeft(out.lo, n);
-                                }
+                        break;
+                    }
+                    case OpShl: {
+                        if (l->f->values[args[Int(1LL)]].op == OpConst) {
+                            u32 n = convert<u32>(l->f->values[args[Int(1LL)]].aux) & u32(31LL);
+                            if (n <= u32(16LL)) {
+                                out = memoryLoopSpan(l, args[Int(0LL)], depth + Int(1LL));
+                                out.mul = shiftLeft(out.mul, n);
+                                out.mul2 = shiftLeft(out.mul2, n);
+                                out.factor = shiftLeft(out.factor, n);
+                                out.offset = shiftLeft(out.offset, n);
+                                out.lo = shiftLeft(out.lo, n);
                             }
-                            break;
                         }
+                        break;
                     }
                 }
             }
@@ -8553,59 +8421,47 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static i32 memoryLoopVersion(MemoryLoop* l) {
-        {
-            Int attempt = Int(0LL);
-            for (; attempt < Int(2LL); attempt++) {
-                {
-                    auto range284 = l->induction;
-                    for (Int index285 = 0; index285 < mapSlots(range284); ++index285) {
-                        if (!mapOccupied(range284, index285)) {
-                            continue;
-                        }
-                        i32 p = mapKey(range284, index285);
-                        LoopSpan bound = mapValue(range284, index285);
-                        if (bound.stride != i32(0LL)) {
-                            eraseMap(l->induction, p);
-                        }
-                    }
+        Int attempt = Int(0LL);
+        for (; attempt < Int(2LL); attempt++) {
+            auto range284 = l->induction;
+            for (Int index285 = 0; index285 < mapSlots(range284); ++index285) {
+                if (!mapOccupied(range284, index285)) {
+                    continue;
                 }
-                l->allowLoads = attempt == Int(0LL) && l->f->module->importedFuncs == Int(0LL) && !l->f->module->mems[Int(0LL)].imported;
-                {
-                    auto range287 = l->order;
-                    for (Int index288 = 0, rangeEnd289 = length(range287); index288 < rangeEnd289; ++index288) {
-                        i32 b = range287[index288];
-                        {
-                            auto range290 = l->f->blocks[b].instrs.view();
-                            for (Int index291 = 0, rangeEnd292 = length(range290); index291 < rangeEnd292; ++index291) {
-                                i32 v = range290[index291];
-                                {
-                                    auto switch293 = l->f->values[v].op;
-                                    switch (switch293) {
-                                        case OpCall:
-                                        case OpCallIndirect:
-                                        case OpMemCopy:
-                                        case OpMemFill:
-                                        case OpMemInit:
-                                        case OpCopyForward: {
-                                            l->allowLoads = false;
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
+                i32 p = mapKey(range284, index285);
+                LoopSpan bound = mapValue(range284, index285);
+                if (bound.stride != i32(0LL)) {
+                    eraseMap(l->induction, p);
+                }
+            }
+            l->allowLoads = attempt == Int(0LL) && l->f->module->importedFuncs == Int(0LL) && !l->f->module->mems[Int(0LL)].imported;
+            auto range287 = l->order;
+            for (Int index288 = 0, rangeEnd289 = length(range287); index288 < rangeEnd289; ++index288) {
+                i32 b = range287[index288];
+                auto range290 = l->f->blocks[b].instrs.view();
+                for (Int index291 = 0, rangeEnd292 = length(range290); index291 < rangeEnd292; ++index291) {
+                    i32 v = range290[index291];
+                    auto switch293 = l->f->values[v].op;
+                    switch (switch293) {
+                        case OpCall:
+                        case OpCallIndirect:
+                        case OpMemCopy:
+                        case OpMemFill:
+                        case OpMemInit:
+                        case OpCopyForward: {
+                            l->allowLoads = false;
+                            break;
                         }
                     }
                 }
-                l->invariantCache = mapOf<i32, bool>({});
-                l->invariantNodes = {};
-                l->cache = mapOf<i32, LoopSpan>({});
-                l->noWrap = mapOf<i32, bool>({});
-                {
-                    i32 fast = memoryLoopVersionOne(l);
-                    if (fast >= i32(0LL)) {
-                        return fast;
-                    }
-                }
+            }
+            l->invariantCache = mapOf<i32, bool>({});
+            l->invariantNodes = {};
+            l->cache = mapOf<i32, LoopSpan>({});
+            l->noWrap = mapOf<i32, bool>({});
+            i32 fast = memoryLoopVersionOne(l);
+            if (fast >= i32(0LL)) {
+                return fast;
             }
         }
         return i32(-1LL);
@@ -8617,14 +8473,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return i32(-1LL);
         }
         Slice<i32> switches = {};
-        {
-            auto range294 = l->order;
-            for (Int index295 = 0, rangeEnd296 = length(range294); index295 < rangeEnd296; ++index295) {
-                i32 b = range294[index295];
-                Term* t = &f->blocks[b].term;
-                if (t->kind == TermSwitch && length(t->edges) >= Int(5LL) && t->edges[Int(0LL)].block != t->edges[length(t->edges) - Int(1LL)].block && memoryLoopInvariant(l, t->value, Int(0LL))) {
-                    switches = appendValues(switches, b);
-                }
+        auto range294 = l->order;
+        for (Int index295 = 0, rangeEnd296 = length(range294); index295 < rangeEnd296; ++index295) {
+            i32 b = range294[index295];
+            Term* t = &f->blocks[b].term;
+            if (t->kind == TermSwitch && length(t->edges) >= Int(5LL) && t->edges[Int(0LL)].block != t->edges[length(t->edges) - Int(1LL)].block && memoryLoopInvariant(l, t->value, Int(0LL))) {
+                switches = appendValues(switches, b);
             }
         }
         Slice<LoopSpan> writes = {};
@@ -8632,52 +8486,44 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         auto keyOf = [&](LoopSpan bound) mutable -> RangeKeyLoop_version570 {
             return RangeKeyLoop_version570{bound.base, bound.base2, bound.stride, bound.mul, bound.mul2, bound.factor};
         };
-        {
-            auto range297 = f->blocks[l->latch].term.edges;
-            for (Int index298 = 0, rangeEnd299 = length(range297); index298 < rangeEnd299; ++index298) {
-                Edge e = range297[index298];
-                if (e.block != l->header) {
+        auto range297 = f->blocks[l->latch].term.edges;
+        for (Int index298 = 0, rangeEnd299 = length(range297); index298 < rangeEnd299; ++index298) {
+            Edge e = range297[index298];
+            if (e.block != l->header) {
+                continue;
+            }
+            auto range300 = f->blocks[l->header].params;
+            for (Int index301 = 0, rangeEnd302 = length(range300); index301 < rangeEnd302; ++index301) {
+                Int j = index301;
+                i32 p = range300[index301];
+                auto temporary303 = lookupMap(l->induction, p);
+                bool known = temporary303.v1;
+                if (known) {
                     continue;
                 }
-                {
-                    auto range300 = f->blocks[l->header].params;
-                    for (Int index301 = 0, rangeEnd302 = length(range300); index301 < rangeEnd302; ++index301) {
-                        Int j = index301;
-                        i32 p = range300[index301];
-                        {
-                            auto temporary303 = lookupMap(l->induction, p);
-                            bool known = temporary303.v1;
-                            if (known) {
-                                continue;
-                            }
-                        }
-                        auto temporary304 = inductionTerms(f, e.args[j], p, Int(0LL));
-                        Slice<i32> terms = temporary304.v0;
-                        bool ok = temporary304.v1;
-                        if (!ok) {
-                            continue;
-                        }
-                        LoopSpan bound = LoopSpan{l->entry.args[j], u64(1LL), {}, {}, {}, {}, {}, {}, true};
-                        {
-                            auto range305 = terms;
-                            for (Int index306 = 0, rangeEnd307 = length(range305); index306 < rangeEnd307; ++index306) {
-                                i32 v = range305[index306];
-                                Value* val = &f->values[v];
-                                if (val->op == OpConst && bound.stride == i32(0LL) && val->aux >= i64(0LL) && val->aux <= i64(65536LL)) {
-                                    bound.factor += convert<u64>(val->aux);
-                                } else if (val->op != OpConst && (bound.factor == u64(0LL) || bound.stride == v + i32(1LL)) && memoryLoopInvariant(l, v, Int(0LL))) {
-                                    bound.stride = v + i32(1LL);
-                                    bound.factor++;
-                                } else {
-                                    bound.valid = false;
-                                    break;
-                                }
-                            }
-                        }
-                        if (bound.valid && bound.factor <= u64(65536LL)) {
-                            setMap(l->induction, p, bound);
-                        }
+                auto temporary304 = inductionTerms(f, e.args[j], p, Int(0LL));
+                Slice<i32> terms = temporary304.v0;
+                bool ok = temporary304.v1;
+                if (!ok) {
+                    continue;
+                }
+                LoopSpan bound = LoopSpan{l->entry.args[j], u64(1LL), {}, {}, {}, {}, {}, {}, true};
+                auto range305 = terms;
+                for (Int index306 = 0, rangeEnd307 = length(range305); index306 < rangeEnd307; ++index306) {
+                    i32 v = range305[index306];
+                    Value* val = &f->values[v];
+                    if (val->op == OpConst && bound.stride == i32(0LL) && val->aux >= i64(0LL) && val->aux <= i64(65536LL)) {
+                        bound.factor += convert<u64>(val->aux);
+                    } else if (val->op != OpConst && (bound.factor == u64(0LL) || bound.stride == v + i32(1LL)) && memoryLoopInvariant(l, v, Int(0LL))) {
+                        bound.stride = v + i32(1LL);
+                        bound.factor++;
+                    } else {
+                        bound.valid = false;
+                        break;
                     }
+                }
+                if (bound.valid && bound.factor <= u64(65536LL)) {
+                    setMap(l->induction, p, bound);
                 }
             }
         }
@@ -8685,74 +8531,64 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Slice<LoopSpan> guards = {};
         Map<i32, bool> proven = mapOf<i32, bool>({});
         bool unboundedWrite = false;
-        {
-            auto range308 = l->order;
-            for (Int index309 = 0, rangeEnd310 = length(range308); index309 < rangeEnd310; ++index309) {
-                i32 b = range308[index309];
-                {
-                    auto range311 = f->blocks[b].instrs.view();
-                    for (Int index312 = 0, rangeEnd313 = length(range311); index312 < rangeEnd313; ++index312) {
-                        i32 v = range311[index312];
-                        Value* val = &f->values[v];
-                        if ((val->op != OpLoad && val->op != OpStore) || MemKind(convert<MemKind>(val->aux2) & memProven) != MemKind(0LL)) {
-                            continue;
+        auto range308 = l->order;
+        for (Int index309 = 0, rangeEnd310 = length(range308); index309 < rangeEnd310; ++index309) {
+            i32 b = range308[index309];
+            auto range311 = f->blocks[b].instrs.view();
+            for (Int index312 = 0, rangeEnd313 = length(range311); index312 < rangeEnd313; ++index312) {
+                i32 v = range311[index312];
+                Value* val = &f->values[v];
+                if ((val->op != OpLoad && val->op != OpStore) || MemKind(convert<MemKind>(val->aux2) & memProven) != MemKind(0LL)) {
+                    continue;
+                }
+                i32 addr = functionArgs(f, v)[Int(0LL)];
+                u64 end = convert<u64>(val->aux) + convert<u64>(memKindWidth(convert<MemKind>(val->aux2)));
+                LoopSpan bound = memoryLoopSpan(l, addr, Int(0LL));
+                if (val->op == OpStore) {
+                    if (bound.valid) {
+                        LoopSpan write = bound;
+                        write.lo += convert<u64>(val->aux);
+                        write.offset += end;
+                        RangeKeyLoop_version570 key = keyOf(write);
+                        auto temporary314 = lookupMap(writeIndex, key);
+                        Int j = temporary314.v0;
+                        bool known = temporary314.v1;
+                        if (known) {
+                            writes[j].lo = minimum(writes[j].lo, write.lo);
+                            writes[j].offset = maximum(writes[j].offset, write.offset);
+                        } else {
+                            setMap(writeIndex, key, length(writes));
+                            writes = appendValues(writes, write);
                         }
-                        i32 addr = functionArgs(f, v)[Int(0LL)];
-                        u64 end = convert<u64>(val->aux) + convert<u64>(memKindWidth(convert<MemKind>(val->aux2)));
-                        LoopSpan bound = memoryLoopSpan(l, addr, Int(0LL));
-                        if (val->op == OpStore) {
-                            if (bound.valid) {
-                                LoopSpan write = bound;
-                                write.lo += convert<u64>(val->aux);
-                                write.offset += end;
-                                RangeKeyLoop_version570 key = keyOf(write);
-                                {
-                                    auto temporary314 = lookupMap(writeIndex, key);
-                                    Int j = temporary314.v0;
-                                    bool known = temporary314.v1;
-                                    if (known) {
-                                        writes[j].lo = minimum(writes[j].lo, write.lo);
-                                        writes[j].offset = maximum(writes[j].offset, write.offset);
-                                    } else {
-                                        setMap(writeIndex, key, length(writes));
-                                        writes = appendValues(writes, write);
-                                    }
-                                }
-                            } else {
-                                unboundedWrite = true;
-                            }
-                        }
-                        if (unsignedRangesOf(l->unsignedValue, addr, Int(0LL)).hi + end <= f->module->mems[Int(0LL)].limits.min * u64(65536LL) && !f->module->mems[Int(0LL)].imported) {
-                            continue;
-                        }
-                        if (!bound.valid) {
-                            continue;
-                        }
-                        bound.offset += end;
-                        RangeKeyLoop_version570 key = keyOf(bound);
-                        {
-                            auto temporary315 = lookupMap(indices, key);
-                            Int j = temporary315.v0;
-                            bool ok = temporary315.v1;
-                            if (ok) {
-                                guards[j].offset = maximum(guards[j].offset, bound.offset);
-                            } else {
-                                setMap(indices, key, length(guards));
-                                guards = appendValues(guards, bound);
-                            }
-                        }
-                        setMap(proven, v, true);
+                    } else {
+                        unboundedWrite = true;
                     }
                 }
+                if (unsignedRangesOf(l->unsignedValue, addr, Int(0LL)).hi + end <= f->module->mems[Int(0LL)].limits.min * u64(65536LL) && !f->module->mems[Int(0LL)].imported) {
+                    continue;
+                }
+                if (!bound.valid) {
+                    continue;
+                }
+                bound.offset += end;
+                RangeKeyLoop_version570 key = keyOf(bound);
+                auto temporary315 = lookupMap(indices, key);
+                Int j = temporary315.v0;
+                bool ok = temporary315.v1;
+                if (ok) {
+                    guards[j].offset = maximum(guards[j].offset, bound.offset);
+                } else {
+                    setMap(indices, key, length(guards));
+                    guards = appendValues(guards, bound);
+                }
+                setMap(proven, v, true);
             }
         }
         bool hasLoad = false;
-        {
-            auto range316 = l->invariantNodes;
-            for (Int index317 = 0, rangeEnd318 = length(range316); index317 < rangeEnd318; ++index317) {
-                i32 v = range316[index317];
-                hasLoad = hasLoad || f->values[v].op == OpLoad;
-            }
+        auto range316 = l->invariantNodes;
+        for (Int index317 = 0, rangeEnd318 = length(range316); index317 < rangeEnd318; ++index317) {
+            i32 v = range316[index317];
+            hasLoad = hasLoad || f->values[v].op == OpLoad;
         }
         if (length(proven) < Int(2LL) || length(guards) > Int(24LL) || (unboundedWrite && hasLoad)) {
             return i32(-1LL);
@@ -8794,13 +8630,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         Map<i32, i32> invariants = mapOf<i32, i32>({});
         auto mapValue = [&](i32 v) mutable -> i32 {
-            {
-                auto temporary319 = lookupMap(invariants, v);
-                i32 mapped = temporary319.v0;
-                bool ok = temporary319.v1;
-                if (ok) {
-                    return mapped;
-                }
+            auto temporary319 = lookupMap(invariants, v);
+            i32 mapped = temporary319.v0;
+            bool ok = temporary319.v1;
+            if (ok) {
+                return mapped;
             }
             return v;
         };
@@ -8811,53 +8645,47 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             f->blocks[current].term = Term{TermIf, condition, sliceOf<Edge>({Edge{next, {}}, l->entry}), {}, {}};
             current = next;
         }
-        {
-            auto range320 = l->invariantNodes;
-            for (Int index321 = 0, rangeEnd322 = length(range320); index321 < rangeEnd322; ++index321) {
-                i32 v = range320[index321];
-                Value val = f->values[v];
-                Slice<i32> args = appendSlice(Slice<i32>{}, functionArgs(f, v));
-                {
-                    auto range323 = args;
-                    for (Int index324 = 0, rangeEnd325 = length(range323); index324 < rangeEnd325; ++index324) {
-                        Int j = index324;
-                        args[j] = mapValue(args[j]);
-                    }
+        auto range320 = l->invariantNodes;
+        for (Int index321 = 0, rangeEnd322 = length(range320); index321 < rangeEnd322; ++index321) {
+            i32 v = range320[index321];
+            Value val = f->values[v];
+            Slice<i32> args = appendSlice(Slice<i32>{}, functionArgs(f, v));
+            auto range323 = args;
+            for (Int index324 = 0, rangeEnd325 = length(range323); index324 < rangeEnd325; ++index324) {
+                Int j = index324;
+                args[j] = mapValue(args[j]);
+            }
+            CseKey key = CseKey{val.op, val.typ, val.nargs, val.aux, val.aux2, {}};
+            bool cacheable = length(args) <= Int(3LL);
+            if (cacheable) {
+                copySlice(subslice(key.args, Int(0), length(key.args)), args);
+                auto temporary326 = lookupMap(available, key);
+                i32 n = temporary326.v0;
+                bool known = temporary326.v1;
+                if (known) {
+                    setMap(invariants, v, n);
+                    continue;
                 }
-                CseKey key = CseKey{val.op, val.typ, val.nargs, val.aux, val.aux2, {}};
-                bool cacheable = length(args) <= Int(3LL);
-                if (cacheable) {
-                    copySlice(subslice(key.args, Int(0), length(key.args)), args);
-                    {
-                        auto temporary326 = lookupMap(available, key);
-                        i32 n = temporary326.v0;
-                        bool known = temporary326.v1;
-                        if (known) {
-                            setMap(invariants, v, n);
-                            continue;
-                        }
-                    }
-                }
-                if (val.op == OpLoad) {
-                    i32 addr = emit(OpExtendU, I64, sliceOf<i32>({args[Int(0LL)]}));
-                    i32 begin = emit(OpAdd, I64, sliceOf<i32>({addr, constant(I64, convert<u64>(val.aux))}));
-                    i32 end = emit(OpAdd, I64, sliceOf<i32>({begin, constant(I64, convert<u64>(memKindWidth(convert<MemKind>(val.aux2))))}));
-                    i32 ok = emit(OpLeU, I32, sliceOf<i32>({end, size}));
-                    i32 next = functionNewBlock(f);
-                    f->blocks[current].term = Term{TermIf, ok, sliceOf<Edge>({Edge{next, {}}, l->entry}), {}, {}};
-                    current = next;
-                    reads = appendValues(reads, LoadRangeLoop_version741{begin, end});
-                    val.aux2 |= i32(32LL);
-                }
-                i32 n = emit(val.op, val.typ, args);
-                auto temporary327 = val.aux;
-                auto temporary328 = val.aux2;
-                f->values[n].aux = temporary327;
-                f->values[n].aux2 = temporary328;
-                setMap(invariants, v, n);
-                if (cacheable) {
-                    setMap(available, key, n);
-                }
+            }
+            if (val.op == OpLoad) {
+                i32 addr = emit(OpExtendU, I64, sliceOf<i32>({args[Int(0LL)]}));
+                i32 begin = emit(OpAdd, I64, sliceOf<i32>({addr, constant(I64, convert<u64>(val.aux))}));
+                i32 end = emit(OpAdd, I64, sliceOf<i32>({begin, constant(I64, convert<u64>(memKindWidth(convert<MemKind>(val.aux2))))}));
+                i32 ok = emit(OpLeU, I32, sliceOf<i32>({end, size}));
+                i32 next = functionNewBlock(f);
+                f->blocks[current].term = Term{TermIf, ok, sliceOf<Edge>({Edge{next, {}}, l->entry}), {}, {}};
+                current = next;
+                reads = appendValues(reads, LoadRangeLoop_version741{begin, end});
+                val.aux2 |= i32(32LL);
+            }
+            i32 n = emit(val.op, val.typ, args);
+            auto temporary327 = val.aux;
+            auto temporary328 = val.aux2;
+            f->values[n].aux = temporary327;
+            f->values[n].aux2 = temporary328;
+            setMap(invariants, v, n);
+            if (cacheable) {
+                setMap(available, key, n);
             }
         }
         if (l->limit >= i32(0LL)) {
@@ -8874,20 +8702,18 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         auto evaluate = [&](LoopSpan bound) mutable -> Tuple2<i32, i32> {
             i32 end = constant(I64, bound.offset);
             i32 begin = constant(I64, bound.lo);
-            {
-                auto range329 = Array<Array<i64, 2>, 2>{{Array<i64, 2>{{convert<i64>(bound.base), convert<i64>(bound.mul)}}, Array<i64, 2>{{convert<i64>(bound.base2), convert<i64>(bound.mul2)}}}};
-                for (Int index330 = 0, rangeEnd331 = length(range329); index330 < rangeEnd331; ++index330) {
-                    Array<i64, 2> term = range329[index330];
-                    if (term[Int(1LL)] == i64(0LL)) {
-                        continue;
-                    }
-                    i32 base = emit(OpExtendU, I64, sliceOf<i32>({mapValue(convert<i32>(term[Int(0LL)]))}));
-                    if (term[Int(1LL)] != i64(1LL)) {
-                        base = emit(OpMul, I64, sliceOf<i32>({base, constant(I64, convert<u64>(term[Int(1LL)]))}));
-                    }
-                    end = emit(OpAdd, I64, sliceOf<i32>({end, base}));
-                    begin = emit(OpAdd, I64, sliceOf<i32>({begin, base}));
+            auto range329 = Array<Array<i64, 2>, 2>{{Array<i64, 2>{{convert<i64>(bound.base), convert<i64>(bound.mul)}}, Array<i64, 2>{{convert<i64>(bound.base2), convert<i64>(bound.mul2)}}}};
+            for (Int index330 = 0, rangeEnd331 = length(range329); index330 < rangeEnd331; ++index330) {
+                Array<i64, 2> term = range329[index330];
+                if (term[Int(1LL)] == i64(0LL)) {
+                    continue;
                 }
+                i32 base = emit(OpExtendU, I64, sliceOf<i32>({mapValue(convert<i32>(term[Int(0LL)]))}));
+                if (term[Int(1LL)] != i64(1LL)) {
+                    base = emit(OpMul, I64, sliceOf<i32>({base, constant(I64, convert<u64>(term[Int(1LL)]))}));
+                }
+                end = emit(OpAdd, I64, sliceOf<i32>({end, base}));
+                begin = emit(OpAdd, I64, sliceOf<i32>({begin, base}));
             }
             if (bound.factor != u64(0LL)) {
                 i32 distance = emit(OpMul, I64, sliceOf<i32>({iterations, constant(I64, bound.factor)}));
@@ -8900,52 +8726,42 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             return {begin, end};
         };
-        {
-            auto range332 = guards;
-            for (Int index333 = 0, rangeEnd334 = length(range332); index333 < rangeEnd334; ++index333) {
-                LoopSpan bound = range332[index333];
-                auto temporary335 = evaluate(bound);
-                i32 end = temporary335.v1;
-                condition = emit(OpAnd, I32, sliceOf<i32>({condition, emit(OpLeU, I32, sliceOf<i32>({end, size}))}));
-            }
+        auto range332 = guards;
+        for (Int index333 = 0, rangeEnd334 = length(range332); index333 < rangeEnd334; ++index333) {
+            LoopSpan bound = range332[index333];
+            auto temporary335 = evaluate(bound);
+            i32 end = temporary335.v1;
+            condition = emit(OpAnd, I32, sliceOf<i32>({condition, emit(OpLeU, I32, sliceOf<i32>({end, size}))}));
         }
-        {
-            auto range336 = writes;
-            for (Int index337 = 0, rangeEnd338 = length(range336); index337 < rangeEnd338; ++index337) {
-                LoopSpan write = range336[index337];
-                auto temporary339 = evaluate(write);
-                i32 begin = temporary339.v0;
-                i32 end = temporary339.v1;
-                condition = emit(OpAnd, I32, sliceOf<i32>({condition, emit(OpLeU, I32, sliceOf<i32>({end, size}))}));
-                {
-                    auto range340 = reads;
-                    for (Int index341 = 0, rangeEnd342 = length(range340); index341 < rangeEnd342; ++index341) {
-                        LoadRangeLoop_version741 read = range340[index341];
-                        i32 disjoint = emit(OpOr, I32, sliceOf<i32>({emit(OpLeU, I32, sliceOf<i32>({end, read.begin})), emit(OpLeU, I32, sliceOf<i32>({read.end, begin}))}));
-                        condition = emit(OpAnd, I32, sliceOf<i32>({condition, disjoint}));
-                    }
-                }
+        auto range336 = writes;
+        for (Int index337 = 0, rangeEnd338 = length(range336); index337 < rangeEnd338; ++index337) {
+            LoopSpan write = range336[index337];
+            auto temporary339 = evaluate(write);
+            i32 begin = temporary339.v0;
+            i32 end = temporary339.v1;
+            condition = emit(OpAnd, I32, sliceOf<i32>({condition, emit(OpLeU, I32, sliceOf<i32>({end, size}))}));
+            auto range340 = reads;
+            for (Int index341 = 0, rangeEnd342 = length(range340); index341 < rangeEnd342; ++index341) {
+                LoadRangeLoop_version741 read = range340[index341];
+                i32 disjoint = emit(OpOr, I32, sliceOf<i32>({emit(OpLeU, I32, sliceOf<i32>({end, read.begin})), emit(OpLeU, I32, sliceOf<i32>({read.end, begin}))}));
+                condition = emit(OpAnd, I32, sliceOf<i32>({condition, disjoint}));
             }
         }
         i32 fast = memoryLoopClone(l, proven, invariants, {});
         l->copies = appendValues(l->copies, fast);
         Edge entry = Edge{fast, appendSlice(Slice<i32>{}, l->entry.args)};
-        {
-            i32 bulk = memoryLoopCopyLoop(l, fast, countValue, size, proven, invariants);
-            if (bulk >= i32(0LL)) {
-                entry.block = bulk;
-            }
+        i32 bulk = memoryLoopCopyLoop(l, fast, countValue, size, proven, invariants);
+        if (bulk >= i32(0LL)) {
+            entry.block = bulk;
         }
         if (length(switches) >= Int(2LL)) {
             i32 index = mapValue(f->blocks[switches[Int(0LL)]].term.value);
             Map<i32, Int> cases = mapOf<i32, Int>({});
-            {
-                auto range343 = switches;
-                for (Int index344 = 0, rangeEnd345 = length(range343); index344 < rangeEnd345; ++index344) {
-                    i32 b = range343[index344];
-                    if (mapValue(f->blocks[b].term.value) == index) {
-                        setMap(cases, b, Int(0LL));
-                    }
+            auto range343 = switches;
+            for (Int index344 = 0, rangeEnd345 = length(range343); index344 < rangeEnd345; ++index344) {
+                i32 b = range343[index344];
+                if (mapValue(f->blocks[b].term.value) == index) {
+                    setMap(cases, b, Int(0LL));
                 }
             }
             if (length(cases) >= Int(2LL)) {
@@ -8959,13 +8775,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         f->blocks[current].term = Term{TermIf, condition, sliceOf<Edge>({entry, l->entry}), {}, {}};
-        {
-            auto range346 = f->blocks[l->preheader].term.edges;
-            for (Int index347 = 0, rangeEnd348 = length(range346); index347 < rangeEnd348; ++index347) {
-                Int j = index347;
-                if (f->blocks[l->preheader].term.edges[j].block == l->header) {
-                    f->blocks[l->preheader].term.edges[j] = Edge{guard, {}};
-                }
+        auto range346 = f->blocks[l->preheader].term.edges;
+        for (Int index347 = 0, rangeEnd348 = length(range346); index347 < rangeEnd348; ++index347) {
+            Int j = index347;
+            if (f->blocks[l->preheader].term.edges[j].block == l->header) {
+                f->blocks[l->preheader].term.edges[j] = Edge{guard, {}};
             }
         }
         return fast;
@@ -9033,34 +8847,30 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 code = appendLeb(code, convert<u64>(i));
             }
         }
-        {
-            auto range349 = m->datas;
-            for (Int index350 = 0, rangeEnd351 = length(range349); index350 < rangeEnd351; ++index350) {
-                Int i = index350;
-                Data d = range349[index350];
-                if (m->batchData || d.mode != segmentActive) {
-                    continue;
-                }
-                next();
-                code = appendSlice(code, subslice(d.offset, Int(0), length(d.offset) - Int(1LL)));
-                code = appendValues(code, u8(65LL), u8(0LL), u8(65LL));
-                code = appendSleb(code, convert<i64>(convert<i32>(convert<u32>(length(d.bytes)))));
-                code = appendValues(code, u8(252LL), u8(8LL));
-                code = appendLeb(code, convert<u64>(i));
-                code = appendValues(code, u8(0LL), u8(252LL), u8(9LL));
-                code = appendLeb(code, convert<u64>(i));
+        auto range349 = m->datas;
+        for (Int index350 = 0, rangeEnd351 = length(range349); index350 < rangeEnd351; ++index350) {
+            Int i = index350;
+            Data d = range349[index350];
+            if (m->batchData || d.mode != segmentActive) {
+                continue;
             }
+            next();
+            code = appendSlice(code, subslice(d.offset, Int(0), length(d.offset) - Int(1LL)));
+            code = appendValues(code, u8(65LL), u8(0LL), u8(65LL));
+            code = appendSleb(code, convert<i64>(convert<i32>(convert<u32>(length(d.bytes)))));
+            code = appendValues(code, u8(252LL), u8(8LL));
+            code = appendLeb(code, convert<u64>(i));
+            code = appendValues(code, u8(0LL), u8(252LL), u8(9LL));
+            code = appendLeb(code, convert<u64>(i));
         }
         Int typ = Int(-1LL);
-        {
-            auto range352 = m->types;
-            for (Int index353 = 0, rangeEnd354 = length(range352); index353 < rangeEnd354; ++index353) {
-                Int i = index353;
-                FuncType t = range352[index353];
-                if (length(t.params) == Int(0LL) && length(t.results) == Int(0LL)) {
-                    typ = i;
-                    break;
-                }
+        auto range352 = m->types;
+        for (Int index353 = 0, rangeEnd354 = length(range352); index353 < rangeEnd354; ++index353) {
+            Int i = index353;
+            FuncType t = range352[index353];
+            if (length(t.params) == Int(0LL) && length(t.results) == Int(0LL)) {
+                typ = i;
+                break;
             }
         }
         if (typ < Int(0LL)) {
@@ -9070,15 +8880,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (length(parts) > Int(0LL)) {
             parts = appendValues(parts, appendValues(code, u8(11LL)));
             code = sliceOf<u8>({u8(0LL)});
-            {
-                auto range355 = parts;
-                for (Int index356 = 0, rangeEnd357 = length(range355); index356 < rangeEnd357; ++index356) {
-                    Int k = index356;
-                    Slice<u8> body = range355[index356];
-                    Int fn = length(m->funcs);
-                    m->funcs = appendValues(m->funcs, Func{convert<u32>(typ), {}, {}, fmtSprintf(String("init.part%d"), k), body, {}});
-                    code = appendLeb(appendValues(code, u8(16LL)), convert<u64>(fn));
-                }
+            auto range355 = parts;
+            for (Int index356 = 0, rangeEnd357 = length(range355); index356 < rangeEnd357; ++index356) {
+                Int k = index356;
+                Slice<u8> body = range355[index356];
+                Int fn = length(m->funcs);
+                m->funcs = appendValues(m->funcs, Func{convert<u32>(typ), {}, {}, fmtSprintf(String("init.part%d"), k), body, {}});
+                code = appendLeb(appendValues(code, u8(16LL)), convert<u64>(fn));
             }
         }
         if (m->start >= 0 && !m->batchData) {
@@ -9094,107 +8902,95 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void moduleDataSection(Module* m, Reader* r) {
         u32 n = readerU32(r);
-        {
-            u32 i = u32(0LL);
-            for (; i < n; i++) {
-                u32 flags = readerU32(r);
-                Data d = Data{};
-                {
-                    auto switch358 = flags;
-                    switch (switch358) {
-                        case u32(0LL): {
-                            d.offset = readerConstExpr(r);
-                            break;
-                        }
-                        case u32(1LL): {
-                            d.mode = segmentPassive;
-                            break;
-                        }
-                        case u32(2LL): {
-                            d.memory = readerU32(r);
-                            d.offset = readerConstExpr(r);
-                            break;
-                        }
-                        default: {
-                            compilerError(String("malformed data segment kind %d"));
-                            break;
-                        }
-                    }
+        u32 i = u32(0LL);
+        for (; i < n; i++) {
+            u32 flags = readerU32(r);
+            Data d = Data{};
+            auto switch358 = flags;
+            switch (switch358) {
+                case u32(0LL): {
+                    d.offset = readerConstExpr(r);
+                    break;
                 }
-                d.bytes = readerBytes(r, convert<i64>(readerU32(r)));
-                m->datas = appendValues(m->datas, d);
+                case u32(1LL): {
+                    d.mode = segmentPassive;
+                    break;
+                }
+                case u32(2LL): {
+                    d.memory = readerU32(r);
+                    d.offset = readerConstExpr(r);
+                    break;
+                }
+                default: {
+                    compilerError(String("malformed data segment kind %d"));
+                    break;
+                }
             }
+            d.bytes = readerBytes(r, convert<i64>(readerU32(r)));
+            m->datas = appendValues(m->datas, d);
         }
     }
 
     static void moduleElemSection(Module* m, Reader* r) {
         u32 n = readerU32(r);
-        {
-            u32 i = u32(0LL);
-            for (; i < n; i++) {
-                u32 flags = readerU32(r);
-                if (flags > u32(7LL)) {
-                    compilerError(String("malformed elements segment kind %d"));
-                }
-                Elem e = Elem{{}, {}, {}, FuncRef, {}};
-                {
-                    if ((flags & u32(1LL)) == u32(0LL)) {
-                        e.mode = segmentActive;
-                    } else if ((flags & u32(2LL)) == u32(0LL)) {
-                        e.mode = segmentPassive;
-                    } else {
-                        e.mode = segmentDeclarative;
-                    }
-                }
-                if ((flags & u32(1LL)) == u32(0LL)) {
-                    if ((flags & u32(2LL)) != u32(0LL)) {
-                        e.table = readerU32(r);
-                    }
-                    e.offset = readerConstExpr(r);
-                }
-                bool exprs = (flags & u32(4LL)) != u32(0LL);
-                if ((flags & u32(3LL)) != u32(0LL)) {
-                    if (exprs) {
-                        e.typ = readerRefType(r);
-                    } else {
-                        u8 kind = readerByte(r);
-                        if (kind != u8(0LL)) {
-                            compilerError(String("malformed element kind %d"));
-                        }
-                    }
-                }
-                u32 count = readerU32(r);
-                {
-                    u32 j = u32(0LL);
-                    for (; j < count; j++) {
-                        if (exprs) {
-                            e.exprs = appendValues(e.exprs, readerConstExpr(r));
-                        } else {
-                            e.exprs = appendValues(e.exprs, refFuncExpr(readerU32(r)));
-                        }
-                    }
-                }
-                m->elems = appendValues(m->elems, e);
+        u32 i = u32(0LL);
+        for (; i < n; i++) {
+            u32 flags = readerU32(r);
+            if (flags > u32(7LL)) {
+                compilerError(String("malformed elements segment kind %d"));
             }
+            Elem e = Elem{{}, {}, {}, FuncRef, {}};
+            if ((flags & u32(1LL)) == u32(0LL)) {
+                e.mode = segmentActive;
+            } else if ((flags & u32(2LL)) == u32(0LL)) {
+                e.mode = segmentPassive;
+            } else {
+                e.mode = segmentDeclarative;
+            }
+            if ((flags & u32(1LL)) == u32(0LL)) {
+                if ((flags & u32(2LL)) != u32(0LL)) {
+                    e.table = readerU32(r);
+                }
+                e.offset = readerConstExpr(r);
+            }
+            bool exprs = (flags & u32(4LL)) != u32(0LL);
+            if ((flags & u32(3LL)) != u32(0LL)) {
+                if (exprs) {
+                    e.typ = readerRefType(r);
+                } else {
+                    u8 kind = readerByte(r);
+                    if (kind != u8(0LL)) {
+                        compilerError(String("malformed element kind %d"));
+                    }
+                }
+            }
+            u32 count = readerU32(r);
+            u32 j = u32(0LL);
+            for (; j < count; j++) {
+                if (exprs) {
+                    e.exprs = appendValues(e.exprs, readerConstExpr(r));
+                } else {
+                    e.exprs = appendValues(e.exprs, refFuncExpr(readerU32(r)));
+                }
+            }
+            m->elems = appendValues(m->elems, e);
         }
     }
 
     static void moduleExportSection(Module* m, Reader* r) {
         u32 n = readerU32(r);
         Map<String, bool> seen = mapOf<String, bool>({});
-        {
-            u32 i = u32(0LL);
-            for (; i < n; i++) {
-                Export e = Export{readerName(r), readerByte(r), readerU32(r)};
-                if (e.kind > externGlobal) {
-                    compilerError(String("malformed export kind %d"));
-                }
-                if (seen[e.name]) {
-                    compilerError(String("duplicate export name %q"));
-                }
-                setMap(seen, e.name, true);
-                m->exports = appendValues(m->exports, e);
+        u32 i = u32(0LL);
+        for (; i < n; i++) {
+            Export e = Export{readerName(r), readerByte(r), readerU32(r)};
+            if (e.kind > externGlobal) {
+                compilerError(String("malformed export kind %d"));
             }
+            if (seen[e.name]) {
+                compilerError(String("duplicate export name %q"));
+            }
+            setMap(seen, e.name, true);
+            m->exports = appendValues(m->exports, e);
         }
     }
 
@@ -9204,79 +9000,69 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void moduleImportSection(Module* m, Reader* r) {
         u32 n = readerU32(r);
-        {
-            u32 i = u32(0LL);
-            for (; i < n; i++) {
-                Import imp = Import{readerName(r), readerName(r), readerByte(r), {}};
-                {
-                    auto switch361 = imp.kind;
-                    switch (switch361) {
-                        case externFunc: {
-                            imp.index = convert<u32>(length(m->funcs));
-                            m->funcs = appendValues(m->funcs, Func{readerU32(r), true, returnsTwice(imp.name), {}, {}, {}});
-                            m->importedFuncs++;
-                            break;
-                        }
-                        case externTable: {
-                            imp.index = convert<u32>(length(m->tables));
-                            ValType elem = readerRefType(r);
-                            m->tables = appendValues(m->tables, Table{elem, readerLimits(r, false), true});
-                            m->importedTables++;
-                            break;
-                        }
-                        case externMemory: {
-                            imp.index = convert<u32>(length(m->mems));
-                            m->mems = appendValues(m->mems, Memory{readerLimits(r, true), true});
-                            m->importedMems++;
-                            break;
-                        }
-                        case externGlobal: {
-                            imp.index = convert<u32>(length(m->globals));
-                            Global g = Global{readerValType(r), {}, true, {}};
-                            g.mutableValue = globalMutability(r);
-                            m->globals = appendValues(m->globals, g);
-                            m->importedGlobals++;
-                            break;
-                        }
-                        default: {
-                            compilerError(String("malformed import kind %d"));
-                            break;
-                        }
-                    }
+        u32 i = u32(0LL);
+        for (; i < n; i++) {
+            Import imp = Import{readerName(r), readerName(r), readerByte(r), {}};
+            auto switch361 = imp.kind;
+            switch (switch361) {
+                case externFunc: {
+                    imp.index = convert<u32>(length(m->funcs));
+                    m->funcs = appendValues(m->funcs, Func{readerU32(r), true, returnsTwice(imp.name), {}, {}, {}});
+                    m->importedFuncs++;
+                    break;
                 }
-                m->imports = appendValues(m->imports, imp);
+                case externTable: {
+                    imp.index = convert<u32>(length(m->tables));
+                    ValType elem = readerRefType(r);
+                    m->tables = appendValues(m->tables, Table{elem, readerLimits(r, false), true});
+                    m->importedTables++;
+                    break;
+                }
+                case externMemory: {
+                    imp.index = convert<u32>(length(m->mems));
+                    m->mems = appendValues(m->mems, Memory{readerLimits(r, true), true});
+                    m->importedMems++;
+                    break;
+                }
+                case externGlobal: {
+                    imp.index = convert<u32>(length(m->globals));
+                    Global g = Global{readerValType(r), {}, true, {}};
+                    g.mutableValue = globalMutability(r);
+                    m->globals = appendValues(m->globals, g);
+                    m->importedGlobals++;
+                    break;
+                }
+                default: {
+                    compilerError(String("malformed import kind %d"));
+                    break;
+                }
             }
+            m->imports = appendValues(m->imports, imp);
         }
     }
 
     static void moduleTypeSection(Module* m, Reader* r) {
         u32 n = readerU32(r);
-        {
-            u32 i = u32(0LL);
-            for (; i < n; i++) {
-                {
-                    u8 form = readerByte(r);
-                    if (form != u8(96LL)) {
-                        compilerError(String("malformed function type form 0x%02x"));
-                    }
-                }
-                FuncType t = {};
-                u32 np = readerU32(r);
-                {
-                    u32 j = u32(0LL);
-                    for (; j < np; j++) {
-                        t.params = appendValues(t.params, readerValType(r));
-                    }
-                }
-                u32 nr = readerU32(r);
-                {
-                    u32 j = u32(0LL);
-                    for (; j < nr; j++) {
-                        t.results = appendValues(t.results, readerValType(r));
-                    }
-                }
-                m->types = appendValues(m->types, t);
+        u32 i = u32(0LL);
+        for (; i < n; i++) {
+            u8 form = readerByte(r);
+            if (form != u8(96LL)) {
+                compilerError(String("malformed function type form 0x%02x"));
             }
+            FuncType t = {};
+            u32 np = readerU32(r);
+            {
+                u32 j = u32(0LL);
+                for (; j < np; j++) {
+                    t.params = appendValues(t.params, readerValType(r));
+                }
+            }
+            u32 nr = readerU32(r);
+            u32 j = u32(0LL);
+            for (; j < nr; j++) {
+                t.results = appendValues(t.results, readerValType(r));
+            }
+            m->types = appendValues(m->types, t);
         }
     }
 
@@ -9297,137 +9083,129 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         UnsignedRange out = unknown;
         Span<i32> args = functionArgs(r->f, v);
-        {
-            auto switch362 = val->op;
-            switch (switch362) {
-                case OpConst: {
-                    u64 k = convert<u64>(convert<u32>(val->aux));
-                    out = UnsignedRange{k, k};
-                    break;
+        auto switch362 = val->op;
+        switch (switch362) {
+            case OpConst: {
+                u64 k = convert<u64>(convert<u32>(val->aux));
+                out = UnsignedRange{k, k};
+                break;
+            }
+            case OpLoad: {
+                MemKind kind = convert<MemKind>(val->aux2);
+                if (!memKindSigned(kind) && memKindWidth(kind) < Int(4LL)) {
+                    out.hi = shiftLeft(u64(1LL), convert<Uint>(memKindWidth(kind) * Int(8LL))) - u64(1LL);
                 }
-                case OpLoad: {
-                    MemKind kind = convert<MemKind>(val->aux2);
-                    if (!memKindSigned(kind) && memKindWidth(kind) < Int(4LL)) {
-                        out.hi = shiftLeft(u64(1LL), convert<Uint>(memKindWidth(kind) * Int(8LL))) - u64(1LL);
+                break;
+            }
+            case OpEqz:
+            case OpEq:
+            case OpNe:
+            case OpLtS:
+            case OpLtU:
+            case OpGtS:
+            case OpGtU:
+            case OpLeS:
+            case OpLeU:
+            case OpGeS:
+            case OpGeU:
+            case OpFEq:
+            case OpFNe:
+            case OpFLt:
+            case OpFGt:
+            case OpFLe:
+            case OpFGe:
+            case OpRefIsNull: {
+                out.hi = u64(1LL);
+                break;
+            }
+            case OpAnd:
+            case OpAdd:
+            case OpSub:
+            case OpMul:
+            case OpShrU:
+            case OpShl: {
+                auto temporary363 = unsignedRangesOf(r, args[Int(0LL)], depth + Int(1LL));
+                auto temporary364 = unsignedRangesOf(r, args[Int(1LL)], depth + Int(1LL));
+                UnsignedRange a = temporary363;
+                UnsignedRange b = temporary364;
+                auto switch365 = val->op;
+                switch (switch365) {
+                    case OpAnd: {
+                        out.hi = minimum(a.hi, b.hi);
+                        break;
                     }
-                    break;
-                }
-                case OpEqz:
-                case OpEq:
-                case OpNe:
-                case OpLtS:
-                case OpLtU:
-                case OpGtS:
-                case OpGtU:
-                case OpLeS:
-                case OpLeU:
-                case OpGeS:
-                case OpGeU:
-                case OpFEq:
-                case OpFNe:
-                case OpFLt:
-                case OpFGt:
-                case OpFLe:
-                case OpFGe:
-                case OpRefIsNull: {
-                    out.hi = u64(1LL);
-                    break;
-                }
-                case OpAnd:
-                case OpAdd:
-                case OpSub:
-                case OpMul:
-                case OpShrU:
-                case OpShl: {
-                    auto temporary363 = unsignedRangesOf(r, args[Int(0LL)], depth + Int(1LL));
-                    auto temporary364 = unsignedRangesOf(r, args[Int(1LL)], depth + Int(1LL));
-                    UnsignedRange a = temporary363;
-                    UnsignedRange b = temporary364;
-                    {
-                        auto switch365 = val->op;
-                        switch (switch365) {
-                            case OpAnd: {
-                                out.hi = minimum(a.hi, b.hi);
-                                break;
-                            }
-                            case OpAdd: {
-                                if (a.hi + b.hi <= u64(4294967295LL)) {
-                                    out = UnsignedRange{a.lo + b.lo, a.hi + b.hi};
-                                }
-                                break;
-                            }
-                            case OpSub: {
-                                if (a.lo >= b.hi) {
-                                    out = UnsignedRange{a.lo - b.hi, a.hi - b.lo};
-                                }
-                                break;
-                            }
-                            case OpMul: {
-                                if (a.hi * b.hi <= u64(4294967295LL)) {
-                                    out = UnsignedRange{a.lo * b.lo, a.hi * b.hi};
-                                }
-                                break;
-                            }
-                            case OpShrU: {
-                                if (b.lo == b.hi) {
-                                    u64 shift = b.lo & u64(31LL);
-                                    out = UnsignedRange{shiftRight(a.lo, shift), shiftRight(a.hi, shift)};
-                                }
-                                break;
-                            }
-                            case OpShl: {
-                                if (b.lo == b.hi) {
-                                    u64 shift = b.lo & u64(31LL);
-                                    if (a.hi <= shiftRight(u64(4294967295LL), shift)) {
-                                        out = UnsignedRange{shiftLeft(a.lo, shift), shiftLeft(a.hi, shift)};
-                                    }
-                                }
-                                break;
+                    case OpAdd: {
+                        if (a.hi + b.hi <= u64(4294967295LL)) {
+                            out = UnsignedRange{a.lo + b.lo, a.hi + b.hi};
+                        }
+                        break;
+                    }
+                    case OpSub: {
+                        if (a.lo >= b.hi) {
+                            out = UnsignedRange{a.lo - b.hi, a.hi - b.lo};
+                        }
+                        break;
+                    }
+                    case OpMul: {
+                        if (a.hi * b.hi <= u64(4294967295LL)) {
+                            out = UnsignedRange{a.lo * b.lo, a.hi * b.hi};
+                        }
+                        break;
+                    }
+                    case OpShrU: {
+                        if (b.lo == b.hi) {
+                            u64 shift = b.lo & u64(31LL);
+                            out = UnsignedRange{shiftRight(a.lo, shift), shiftRight(a.hi, shift)};
+                        }
+                        break;
+                    }
+                    case OpShl: {
+                        if (b.lo == b.hi) {
+                            u64 shift = b.lo & u64(31LL);
+                            if (a.hi <= shiftRight(u64(4294967295LL), shift)) {
+                                out = UnsignedRange{shiftLeft(a.lo, shift), shiftLeft(a.hi, shift)};
                             }
                         }
+                        break;
                     }
-                    break;
                 }
-                case OpSelect: {
-                    auto temporary366 = unsignedRangesOf(r, args[Int(1LL)], depth + Int(1LL));
-                    auto temporary367 = unsignedRangesOf(r, args[Int(2LL)], depth + Int(1LL));
-                    UnsignedRange a = temporary366;
-                    UnsignedRange b = temporary367;
-                    out = UnsignedRange{minimum(a.lo, b.lo), maximum(a.hi, b.hi)};
-                    break;
-                }
-                case OpParam: {
-                    bool first = true;
-                    {
-                        auto range368 = r->f->blocks[val->block].preds;
-                        for (Int index369 = 0, rangeEnd370 = length(range368); index369 < rangeEnd370; ++index369) {
-                            i32 p = range368[index369];
-                            {
-                                auto range371 = r->f->blocks[p].term.edges;
-                                for (Int index372 = 0, rangeEnd373 = length(range371); index372 < rangeEnd373; ++index372) {
-                                    Edge e = range371[index372];
-                                    if (e.block != val->block) {
-                                        continue;
-                                    }
-                                    UnsignedRange bound = unsignedRangesOf(r, e.args[val->aux], depth + Int(1LL));
-                                    if (first) {
-                                        out = bound;
-                                        first = false;
-                                    } else {
-                                        out = UnsignedRange{minimum(out.lo, bound.lo), maximum(out.hi, bound.hi)};
-                                    }
-                                }
-                            }
+                break;
+            }
+            case OpSelect: {
+                auto temporary366 = unsignedRangesOf(r, args[Int(1LL)], depth + Int(1LL));
+                auto temporary367 = unsignedRangesOf(r, args[Int(2LL)], depth + Int(1LL));
+                UnsignedRange a = temporary366;
+                UnsignedRange b = temporary367;
+                out = UnsignedRange{minimum(a.lo, b.lo), maximum(a.hi, b.hi)};
+                break;
+            }
+            case OpParam: {
+                bool first = true;
+                auto range368 = r->f->blocks[val->block].preds;
+                for (Int index369 = 0, rangeEnd370 = length(range368); index369 < rangeEnd370; ++index369) {
+                    i32 p = range368[index369];
+                    auto range371 = r->f->blocks[p].term.edges;
+                    for (Int index372 = 0, rangeEnd373 = length(range371); index372 < rangeEnd373; ++index372) {
+                        Edge e = range371[index372];
+                        if (e.block != val->block) {
+                            continue;
+                        }
+                        UnsignedRange bound = unsignedRangesOf(r, e.args[val->aux], depth + Int(1LL));
+                        if (first) {
+                            out = bound;
+                            first = false;
+                        } else {
+                            out = UnsignedRange{minimum(out.lo, bound.lo), maximum(out.hi, bound.hi)};
                         }
                     }
-                    break;
                 }
-                case OpWrap: {
-                    if (r->f->values[args[Int(0LL)]].op == OpExtendU) {
-                        out = unsignedRangesOf(r, functionArgs(r->f, args[Int(0LL)])[Int(0LL)], depth + Int(1LL));
-                    }
-                    break;
+                break;
+            }
+            case OpWrap: {
+                if (r->f->values[args[Int(0LL)]].op == OpExtendU) {
+                    out = unsignedRangesOf(r, functionArgs(r->f, args[Int(0LL)])[Int(0LL)], depth + Int(1LL));
                 }
+                break;
             }
         }
         r->cache[v] = out;
@@ -9443,39 +9221,31 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Span<Interval*> active = subslice(a->active.view(), 0, 0);
         Interval* moved[32];
         usize movedCount = 0;
-        {
-            auto range374 = a->active.view();
-            for (Int index375 = 0, rangeEnd376 = length(range374); index375 < rangeEnd376; ++index375) {
-                Interval* it = range374[index375];
-                {
-                    if (intervalEndsBefore(it, pos)) {
-                    } else if (!intervalCoversAt(it, pos)) {
-                        require(movedCount < 32, "too many active register intervals");
-                        moved[movedCount++] = it;
-                        nextChange = minimum(nextChange, it->ranges[it->cursor].from);
-                    } else {
-                        active[active.count++] = it;
-                        nextChange = minimum(nextChange, it->ranges[it->cursor].to);
-                    }
-                }
+        auto range374 = a->active.view();
+        for (Int index375 = 0, rangeEnd376 = length(range374); index375 < rangeEnd376; ++index375) {
+            Interval* it = range374[index375];
+            if (intervalEndsBefore(it, pos)) {
+            } else if (!intervalCoversAt(it, pos)) {
+                require(movedCount < 32, "too many active register intervals");
+                moved[movedCount++] = it;
+                nextChange = minimum(nextChange, it->ranges[it->cursor].from);
+            } else {
+                active[active.count++] = it;
+                nextChange = minimum(nextChange, it->ranges[it->cursor].to);
             }
         }
         a->active.resize(active.count);
         Span<Interval*> inactive = subslice(a->inactive.view(), 0, 0);
-        {
-            auto range379 = a->inactive.view();
-            for (Int index380 = 0, rangeEnd381 = length(range379); index380 < rangeEnd381; ++index380) {
-                Interval* it = range379[index380];
-                {
-                    if (intervalEndsBefore(it, pos)) {
-                    } else if (intervalCoversAt(it, pos)) {
-                        a->active.pushBack(it);
-                        nextChange = minimum(nextChange, it->ranges[it->cursor].to);
-                    } else {
-                        inactive[inactive.count++] = it;
-                        nextChange = minimum(nextChange, it->ranges[it->cursor].from);
-                    }
-                }
+        auto range379 = a->inactive.view();
+        for (Int index380 = 0, rangeEnd381 = length(range379); index380 < rangeEnd381; ++index380) {
+            Interval* it = range379[index380];
+            if (intervalEndsBefore(it, pos)) {
+            } else if (intervalCoversAt(it, pos)) {
+                a->active.pushBack(it);
+                nextChange = minimum(nextChange, it->ranges[it->cursor].to);
+            } else {
+                inactive[inactive.count++] = it;
+                nextChange = minimum(nextChange, it->ranges[it->cursor].from);
             }
         }
         a->inactive.resize(inactive.count);
@@ -9486,66 +9256,56 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void allocatorAllocateBlocked(Allocator* a, Interval* cur) {
         Array<i32, 32> nextUse = {};
         Array<i32, 32> blockPos = {};
-        {
-            auto range384 = allocatorCandidates(a, cur->classValue);
-            for (Int index385 = 0, rangeEnd386 = length(range384); index385 < rangeEnd386; ++index385) {
-                VReg r = range384[index385];
-                nextUse[r] = maxPos;
-                blockPos[r] = maxPos;
-            }
+        auto range384 = allocatorCandidates(a, cur->classValue);
+        for (Int index385 = 0, rangeEnd386 = length(range384); index385 < rangeEnd386; ++index385) {
+            VReg r = range384[index385];
+            nextUse[r] = maxPos;
+            blockPos[r] = maxPos;
         }
         i32 start = intervalStart(cur);
-        {
-            auto range387 = a->active.view();
-            for (Int index388 = 0, rangeEnd389 = length(range387); index388 < rangeEnd389; ++index388) {
-                Interval* it = range387[index388];
-                if (vRegIsPhys(it->vreg)) {
-                    nextUse[it->reg] = i32(0LL);
-                    blockPos[it->reg] = i32(0LL);
-                    continue;
-                }
-                i32 u = intervalNextUse(it, start);
-                if (u == start) {
-                    u = i32(0LL);
-                }
-                if (u < nextUse[it->reg]) {
-                    nextUse[it->reg] = u;
-                }
+        auto range387 = a->active.view();
+        for (Int index388 = 0, rangeEnd389 = length(range387); index388 < rangeEnd389; ++index388) {
+            Interval* it = range387[index388];
+            if (vRegIsPhys(it->vreg)) {
+                nextUse[it->reg] = i32(0LL);
+                blockPos[it->reg] = i32(0LL);
+                continue;
+            }
+            i32 u = intervalNextUse(it, start);
+            if (u == start) {
+                u = i32(0LL);
+            }
+            if (u < nextUse[it->reg]) {
+                nextUse[it->reg] = u;
             }
         }
-        {
-            auto range390 = a->inactive.view();
-            for (Int index391 = 0, rangeEnd392 = length(range390); index391 < rangeEnd392; ++index391) {
-                Interval* it = range390[index391];
-                i32 x = intervalIntersection(it, cur);
-                if (x == maxPos) {
-                    continue;
+        auto range390 = a->inactive.view();
+        for (Int index391 = 0, rangeEnd392 = length(range390); index391 < rangeEnd392; ++index391) {
+            Interval* it = range390[index391];
+            i32 x = intervalIntersection(it, cur);
+            if (x == maxPos) {
+                continue;
+            }
+            if (vRegIsPhys(it->vreg)) {
+                if (x < blockPos[it->reg]) {
+                    blockPos[it->reg] = x;
                 }
-                if (vRegIsPhys(it->vreg)) {
-                    if (x < blockPos[it->reg]) {
-                        blockPos[it->reg] = x;
-                    }
-                    if (x < nextUse[it->reg]) {
-                        nextUse[it->reg] = x;
-                    }
-                    continue;
+                if (x < nextUse[it->reg]) {
+                    nextUse[it->reg] = x;
                 }
-                {
-                    i32 u = intervalNextUse(it, start);
-                    if (u < nextUse[it->reg]) {
-                        nextUse[it->reg] = u;
-                    }
-                }
+                continue;
+            }
+            i32 u = intervalNextUse(it, start);
+            if (u < nextUse[it->reg]) {
+                nextUse[it->reg] = u;
             }
         }
         VReg reg = noReg;
-        {
-            auto range393 = allocatorCandidates(a, cur->classValue);
-            for (Int index394 = 0, rangeEnd395 = length(range393); index394 < rangeEnd395; ++index394) {
-                VReg r = range393[index394];
-                if (reg == noReg || nextUse[r] > nextUse[reg]) {
-                    reg = r;
-                }
+        auto range393 = allocatorCandidates(a, cur->classValue);
+        for (Int index394 = 0, rangeEnd395 = length(range393); index394 < rangeEnd395; ++index394) {
+            VReg r = range393[index394];
+            if (reg == noReg || nextUse[r] > nextUse[reg]) {
+                reg = r;
             }
         }
         i32 firstUse = intervalNextUse(cur, start);
@@ -9570,56 +9330,52 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             allocatorAddUnhandled(a, intervalSplit(cur, at));
         }
         Span<Interval*> active = subslice(a->active.view(), 0, 0);
-        {
-            auto range396 = a->active.view();
-            for (Int index397 = 0, rangeEnd398 = length(range396); index397 < rangeEnd398; ++index397) {
-                Interval* it = range396[index397];
-                if (it->reg != reg || vRegIsPhys(it->vreg)) {
-                    active[active.count++] = it;
-                    continue;
-                }
-                allocatorEvict(a, it, start);
+        auto range396 = a->active.view();
+        for (Int index397 = 0, rangeEnd398 = length(range396); index397 < rangeEnd398; ++index397) {
+            Interval* it = range396[index397];
+            if (it->reg != reg || vRegIsPhys(it->vreg)) {
+                active[active.count++] = it;
+                continue;
             }
+            allocatorEvict(a, it, start);
         }
         a->active.resize(active.count);
         Span<Interval*> inactive = subslice(a->inactive.view(), 0, 0);
-        {
-            auto range399 = a->inactive.view();
-            for (Int index400 = 0, rangeEnd401 = length(range399); index400 < rangeEnd401; ++index400) {
-                Interval* it = range399[index400];
-                if (it->reg != reg || vRegIsPhys(it->vreg)) {
-                    inactive[inactive.count++] = it;
-                    continue;
-                }
-                i32 x = intervalIntersection(it, cur);
-                if (x == maxPos) {
-                    inactive[inactive.count++] = it;
-                    continue;
-                }
-                i32 lo = intervalPrevUse(it, x) + i32(1LL);
-                if (lo < start) {
-                    lo = start;
-                }
-                i32 at = allocatorSplitPos(a, lo, x);
-                bool split = at >= i32(0LL) && at > intervalStart(it);
-                if ((split && allocatorCanEvict(a, it, intervalCovered(it, at))) || (!split && allocatorCanEvict(a, it, start))) {
-                    if (split) {
-                        Interval* child = intervalSplit(it, at);
-                        allocatorEvict(a, child, intervalStart(child));
-                    } else {
-                        allocatorEvict(a, it, start);
-                        continue;
-                    }
-                    inactive[inactive.count++] = it;
-                    continue;
-                }
-                i32 cut = allocatorSplitPos(a, start + i32(1LL), x);
-                if (cut < i32(0LL)) {
-                    compilerError(String("internal error: no split position for %s before %d"));
-                }
-                allocatorAddUnhandled(a, intervalSplit(cur, cut));
+        auto range399 = a->inactive.view();
+        for (Int index400 = 0, rangeEnd401 = length(range399); index400 < rangeEnd401; ++index400) {
+            Interval* it = range399[index400];
+            if (it->reg != reg || vRegIsPhys(it->vreg)) {
                 inactive[inactive.count++] = it;
+                continue;
             }
+            i32 x = intervalIntersection(it, cur);
+            if (x == maxPos) {
+                inactive[inactive.count++] = it;
+                continue;
+            }
+            i32 lo = intervalPrevUse(it, x) + i32(1LL);
+            if (lo < start) {
+                lo = start;
+            }
+            i32 at = allocatorSplitPos(a, lo, x);
+            bool split = at >= i32(0LL) && at > intervalStart(it);
+            if ((split && allocatorCanEvict(a, it, intervalCovered(it, at))) || (!split && allocatorCanEvict(a, it, start))) {
+                if (split) {
+                    Interval* child = intervalSplit(it, at);
+                    allocatorEvict(a, child, intervalStart(child));
+                } else {
+                    allocatorEvict(a, it, start);
+                    continue;
+                }
+                inactive[inactive.count++] = it;
+                continue;
+            }
+            i32 cut = allocatorSplitPos(a, start + i32(1LL), x);
+            if (cut < i32(0LL)) {
+                compilerError(String("internal error: no split position for %s before %d"));
+            }
+            allocatorAddUnhandled(a, intervalSplit(cur, cut));
+            inactive[inactive.count++] = it;
         }
         a->inactive.resize(inactive.count);
     }
@@ -9742,13 +9498,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // calleeSavedUsed lists the callee-saved registers the function writes.
     static Slice<VReg> allocatorCalleeSavedUsed(Allocator* a) {
         Slice<VReg> out = {};
-        {
-            auto range418 = calleeSaved;
-            for (Int index419 = 0, rangeEnd420 = length(range418); index419 < rangeEnd420; ++index419) {
-                VReg r = range418[index419];
-                if (a->used[r]) {
-                    out = appendValues(out, r);
-                }
+        auto range418 = calleeSaved;
+        for (Int index419 = 0, rangeEnd420 = length(range418); index419 < rangeEnd420; ++index419) {
+            VReg r = range418[index419];
+            if (a->used[r]) {
+                out = appendValues(out, r);
             }
         }
         return out;
@@ -9768,12 +9522,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
                 at = allocatorSplitPos(a, lo, pos);
             }
-            {
-                if (at >= i32(0LL) && at > start) {
-                    start = intervalCovered(it, at);
-                } else if (intervalPrevUse(it, pos) >= start) {
-                    return false;
-                }
+            if (at >= i32(0LL) && at > start) {
+                start = intervalCovered(it, at);
+            } else if (intervalPrevUse(it, pos) >= start) {
+                return false;
             }
         }
         i32 u = intervalNextUse(it, pos);
@@ -9942,28 +9694,22 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 mf->classValue[count++] = mf->classValue[x];
             }
         }
-        {
-            auto& range441 = mf->blocks;
-            for (Int index442 = 0, rangeEnd443 = length(range441); index442 < rangeEnd443; ++index442) {
-                Int b = index442;
-                {
-                    auto range444 = mf->blocks[b].insts.view();
-                    for (Int index445 = 0, rangeEnd446 = length(range444); index445 < rangeEnd446; ++index445) {
-                        Int i = index445;
-                        MInst* in = &mf->blocks[b].insts[i];
-                        mInstForEachOperand(in, [&](VReg* r, Int role) mutable -> void {
-                            if (*r != noReg && !vRegIsPhys(*r)) {
-                                *r = firstVirtual + canonical[usize(find(i32(allocatorVindex(a, *r))))];
-                            }
-                        });
-                        {
-                            if (in->op == mParMove) {
-                                mInstExtra(in)->moves.assign(dropSelfMoves(mInstMoves(in)));
-                            } else if ((in->op == mMov || in->op == mFMov) && in->dst == in->src && in->aux == u8(0LL)) {
-                                *in = inst(mNop);
-                            }
-                        }
+        auto& range441 = mf->blocks;
+        for (Int index442 = 0, rangeEnd443 = length(range441); index442 < rangeEnd443; ++index442) {
+            Int b = index442;
+            auto range444 = mf->blocks[b].insts.view();
+            for (Int index445 = 0, rangeEnd446 = length(range444); index445 < rangeEnd446; ++index445) {
+                Int i = index445;
+                MInst* in = &mf->blocks[b].insts[i];
+                mInstForEachOperand(in, [&](VReg* r, Int role) mutable -> void {
+                    if (*r != noReg && !vRegIsPhys(*r)) {
+                        *r = firstVirtual + canonical[usize(find(i32(allocatorVindex(a, *r))))];
                     }
+                });
+                if (in->op == mParMove) {
+                    mInstExtra(in)->moves.assign(dropSelfMoves(mInstMoves(in)));
+                } else if ((in->op == mMov || in->op == mFMov) && in->dst == in->src && in->aux == u8(0LL)) {
+                    *in = inst(mNop);
                 }
             }
         }
@@ -9988,13 +9734,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
                 at = allocatorSplitPos(a, lo, pos);
             }
-            {
-                if (at >= i32(0LL) && at > intervalStart(it)) {
-                    tail = intervalSplit(it, at);
-                } else if (intervalPrevUse(it, pos) < intervalStart(it)) {
-                } else {
-                    compilerError(String("internal error: cannot evict %s at %d"));
-                }
+            if (at >= i32(0LL) && at > intervalStart(it)) {
+                tail = intervalSplit(it, at);
+            } else if (intervalPrevUse(it, pos) < intervalStart(it)) {
+            } else {
+                compilerError(String("internal error: cannot evict %s at %d"));
             }
         }
         allocatorSpill(a, tail);
@@ -10045,12 +9789,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return noReg;
         }
         i32 p = intervalStart(cur);
-        {
-            for (Int i = -1; i < length(it->children); ++i) {
-                Interval* c = i < 0 ? it : it->children[i];
-                if (c->reg != noReg && (intervalCovers(c, p - i32(1LL)) || intervalCovers(c, p) || intervalEnd(c) == p || intervalEnd(c) == p - i32(1LL))) {
-                    return c->reg;
-                }
+        for (Int i = -1; i < length(it->children); ++i) {
+            Interval* c = i < 0 ? it : it->children[i];
+            if (c->reg != noReg && (intervalCovers(c, p - i32(1LL)) || intervalCovers(c, p) || intervalEnd(c) == p || intervalEnd(c) == p - i32(1LL))) {
+                return c->reg;
             }
         }
         return noReg;
@@ -10276,54 +10018,48 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         MFunc* mf = a->mf;
         PositionedMoves inner;
         Bitset split;
-        {
-            auto range478 = a->intervals.view();
-            for (Int index479 = 0, rangeEnd480 = length(range478); index479 < rangeEnd480; ++index479) {
-                Int x = index479;
-                Interval* it = range478[index479];
-                if (isNil(it)) {
+        auto range478 = a->intervals.view();
+        for (Int index479 = 0, rangeEnd480 = length(range478); index479 < rangeEnd480; ++index479) {
+            Int x = index479;
+            Interval* it = range478[index479];
+            if (isNil(it)) {
+                continue;
+            }
+            if (length(it->children)) {
+                if (!split.data) {
+                    split = newBitset(mf->nregs);
+                }
+                bitsetSet(split, x);
+            }
+            Int i = Int(0LL);
+            for (; i < length(it->children); i++) {
+                auto temporary481 = i ? it->children[i - 1] : it;
+                auto temporary482 = it->children[i];
+                Interval* prev = temporary481;
+                Interval* c = temporary482;
+                i32 p = intervalStart(c);
+                if (intervalEnd(prev) != p) {
                     continue;
                 }
-                if (length(it->children)) {
-                    if (!split.data) {
-                        split = newBitset(mf->nregs);
-                    }
-                    bitsetSet(split, x);
+                i32 b = a->posBlock[p / i32(2LL)];
+                if (a->blockFrom[b] == p) {
+                    continue;
                 }
-                {
-                    Int i = Int(0LL);
-                    for (; i < length(it->children); i++) {
-                        auto temporary481 = i ? it->children[i - 1] : it;
-                        auto temporary482 = it->children[i];
-                        Interval* prev = temporary481;
-                        Interval* c = temporary482;
-                        i32 p = intervalStart(c);
-                        if (intervalEnd(prev) != p) {
-                            continue;
-                        }
-                        {
-                            i32 b = a->posBlock[p / i32(2LL)];
-                            if (a->blockFrom[b] == p) {
-                                continue;
-                            }
-                        }
-                        auto temporary483 = allocatorLoc(a, prev);
-                        auto temporary484 = allocatorLoc(a, c);
-                        VReg src = temporary483;
-                        VReg dst = temporary484;
-                        i32 key = i32(2LL) * p;
-                        if ((p & i32(1LL)) != i32(0LL)) {
-                            if (!isSlot(dst)) {
-                                compilerError(String("internal error: %s split at odd position %d into a register"));
-                            }
-                            key = i32(2LL) * (p - i32(1LL)) + i32(1LL);
-                        }
-                        if (src != dst) {
-                            appendMove(inner, key, Move{dst, src});
-                        }
-                        (void)x;
+                auto temporary483 = allocatorLoc(a, prev);
+                auto temporary484 = allocatorLoc(a, c);
+                VReg src = temporary483;
+                VReg dst = temporary484;
+                i32 key = i32(2LL) * p;
+                if ((p & i32(1LL)) != i32(0LL)) {
+                    if (!isSlot(dst)) {
+                        compilerError(String("internal error: %s split at odd position %d into a register"));
                     }
+                    key = i32(2LL) * (p - i32(1LL)) + i32(1LL);
                 }
+                if (src != dst) {
+                    appendMove(inner, key, Move{dst, src});
+                }
+                (void)x;
             }
         }
         Map<i32, Slice<Move>> atEnd = mapOf<i32, Slice<Move>>({});
@@ -10335,29 +10071,27 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             for (Int index486 = 0, rangeEnd487 = length(range485); index486 < rangeEnd487; ++index486) {
                 i32 b = range485[index486];
                 MBlock* blk = &mf->blocks[b];
-                {
-                    auto range488 = blk->succs;
-                    for (Int index489 = 0, rangeEnd490 = length(range488); index489 < rangeEnd490; ++index489) {
-                        i32 s = range488[index489];
-                        Slice<Move> moves = {};
-                        bitsetEachIntersection(a->liveIn[s], split, [&](Int x) mutable -> void {
-                            VReg r = convert<VReg>(x) + firstVirtual;
-                            VReg src = allocatorLocation(a, r, a->blockTo[b] - i32(1LL));
-                            VReg dst = allocatorLocation(a, r, a->blockFrom[s]);
-                            if (src != dst) {
-                                moves = appendValues(moves, Move{dst, src});
-                            }
-                        });
-                        if (length(moves) == Int(0LL)) {
-                            continue;
+                auto range488 = blk->succs;
+                for (Int index489 = 0, rangeEnd490 = length(range488); index489 < rangeEnd490; ++index489) {
+                    i32 s = range488[index489];
+                    Slice<Move> moves = {};
+                    bitsetEachIntersection(a->liveIn[s], split, [&](Int x) mutable -> void {
+                        VReg r = convert<VReg>(x) + firstVirtual;
+                        VReg src = allocatorLocation(a, r, a->blockTo[b] - i32(1LL));
+                        VReg dst = allocatorLocation(a, r, a->blockFrom[s]);
+                        if (src != dst) {
+                            moves = appendValues(moves, Move{dst, src});
                         }
-                        if (length(blk->succs) == Int(1LL)) {
-                            setMap(atEnd, b, appendSlice(atEnd[b], moves));
-                        } else if (length(mf->blocks[s].preds) == Int(1LL)) {
-                            setMap(atStart, s, appendSlice(atStart[s], moves));
-                        } else {
-                            compilerError(String("internal error: critical edge B%d->B%d needs moves"));
-                        }
+                    });
+                    if (length(moves) == Int(0LL)) {
+                        continue;
+                    }
+                    if (length(blk->succs) == Int(1LL)) {
+                        setMap(atEnd, b, appendSlice(atEnd[b], moves));
+                    } else if (length(mf->blocks[s].preds) == Int(1LL)) {
+                        setMap(atStart, s, appendSlice(atStart[s], moves));
+                    } else {
+                        compilerError(String("internal error: critical edge B%d->B%d needs moves"));
                     }
                 }
             }
@@ -10469,37 +10203,31 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return;
         }
         Slice<SpillDef> defs = makeSlice<SpillDef>(a->mf->nregs);
-        {
-            auto range509 = a->order.view();
-            for (Int index510 = 0, rangeEnd511 = length(range509); index510 < rangeEnd511; ++index510) {
-                i32 b = range509[index510];
-                {
-                    auto range512 = a->mf->blocks[b].insts.view();
-                    for (Int index513 = 0, rangeEnd514 = length(range512); index513 < rangeEnd514; ++index513) {
-                        Int i = index513;
-                        MInst* in = &a->mf->blocks[b].insts[i];
-                        mInstForEachOperand(in, [&](VReg* r, Int role) mutable -> void {
-                            if (*r == noReg || vRegIsPhys(*r) || (role & roleDef) == Int(0LL) || role == roleTemp) {
-                                return;
-                            }
-                            SpillDef* d = &defs[allocatorVindex(a, *r)];
-                            d->count++;
-                            d->block = b;
-                            d->pos = a->blockFrom[b] + 2 + 2 * i;
-                        });
+        auto range509 = a->order.view();
+        for (Int index510 = 0, rangeEnd511 = length(range509); index510 < rangeEnd511; ++index510) {
+            i32 b = range509[index510];
+            auto range512 = a->mf->blocks[b].insts.view();
+            for (Int index513 = 0, rangeEnd514 = length(range512); index513 < rangeEnd514; ++index513) {
+                Int i = index513;
+                MInst* in = &a->mf->blocks[b].insts[i];
+                mInstForEachOperand(in, [&](VReg* r, Int role) mutable -> void {
+                    if (*r == noReg || vRegIsPhys(*r) || (role & roleDef) == Int(0LL) || role == roleTemp) {
+                        return;
                     }
-                }
+                    SpillDef* d = &defs[allocatorVindex(a, *r)];
+                    d->count++;
+                    d->block = b;
+                    d->pos = a->blockFrom[b] + 2 + 2 * i;
+                });
             }
         }
         Map<VReg, Int> owners = makeMap<VReg, Int>();
-        {
-            auto range515 = a->slots.view();
-            for (Int index516 = 0, rangeEnd517 = length(range515); index516 < rangeEnd517; ++index516) {
-                Int x = index516;
-                i32 slot = range515[index516];
-                if (slot >= i32(0LL) && defs[x].count == Int(1LL)) {
-                    setMap(owners, slotLoc(slot), x);
-                }
+        auto range515 = a->slots.view();
+        for (Int index516 = 0, rangeEnd517 = length(range515); index516 < rangeEnd517; ++index516) {
+            Int x = index516;
+            i32 slot = range515[index516];
+            if (slot >= i32(0LL) && defs[x].count == Int(1LL)) {
+                setMap(owners, slotLoc(slot), x);
             }
         }
         if (!length(owners)) {
@@ -10507,18 +10235,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         Slice<bool> save = makeSlice<bool>(length(defs));
         auto consider = [&](Slice<Move> moves, i32 b) mutable -> void {
-            {
-                auto range518 = moves;
-                for (Int index519 = 0, rangeEnd520 = length(range518); index519 < rangeEnd520; ++index519) {
-                    Move m = range518[index519];
-                    {
-                        auto temporary521 = lookupMap(owners, m.dst);
-                        Int x = temporary521.v0;
-                        bool ok = temporary521.v1;
-                        if (ok && a->mf->blocks[b].depth > a->mf->blocks[defs[x].block].depth) {
-                            save[x] = true;
-                        }
-                    }
+            auto range518 = moves;
+            for (Int index519 = 0, rangeEnd520 = length(range518); index519 < rangeEnd520; ++index519) {
+                Move m = range518[index519];
+                auto temporary521 = lookupMap(owners, m.dst);
+                Int x = temporary521.v0;
+                bool ok = temporary521.v1;
+                if (ok && a->mf->blocks[b].depth > a->mf->blocks[defs[x].block].depth) {
+                    save[x] = true;
                 }
             }
         };
@@ -10529,44 +10253,36 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 save[owner.v0] = true;
             }
         }
-        {
-            auto range525 = atEnd;
-            for (Int index526 = 0; index526 < mapSlots(range525); ++index526) {
-                if (!mapOccupied(range525, index526)) {
-                    continue;
-                }
-                i32 b = mapKey(range525, index526);
-                Slice<Move> moves = mapValue(range525, index526);
-                consider(moves, b);
+        auto range525 = atEnd;
+        for (Int index526 = 0; index526 < mapSlots(range525); ++index526) {
+            if (!mapOccupied(range525, index526)) {
+                continue;
             }
+            i32 b = mapKey(range525, index526);
+            Slice<Move> moves = mapValue(range525, index526);
+            consider(moves, b);
         }
-        {
-            auto range528 = atStart;
-            for (Int index529 = 0; index529 < mapSlots(range528); ++index529) {
-                if (!mapOccupied(range528, index529)) {
-                    continue;
-                }
-                i32 b = mapKey(range528, index529);
-                Slice<Move> moves = mapValue(range528, index529);
-                consider(moves, b);
+        auto range528 = atStart;
+        for (Int index529 = 0; index529 < mapSlots(range528); ++index529) {
+            if (!mapOccupied(range528, index529)) {
+                continue;
             }
+            i32 b = mapKey(range528, index529);
+            Slice<Move> moves = mapValue(range528, index529);
+            consider(moves, b);
         }
         auto filter = [&](Slice<Move> moves) mutable -> Slice<Move> {
             Slice<Move> out = subslice(moves, Int(0), Int(0LL));
-            {
-                auto range531 = moves;
-                for (Int index532 = 0, rangeEnd533 = length(range531); index532 < rangeEnd533; ++index532) {
-                    Move m = range531[index532];
-                    {
-                        auto temporary534 = lookupMap(owners, m.dst);
-                        Int x = temporary534.v0;
-                        bool ok = temporary534.v1;
-                        if (ok && save[x]) {
-                            continue;
-                        }
-                    }
-                    out = appendValues(out, m);
+            auto range531 = moves;
+            for (Int index532 = 0, rangeEnd533 = length(range531); index532 < rangeEnd533; ++index532) {
+                Move m = range531[index532];
+                auto temporary534 = lookupMap(owners, m.dst);
+                Int x = temporary534.v0;
+                bool ok = temporary534.v1;
+                if (ok && save[x]) {
+                    continue;
                 }
+                out = appendValues(out, m);
             }
             return out;
         };
@@ -10579,56 +10295,48 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         inner.entries.resize(kept);
-        {
-            auto range538 = atEnd;
-            for (Int index539 = 0; index539 < mapSlots(range538); ++index539) {
-                if (!mapOccupied(range538, index539)) {
-                    continue;
-                }
-                i32 b = mapKey(range538, index539);
-                Slice<Move> moves = mapValue(range538, index539);
-                setMap(atEnd, b, filter(moves));
+        auto range538 = atEnd;
+        for (Int index539 = 0; index539 < mapSlots(range538); ++index539) {
+            if (!mapOccupied(range538, index539)) {
+                continue;
             }
+            i32 b = mapKey(range538, index539);
+            Slice<Move> moves = mapValue(range538, index539);
+            setMap(atEnd, b, filter(moves));
         }
-        {
-            auto range541 = atStart;
-            for (Int index542 = 0; index542 < mapSlots(range541); ++index542) {
-                if (!mapOccupied(range541, index542)) {
-                    continue;
-                }
-                i32 b = mapKey(range541, index542);
-                Slice<Move> moves = mapValue(range541, index542);
-                setMap(atStart, b, filter(moves));
+        auto range541 = atStart;
+        for (Int index542 = 0; index542 < mapSlots(range541); ++index542) {
+            if (!mapOccupied(range541, index542)) {
+                continue;
             }
+            i32 b = mapKey(range541, index542);
+            Slice<Move> moves = mapValue(range541, index542);
+            setMap(atStart, b, filter(moves));
         }
-        {
-            auto range544 = save;
-            for (Int index545 = 0, rangeEnd546 = length(range544); index545 < rangeEnd546; ++index545) {
-                Int x = index545;
-                bool yes = range544[index545];
-                if (!yes) {
-                    continue;
-                }
-                SpillDef d = defs[x];
-                VReg r = convert<VReg>(x) + firstVirtual;
-                VReg src = allocatorLocation(a, r, d.pos + i32(1LL));
-                VReg dst = slotLoc(a->slots[x]);
-                if (src != dst) {
-                    i32 key = i32(2LL) * (d.pos + i32(2LL));
-                    appendMove(inner, key, Move{dst, src});
-                }
+        auto range544 = save;
+        for (Int index545 = 0, rangeEnd546 = length(range544); index545 < rangeEnd546; ++index545) {
+            Int x = index545;
+            bool yes = range544[index545];
+            if (!yes) {
+                continue;
+            }
+            SpillDef d = defs[x];
+            VReg r = convert<VReg>(x) + firstVirtual;
+            VReg src = allocatorLocation(a, r, d.pos + i32(1LL));
+            VReg dst = slotLoc(a->slots[x]);
+            if (src != dst) {
+                i32 key = i32(2LL) * (d.pos + i32(2LL));
+                appendMove(inner, key, Move{dst, src});
             }
         }
     }
 
     static void allocatorScan(Allocator* a) {
-        {
-            auto range547 = a->intervals.view();
-            for (Int index548 = 0, rangeEnd549 = length(range547); index548 < rangeEnd549; ++index548) {
-                Interval* it = range547[index548];
-                if (!isNil(it) && length(it->ranges) > Int(0LL)) {
-                    a->unhandled.initial.pushBack({it, intervalStart(it), 0});
-                }
+        auto range547 = a->intervals.view();
+        for (Int index548 = 0, rangeEnd549 = length(range547); index548 < rangeEnd549; ++index548) {
+            Interval* it = range547[index548];
+            if (!isNil(it) && length(it->ranges) > Int(0LL)) {
+                a->unhandled.initial.pushBack({it, intervalStart(it), 0});
             }
         }
         sortValues(Span<IntervalQueue::Entry>(a->unhandled.initial), [&](Int i, Int j) {
@@ -10640,13 +10348,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             a->unhandled.initial[i].order = u32(i);
         }
         a->unhandled.nextOrder = u32(a->unhandled.initial.size());
-        {
-            auto range550 = a->fixed;
-            for (Int index551 = 0, rangeEnd552 = length(range550); index551 < rangeEnd552; ++index551) {
-                Int r = index551;
-                if (!isNil(a->fixed[r]) && length(a->fixed[r]->ranges) > Int(0LL)) {
-                    a->inactive.pushBack(a->fixed[r]);
-                }
+        auto range550 = a->fixed;
+        for (Int index551 = 0, rangeEnd552 = length(range550); index551 < rangeEnd552; ++index551) {
+            Int r = index551;
+            if (!isNil(a->fixed[r]) && length(a->fixed[r]->ranges) > Int(0LL)) {
+                a->inactive.pushBack(a->fixed[r]);
             }
         }
         a->slots.resize(usize(a->mf->nregs));
@@ -10655,20 +10361,18 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         // removes active intervals; shortening an inactive prefix can only
         // leave an inert, ended entry until the next advance.
         i32 nextChange = -1;
-        {
-            for (; !a->unhandled.empty();) {
-                Interval* cur = a->unhandled.pop();
-                i32 pos = intervalStart(cur);
-                if (pos >= nextChange) {
-                    nextChange = allocatorAdvance(a, pos);
-                }
-                if (!allocatorTryFree(a, cur)) {
-                    allocatorAllocateBlocked(a, cur);
-                }
-                if (cur->reg != noReg) {
-                    a->active.pushBack(cur);
-                    nextChange = minimum(nextChange, cur->ranges[0].to);
-                }
+        for (; !a->unhandled.empty();) {
+            Interval* cur = a->unhandled.pop();
+            i32 pos = intervalStart(cur);
+            if (pos >= nextChange) {
+                nextChange = allocatorAdvance(a, pos);
+            }
+            if (!allocatorTryFree(a, cur)) {
+                allocatorAllocateBlocked(a, cur);
+            }
+            if (cur->reg != noReg) {
+                a->active.pushBack(cur);
+                nextChange = minimum(nextChange, cur->ranges[0].to);
             }
         }
     }
@@ -10695,94 +10399,76 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         i32 best = max;
         Int bestDepth = a->mf->blocks[a->posBlock[max / i32(2LL)]].depth;
-        {
-            i32 p = max;
-            for (; p > min;) {
-                i32 b = a->posBlock[(p - i32(1LL)) / i32(2LL)];
-                i32 from = a->blockFrom[b];
-                if (from < min) {
-                    break;
-                }
-                {
-                    Int d = a->mf->blocks[b].depth;
-                    if (d < bestDepth) {
-                        best = from;
-                        bestDepth = d;
-                    }
-                }
-                p = from;
+        i32 p = max;
+        for (; p > min;) {
+            i32 b = a->posBlock[(p - i32(1LL)) / i32(2LL)];
+            i32 from = a->blockFrom[b];
+            if (from < min) {
+                break;
             }
+            Int d = a->mf->blocks[b].depth;
+            if (d < bestDepth) {
+                best = from;
+                bestDepth = d;
+            }
+            p = from;
         }
         return best;
     }
 
     static bool allocatorTryFree(Allocator* a, Interval* cur) {
         Array<i32, 32> freeUntil = {};
-        {
-            auto range556 = allocatorCandidates(a, cur->classValue);
-            for (Int index557 = 0, rangeEnd558 = length(range556); index557 < rangeEnd558; ++index557) {
-                VReg r = range556[index557];
-                freeUntil[r] = maxPos;
-            }
+        auto range556 = allocatorCandidates(a, cur->classValue);
+        for (Int index557 = 0, rangeEnd558 = length(range556); index557 < rangeEnd558; ++index557) {
+            VReg r = range556[index557];
+            freeUntil[r] = maxPos;
         }
-        {
-            auto range559 = a->active.view();
-            for (Int index560 = 0, rangeEnd561 = length(range559); index560 < rangeEnd561; ++index560) {
-                Interval* it = range559[index560];
-                freeUntil[it->reg] = i32(0LL);
-            }
+        auto range559 = a->active.view();
+        for (Int index560 = 0, rangeEnd561 = length(range559); index560 < rangeEnd561; ++index560) {
+            Interval* it = range559[index560];
+            freeUntil[it->reg] = i32(0LL);
         }
-        {
-            auto range562 = a->inactive.view();
-            for (Int index563 = 0, rangeEnd564 = length(range562); index563 < rangeEnd564; ++index563) {
-                Interval* it = range562[index563];
-                if (freeUntil[it->reg] == i32(0LL)) {
-                    continue;
-                }
-                {
-                    i32 x = intervalIntersection(it, cur);
-                    if (x < freeUntil[it->reg]) {
-                        freeUntil[it->reg] = x;
-                    }
-                }
+        auto range562 = a->inactive.view();
+        for (Int index563 = 0, rangeEnd564 = length(range562); index563 < rangeEnd564; ++index563) {
+            Interval* it = range562[index563];
+            if (freeUntil[it->reg] == i32(0LL)) {
+                continue;
+            }
+            i32 x = intervalIntersection(it, cur);
+            if (x < freeUntil[it->reg]) {
+                freeUntil[it->reg] = x;
             }
         }
         auto temporary565 = intervalStart(cur);
         auto temporary566 = intervalEnd(cur);
         i32 start = temporary565;
         i32 end = temporary566;
-        {
-            auto range567 = allocatorCandidates(a, cur->classValue);
-            for (Int index568 = 0, rangeEnd569 = length(range567); index568 < rangeEnd569; ++index568) {
-                VReg r = range567[index568];
-                if (freeUntil[r] < end) {
-                    freeUntil[r] &= ~i32(1LL);
-                    if (freeUntil[r] <= start) {
-                        freeUntil[r] = i32(0LL);
-                    }
+        auto range567 = allocatorCandidates(a, cur->classValue);
+        for (Int index568 = 0, rangeEnd569 = length(range567); index568 < rangeEnd569; ++index568) {
+            VReg r = range567[index568];
+            if (freeUntil[r] < end) {
+                freeUntil[r] &= ~i32(1LL);
+                if (freeUntil[r] <= start) {
+                    freeUntil[r] = i32(0LL);
                 }
             }
         }
         VReg reg = noReg;
-        {
-            VReg h = allocatorHintReg(a, cur);
-            if (h != noReg && allocatable(h) && allocatorRegClass(a, h) == cur->classValue && freeUntil[h] >= end) {
-                reg = h;
-            }
+        VReg h = allocatorHintReg(a, cur);
+        if (h != noReg && allocatable(h) && allocatorRegClass(a, h) == cur->classValue && freeUntil[h] >= end) {
+            reg = h;
         }
         if (reg == noReg) {
             VReg best = noReg;
-            {
-                auto range570 = allocatorCandidates(a, cur->classValue);
-                for (Int index571 = 0, rangeEnd572 = length(range570); index571 < rangeEnd572; ++index571) {
-                    VReg r = range570[index571];
-                    if (freeUntil[r] >= end) {
-                        reg = r;
-                        break;
-                    }
-                    if (best == noReg || freeUntil[r] > freeUntil[best]) {
-                        best = r;
-                    }
+            auto range570 = allocatorCandidates(a, cur->classValue);
+            for (Int index571 = 0, rangeEnd572 = length(range570); index571 < rangeEnd572; ++index571) {
+                VReg r = range570[index571];
+                if (freeUntil[r] >= end) {
+                    reg = r;
+                    break;
+                }
+                if (best == noReg || freeUntil[r] > freeUntil[best]) {
+                    best = r;
                 }
             }
             if (reg == noReg) {
@@ -10818,24 +10504,22 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void asmAluRI(Asm* a, AluOp op, u8 size, VReg dst, i64 x) {
         asmAluRIRaw(a, op, size, dst, x);
         if (dst == RSP) {
-            {
-                auto switch573 = op;
-                switch (switch573) {
-                    case aluSub: {
-                        asmMoveSP(a, convert<i32>(x));
-                        break;
-                    }
-                    case aluAdd: {
-                        asmMoveSP(a, -convert<i32>(x));
-                        break;
-                    }
-                    case aluCmp: {
-                        break;
-                    }
-                    default: {
-                        compilerError(String("internal error: untracked change of rsp"));
-                        break;
-                    }
+            auto switch573 = op;
+            switch (switch573) {
+                case aluSub: {
+                    asmMoveSP(a, convert<i32>(x));
+                    break;
+                }
+                case aluAdd: {
+                    asmMoveSP(a, -convert<i32>(x));
+                    break;
+                }
+                case aluCmp: {
+                    break;
+                }
+                default: {
+                    compilerError(String("internal error: untracked change of rsp"));
+                    break;
                 }
             }
         }
@@ -10936,24 +10620,22 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         auto temporary575 = convert<i64>(src);
         Int d = temporary574;
         Int s = temporary575;
-        {
-            if (width == u8(4LL) && signedValue) {
-                asmOpRR(a, true, Span<const u8>({u8(99LL)}), d, s, false);
-            } else if (width == u8(4LL)) {
-                asmOpRR(a, false, Span<const u8>({u8(139LL)}), d, s, false);
-            } else if (width == u8(2LL)) {
-                u8 op = u8(183LL);
-                if (signedValue) {
-                    op = u8(191LL);
-                }
-                asmOpRR(a, signedValue && dsize == u8(8LL), Span<const u8>({u8(15LL), op}), d, s, false);
-            } else {
-                u8 op = u8(182LL);
-                if (signedValue) {
-                    op = u8(190LL);
-                }
-                asmOpRR(a, signedValue && dsize == u8(8LL), Span<const u8>({u8(15LL), op}), d, s, true);
+        if (width == u8(4LL) && signedValue) {
+            asmOpRR(a, true, Span<const u8>({u8(99LL)}), d, s, false);
+        } else if (width == u8(4LL)) {
+            asmOpRR(a, false, Span<const u8>({u8(139LL)}), d, s, false);
+        } else if (width == u8(2LL)) {
+            u8 op = u8(183LL);
+            if (signedValue) {
+                op = u8(191LL);
             }
+            asmOpRR(a, signedValue && dsize == u8(8LL), Span<const u8>({u8(15LL), op}), d, s, false);
+        } else {
+            u8 op = u8(182LL);
+            if (signedValue) {
+                op = u8(190LL);
+            }
+            asmOpRR(a, signedValue && dsize == u8(8LL), Span<const u8>({u8(15LL), op}), d, s, true);
         }
     }
 
@@ -11070,26 +10752,24 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // load emits a load of width bytes into a register of dsize bytes.
     static void asmLoad(Asm* a, u8 width, u8 dsize, bool signedValue, VReg dst, Amem m) {
         Int d = convert<i64>(dst);
-        {
-            if (width == u8(8LL)) {
-                asmOpRM(a, true, Span<const u8>({u8(139LL)}), d, m, Int(0LL), false);
-            } else if (width == u8(4LL) && signedValue && dsize == u8(8LL)) {
-                asmOpRM(a, true, Span<const u8>({u8(99LL)}), d, m, Int(0LL), false);
-            } else if (width == u8(4LL)) {
-                asmOpRM(a, false, Span<const u8>({u8(139LL)}), d, m, Int(0LL), false);
-            } else if (width == u8(2LL)) {
-                u8 op = u8(183LL);
-                if (signedValue) {
-                    op = u8(191LL);
-                }
-                asmOpRM(a, signedValue && dsize == u8(8LL), Span<const u8>({u8(15LL), op}), d, m, Int(0LL), false);
-            } else {
-                u8 op = u8(182LL);
-                if (signedValue) {
-                    op = u8(190LL);
-                }
-                asmOpRM(a, signedValue && dsize == u8(8LL), Span<const u8>({u8(15LL), op}), d, m, Int(0LL), false);
+        if (width == u8(8LL)) {
+            asmOpRM(a, true, Span<const u8>({u8(139LL)}), d, m, Int(0LL), false);
+        } else if (width == u8(4LL) && signedValue && dsize == u8(8LL)) {
+            asmOpRM(a, true, Span<const u8>({u8(99LL)}), d, m, Int(0LL), false);
+        } else if (width == u8(4LL)) {
+            asmOpRM(a, false, Span<const u8>({u8(139LL)}), d, m, Int(0LL), false);
+        } else if (width == u8(2LL)) {
+            u8 op = u8(183LL);
+            if (signedValue) {
+                op = u8(191LL);
             }
+            asmOpRM(a, signedValue && dsize == u8(8LL), Span<const u8>({u8(15LL), op}), d, m, Int(0LL), false);
+        } else {
+            u8 op = u8(182LL);
+            if (signedValue) {
+                op = u8(190LL);
+            }
+            asmOpRM(a, signedValue && dsize == u8(8LL), Span<const u8>({u8(15LL), op}), d, m, Int(0LL), false);
         }
     }
 
@@ -11110,14 +10790,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return;
         }
         u8 mod = {};
-        {
-            if (m.disp == i32(0LL) && lo3(m.base) != u8(5LL)) {
-                mod = u8(0LL);
-            } else if (m.disp == convert<i32>(convert<i8>(m.disp))) {
-                mod = u8(1LL);
-            } else {
-                mod = u8(2LL);
-            }
+        if (m.disp == i32(0LL) && lo3(m.base) != u8(5LL)) {
+            mod = u8(0LL);
+        } else if (m.disp == convert<i32>(convert<i8>(m.disp))) {
+            mod = u8(1LL);
+        } else {
+            mod = u8(2LL);
         }
         if (m.index >= Int(0LL) || lo3(m.base) == u8(4LL)) {
             u8 index = u8(4LL);
@@ -11129,17 +10807,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         } else {
             asmBytes(a, {u8(u8(u8(shiftLeft(mod, Int(6LL)) | r) | lo3(m.base)))});
         }
-        {
-            auto switch582 = mod;
-            switch (switch582) {
-                case u8(1LL): {
-                    asmBytes(a, {u8(convert<u8>(m.disp))});
-                    break;
-                }
-                case u8(2LL): {
-                    asmU32(a, convert<u32>(m.disp));
-                    break;
-                }
+        auto switch582 = mod;
+        switch (switch582) {
+            case u8(1LL): {
+                asmBytes(a, {u8(convert<u8>(m.disp))});
+                break;
+            }
+            case u8(2LL): {
+                asmU32(a, convert<u32>(m.disp));
+                break;
             }
         }
     }
@@ -11154,23 +10830,21 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void asmMovImm(Asm* a, u8 size, VReg dst, i64 x) {
         Int d = convert<i64>(dst);
-        {
-            if (x == i64(0LL)) {
-                asmOpRR(a, false, Span<const u8>({u8(51LL)}), d, d, false);
-            } else if (size == u8(4LL) || (x >= i64(0LL) && x <= i64(4294967295LL))) {
-                asmRex(a, false, Int(-1LL), Int(-1LL), d, false);
-                asmBytes(a, {u8(u8(u8(184LL) + lo3(d)))});
-                asmU32(a, convert<u32>(x));
-            } else if (x == convert<i64>(convert<i32>(x))) {
-                asmRex(a, true, Int(-1LL), Int(-1LL), d, false);
-                asmBytes(a, {u8(u8(199LL))});
-                asmModrmReg(a, Int(0LL), d);
-                asmU32(a, convert<u32>(x));
-            } else {
-                asmRex(a, true, Int(-1LL), Int(-1LL), d, false);
-                asmBytes(a, {u8(u8(u8(184LL) + lo3(d)))});
-                asmU64(a, convert<u64>(x));
-            }
+        if (x == i64(0LL)) {
+            asmOpRR(a, false, Span<const u8>({u8(51LL)}), d, d, false);
+        } else if (size == u8(4LL) || (x >= i64(0LL) && x <= i64(4294967295LL))) {
+            asmRex(a, false, Int(-1LL), Int(-1LL), d, false);
+            asmBytes(a, {u8(u8(u8(184LL) + lo3(d)))});
+            asmU32(a, convert<u32>(x));
+        } else if (x == convert<i64>(convert<i32>(x))) {
+            asmRex(a, true, Int(-1LL), Int(-1LL), d, false);
+            asmBytes(a, {u8(u8(199LL))});
+            asmModrmReg(a, Int(0LL), d);
+            asmU32(a, convert<u32>(x));
+        } else {
+            asmRex(a, true, Int(-1LL), Int(-1LL), d, false);
+            asmBytes(a, {u8(u8(u8(184LL) + lo3(d)))});
+            asmU64(a, convert<u64>(x));
         }
     }
 
@@ -11187,12 +10861,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void asmNops(Asm* a, i32 n) {
-        {
-            for (; n > i32(0LL);) {
-                i32 width = minimum(n, i32(9LL));
-                appendSpan(a->buf, Span<const u8>(nopBytes[width]));
-                n -= width;
-            }
+        for (; n > i32(0LL);) {
+            i32 width = minimum(n, i32(9LL));
+            appendSpan(a->buf, Span<const u8>(nopBytes[width]));
+            n -= width;
         }
     }
 
@@ -11304,12 +10976,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // region and where control arrives from elsewhere.
     static void asmSetSP(Asm* a, i32 delta) {
         Int n = length(a->sps);
-        {
-            if (n > Int(0LL) && a->sps[n - Int(1LL)].pc == asmPos(a)) {
-                a->sps[n - Int(1LL)].delta = delta;
-            } else if (n == Int(0LL) || a->sps[n - Int(1LL)].delta != delta) {
-                a->sps = appendValues(a->sps, SpEntry{asmPos(a), delta});
-            }
+        if (n > Int(0LL) && a->sps[n - Int(1LL)].pc == asmPos(a)) {
+            a->sps[n - Int(1LL)].delta = delta;
+        } else if (n == Int(0LL) || a->sps[n - Int(1LL)].delta != delta) {
+            a->sps = appendValues(a->sps, SpEntry{asmPos(a), delta});
         }
         a->sp = delta;
     }
@@ -11346,17 +11016,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void asmShiftX(Asm* a, u8 kind, u8 size, VReg dst, VReg src, VReg count) {
         u8 pp = u8(1LL);
-        {
-            auto switch587 = kind;
-            switch (switch587) {
-                case shiftShr: {
-                    pp = ppF2;
-                    break;
-                }
-                case shiftSar: {
-                    pp = ppF3;
-                    break;
-                }
+        auto switch587 = kind;
+        switch (switch587) {
+            case shiftShr: {
+                pp = ppF2;
+                break;
+            }
+            case shiftSar: {
+                pp = ppF3;
+                break;
             }
         }
         asmVexRR(a, pp, u8(2LL), size == u8(8LL), u8(247LL), convert<i64>(dst), convert<i64>(count), convert<i64>(src));
@@ -11372,16 +11040,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (k > Int(0LL)) {
             out[Int(0LL)].delta = a->sps[k - Int(1LL)].delta;
         }
-        {
-            auto range588 = subslice(a->sps, k, length(a->sps));
-            for (Int index589 = 0, rangeEnd590 = length(range588); index589 < rangeEnd590; ++index589) {
-                SpEntry e = range588[index589];
-                if (e.pc >= end) {
-                    break;
-                }
-                if (e.delta != out[length(out) - Int(1LL)].delta) {
-                    out = appendValues(out, SpEntry{e.pc - start, e.delta});
-                }
+        auto range588 = subslice(a->sps, k, length(a->sps));
+        for (Int index589 = 0, rangeEnd590 = length(range588); index589 < rangeEnd590; ++index589) {
+            SpEntry e = range588[index589];
+            if (e.pc >= end) {
+                break;
+            }
+            if (e.delta != out[length(out) - Int(1LL)].delta) {
+                out = appendValues(out, SpEntry{e.pc - start, e.delta});
             }
         }
         return out;
@@ -11389,55 +11055,51 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void asmStore(Asm* a, u8 width, VReg src, Amem m) {
         Int s = convert<i64>(src);
-        {
-            auto switch591 = width;
-            switch (switch591) {
-                case u8(8LL): {
-                    asmOpRM(a, true, Span<const u8>({u8(137LL)}), s, m, Int(0LL), false);
-                    break;
-                }
-                case u8(4LL): {
-                    asmOpRM(a, false, Span<const u8>({u8(137LL)}), s, m, Int(0LL), false);
-                    break;
-                }
-                case u8(2LL): {
-                    asmBytes(a, {u8(u8(102LL))});
-                    asmOpRM(a, false, Span<const u8>({u8(137LL)}), s, m, Int(0LL), false);
-                    break;
-                }
-                default: {
-                    asmOpRM(a, false, Span<const u8>({u8(136LL)}), s, m, Int(0LL), true);
-                    break;
-                }
+        auto switch591 = width;
+        switch (switch591) {
+            case u8(8LL): {
+                asmOpRM(a, true, Span<const u8>({u8(137LL)}), s, m, Int(0LL), false);
+                break;
+            }
+            case u8(4LL): {
+                asmOpRM(a, false, Span<const u8>({u8(137LL)}), s, m, Int(0LL), false);
+                break;
+            }
+            case u8(2LL): {
+                asmBytes(a, {u8(u8(102LL))});
+                asmOpRM(a, false, Span<const u8>({u8(137LL)}), s, m, Int(0LL), false);
+                break;
+            }
+            default: {
+                asmOpRM(a, false, Span<const u8>({u8(136LL)}), s, m, Int(0LL), true);
+                break;
             }
         }
     }
 
     static void asmStoreImm(Asm* a, u8 width, Amem m, i64 x) {
-        {
-            auto switch592 = width;
-            switch (switch592) {
-                case u8(8LL): {
-                    asmOpRM(a, true, Span<const u8>({u8(199LL)}), Int(0LL), m, Int(4LL), false);
-                    asmU32(a, convert<u32>(x));
-                    break;
-                }
-                case u8(4LL): {
-                    asmOpRM(a, false, Span<const u8>({u8(199LL)}), Int(0LL), m, Int(4LL), false);
-                    asmU32(a, convert<u32>(x));
-                    break;
-                }
-                case u8(2LL): {
-                    asmBytes(a, {u8(u8(102LL))});
-                    asmOpRM(a, false, Span<const u8>({u8(199LL)}), Int(0LL), m, Int(2LL), false);
-                    asmBytes(a, {u8(convert<u8>(x)), u8(convert<u8>(shiftRight(x, Int(8LL))))});
-                    break;
-                }
-                default: {
-                    asmOpRM(a, false, Span<const u8>({u8(198LL)}), Int(0LL), m, Int(1LL), false);
-                    asmBytes(a, {u8(convert<u8>(x))});
-                    break;
-                }
+        auto switch592 = width;
+        switch (switch592) {
+            case u8(8LL): {
+                asmOpRM(a, true, Span<const u8>({u8(199LL)}), Int(0LL), m, Int(4LL), false);
+                asmU32(a, convert<u32>(x));
+                break;
+            }
+            case u8(4LL): {
+                asmOpRM(a, false, Span<const u8>({u8(199LL)}), Int(0LL), m, Int(4LL), false);
+                asmU32(a, convert<u32>(x));
+                break;
+            }
+            case u8(2LL): {
+                asmBytes(a, {u8(u8(102LL))});
+                asmOpRM(a, false, Span<const u8>({u8(199LL)}), Int(0LL), m, Int(2LL), false);
+                asmBytes(a, {u8(convert<u8>(x)), u8(convert<u8>(shiftRight(x, Int(8LL))))});
+                break;
+            }
+            default: {
+                asmOpRM(a, false, Span<const u8>({u8(198LL)}), Int(0LL), m, Int(1LL), false);
+                asmBytes(a, {u8(convert<u8>(x))});
+                break;
             }
         }
     }
@@ -11547,16 +11209,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static bool cfgInfoDominates(CfgInfo* ci, i32 a, i32 b) {
-        {
-            for (; true;) {
-                if (a == b) {
-                    return true;
-                }
-                if (ci->rpoIndex[b] <= ci->rpoIndex[a]) {
-                    return false;
-                }
-                b = ci->idom[b];
+        for (; true;) {
+            if (a == b) {
+                return true;
             }
+            if (ci->rpoIndex[b] <= ci->rpoIndex[a]) {
+                return false;
+            }
+            b = ci->idom[b];
         }
     }
 
@@ -11564,61 +11224,47 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void cfgInfoDominators(CfgInfo* ci, Function* f) {
         Int n = length(f->blocks);
         ci->idom = makeSlice<i32>(n);
-        {
-            auto range599 = ci->idom;
-            for (Int index600 = 0, rangeEnd601 = length(range599); index600 < rangeEnd601; ++index600) {
-                Int i = index600;
-                ci->idom[i] = i32(-1LL);
-            }
+        auto range599 = ci->idom;
+        for (Int index600 = 0, rangeEnd601 = length(range599); index600 < rangeEnd601; ++index600) {
+            Int i = index600;
+            ci->idom[i] = i32(-1LL);
         }
         i32 entry = ci->order[Int(0LL)];
         ci->idom[entry] = entry;
-        {
-            bool changed = true;
-            for (; changed;) {
-                changed = false;
-                {
-                    auto range602 = subslice(ci->order, Int(1LL), length(ci->order));
-                    for (Int index603 = 0, rangeEnd604 = length(range602); index603 < rangeEnd604; ++index603) {
-                        i32 b = range602[index603];
-                        i32 newIdom = i32(-1LL);
-                        {
-                            auto range605 = f->blocks[b].preds;
-                            for (Int index606 = 0, rangeEnd607 = length(range605); index606 < rangeEnd607; ++index606) {
-                                i32 p = range605[index606];
-                                if (ci->idom[p] < i32(0LL)) {
-                                    continue;
-                                }
-                                if (newIdom < i32(0LL)) {
-                                    newIdom = p;
-                                } else {
-                                    newIdom = cfgInfoIntersect(ci, p, newIdom);
-                                }
-                            }
-                        }
-                        if (newIdom != ci->idom[b]) {
-                            ci->idom[b] = newIdom;
-                            changed = true;
-                        }
+        bool changed = true;
+        for (; changed;) {
+            changed = false;
+            auto range602 = subslice(ci->order, Int(1LL), length(ci->order));
+            for (Int index603 = 0, rangeEnd604 = length(range602); index603 < rangeEnd604; ++index603) {
+                i32 b = range602[index603];
+                i32 newIdom = i32(-1LL);
+                auto range605 = f->blocks[b].preds;
+                for (Int index606 = 0, rangeEnd607 = length(range605); index606 < rangeEnd607; ++index606) {
+                    i32 p = range605[index606];
+                    if (ci->idom[p] < i32(0LL)) {
+                        continue;
                     }
+                    if (newIdom < i32(0LL)) {
+                        newIdom = p;
+                    } else {
+                        newIdom = cfgInfoIntersect(ci, p, newIdom);
+                    }
+                }
+                if (newIdom != ci->idom[b]) {
+                    ci->idom[b] = newIdom;
+                    changed = true;
                 }
             }
         }
     }
 
     static i32 cfgInfoIntersect(CfgInfo* ci, i32 a, i32 b) {
-        {
-            for (; a != b;) {
-                {
-                    for (; ci->rpoIndex[a] > ci->rpoIndex[b];) {
-                        a = ci->idom[a];
-                    }
-                }
-                {
-                    for (; ci->rpoIndex[b] > ci->rpoIndex[a];) {
-                        b = ci->idom[b];
-                    }
-                }
+        for (; a != b;) {
+            for (; ci->rpoIndex[a] > ci->rpoIndex[b];) {
+                a = ci->idom[a];
+            }
+            for (; ci->rpoIndex[b] > ci->rpoIndex[a];) {
+                b = ci->idom[b];
             }
         }
         return a;
@@ -11630,46 +11276,38 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         ci->header = makeSlice<bool>(n);
         Slice<i32> work = {};
         Slice<i32> inLoop = makeSlice<i32>(n);
-        {
-            auto range608 = inLoop;
-            for (Int index609 = 0, rangeEnd610 = length(range608); index609 < rangeEnd610; ++index609) {
-                Int i = index609;
-                inLoop[i] = i32(-1LL);
-            }
+        auto range608 = inLoop;
+        for (Int index609 = 0, rangeEnd610 = length(range608); index609 < rangeEnd610; ++index609) {
+            Int i = index609;
+            inLoop[i] = i32(-1LL);
         }
-        {
-            auto range611 = ci->order;
-            for (Int index612 = 0, rangeEnd613 = length(range611); index612 < rangeEnd613; ++index612) {
-                i32 h = range611[index612];
-                Slice<i32> latches = {};
-                {
-                    auto range614 = f->blocks[h].preds;
-                    for (Int index615 = 0, rangeEnd616 = length(range614); index615 < rangeEnd616; ++index615) {
-                        i32 p = range614[index615];
-                        if (ci->rpoIndex[p] >= ci->rpoIndex[h]) {
-                            latches = appendValues(latches, p);
-                        }
-                    }
+        auto range611 = ci->order;
+        for (Int index612 = 0, rangeEnd613 = length(range611); index612 < rangeEnd613; ++index612) {
+            i32 h = range611[index612];
+            Slice<i32> latches = {};
+            auto range614 = f->blocks[h].preds;
+            for (Int index615 = 0, rangeEnd616 = length(range614); index615 < rangeEnd616; ++index615) {
+                i32 p = range614[index615];
+                if (ci->rpoIndex[p] >= ci->rpoIndex[h]) {
+                    latches = appendValues(latches, p);
                 }
-                if (length(latches) == Int(0LL)) {
+            }
+            if (length(latches) == Int(0LL)) {
+                continue;
+            }
+            ci->header[h] = true;
+            inLoop[h] = h;
+            ci->depth[h]++;
+            work = appendSlice(subslice(work, Int(0), Int(0LL)), latches);
+            for (; length(work) > Int(0LL);) {
+                i32 b = work[length(work) - Int(1LL)];
+                work = subslice(work, Int(0), length(work) - Int(1LL));
+                if (inLoop[b] == h || ci->rpoIndex[b] < i32(0LL)) {
                     continue;
                 }
-                ci->header[h] = true;
-                inLoop[h] = h;
-                ci->depth[h]++;
-                work = appendSlice(subslice(work, Int(0), Int(0LL)), latches);
-                {
-                    for (; length(work) > Int(0LL);) {
-                        i32 b = work[length(work) - Int(1LL)];
-                        work = subslice(work, Int(0), length(work) - Int(1LL));
-                        if (inLoop[b] == h || ci->rpoIndex[b] < i32(0LL)) {
-                            continue;
-                        }
-                        inLoop[b] = h;
-                        ci->depth[b]++;
-                        work = appendSlice(work, f->blocks[b].preds);
-                    }
-                }
+                inLoop[b] = h;
+                ci->depth[b]++;
+                work = appendSlice(work, f->blocks[b].preds);
             }
         }
     }
@@ -11703,12 +11341,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         i32 b = fe->f->values[phi].block;
         InlineVec<i32, 2> ops;
         ops.reserve(usize(length(fe->preds[b])));
-        {
-            auto range617 = fe->preds[b];
-            for (Int index618 = 0, rangeEnd619 = length(range617); index618 < rangeEnd619; ++index618) {
-                PredRef p = range617[index618];
-                ops.pushBack(frontendRead(fe, local, p.block));
-            }
+        auto range617 = fe->preds[b];
+        for (Int index618 = 0, rangeEnd619 = length(range617); index618 < rangeEnd619; ++index618) {
+            PredRef p = range617[index618];
+            ops.pushBack(frontendRead(fe, local, p.block));
         }
         const i32 result = frontendTryRemoveTrivial(fe, phi, ops.view());
         if (result == phi) {
@@ -11744,26 +11380,24 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static Tuple2<Slice<ValType>, Slice<ValType>> frontendBlockType(Frontend* fe) {
         Reader* r = &fe->r;
         if (r->pos < length(r->data)) {
-            {
-                u8 b = r->data[r->pos];
-                auto switch620 = b;
-                switch (switch620) {
-                    case u8(64LL): {
-                        r->pos++;
-                        return {{}, {}};
-                        break;
-                    }
-                    case u8(127LL):
-                    case u8(126LL):
-                    case u8(125LL):
-                    case u8(124LL):
-                    case u8(123LL):
-                    case u8(112LL):
-                    case u8(111LL): {
-                        r->pos++;
-                        return {{}, sliceOf<ValType>({convert<ValType>(b)})};
-                        break;
-                    }
+            u8 b = r->data[r->pos];
+            auto switch620 = b;
+            switch (switch620) {
+                case u8(64LL): {
+                    r->pos++;
+                    return {{}, {}};
+                    break;
+                }
+                case u8(127LL):
+                case u8(126LL):
+                case u8(125LL):
+                case u8(124LL):
+                case u8(123LL):
+                case u8(112LL):
+                case u8(111LL): {
+                    r->pos++;
+                    return {{}, sliceOf<ValType>({convert<ValType>(b)})};
+                    break;
                 }
             }
         }
@@ -11777,607 +11411,591 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void frontendBody(Frontend* fe) {
         Reader* r = &fe->r;
-        {
-            for (; length(fe->ctrls) > Int(0LL);) {
-                u8 op = readerByte(r);
-                if (fe->cur < i32(0LL)) {
-                    frontendSkip(fe, op);
-                    continue;
+        for (; length(fe->ctrls) > Int(0LL);) {
+            u8 op = readerByte(r);
+            if (fe->cur < i32(0LL)) {
+                frontendSkip(fe, op);
+                continue;
+            }
+            auto switch621 = op;
+            switch (switch621) {
+                case u8(0LL): {
+                    fe->f->blocks[fe->cur].term = Term{TermTrap, {}, {}, {}, trapUnreachable};
+                    frontendMarkDead(fe);
+                    break;
                 }
-                {
-                    auto switch621 = op;
-                    switch (switch621) {
-                        case u8(0LL): {
-                            fe->f->blocks[fe->cur].term = Term{TermTrap, {}, {}, {}, trapUnreachable};
-                            frontendMarkDead(fe);
-                            break;
-                        }
-                        case u8(1LL): {
-                            break;
-                        }
-                        case u8(2LL):
-                        case u8(3LL): {
-                            auto temporary622 = frontendBlockType(fe);
-                            Slice<ValType> params = temporary622.v0;
-                            Slice<ValType> results = temporary622.v1;
-                            Slice<i32> args = frontendPopN(fe, length(params));
-                            Control c = Control{ctrlBlock, params, results, length(fe->stack), {}, i32(-1LL), {}, {}, {}};
-                            if (op == u8(3LL)) {
-                                c.kind = ctrlLoop;
-                                i32 header = frontendNewBlock(fe);
-                                c.target = header;
-                                Slice<i32> vals = makeSlice<i32>(length(params));
-                                {
-                                    auto range623 = params;
-                                    for (Int index624 = 0, rangeEnd625 = length(range623); index624 < rangeEnd625; ++index624) {
-                                        Int i = index624;
-                                        ValType t = range623[index624];
-                                        vals[i] = frontendAddExplicit(fe, header, t);
-                                    }
-                                }
-                                frontendJump(fe, header, args);
-                                fe->cur = header;
-                                args = vals;
-                            } else {
-                                c.target = frontendNewBlock(fe);
-                                {
-                                    auto range626 = results;
-                                    for (Int index627 = 0, rangeEnd628 = length(range626); index627 < rangeEnd628; ++index627) {
-                                        ValType t = range626[index627];
-                                        frontendAddExplicit(fe, c.target, t);
-                                    }
-                                }
-                            }
-                            fe->ctrls = appendValues(fe->ctrls, c);
-                            fe->stack = appendSlice(fe->stack, args);
-                            break;
-                        }
-                        case u8(4LL): {
-                            auto temporary629 = frontendBlockType(fe);
-                            Slice<ValType> params = temporary629.v0;
-                            Slice<ValType> results = temporary629.v1;
-                            i32 cond = frontendPop(fe);
-                            Slice<i32> args = frontendPopN(fe, length(params));
-                            Control c = Control{ctrlIf, params, results, length(fe->stack), {}, {}, args, {}, {}};
-                            c.target = frontendNewBlock(fe);
-                            {
-                                auto range630 = results;
-                                for (Int index631 = 0, rangeEnd632 = length(range630); index631 < rangeEnd632; ++index631) {
-                                    ValType t = range630[index631];
-                                    frontendAddExplicit(fe, c.target, t);
-                                }
-                            }
-                            i32 then = frontendNewBlock(fe);
-                            c.elseBlock = frontendNewBlock(fe);
-                            Block* blk = &fe->f->blocks[fe->cur];
-                            blk->term.kind = TermIf;
-                            blk->term.value = cond;
-                            frontendAddEdge(fe, fe->cur, then, {});
-                            frontendAddEdge(fe, fe->cur, c.elseBlock, {});
-                            frontendSeal(fe, then);
-                            frontendSeal(fe, c.elseBlock);
-                            fe->cur = then;
-                            fe->ctrls = appendValues(fe->ctrls, c);
-                            fe->stack = appendSlice(fe->stack, args);
-                            break;
-                        }
-                        case u8(5LL): {
-                            frontendElseOp(fe);
-                            break;
-                        }
-                        case u8(11LL): {
-                            frontendEnd(fe);
-                            break;
-                        }
-                        case u8(12LL): {
-                            Control* c = frontendLabel(fe, readerU32(r));
-                            frontendJump(fe, c->target, frontendTop(fe, length(frontendLabelTypes(fe, c))));
-                            frontendMarkDead(fe);
-                            break;
-                        }
-                        case u8(13LL): {
-                            Control* c = frontendLabel(fe, readerU32(r));
-                            i32 cond = frontendPop(fe);
-                            Slice<i32> args = frontendTop(fe, length(frontendLabelTypes(fe, c)));
-                            i32 next = frontendNewBlock(fe);
-                            Block* blk = &fe->f->blocks[fe->cur];
-                            blk->term.kind = TermIf;
-                            blk->term.value = cond;
-                            frontendAddEdge(fe, fe->cur, c->target, args);
-                            frontendAddEdge(fe, fe->cur, next, {});
-                            frontendSeal(fe, next);
-                            fe->cur = next;
-                            break;
-                        }
-                        case u8(14LL): {
-                            u32 n = readerU32(r);
-                            if (n > u32(1048576LL)) {
-                                compilerError(String("br_table too large"));
-                            }
-                            Slice<u32> labels = makeSlice<u32>(n + u32(1LL));
-                            {
-                                auto range633 = labels;
-                                for (Int index634 = 0, rangeEnd635 = length(range633); index634 < rangeEnd635; ++index634) {
-                                    Int i = index634;
-                                    labels[i] = readerU32(r);
-                                }
-                            }
-                            i32 index = frontendPop(fe);
-                            Int arity = length(frontendLabelTypes(fe, frontendLabel(fe, labels[n])));
-                            Slice<i32> args = frontendTop(fe, arity);
-                            Block* blk = &fe->f->blocks[fe->cur];
-                            blk->term.kind = TermSwitch;
-                            blk->term.value = index;
-                            {
-                                auto range636 = labels;
-                                for (Int index637 = 0, rangeEnd638 = length(range636); index637 < rangeEnd638; ++index637) {
-                                    u32 l = range636[index637];
-                                    Control* c = frontendLabel(fe, l);
-                                    if (length(frontendLabelTypes(fe, c)) != arity) {
-                                        compilerError(String("type mismatch: br_table arity"));
-                                    }
-                                    frontendAddEdge(fe, fe->cur, c->target, appendSlice(Slice<i32>{}, args));
-                                }
-                            }
-                            frontendMarkDead(fe);
-                            break;
-                        }
-                        case u8(15LL): {
-                            fe->f->blocks[fe->cur].term = Term{TermReturn, {}, {}, frontendTop(fe, length(fe->f->typ->results)), {}};
-                            frontendMarkDead(fe);
-                            break;
-                        }
-                        case u8(16LL): {
-                            u32 index = readerU32(r);
-                            if (convert<i64>(index) >= length(fe->m->funcs)) {
-                                compilerError(String("unknown function %d"));
-                            }
-                            frontendCall(fe, OpCall, moduleFuncType(fe->m, index), convert<i64>(index), i32(0LL), {});
-                            break;
-                        }
-                        case u8(17LL): {
-                            u32 typeIndex = readerU32(r);
-                            u32 table = readerU32(r);
-                            if (convert<i64>(typeIndex) >= length(fe->m->types)) {
-                                compilerError(String("unknown type %d"));
-                            }
-                            if (convert<i64>(table) >= length(fe->m->tables)) {
-                                compilerError(String("unknown table %d"));
-                            }
-                            i32 elem = frontendPop(fe);
-                            frontendCall(fe, OpCallIndirect, &fe->m->types[typeIndex], convert<i64>(typeIndex), convert<i32>(table), sliceOf<i32>({elem}));
-                            break;
-                        }
-                        case u8(26LL): {
-                            frontendPop(fe);
-                            break;
-                        }
-                        case u8(27LL):
-                        case u8(28LL): {
-                            if (op == u8(28LL)) {
-                                u32 n = readerU32(r);
-                                {
-                                    u32 i = u32(0LL);
-                                    for (; i < n; i++) {
-                                        readerValType(r);
-                                    }
-                                }
-                            }
-                            i32 cond = frontendPop(fe);
-                            i32 b = frontendPop(fe);
-                            i32 a = frontendPop(fe);
-                            frontendPush(fe, frontendEmit(fe, OpSelect, frontendTypeOf(fe, a), i64(0LL), Span<const i32>({cond, a, b})));
-                            break;
-                        }
-                        case u8(32LL): {
-                            i32 local = frontendLocalIndex(fe);
-                            frontendPush(fe, frontendRead(fe, local, fe->cur));
-                            break;
-                        }
-                        case u8(33LL): {
-                            i32 local = frontendLocalIndex(fe);
-                            frontendWrite(fe, local, fe->cur, frontendPop(fe));
-                            break;
-                        }
-                        case u8(34LL): {
-                            i32 local = frontendLocalIndex(fe);
-                            i32 v = frontendPop(fe);
-                            frontendWrite(fe, local, fe->cur, v);
-                            frontendPush(fe, v);
-                            break;
-                        }
-                        case u8(35LL): {
-                            u32 index = frontendGlobalIndex(fe);
-                            frontendPush(fe, frontendEmit(fe, OpGlobalGet, fe->m->globals[index].typ, convert<i64>(index), Span<const i32>({})));
-                            break;
-                        }
-                        case u8(36LL): {
-                            u32 index = frontendGlobalIndex(fe);
-                            frontendEmit(fe, OpGlobalSet, TNone, convert<i64>(index), Span<const i32>({frontendPop(fe)}));
-                            break;
-                        }
-                        case u8(37LL): {
-                            u32 table = frontendTableIndex(fe);
-                            i32 index = frontendPop(fe);
-                            frontendPush(fe, frontendEmit(fe, OpTableGet, fe->m->tables[table].elem, convert<i64>(table), Span<const i32>({index})));
-                            break;
-                        }
-                        case u8(38LL): {
-                            u32 table = frontendTableIndex(fe);
-                            i32 val = frontendPop(fe);
-                            i32 index = frontendPop(fe);
-                            frontendEmit(fe, OpTableSet, TNone, convert<i64>(table), Span<const i32>({index, val}));
-                            break;
-                        }
-                        case u8(40LL): {
-                            frontendLoad(fe, I32, Int(4LL), false);
-                            break;
-                        }
-                        case u8(41LL): {
-                            frontendLoad(fe, I64, Int(8LL), false);
-                            break;
-                        }
-                        case u8(42LL): {
-                            frontendLoad(fe, F32, Int(4LL), false);
-                            break;
-                        }
-                        case u8(43LL): {
-                            frontendLoad(fe, F64, Int(8LL), false);
-                            break;
-                        }
-                        case u8(44LL): {
-                            frontendLoad(fe, I32, Int(1LL), true);
-                            break;
-                        }
-                        case u8(45LL): {
-                            frontendLoad(fe, I32, Int(1LL), false);
-                            break;
-                        }
-                        case u8(46LL): {
-                            frontendLoad(fe, I32, Int(2LL), true);
-                            break;
-                        }
-                        case u8(47LL): {
-                            frontendLoad(fe, I32, Int(2LL), false);
-                            break;
-                        }
-                        case u8(48LL): {
-                            frontendLoad(fe, I64, Int(1LL), true);
-                            break;
-                        }
-                        case u8(49LL): {
-                            frontendLoad(fe, I64, Int(1LL), false);
-                            break;
-                        }
-                        case u8(50LL): {
-                            frontendLoad(fe, I64, Int(2LL), true);
-                            break;
-                        }
-                        case u8(51LL): {
-                            frontendLoad(fe, I64, Int(2LL), false);
-                            break;
-                        }
-                        case u8(52LL): {
-                            frontendLoad(fe, I64, Int(4LL), true);
-                            break;
-                        }
-                        case u8(53LL): {
-                            frontendLoad(fe, I64, Int(4LL), false);
-                            break;
-                        }
-                        case u8(54LL):
-                        case u8(56LL): {
-                            frontendStore(fe, Int(4LL));
-                            break;
-                        }
-                        case u8(55LL):
-                        case u8(57LL): {
-                            frontendStore(fe, Int(8LL));
-                            break;
-                        }
-                        case u8(58LL):
-                        case u8(60LL): {
-                            frontendStore(fe, Int(1LL));
-                            break;
-                        }
-                        case u8(59LL):
-                        case u8(61LL): {
-                            frontendStore(fe, Int(2LL));
-                            break;
-                        }
-                        case u8(62LL): {
-                            frontendStore(fe, Int(4LL));
-                            break;
-                        }
-                        case u8(63LL): {
-                            frontendMemIndex(fe);
-                            frontendPush(fe, frontendEmit(fe, OpMemSize, frontendAddrType(fe), i64(0LL), Span<const i32>({})));
-                            break;
-                        }
-                        case u8(64LL): {
-                            frontendMemIndex(fe);
-                            i32 delta = frontendPop(fe);
-                            frontendPush(fe, frontendEmit(fe, OpMemGrow, frontendAddrType(fe), i64(0LL), Span<const i32>({delta})));
-                            break;
-                        }
-                        case u8(65LL): {
-                            frontendPush(fe, frontendConstant(fe, I32, convert<i64>(readerS32(r))));
-                            break;
-                        }
-                        case u8(66LL): {
-                            frontendPush(fe, frontendConstant(fe, I64, readerS64(r)));
-                            break;
-                        }
-                        case u8(67LL): {
-                            frontendPush(fe, frontendConstant(fe, F32, convert<i64>(readerF32(r))));
-                            break;
-                        }
-                        case u8(68LL): {
-                            frontendPush(fe, frontendConstant(fe, F64, convert<i64>(readerF64(r))));
-                            break;
-                        }
-                        case u8(69LL): {
-                            frontendUnary(fe, OpEqz, I32);
-                            break;
-                        }
-                        case u8(80LL): {
-                            frontendUnary(fe, OpEqz, I32);
-                            break;
-                        }
-                        case u8(70LL):
-                        case u8(71LL):
-                        case u8(72LL):
-                        case u8(73LL):
-                        case u8(74LL):
-                        case u8(75LL):
-                        case u8(76LL):
-                        case u8(77LL):
-                        case u8(78LL):
-                        case u8(79LL): {
-                            frontendBinary(fe, Op(OpEq + convert<Op>(u8(op - u8(70LL)))), I32);
-                            break;
-                        }
-                        case u8(81LL):
-                        case u8(82LL):
-                        case u8(83LL):
-                        case u8(84LL):
-                        case u8(85LL):
-                        case u8(86LL):
-                        case u8(87LL):
-                        case u8(88LL):
-                        case u8(89LL):
-                        case u8(90LL): {
-                            frontendBinary(fe, Op(OpEq + convert<Op>(u8(op - u8(81LL)))), I32);
-                            break;
-                        }
-                        case u8(91LL):
-                        case u8(92LL):
-                        case u8(93LL):
-                        case u8(94LL):
-                        case u8(95LL):
-                        case u8(96LL): {
-                            frontendBinary(fe, Op(OpFEq + convert<Op>(u8(op - u8(91LL)))), I32);
-                            break;
-                        }
-                        case u8(97LL):
-                        case u8(98LL):
-                        case u8(99LL):
-                        case u8(100LL):
-                        case u8(101LL):
-                        case u8(102LL): {
-                            frontendBinary(fe, Op(OpFEq + convert<Op>(u8(op - u8(97LL)))), I32);
-                            break;
-                        }
-                        case u8(103LL):
-                        case u8(104LL):
-                        case u8(105LL): {
-                            frontendUnary(fe, Op(OpClz + convert<Op>(u8(op - u8(103LL)))), I32);
-                            break;
-                        }
-                        case u8(121LL):
-                        case u8(122LL):
-                        case u8(123LL): {
-                            frontendUnary(fe, Op(OpClz + convert<Op>(u8(op - u8(121LL)))), I64);
-                            break;
-                        }
-                        case u8(106LL):
-                        case u8(107LL):
-                        case u8(108LL):
-                        case u8(109LL):
-                        case u8(110LL):
-                        case u8(111LL):
-                        case u8(112LL):
-                        case u8(113LL):
-                        case u8(114LL):
-                        case u8(115LL):
-                        case u8(116LL):
-                        case u8(117LL):
-                        case u8(118LL):
-                        case u8(119LL):
-                        case u8(120LL): {
-                            frontendBinary(fe, Op(OpAdd + convert<Op>(u8(op - u8(106LL)))), I32);
-                            break;
-                        }
-                        case u8(124LL):
-                        case u8(125LL):
-                        case u8(126LL):
-                        case u8(127LL):
-                        case u8(128LL):
-                        case u8(129LL):
-                        case u8(130LL):
-                        case u8(131LL):
-                        case u8(132LL):
-                        case u8(133LL):
-                        case u8(134LL):
-                        case u8(135LL):
-                        case u8(136LL):
-                        case u8(137LL):
-                        case u8(138LL): {
-                            frontendBinary(fe, Op(OpAdd + convert<Op>(u8(op - u8(124LL)))), I64);
-                            break;
-                        }
-                        case u8(139LL):
-                        case u8(140LL):
-                        case u8(141LL):
-                        case u8(142LL):
-                        case u8(143LL):
-                        case u8(144LL):
-                        case u8(145LL): {
-                            frontendUnary(fe, floatUnary[u8(op - u8(139LL))], F32);
-                            break;
-                        }
-                        case u8(153LL):
-                        case u8(154LL):
-                        case u8(155LL):
-                        case u8(156LL):
-                        case u8(157LL):
-                        case u8(158LL):
-                        case u8(159LL): {
-                            frontendUnary(fe, floatUnary[u8(op - u8(153LL))], F64);
-                            break;
-                        }
-                        case u8(146LL):
-                        case u8(147LL):
-                        case u8(148LL):
-                        case u8(149LL):
-                        case u8(150LL):
-                        case u8(151LL):
-                        case u8(152LL): {
-                            frontendBinary(fe, Op(OpFAdd + convert<Op>(u8(op - u8(146LL)))), F32);
-                            break;
-                        }
-                        case u8(160LL):
-                        case u8(161LL):
-                        case u8(162LL):
-                        case u8(163LL):
-                        case u8(164LL):
-                        case u8(165LL):
-                        case u8(166LL): {
-                            frontendBinary(fe, Op(OpFAdd + convert<Op>(u8(op - u8(160LL)))), F64);
-                            break;
-                        }
-                        case u8(167LL): {
-                            frontendUnary(fe, OpWrap, I32);
-                            break;
-                        }
-                        case u8(168LL):
-                        case u8(170LL): {
-                            frontendUnary(fe, OpTruncS, I32);
-                            break;
-                        }
-                        case u8(169LL):
-                        case u8(171LL): {
-                            frontendUnary(fe, OpTruncU, I32);
-                            break;
-                        }
-                        case u8(172LL): {
-                            frontendUnary(fe, OpExtendS, I64);
-                            break;
-                        }
-                        case u8(173LL): {
-                            frontendUnary(fe, OpExtendU, I64);
-                            break;
-                        }
-                        case u8(174LL):
-                        case u8(176LL): {
-                            frontendUnary(fe, OpTruncS, I64);
-                            break;
-                        }
-                        case u8(175LL):
-                        case u8(177LL): {
-                            frontendUnary(fe, OpTruncU, I64);
-                            break;
-                        }
-                        case u8(178LL):
-                        case u8(180LL): {
-                            frontendUnary(fe, OpConvertS, F32);
-                            break;
-                        }
-                        case u8(179LL):
-                        case u8(181LL): {
-                            frontendUnary(fe, OpConvertU, F32);
-                            break;
-                        }
-                        case u8(182LL): {
-                            frontendUnary(fe, OpDemote, F32);
-                            break;
-                        }
-                        case u8(183LL):
-                        case u8(185LL): {
-                            frontendUnary(fe, OpConvertS, F64);
-                            break;
-                        }
-                        case u8(184LL):
-                        case u8(186LL): {
-                            frontendUnary(fe, OpConvertU, F64);
-                            break;
-                        }
-                        case u8(187LL): {
-                            frontendUnary(fe, OpPromote, F64);
-                            break;
-                        }
-                        case u8(188LL): {
-                            frontendUnary(fe, OpReinterpret, I32);
-                            break;
-                        }
-                        case u8(189LL): {
-                            frontendUnary(fe, OpReinterpret, I64);
-                            break;
-                        }
-                        case u8(190LL): {
-                            frontendUnary(fe, OpReinterpret, F32);
-                            break;
-                        }
-                        case u8(191LL): {
-                            frontendUnary(fe, OpReinterpret, F64);
-                            break;
-                        }
-                        case u8(192LL): {
-                            frontendUnary(fe, OpExtend8S, I32);
-                            break;
-                        }
-                        case u8(193LL): {
-                            frontendUnary(fe, OpExtend16S, I32);
-                            break;
-                        }
-                        case u8(194LL): {
-                            frontendUnary(fe, OpExtend8S, I64);
-                            break;
-                        }
-                        case u8(195LL): {
-                            frontendUnary(fe, OpExtend16S, I64);
-                            break;
-                        }
-                        case u8(196LL): {
-                            frontendUnary(fe, OpExtend32S, I64);
-                            break;
-                        }
-                        case u8(208LL): {
-                            ValType t = readerRefType(r);
-                            frontendPush(fe, functionNewValue(fe->f, OpRefNull, t, i32(-1LL), i64(0LL), Span<const i32>({})));
-                            break;
-                        }
-                        case u8(209LL): {
-                            frontendUnary(fe, OpRefIsNull, I32);
-                            break;
-                        }
-                        case u8(210LL): {
-                            u32 index = readerU32(r);
-                            if (convert<i64>(index) >= length(fe->m->funcs)) {
-                                compilerError(String("unknown function %d"));
-                            }
-                            frontendPush(fe, frontendEmit(fe, OpRefFunc, FuncRef, convert<i64>(index), Span<const i32>({})));
-                            break;
-                        }
-                        case u8(252LL): {
-                            frontendPrefixFC(fe);
-                            break;
-                        }
-                        default: {
-                            compilerError(String("illegal opcode 0x%02x at offset %d"));
-                            break;
+                case u8(1LL): {
+                    break;
+                }
+                case u8(2LL):
+                case u8(3LL): {
+                    auto temporary622 = frontendBlockType(fe);
+                    Slice<ValType> params = temporary622.v0;
+                    Slice<ValType> results = temporary622.v1;
+                    Slice<i32> args = frontendPopN(fe, length(params));
+                    Control c = Control{ctrlBlock, params, results, length(fe->stack), {}, i32(-1LL), {}, {}, {}};
+                    if (op == u8(3LL)) {
+                        c.kind = ctrlLoop;
+                        i32 header = frontendNewBlock(fe);
+                        c.target = header;
+                        Slice<i32> vals = makeSlice<i32>(length(params));
+                        auto range623 = params;
+                        for (Int index624 = 0, rangeEnd625 = length(range623); index624 < rangeEnd625; ++index624) {
+                            Int i = index624;
+                            ValType t = range623[index624];
+                            vals[i] = frontendAddExplicit(fe, header, t);
+                        }
+                        frontendJump(fe, header, args);
+                        fe->cur = header;
+                        args = vals;
+                    } else {
+                        c.target = frontendNewBlock(fe);
+                        auto range626 = results;
+                        for (Int index627 = 0, rangeEnd628 = length(range626); index627 < rangeEnd628; ++index627) {
+                            ValType t = range626[index627];
+                            frontendAddExplicit(fe, c.target, t);
                         }
                     }
+                    fe->ctrls = appendValues(fe->ctrls, c);
+                    fe->stack = appendSlice(fe->stack, args);
+                    break;
+                }
+                case u8(4LL): {
+                    auto temporary629 = frontendBlockType(fe);
+                    Slice<ValType> params = temporary629.v0;
+                    Slice<ValType> results = temporary629.v1;
+                    i32 cond = frontendPop(fe);
+                    Slice<i32> args = frontendPopN(fe, length(params));
+                    Control c = Control{ctrlIf, params, results, length(fe->stack), {}, {}, args, {}, {}};
+                    c.target = frontendNewBlock(fe);
+                    auto range630 = results;
+                    for (Int index631 = 0, rangeEnd632 = length(range630); index631 < rangeEnd632; ++index631) {
+                        ValType t = range630[index631];
+                        frontendAddExplicit(fe, c.target, t);
+                    }
+                    i32 then = frontendNewBlock(fe);
+                    c.elseBlock = frontendNewBlock(fe);
+                    Block* blk = &fe->f->blocks[fe->cur];
+                    blk->term.kind = TermIf;
+                    blk->term.value = cond;
+                    frontendAddEdge(fe, fe->cur, then, {});
+                    frontendAddEdge(fe, fe->cur, c.elseBlock, {});
+                    frontendSeal(fe, then);
+                    frontendSeal(fe, c.elseBlock);
+                    fe->cur = then;
+                    fe->ctrls = appendValues(fe->ctrls, c);
+                    fe->stack = appendSlice(fe->stack, args);
+                    break;
+                }
+                case u8(5LL): {
+                    frontendElseOp(fe);
+                    break;
+                }
+                case u8(11LL): {
+                    frontendEnd(fe);
+                    break;
+                }
+                case u8(12LL): {
+                    Control* c = frontendLabel(fe, readerU32(r));
+                    frontendJump(fe, c->target, frontendTop(fe, length(frontendLabelTypes(fe, c))));
+                    frontendMarkDead(fe);
+                    break;
+                }
+                case u8(13LL): {
+                    Control* c = frontendLabel(fe, readerU32(r));
+                    i32 cond = frontendPop(fe);
+                    Slice<i32> args = frontendTop(fe, length(frontendLabelTypes(fe, c)));
+                    i32 next = frontendNewBlock(fe);
+                    Block* blk = &fe->f->blocks[fe->cur];
+                    blk->term.kind = TermIf;
+                    blk->term.value = cond;
+                    frontendAddEdge(fe, fe->cur, c->target, args);
+                    frontendAddEdge(fe, fe->cur, next, {});
+                    frontendSeal(fe, next);
+                    fe->cur = next;
+                    break;
+                }
+                case u8(14LL): {
+                    u32 n = readerU32(r);
+                    if (n > u32(1048576LL)) {
+                        compilerError(String("br_table too large"));
+                    }
+                    Slice<u32> labels = makeSlice<u32>(n + u32(1LL));
+                    auto range633 = labels;
+                    for (Int index634 = 0, rangeEnd635 = length(range633); index634 < rangeEnd635; ++index634) {
+                        Int i = index634;
+                        labels[i] = readerU32(r);
+                    }
+                    i32 index = frontendPop(fe);
+                    Int arity = length(frontendLabelTypes(fe, frontendLabel(fe, labels[n])));
+                    Slice<i32> args = frontendTop(fe, arity);
+                    Block* blk = &fe->f->blocks[fe->cur];
+                    blk->term.kind = TermSwitch;
+                    blk->term.value = index;
+                    auto range636 = labels;
+                    for (Int index637 = 0, rangeEnd638 = length(range636); index637 < rangeEnd638; ++index637) {
+                        u32 l = range636[index637];
+                        Control* c = frontendLabel(fe, l);
+                        if (length(frontendLabelTypes(fe, c)) != arity) {
+                            compilerError(String("type mismatch: br_table arity"));
+                        }
+                        frontendAddEdge(fe, fe->cur, c->target, appendSlice(Slice<i32>{}, args));
+                    }
+                    frontendMarkDead(fe);
+                    break;
+                }
+                case u8(15LL): {
+                    fe->f->blocks[fe->cur].term = Term{TermReturn, {}, {}, frontendTop(fe, length(fe->f->typ->results)), {}};
+                    frontendMarkDead(fe);
+                    break;
+                }
+                case u8(16LL): {
+                    u32 index = readerU32(r);
+                    if (convert<i64>(index) >= length(fe->m->funcs)) {
+                        compilerError(String("unknown function %d"));
+                    }
+                    frontendCall(fe, OpCall, moduleFuncType(fe->m, index), convert<i64>(index), i32(0LL), {});
+                    break;
+                }
+                case u8(17LL): {
+                    u32 typeIndex = readerU32(r);
+                    u32 table = readerU32(r);
+                    if (convert<i64>(typeIndex) >= length(fe->m->types)) {
+                        compilerError(String("unknown type %d"));
+                    }
+                    if (convert<i64>(table) >= length(fe->m->tables)) {
+                        compilerError(String("unknown table %d"));
+                    }
+                    i32 elem = frontendPop(fe);
+                    frontendCall(fe, OpCallIndirect, &fe->m->types[typeIndex], convert<i64>(typeIndex), convert<i32>(table), sliceOf<i32>({elem}));
+                    break;
+                }
+                case u8(26LL): {
+                    frontendPop(fe);
+                    break;
+                }
+                case u8(27LL):
+                case u8(28LL): {
+                    if (op == u8(28LL)) {
+                        u32 n = readerU32(r);
+                        u32 i = u32(0LL);
+                        for (; i < n; i++) {
+                            readerValType(r);
+                        }
+                    }
+                    i32 cond = frontendPop(fe);
+                    i32 b = frontendPop(fe);
+                    i32 a = frontendPop(fe);
+                    frontendPush(fe, frontendEmit(fe, OpSelect, frontendTypeOf(fe, a), i64(0LL), Span<const i32>({cond, a, b})));
+                    break;
+                }
+                case u8(32LL): {
+                    i32 local = frontendLocalIndex(fe);
+                    frontendPush(fe, frontendRead(fe, local, fe->cur));
+                    break;
+                }
+                case u8(33LL): {
+                    i32 local = frontendLocalIndex(fe);
+                    frontendWrite(fe, local, fe->cur, frontendPop(fe));
+                    break;
+                }
+                case u8(34LL): {
+                    i32 local = frontendLocalIndex(fe);
+                    i32 v = frontendPop(fe);
+                    frontendWrite(fe, local, fe->cur, v);
+                    frontendPush(fe, v);
+                    break;
+                }
+                case u8(35LL): {
+                    u32 index = frontendGlobalIndex(fe);
+                    frontendPush(fe, frontendEmit(fe, OpGlobalGet, fe->m->globals[index].typ, convert<i64>(index), Span<const i32>({})));
+                    break;
+                }
+                case u8(36LL): {
+                    u32 index = frontendGlobalIndex(fe);
+                    frontendEmit(fe, OpGlobalSet, TNone, convert<i64>(index), Span<const i32>({frontendPop(fe)}));
+                    break;
+                }
+                case u8(37LL): {
+                    u32 table = frontendTableIndex(fe);
+                    i32 index = frontendPop(fe);
+                    frontendPush(fe, frontendEmit(fe, OpTableGet, fe->m->tables[table].elem, convert<i64>(table), Span<const i32>({index})));
+                    break;
+                }
+                case u8(38LL): {
+                    u32 table = frontendTableIndex(fe);
+                    i32 val = frontendPop(fe);
+                    i32 index = frontendPop(fe);
+                    frontendEmit(fe, OpTableSet, TNone, convert<i64>(table), Span<const i32>({index, val}));
+                    break;
+                }
+                case u8(40LL): {
+                    frontendLoad(fe, I32, Int(4LL), false);
+                    break;
+                }
+                case u8(41LL): {
+                    frontendLoad(fe, I64, Int(8LL), false);
+                    break;
+                }
+                case u8(42LL): {
+                    frontendLoad(fe, F32, Int(4LL), false);
+                    break;
+                }
+                case u8(43LL): {
+                    frontendLoad(fe, F64, Int(8LL), false);
+                    break;
+                }
+                case u8(44LL): {
+                    frontendLoad(fe, I32, Int(1LL), true);
+                    break;
+                }
+                case u8(45LL): {
+                    frontendLoad(fe, I32, Int(1LL), false);
+                    break;
+                }
+                case u8(46LL): {
+                    frontendLoad(fe, I32, Int(2LL), true);
+                    break;
+                }
+                case u8(47LL): {
+                    frontendLoad(fe, I32, Int(2LL), false);
+                    break;
+                }
+                case u8(48LL): {
+                    frontendLoad(fe, I64, Int(1LL), true);
+                    break;
+                }
+                case u8(49LL): {
+                    frontendLoad(fe, I64, Int(1LL), false);
+                    break;
+                }
+                case u8(50LL): {
+                    frontendLoad(fe, I64, Int(2LL), true);
+                    break;
+                }
+                case u8(51LL): {
+                    frontendLoad(fe, I64, Int(2LL), false);
+                    break;
+                }
+                case u8(52LL): {
+                    frontendLoad(fe, I64, Int(4LL), true);
+                    break;
+                }
+                case u8(53LL): {
+                    frontendLoad(fe, I64, Int(4LL), false);
+                    break;
+                }
+                case u8(54LL):
+                case u8(56LL): {
+                    frontendStore(fe, Int(4LL));
+                    break;
+                }
+                case u8(55LL):
+                case u8(57LL): {
+                    frontendStore(fe, Int(8LL));
+                    break;
+                }
+                case u8(58LL):
+                case u8(60LL): {
+                    frontendStore(fe, Int(1LL));
+                    break;
+                }
+                case u8(59LL):
+                case u8(61LL): {
+                    frontendStore(fe, Int(2LL));
+                    break;
+                }
+                case u8(62LL): {
+                    frontendStore(fe, Int(4LL));
+                    break;
+                }
+                case u8(63LL): {
+                    frontendMemIndex(fe);
+                    frontendPush(fe, frontendEmit(fe, OpMemSize, frontendAddrType(fe), i64(0LL), Span<const i32>({})));
+                    break;
+                }
+                case u8(64LL): {
+                    frontendMemIndex(fe);
+                    i32 delta = frontendPop(fe);
+                    frontendPush(fe, frontendEmit(fe, OpMemGrow, frontendAddrType(fe), i64(0LL), Span<const i32>({delta})));
+                    break;
+                }
+                case u8(65LL): {
+                    frontendPush(fe, frontendConstant(fe, I32, convert<i64>(readerS32(r))));
+                    break;
+                }
+                case u8(66LL): {
+                    frontendPush(fe, frontendConstant(fe, I64, readerS64(r)));
+                    break;
+                }
+                case u8(67LL): {
+                    frontendPush(fe, frontendConstant(fe, F32, convert<i64>(readerF32(r))));
+                    break;
+                }
+                case u8(68LL): {
+                    frontendPush(fe, frontendConstant(fe, F64, convert<i64>(readerF64(r))));
+                    break;
+                }
+                case u8(69LL): {
+                    frontendUnary(fe, OpEqz, I32);
+                    break;
+                }
+                case u8(80LL): {
+                    frontendUnary(fe, OpEqz, I32);
+                    break;
+                }
+                case u8(70LL):
+                case u8(71LL):
+                case u8(72LL):
+                case u8(73LL):
+                case u8(74LL):
+                case u8(75LL):
+                case u8(76LL):
+                case u8(77LL):
+                case u8(78LL):
+                case u8(79LL): {
+                    frontendBinary(fe, Op(OpEq + convert<Op>(u8(op - u8(70LL)))), I32);
+                    break;
+                }
+                case u8(81LL):
+                case u8(82LL):
+                case u8(83LL):
+                case u8(84LL):
+                case u8(85LL):
+                case u8(86LL):
+                case u8(87LL):
+                case u8(88LL):
+                case u8(89LL):
+                case u8(90LL): {
+                    frontendBinary(fe, Op(OpEq + convert<Op>(u8(op - u8(81LL)))), I32);
+                    break;
+                }
+                case u8(91LL):
+                case u8(92LL):
+                case u8(93LL):
+                case u8(94LL):
+                case u8(95LL):
+                case u8(96LL): {
+                    frontendBinary(fe, Op(OpFEq + convert<Op>(u8(op - u8(91LL)))), I32);
+                    break;
+                }
+                case u8(97LL):
+                case u8(98LL):
+                case u8(99LL):
+                case u8(100LL):
+                case u8(101LL):
+                case u8(102LL): {
+                    frontendBinary(fe, Op(OpFEq + convert<Op>(u8(op - u8(97LL)))), I32);
+                    break;
+                }
+                case u8(103LL):
+                case u8(104LL):
+                case u8(105LL): {
+                    frontendUnary(fe, Op(OpClz + convert<Op>(u8(op - u8(103LL)))), I32);
+                    break;
+                }
+                case u8(121LL):
+                case u8(122LL):
+                case u8(123LL): {
+                    frontendUnary(fe, Op(OpClz + convert<Op>(u8(op - u8(121LL)))), I64);
+                    break;
+                }
+                case u8(106LL):
+                case u8(107LL):
+                case u8(108LL):
+                case u8(109LL):
+                case u8(110LL):
+                case u8(111LL):
+                case u8(112LL):
+                case u8(113LL):
+                case u8(114LL):
+                case u8(115LL):
+                case u8(116LL):
+                case u8(117LL):
+                case u8(118LL):
+                case u8(119LL):
+                case u8(120LL): {
+                    frontendBinary(fe, Op(OpAdd + convert<Op>(u8(op - u8(106LL)))), I32);
+                    break;
+                }
+                case u8(124LL):
+                case u8(125LL):
+                case u8(126LL):
+                case u8(127LL):
+                case u8(128LL):
+                case u8(129LL):
+                case u8(130LL):
+                case u8(131LL):
+                case u8(132LL):
+                case u8(133LL):
+                case u8(134LL):
+                case u8(135LL):
+                case u8(136LL):
+                case u8(137LL):
+                case u8(138LL): {
+                    frontendBinary(fe, Op(OpAdd + convert<Op>(u8(op - u8(124LL)))), I64);
+                    break;
+                }
+                case u8(139LL):
+                case u8(140LL):
+                case u8(141LL):
+                case u8(142LL):
+                case u8(143LL):
+                case u8(144LL):
+                case u8(145LL): {
+                    frontendUnary(fe, floatUnary[u8(op - u8(139LL))], F32);
+                    break;
+                }
+                case u8(153LL):
+                case u8(154LL):
+                case u8(155LL):
+                case u8(156LL):
+                case u8(157LL):
+                case u8(158LL):
+                case u8(159LL): {
+                    frontendUnary(fe, floatUnary[u8(op - u8(153LL))], F64);
+                    break;
+                }
+                case u8(146LL):
+                case u8(147LL):
+                case u8(148LL):
+                case u8(149LL):
+                case u8(150LL):
+                case u8(151LL):
+                case u8(152LL): {
+                    frontendBinary(fe, Op(OpFAdd + convert<Op>(u8(op - u8(146LL)))), F32);
+                    break;
+                }
+                case u8(160LL):
+                case u8(161LL):
+                case u8(162LL):
+                case u8(163LL):
+                case u8(164LL):
+                case u8(165LL):
+                case u8(166LL): {
+                    frontendBinary(fe, Op(OpFAdd + convert<Op>(u8(op - u8(160LL)))), F64);
+                    break;
+                }
+                case u8(167LL): {
+                    frontendUnary(fe, OpWrap, I32);
+                    break;
+                }
+                case u8(168LL):
+                case u8(170LL): {
+                    frontendUnary(fe, OpTruncS, I32);
+                    break;
+                }
+                case u8(169LL):
+                case u8(171LL): {
+                    frontendUnary(fe, OpTruncU, I32);
+                    break;
+                }
+                case u8(172LL): {
+                    frontendUnary(fe, OpExtendS, I64);
+                    break;
+                }
+                case u8(173LL): {
+                    frontendUnary(fe, OpExtendU, I64);
+                    break;
+                }
+                case u8(174LL):
+                case u8(176LL): {
+                    frontendUnary(fe, OpTruncS, I64);
+                    break;
+                }
+                case u8(175LL):
+                case u8(177LL): {
+                    frontendUnary(fe, OpTruncU, I64);
+                    break;
+                }
+                case u8(178LL):
+                case u8(180LL): {
+                    frontendUnary(fe, OpConvertS, F32);
+                    break;
+                }
+                case u8(179LL):
+                case u8(181LL): {
+                    frontendUnary(fe, OpConvertU, F32);
+                    break;
+                }
+                case u8(182LL): {
+                    frontendUnary(fe, OpDemote, F32);
+                    break;
+                }
+                case u8(183LL):
+                case u8(185LL): {
+                    frontendUnary(fe, OpConvertS, F64);
+                    break;
+                }
+                case u8(184LL):
+                case u8(186LL): {
+                    frontendUnary(fe, OpConvertU, F64);
+                    break;
+                }
+                case u8(187LL): {
+                    frontendUnary(fe, OpPromote, F64);
+                    break;
+                }
+                case u8(188LL): {
+                    frontendUnary(fe, OpReinterpret, I32);
+                    break;
+                }
+                case u8(189LL): {
+                    frontendUnary(fe, OpReinterpret, I64);
+                    break;
+                }
+                case u8(190LL): {
+                    frontendUnary(fe, OpReinterpret, F32);
+                    break;
+                }
+                case u8(191LL): {
+                    frontendUnary(fe, OpReinterpret, F64);
+                    break;
+                }
+                case u8(192LL): {
+                    frontendUnary(fe, OpExtend8S, I32);
+                    break;
+                }
+                case u8(193LL): {
+                    frontendUnary(fe, OpExtend16S, I32);
+                    break;
+                }
+                case u8(194LL): {
+                    frontendUnary(fe, OpExtend8S, I64);
+                    break;
+                }
+                case u8(195LL): {
+                    frontendUnary(fe, OpExtend16S, I64);
+                    break;
+                }
+                case u8(196LL): {
+                    frontendUnary(fe, OpExtend32S, I64);
+                    break;
+                }
+                case u8(208LL): {
+                    ValType t = readerRefType(r);
+                    frontendPush(fe, functionNewValue(fe->f, OpRefNull, t, i32(-1LL), i64(0LL), Span<const i32>({})));
+                    break;
+                }
+                case u8(209LL): {
+                    frontendUnary(fe, OpRefIsNull, I32);
+                    break;
+                }
+                case u8(210LL): {
+                    u32 index = readerU32(r);
+                    if (convert<i64>(index) >= length(fe->m->funcs)) {
+                        compilerError(String("unknown function %d"));
+                    }
+                    frontendPush(fe, frontendEmit(fe, OpRefFunc, FuncRef, convert<i64>(index), Span<const i32>({})));
+                    break;
+                }
+                case u8(252LL): {
+                    frontendPrefixFC(fe);
+                    break;
+                }
+                default: {
+                    compilerError(String("illegal opcode 0x%02x at offset %d"));
+                    break;
                 }
             }
         }
@@ -12390,20 +12008,18 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Slice<i32> args = frontendPopN(fe, length(t->params));
         args = appendSlice(args, extra);
         ValType typ = TNone;
-        {
-            auto switch639 = length(t->results);
-            switch (switch639) {
-                case Int(0LL): {
-                    break;
-                }
-                case Int(1LL): {
-                    typ = t->results[Int(0LL)];
-                    break;
-                }
-                default: {
-                    typ = TTuple;
-                    break;
-                }
+        auto switch639 = length(t->results);
+        switch (switch639) {
+            case Int(0LL): {
+                break;
+            }
+            case Int(1LL): {
+                typ = t->results[Int(0LL)];
+                break;
+            }
+            default: {
+                typ = TTuple;
+                break;
             }
         }
         i32 v = frontendEmit(fe, op, typ, aux, args);
@@ -12411,13 +12027,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (length(t->results) == Int(1LL)) {
             frontendPush(fe, v);
         } else {
-            {
-                auto range640 = t->results;
-                for (Int index641 = 0, rangeEnd642 = length(range640); index641 < rangeEnd642; ++index641) {
-                    Int i = index641;
-                    ValType rt = range640[index641];
-                    frontendPush(fe, frontendEmit(fe, OpExtract, rt, convert<i64>(i), Span<const i32>({v})));
-                }
+            auto range640 = t->results;
+            for (Int index641 = 0, rangeEnd642 = length(range640); index641 < rangeEnd642; ++index641) {
+                Int i = index641;
+                ValType rt = range640[index641];
+                frontendPush(fe, frontendEmit(fe, OpExtract, rt, convert<i64>(i), Span<const i32>({v})));
             }
         }
     }
@@ -12604,11 +12218,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void frontendMemIndex(Frontend* fe) {
-        {
-            u32 mem = readerU32(&fe->r);
-            if (mem != u32(0LL) || length(fe->m->mems) == Int(0LL)) {
-                compilerError(String("unknown memory %d"));
-            }
+        u32 mem = readerU32(&fe->r);
+        if (mem != u32(0LL) || length(fe->m->mems) == Int(0LL)) {
+            compilerError(String("unknown memory %d"));
         }
     }
 
@@ -12645,10 +12257,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // paramSlot maps a parameter value to its alias slot. Aliases are kept per
     // value; values created after the parameter grow the table on demand.
     static i32 frontendParamSlot(Frontend* fe, i32 v) {
-        {
-            for (; convert<i64>(v) >= length(fe->alias);) {
-                fe->alias.pushBack(-1);
-            }
+        for (; convert<i64>(v) >= length(fe->alias);) {
+            fe->alias.pushBack(-1);
         }
         return v;
     }
@@ -12675,119 +12285,117 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void frontendPrefixFC(Frontend* fe) {
         Reader* r = &fe->r;
         u32 sub = readerU32(r);
-        {
-            auto switch645 = sub;
-            switch (switch645) {
-                case u32(0LL):
-                case u32(1LL):
-                case u32(2LL):
-                case u32(3LL): {
-                    Op op = OpTruncSatS;
-                    if ((sub & u32(1LL)) != u32(0LL)) {
-                        op = OpTruncSatU;
-                    }
-                    frontendUnary(fe, op, I32);
-                    break;
+        auto switch645 = sub;
+        switch (switch645) {
+            case u32(0LL):
+            case u32(1LL):
+            case u32(2LL):
+            case u32(3LL): {
+                Op op = OpTruncSatS;
+                if ((sub & u32(1LL)) != u32(0LL)) {
+                    op = OpTruncSatU;
                 }
-                case u32(4LL):
-                case u32(5LL):
-                case u32(6LL):
-                case u32(7LL): {
-                    Op op = OpTruncSatS;
-                    if ((sub & u32(1LL)) != u32(0LL)) {
-                        op = OpTruncSatU;
-                    }
-                    frontendUnary(fe, op, I64);
-                    break;
+                frontendUnary(fe, op, I32);
+                break;
+            }
+            case u32(4LL):
+            case u32(5LL):
+            case u32(6LL):
+            case u32(7LL): {
+                Op op = OpTruncSatS;
+                if ((sub & u32(1LL)) != u32(0LL)) {
+                    op = OpTruncSatU;
                 }
-                case u32(8LL): {
-                    u32 seg = readerU32(r);
-                    frontendMemIndex(fe);
-                    frontendCheckData(fe, seg);
-                    i32 n = frontendPop(fe);
-                    i32 s = frontendPop(fe);
-                    i32 d = frontendPop(fe);
-                    frontendEmit(fe, OpMemInit, TNone, convert<i64>(seg), Span<const i32>({d, s, n}));
-                    break;
+                frontendUnary(fe, op, I64);
+                break;
+            }
+            case u32(8LL): {
+                u32 seg = readerU32(r);
+                frontendMemIndex(fe);
+                frontendCheckData(fe, seg);
+                i32 n = frontendPop(fe);
+                i32 s = frontendPop(fe);
+                i32 d = frontendPop(fe);
+                frontendEmit(fe, OpMemInit, TNone, convert<i64>(seg), Span<const i32>({d, s, n}));
+                break;
+            }
+            case u32(9LL): {
+                u32 seg = readerU32(r);
+                frontendCheckData(fe, seg);
+                frontendEmit(fe, OpDataDrop, TNone, convert<i64>(seg), Span<const i32>({}));
+                break;
+            }
+            case u32(10LL): {
+                frontendMemIndex(fe);
+                frontendMemIndex(fe);
+                i32 n = frontendPop(fe);
+                i32 s = frontendPop(fe);
+                i32 d = frontendPop(fe);
+                frontendEmit(fe, OpMemCopy, TNone, i64(0LL), Span<const i32>({d, s, n}));
+                break;
+            }
+            case u32(11LL): {
+                frontendMemIndex(fe);
+                i32 n = frontendPop(fe);
+                i32 val = frontendPop(fe);
+                i32 d = frontendPop(fe);
+                frontendEmit(fe, OpMemFill, TNone, i64(0LL), Span<const i32>({d, val, n}));
+                break;
+            }
+            case u32(12LL): {
+                u32 seg = readerU32(r);
+                u32 table = frontendTableIndex(fe);
+                if (convert<i64>(seg) >= length(fe->m->elems)) {
+                    compilerError(String("unknown elem segment %d"));
                 }
-                case u32(9LL): {
-                    u32 seg = readerU32(r);
-                    frontendCheckData(fe, seg);
-                    frontendEmit(fe, OpDataDrop, TNone, convert<i64>(seg), Span<const i32>({}));
-                    break;
+                i32 n = frontendPop(fe);
+                i32 s = frontendPop(fe);
+                i32 d = frontendPop(fe);
+                i32 v = frontendEmit(fe, OpTableInit, TNone, convert<i64>(seg), Span<const i32>({d, s, n}));
+                fe->f->values[v].aux2 = convert<i32>(table);
+                break;
+            }
+            case u32(13LL): {
+                u32 seg = readerU32(r);
+                if (convert<i64>(seg) >= length(fe->m->elems)) {
+                    compilerError(String("unknown elem segment %d"));
                 }
-                case u32(10LL): {
-                    frontendMemIndex(fe);
-                    frontendMemIndex(fe);
-                    i32 n = frontendPop(fe);
-                    i32 s = frontendPop(fe);
-                    i32 d = frontendPop(fe);
-                    frontendEmit(fe, OpMemCopy, TNone, i64(0LL), Span<const i32>({d, s, n}));
-                    break;
-                }
-                case u32(11LL): {
-                    frontendMemIndex(fe);
-                    i32 n = frontendPop(fe);
-                    i32 val = frontendPop(fe);
-                    i32 d = frontendPop(fe);
-                    frontendEmit(fe, OpMemFill, TNone, i64(0LL), Span<const i32>({d, val, n}));
-                    break;
-                }
-                case u32(12LL): {
-                    u32 seg = readerU32(r);
-                    u32 table = frontendTableIndex(fe);
-                    if (convert<i64>(seg) >= length(fe->m->elems)) {
-                        compilerError(String("unknown elem segment %d"));
-                    }
-                    i32 n = frontendPop(fe);
-                    i32 s = frontendPop(fe);
-                    i32 d = frontendPop(fe);
-                    i32 v = frontendEmit(fe, OpTableInit, TNone, convert<i64>(seg), Span<const i32>({d, s, n}));
-                    fe->f->values[v].aux2 = convert<i32>(table);
-                    break;
-                }
-                case u32(13LL): {
-                    u32 seg = readerU32(r);
-                    if (convert<i64>(seg) >= length(fe->m->elems)) {
-                        compilerError(String("unknown elem segment %d"));
-                    }
-                    frontendEmit(fe, OpElemDrop, TNone, convert<i64>(seg), Span<const i32>({}));
-                    break;
-                }
-                case u32(14LL): {
-                    u32 dst = frontendTableIndex(fe);
-                    u32 src = frontendTableIndex(fe);
-                    i32 n = frontendPop(fe);
-                    i32 s = frontendPop(fe);
-                    i32 d = frontendPop(fe);
-                    i32 v = frontendEmit(fe, OpTableCopy, TNone, convert<i64>(dst), Span<const i32>({d, s, n}));
-                    fe->f->values[v].aux2 = convert<i32>(src);
-                    break;
-                }
-                case u32(15LL): {
-                    u32 table = frontendTableIndex(fe);
-                    i32 n = frontendPop(fe);
-                    i32 val = frontendPop(fe);
-                    frontendPush(fe, frontendEmit(fe, OpTableGrow, I32, convert<i64>(table), Span<const i32>({val, n})));
-                    break;
-                }
-                case u32(16LL): {
-                    u32 table = frontendTableIndex(fe);
-                    frontendPush(fe, frontendEmit(fe, OpTableSize, I32, convert<i64>(table), Span<const i32>({})));
-                    break;
-                }
-                case u32(17LL): {
-                    u32 table = frontendTableIndex(fe);
-                    i32 n = frontendPop(fe);
-                    i32 val = frontendPop(fe);
-                    i32 d = frontendPop(fe);
-                    frontendEmit(fe, OpTableFill, TNone, convert<i64>(table), Span<const i32>({d, val, n}));
-                    break;
-                }
-                default: {
-                    compilerError(String("illegal opcode 0xfc %d"));
-                    break;
-                }
+                frontendEmit(fe, OpElemDrop, TNone, convert<i64>(seg), Span<const i32>({}));
+                break;
+            }
+            case u32(14LL): {
+                u32 dst = frontendTableIndex(fe);
+                u32 src = frontendTableIndex(fe);
+                i32 n = frontendPop(fe);
+                i32 s = frontendPop(fe);
+                i32 d = frontendPop(fe);
+                i32 v = frontendEmit(fe, OpTableCopy, TNone, convert<i64>(dst), Span<const i32>({d, s, n}));
+                fe->f->values[v].aux2 = convert<i32>(src);
+                break;
+            }
+            case u32(15LL): {
+                u32 table = frontendTableIndex(fe);
+                i32 n = frontendPop(fe);
+                i32 val = frontendPop(fe);
+                frontendPush(fe, frontendEmit(fe, OpTableGrow, I32, convert<i64>(table), Span<const i32>({val, n})));
+                break;
+            }
+            case u32(16LL): {
+                u32 table = frontendTableIndex(fe);
+                frontendPush(fe, frontendEmit(fe, OpTableSize, I32, convert<i64>(table), Span<const i32>({})));
+                break;
+            }
+            case u32(17LL): {
+                u32 table = frontendTableIndex(fe);
+                i32 n = frontendPop(fe);
+                i32 val = frontendPop(fe);
+                i32 d = frontendPop(fe);
+                frontendEmit(fe, OpTableFill, TNone, convert<i64>(table), Span<const i32>({d, val, n}));
+                break;
+            }
+            default: {
+                compilerError(String("illegal opcode 0xfc %d"));
+                break;
             }
         }
     }
@@ -12797,37 +12405,31 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static i32 frontendRead(Frontend* fe, i32 local, i32 b) {
-        {
-            Slice<i32> d = fe->defs[b];
-            if (!isNil(d) && d[local] >= i32(0LL)) {
-                return frontendResolve(fe, d[local]);
-            }
+        Slice<i32> d = fe->defs[b];
+        if (!isNil(d) && d[local] >= i32(0LL)) {
+            return frontendResolve(fe, d[local]);
         }
         i32 v = {};
         ValType t = fe->locals[local];
-        {
-            if (!fe->sealed[b]) {
-                v = frontendAddParam(fe, b, t);
-                fe->incomplete[b] = appendValues(fe->incomplete[b], PendingPhi{local, v});
-            } else if (length(fe->preds[b]) == Int(1LL)) {
-                v = frontendRead(fe, local, fe->preds[b][Int(0LL)].block);
-            } else if (length(fe->preds[b]) == Int(0LL)) {
-                v = functionNewValue(fe->f, OpUndef, t, i32(-1LL), i64(0LL), Span<const i32>({}));
-            } else {
-                v = frontendAddParam(fe, b, t);
-                frontendWrite(fe, local, b, v);
-                v = frontendAddOperands(fe, local, v);
-            }
+        if (!fe->sealed[b]) {
+            v = frontendAddParam(fe, b, t);
+            fe->incomplete[b] = appendValues(fe->incomplete[b], PendingPhi{local, v});
+        } else if (length(fe->preds[b]) == Int(1LL)) {
+            v = frontendRead(fe, local, fe->preds[b][Int(0LL)].block);
+        } else if (length(fe->preds[b]) == Int(0LL)) {
+            v = functionNewValue(fe->f, OpUndef, t, i32(-1LL), i64(0LL), Span<const i32>({}));
+        } else {
+            v = frontendAddParam(fe, b, t);
+            frontendWrite(fe, local, b, v);
+            v = frontendAddOperands(fe, local, v);
         }
         frontendWrite(fe, local, b, v);
         return v;
     }
 
     static i32 frontendResolve(Frontend* fe, i32 v) {
-        {
-            for (; convert<i64>(v) < length(fe->alias) && fe->alias[v] >= i32(0LL);) {
-                v = fe->alias[v];
-            }
+        for (; convert<i64>(v) < length(fe->alias) && fe->alias[v] >= i32(0LL);) {
+            v = fe->alias[v];
         }
         return v;
     }
@@ -12920,37 +12522,31 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // operands to the incoming edges.
     static void frontendResolveAliases(Frontend* fe) {
         Function* f = fe->f;
-        {
-            auto& range648 = f->blocks;
-            for (Int index649 = 0, rangeEnd650 = length(range648); index649 < rangeEnd650; ++index649) {
-                Int b = index649;
-                Block* blk = &f->blocks[b];
-                if (blk->dead) {
+        auto& range648 = f->blocks;
+        for (Int index649 = 0, rangeEnd650 = length(range648); index649 < rangeEnd650; ++index649) {
+            Int b = index649;
+            Block* blk = &f->blocks[b];
+            if (blk->dead) {
+                continue;
+            }
+            Slice<i32> params = subslice(blk->params, Int(0), fe->explicitValue[b]);
+            auto range651 = subslice(blk->params, fe->explicitValue[b], length(blk->params));
+            for (Int index652 = 0, rangeEnd653 = length(range651); index652 < rangeEnd653; ++index652) {
+                i32 p = range651[index652];
+                if (frontendResolve(fe, p) != p) {
                     continue;
                 }
-                Slice<i32> params = subslice(blk->params, Int(0), fe->explicitValue[b]);
-                {
-                    auto range651 = subslice(blk->params, fe->explicitValue[b], length(blk->params));
-                    for (Int index652 = 0, rangeEnd653 = length(range651); index652 < rangeEnd653; ++index652) {
-                        i32 p = range651[index652];
-                        if (frontendResolve(fe, p) != p) {
-                            continue;
-                        }
-                        f->values[p].aux = convert<i64>(length(params));
-                        params = appendValues(params, p);
-                        {
-                            auto range654 = fe->preds[b];
-                            for (Int index655 = 0, rangeEnd656 = length(range654); index655 < rangeEnd656; ++index655) {
-                                Int i = index655;
-                                PredRef pr = range654[index655];
-                                Edge* e = &f->blocks[pr.block].term.edges[pr.edge];
-                                e->args = appendValues(e->args, fe->phiOps[p][i]);
-                            }
-                        }
-                    }
+                f->values[p].aux = convert<i64>(length(params));
+                params = appendValues(params, p);
+                auto range654 = fe->preds[b];
+                for (Int index655 = 0, rangeEnd656 = length(range654); index655 < rangeEnd656; ++index655) {
+                    Int i = index655;
+                    PredRef pr = range654[index655];
+                    Edge* e = &f->blocks[pr.block].term.edges[pr.edge];
+                    e->args = appendValues(e->args, fe->phiOps[p][i]);
                 }
-                blk->params = params;
             }
+            blk->params = params;
         }
         if (fe->alias.size()) {
             frontendCompactValues(fe);
@@ -12974,39 +12570,31 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 if (total > u64(50000LL)) {
                     compilerError(String("too many locals"));
                 }
-                {
-                    u32 j = u32(0LL);
-                    for (; j < n; j++) {
-                        fe->locals = appendValues(fe->locals, t);
-                    }
+                u32 j = u32(0LL);
+                for (; j < n; j++) {
+                    fe->locals = appendValues(fe->locals, t);
                 }
             }
         }
         i32 entry = frontendNewBlock(fe);
         frontendSeal(fe, entry);
         fe->cur = entry;
-        {
-            auto range672 = f->typ->params;
-            for (Int index673 = 0, rangeEnd674 = length(range672); index673 < rangeEnd674; ++index673) {
-                Int i = index673;
-                ValType t = range672[index673];
-                frontendWrite(fe, convert<i32>(i), entry, frontendAddExplicit(fe, entry, t));
-            }
+        auto range672 = f->typ->params;
+        for (Int index673 = 0, rangeEnd674 = length(range672); index673 < rangeEnd674; ++index673) {
+            Int i = index673;
+            ValType t = range672[index673];
+            frontendWrite(fe, convert<i32>(i), entry, frontendAddExplicit(fe, entry, t));
         }
-        {
-            Int i = length(f->typ->params);
-            for (; i < length(fe->locals); i++) {
-                frontendWrite(fe, convert<i32>(i), entry, frontendZero(fe, fe->locals[i]));
-            }
+        Int i = length(f->typ->params);
+        for (; i < length(fe->locals); i++) {
+            frontendWrite(fe, convert<i32>(i), entry, frontendZero(fe, fe->locals[i]));
         }
         i32 ret = frontendNewBlock(fe);
         fe->ctrls = appendValues(fe->ctrls, Control{ctrlFunc, {}, f->typ->results, {}, ret, i32(-1LL), {}, {}, {}});
-        {
-            auto range675 = f->typ->results;
-            for (Int index676 = 0, rangeEnd677 = length(range675); index676 < rangeEnd677; ++index676) {
-                ValType t = range675[index676];
-                frontendAddExplicit(fe, ret, t);
-            }
+        auto range675 = f->typ->results;
+        for (Int index676 = 0, rangeEnd677 = length(range675); index676 < rangeEnd677; ++index676) {
+            ValType t = range675[index676];
+            frontendAddExplicit(fe, ret, t);
         }
         frontendBody(fe);
         frontendResolveAliases(fe);
@@ -13019,12 +12607,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         fe->sealed[b] = true;
         Slice<PendingPhi> pending = fe->incomplete[b];
         fe->incomplete[b] = {};
-        {
-            auto range678 = pending;
-            for (Int index679 = 0, rangeEnd680 = length(range678); index679 < rangeEnd680; ++index679) {
-                PendingPhi p = range678[index679];
-                frontendAddOperands(fe, p.local, p.phi);
-            }
+        auto range678 = pending;
+        for (Int index679 = 0, rangeEnd680 = length(range678); index679 < rangeEnd680; ++index679) {
+            PendingPhi p = range678[index679];
+            frontendAddOperands(fe, p.local, p.phi);
         }
     }
 
@@ -13032,139 +12618,131 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // structure needed to find where reachable code resumes.
     static void frontendSkip(Frontend* fe, u8 op) {
         Reader* r = &fe->r;
-        {
-            auto switch681 = op;
-            switch (switch681) {
-                case u8(2LL):
-                case u8(3LL):
-                case u8(4LL): {
-                    frontendBlockType(fe);
-                    fe->ctrls = appendValues(fe->ctrls, Control{ctrlBlock, {}, {}, length(fe->stack), {}, i32(-1LL), {}, {}, true});
-                    if (op == u8(4LL)) {
-                        fe->ctrls[length(fe->ctrls) - Int(1LL)].kind = ctrlIf;
-                    }
-                    break;
+        auto switch681 = op;
+        switch (switch681) {
+            case u8(2LL):
+            case u8(3LL):
+            case u8(4LL): {
+                frontendBlockType(fe);
+                fe->ctrls = appendValues(fe->ctrls, Control{ctrlBlock, {}, {}, length(fe->stack), {}, i32(-1LL), {}, {}, true});
+                if (op == u8(4LL)) {
+                    fe->ctrls[length(fe->ctrls) - Int(1LL)].kind = ctrlIf;
                 }
-                case u8(5LL): {
-                    frontendElseOp(fe);
-                    break;
-                }
-                case u8(11LL): {
-                    frontendEnd(fe);
-                    break;
-                }
-                case u8(12LL):
-                case u8(13LL): {
+                break;
+            }
+            case u8(5LL): {
+                frontendElseOp(fe);
+                break;
+            }
+            case u8(11LL): {
+                frontendEnd(fe);
+                break;
+            }
+            case u8(12LL):
+            case u8(13LL): {
+                readerU32(r);
+                break;
+            }
+            case u8(14LL): {
+                u32 n = readerU32(r);
+                u32 i = u32(0LL);
+                for (; i <= n; i++) {
                     readerU32(r);
-                    break;
                 }
-                case u8(14LL): {
-                    u32 n = readerU32(r);
-                    {
-                        u32 i = u32(0LL);
-                        for (; i <= n; i++) {
-                            readerU32(r);
+                break;
+            }
+            case u8(16LL):
+            case u8(18LL):
+            case u8(32LL):
+            case u8(33LL):
+            case u8(34LL):
+            case u8(35LL):
+            case u8(36LL):
+            case u8(37LL):
+            case u8(38LL):
+            case u8(210LL): {
+                readerU32(r);
+                break;
+            }
+            case u8(17LL): {
+                readerU32(r);
+                readerU32(r);
+                break;
+            }
+            case u8(28LL): {
+                u32 n = readerU32(r);
+                u32 i = u32(0LL);
+                for (; i < n; i++) {
+                    readerValType(r);
+                }
+                break;
+            }
+            case u8(63LL):
+            case u8(64LL): {
+                readerU32(r);
+                break;
+            }
+            case u8(65LL): {
+                readerS32(r);
+                break;
+            }
+            case u8(66LL): {
+                readerS64(r);
+                break;
+            }
+            case u8(67LL): {
+                readerBytes(r, Int(4LL));
+                break;
+            }
+            case u8(68LL): {
+                readerBytes(r, Int(8LL));
+                break;
+            }
+            case u8(208LL): {
+                readerRefType(r);
+                break;
+            }
+            case u8(252LL): {
+                u32 sub = readerU32(r);
+                auto switch682 = sub;
+                switch (switch682) {
+                    case u32(8LL):
+                    case u32(12LL):
+                    case u32(14LL): {
+                        readerU32(r);
+                        readerU32(r);
+                        break;
+                    }
+                    case u32(10LL): {
+                        readerU32(r);
+                        readerU32(r);
+                        break;
+                    }
+                    case u32(9LL):
+                    case u32(11LL):
+                    case u32(13LL):
+                    case u32(15LL):
+                    case u32(16LL):
+                    case u32(17LL): {
+                        readerU32(r);
+                        break;
+                    }
+                    default: {
+                        if (sub > u32(7LL)) {
+                            compilerError(String("illegal opcode 0xfc %d"));
                         }
+                        break;
                     }
-                    break;
                 }
-                case u8(16LL):
-                case u8(18LL):
-                case u8(32LL):
-                case u8(33LL):
-                case u8(34LL):
-                case u8(35LL):
-                case u8(36LL):
-                case u8(37LL):
-                case u8(38LL):
-                case u8(210LL): {
-                    readerU32(r);
-                    break;
+                break;
+            }
+            default: {
+                if (op >= u8(40LL) && op <= u8(62LL)) {
+                    frontendMemarg(fe);
+                } else if (op > u8(196LL) && op != u8(209LL)) {
+                    compilerError(String("illegal opcode 0x%02x"));
                 }
-                case u8(17LL): {
-                    readerU32(r);
-                    readerU32(r);
-                    break;
-                }
-                case u8(28LL): {
-                    u32 n = readerU32(r);
-                    {
-                        u32 i = u32(0LL);
-                        for (; i < n; i++) {
-                            readerValType(r);
-                        }
-                    }
-                    break;
-                }
-                case u8(63LL):
-                case u8(64LL): {
-                    readerU32(r);
-                    break;
-                }
-                case u8(65LL): {
-                    readerS32(r);
-                    break;
-                }
-                case u8(66LL): {
-                    readerS64(r);
-                    break;
-                }
-                case u8(67LL): {
-                    readerBytes(r, Int(4LL));
-                    break;
-                }
-                case u8(68LL): {
-                    readerBytes(r, Int(8LL));
-                    break;
-                }
-                case u8(208LL): {
-                    readerRefType(r);
-                    break;
-                }
-                case u8(252LL): {
-                    {
-                        u32 sub = readerU32(r);
-                        auto switch682 = sub;
-                        switch (switch682) {
-                            case u32(8LL):
-                            case u32(12LL):
-                            case u32(14LL): {
-                                readerU32(r);
-                                readerU32(r);
-                                break;
-                            }
-                            case u32(10LL): {
-                                readerU32(r);
-                                readerU32(r);
-                                break;
-                            }
-                            case u32(9LL):
-                            case u32(11LL):
-                            case u32(13LL):
-                            case u32(15LL):
-                            case u32(16LL):
-                            case u32(17LL): {
-                                readerU32(r);
-                                break;
-                            }
-                            default: {
-                                if (sub > u32(7LL)) {
-                                    compilerError(String("illegal opcode 0xfc %d"));
-                                }
-                                break;
-                            }
-                        }
-                    }
-                    break;
-                }
-                default: {
-                    if (op >= u8(40LL) && op <= u8(62LL)) {
-                        frontendMemarg(fe);
-                    } else if (op > u8(196LL) && op != u8(209LL)) {
-                        compilerError(String("illegal opcode 0x%02x"));
-                    }
-                    break;
-                }
+                break;
             }
         }
     }
@@ -13201,19 +12779,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // itself) on every edge by that value.
     static i32 frontendTryRemoveTrivial(Frontend* fe, i32 phi, Span<const i32> ops) {
         i32 same = i32(-1LL);
-        {
-            auto range684 = ops;
-            for (Int index685 = 0, rangeEnd686 = length(range684); index685 < rangeEnd686; ++index685) {
-                i32 op = range684[index685];
-                i32 arg = frontendResolve(fe, op);
-                if (arg == same || arg == phi) {
-                    continue;
-                }
-                if (same >= i32(0LL)) {
-                    return phi;
-                }
-                same = arg;
+        auto range684 = ops;
+        for (Int index685 = 0, rangeEnd686 = length(range684); index685 < rangeEnd686; ++index685) {
+            i32 op = range684[index685];
+            i32 arg = frontendResolve(fe, op);
+            if (arg == same || arg == phi) {
+                continue;
             }
+            if (same >= i32(0LL)) {
+                return phi;
+            }
+            same = arg;
         }
         if (same < i32(0LL)) {
             same = functionNewValue(fe->f, OpUndef, fe->f->values[phi].typ, i32(-1LL), i64(0LL), Span<const i32>({}));
@@ -13237,12 +12813,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void frontendWrite(Frontend* fe, i32 local, i32 b, i32 v) {
         if (isNil(fe->defs[b])) {
             fe->defs[b] = makeSlice<i32>(length(fe->locals));
-            {
-                auto range687 = fe->defs[b];
-                for (Int index688 = 0, rangeEnd689 = length(range687); index688 < rangeEnd689; ++index688) {
-                    Int i = index688;
-                    fe->defs[b][i] = i32(-1LL);
-                }
+            auto range687 = fe->defs[b];
+            for (Int index688 = 0, rangeEnd689 = length(range687); index688 < rangeEnd689; ++index688) {
+                Int i = index688;
+                fe->defs[b][i] = i32(-1LL);
             }
         }
         fe->defs[b][local] = v;
@@ -13299,41 +12873,37 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         e->cold = blk->cold;
         Span<MInst> insts = blk->insts.view();
         Int n = length(insts);
-        {
-            Int i = Int(0LL);
-            for (; i < n; i++) {
-                MInst* in = &insts[i];
-                {
-                    auto switch690 = in->op;
-                    switch (switch690) {
-                        case mJmp: {
-                            if (!funcEmitterLands(e, at, in->target)) {
-                                funcEmitterJumpTo(e, Int(-1LL), in->target);
-                            }
-                            break;
-                        }
-                        case mJcc: {
-                            // Resolve can leave emptied moves before the final jump.
-                            Int last = i + 1;
-                            while (last < n && mInstSilent(&insts[last])) {
-                                ++last;
-                            }
-                            if (last == n - 1 && insts[last].op == mJmp && funcEmitterLands(e, at, in->target)) {
-                                const i32 other = insts[last].target;
-                                if (!funcEmitterLands(e, at, other)) {
-                                    funcEmitterJumpTo(e, convert<i64>(u8(in->cc ^ u8(1LL))), other);
-                                }
-                                i = last;
-                                continue;
-                            }
-                            funcEmitterJumpTo(e, convert<i64>(in->cc), in->target);
-                            break;
-                        }
-                        default: {
-                            funcEmitterInst(e, in);
-                            break;
-                        }
+        Int i = Int(0LL);
+        for (; i < n; i++) {
+            MInst* in = &insts[i];
+            auto switch690 = in->op;
+            switch (switch690) {
+                case mJmp: {
+                    if (!funcEmitterLands(e, at, in->target)) {
+                        funcEmitterJumpTo(e, Int(-1LL), in->target);
                     }
+                    break;
+                }
+                case mJcc: {
+                    // Resolve can leave emptied moves before the final jump.
+                    Int last = i + 1;
+                    while (last < n && mInstSilent(&insts[last])) {
+                        ++last;
+                    }
+                    if (last == n - 1 && insts[last].op == mJmp && funcEmitterLands(e, at, in->target)) {
+                        const i32 other = insts[last].target;
+                        if (!funcEmitterLands(e, at, other)) {
+                            funcEmitterJumpTo(e, convert<i64>(u8(in->cc ^ u8(1LL))), other);
+                        }
+                        i = last;
+                        continue;
+                    }
+                    funcEmitterJumpTo(e, convert<i64>(in->cc), in->target);
+                    break;
+                }
+                default: {
+                    funcEmitterInst(e, in);
+                    break;
                 }
             }
         }
@@ -13416,341 +12986,335 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void funcEmitterInst(FuncEmitter* e, MInst* in) {
         Asm* a = e->a;
-        {
-            auto switch697 = in->op;
-            switch (switch697) {
-                case mNop: {
-                    break;
+        auto switch697 = in->op;
+        switch (switch697) {
+            case mNop: {
+                break;
+            }
+            case mCounter: {
+                asmAluMI(a, aluAdd, u8(8LL), funcEmitterMem(e, in->mem), in->imm);
+                break;
+            }
+            case mCopyForward: {
+                asmLea(a, u8(8LL), RAX, baseAt(RSI, i32(1LL)));
+                asmAluRR(a, aluCmp, u8(8LL), RDI, RAX);
+                i32 copy = asmJcc8(a, ccNE);
+                asmLoad(a, u8(1LL), u8(4LL), false, RAX, baseAt(RSI, i32(0LL)));
+                asmBytes(a, {u8(u8(243LL)), u8(u8(170LL))});
+                i32 done = asmJmp8(a);
+                asmHere8(a, copy);
+                asmBytes(a, {u8(u8(243LL)), u8(u8(164LL))});
+                asmHere8(a, done);
+                break;
+            }
+            case mMov: {
+                if (in->dst == in->src && in->aux == u8(0LL)) {
+                    return;
                 }
-                case mCounter: {
-                    asmAluMI(a, aluAdd, u8(8LL), funcEmitterMem(e, in->mem), in->imm);
-                    break;
+                u8 size = in->size;
+                if (in->aux == u8(1LL)) {
+                    size = u8(4LL);
                 }
-                case mCopyForward: {
-                    asmLea(a, u8(8LL), RAX, baseAt(RSI, i32(1LL)));
-                    asmAluRR(a, aluCmp, u8(8LL), RDI, RAX);
-                    i32 copy = asmJcc8(a, ccNE);
-                    asmLoad(a, u8(1LL), u8(4LL), false, RAX, baseAt(RSI, i32(0LL)));
-                    asmBytes(a, {u8(u8(243LL)), u8(u8(170LL))});
-                    i32 done = asmJmp8(a);
-                    asmHere8(a, copy);
-                    asmBytes(a, {u8(u8(243LL)), u8(u8(164LL))});
-                    asmHere8(a, done);
-                    break;
+                asmMovRR(a, size, in->dst, in->src);
+                break;
+            }
+            case mFMov: {
+                if (in->dst != in->src) {
+                    asmFmov(a, in->dst, in->src);
                 }
-                case mMov: {
-                    if (in->dst == in->src && in->aux == u8(0LL)) {
-                        return;
+                break;
+            }
+            case mMovImm: {
+                asmMovImm(a, in->size, in->dst, in->imm);
+                break;
+            }
+            case mLoad: {
+                asmLoad(a, in->size, in->dsize, in->aux == u8(1LL), in->dst, funcEmitterMem(e, in->mem));
+                break;
+            }
+            case mStore: {
+                asmStore(a, in->size, in->src, funcEmitterMem(e, in->mem));
+                break;
+            }
+            case mStoreImm: {
+                asmStoreImm(a, in->size, funcEmitterMem(e, in->mem), in->imm);
+                break;
+            }
+            case mLea: {
+                asmLea(a, in->size, in->dst, funcEmitterMem(e, in->mem));
+                break;
+            }
+            case mAlu: {
+                asmAluRR(a, convert<AluOp>(in->aux), in->size, in->dst, in->src);
+                break;
+            }
+            case mAluImm: {
+                asmAluRI(a, convert<AluOp>(in->aux), in->size, in->dst, in->imm);
+                break;
+            }
+            case mAluMem: {
+                asmAluRM(a, convert<AluOp>(in->aux), in->size, in->dst, funcEmitterMem(e, in->mem));
+                break;
+            }
+            case mImul3: {
+                asmImul3(a, in->size, in->dst, in->src, in->imm);
+                break;
+            }
+            case mCmp: {
+                asmAluRR(a, aluCmp, in->size, in->src, in->src2);
+                break;
+            }
+            case mCmpImm: {
+                asmAluRI(a, aluCmp, in->size, in->src, in->imm);
+                break;
+            }
+            case mCmpMem: {
+                asmAluRM(a, aluCmp, in->size, in->src, funcEmitterMem(e, in->mem));
+                break;
+            }
+            case mCmpMemImm: {
+                asmAluMI(a, aluCmp, in->size, funcEmitterMem(e, in->mem), in->imm);
+                break;
+            }
+            case mTest: {
+                asmTest(a, in->size, in->src, in->src2);
+                break;
+            }
+            case mTestImm: {
+                if (in->aux == u8(1LL) && in->imm >= i64(0LL) && in->imm <= i64(255LL)) {
+                    asmOpRR(a, false, Span<const u8>({u8(246LL)}), Int(0LL), convert<i64>(in->src), true);
+                    asmBytes(a, {u8(convert<u8>(in->imm))});
+                } else {
+                    asmTestImm(a, in->size, in->src, in->imm);
+                }
+                break;
+            }
+            case mSetcc: {
+                asmSetcc(a, in->cc, in->dst);
+                break;
+            }
+            case mCmov: {
+                asmCmov(a, in->cc, in->size, in->dst, in->src);
+                break;
+            }
+            case mShiftImm: {
+                asmShiftImm(a, in->aux, in->size, in->dst, in->imm);
+                break;
+            }
+            case mShiftX: {
+                asmShiftX(a, in->aux, in->size, in->dst, in->src, in->src2);
+                break;
+            }
+            case mRotCL: {
+                asmShiftCL(a, in->aux, in->size, in->dst);
+                break;
+            }
+            case mUnary: {
+                asmUnary(a, in->aux, in->size, in->dst);
+                break;
+            }
+            case mBitCount: {
+                if (in->dst != in->src) {
+                    asmAluRR(a, aluXor, u8(4LL), in->dst, in->dst);
+                }
+                asmBitCount(a, in->aux, in->size, in->dst, in->src);
+                break;
+            }
+            case mExt: {
+                asmExt(a, in->size, in->dsize, in->aux == u8(1LL), in->dst, in->src);
+                break;
+            }
+            case mDiv: {
+                asmDiv(a, in->aux == u8(1LL), in->size, in->src);
+                break;
+            }
+            case mSignExtAx: {
+                if (in->size == u8(8LL)) {
+                    asmBytes(a, {u8(u8(72LL))});
+                }
+                asmBytes(a, {u8(u8(153LL))});
+                break;
+            }
+            case mZeroDx: {
+                asmAluRR(a, aluXor, u8(4LL), RDX, RDX);
+                break;
+            }
+            case mFLoad: {
+                asmFload(a, in->size, in->dst, funcEmitterMem(e, in->mem));
+                break;
+            }
+            case mFStore: {
+                asmFstore(a, in->size, in->src, funcEmitterMem(e, in->mem));
+                break;
+            }
+            case mFConst: {
+                if (in->imm == i64(0LL)) {
+                    asmFxor(a, in->dst);
+                } else {
+                    asmFload(a, in->size, in->dst, objCodeFloatConst(e->oc, convert<u64>(in->imm), in->size));
+                }
+                break;
+            }
+            case mFAlu: {
+                asmFalu(a, convert<FAluOp>(in->aux), in->size, in->dst, in->src, in->src2);
+                break;
+            }
+            case mFSelect: {
+                VReg mask = mInstTemps(in)[Int(0LL)];
+                Array<u8, 6> predicates = Array<u8, 6>{{u8(0LL), u8(4LL), u8(17LL), u8(30LL), u8(18LL), u8(29LL)}};
+                asmFcmpMask(a, in->dsize, mask, mInstUses(in)[Int(0LL)], mInstUses(in)[Int(1LL)], predicates[in->aux]);
+                if (in->dsize == u8(4LL) && in->size == u8(8LL)) {
+                    asmVexRR(a, pp66, u8(1LL), false, u8(112LL), regNum(mask), Int(-1LL), regNum(mask));
+                    asmBytes(a, {u8(u8(0LL))});
+                }
+                asmFblend(a, in->size, in->dst, in->src2, in->src, mask);
+                break;
+            }
+            case mFAluMem: {
+                asmFaluM(a, convert<FAluOp>(in->aux), in->size, in->dst, in->src, funcEmitterMem(e, in->mem));
+                break;
+            }
+            case mFUnary: {
+                if (in->aux == fSqrt) {
+                    asmFsqrt(a, in->size, in->dst, in->src);
+                } else {
+                    asmFround(a, in->size, in->dst, in->src, in->imm);
+                }
+                break;
+            }
+            case mFCmp: {
+                asmFcmp(a, in->size, in->src, in->src2);
+                break;
+            }
+            case mCvtIF: {
+                asmCvtIF(a, in->size, in->dsize, in->dst, in->src);
+                break;
+            }
+            case mCvtFI: {
+                asmCvtFI(a, in->size, in->dsize, in->dst, in->src);
+                break;
+            }
+            case mCvtFF: {
+                asmCvtFF(a, in->size, in->dst, in->src);
+                break;
+            }
+            case mMovGX: {
+                asmMovGX(a, in->size, in->dst, in->src);
+                break;
+            }
+            case mMovXG: {
+                asmMovXG(a, in->size, in->dst, in->src);
+                break;
+            }
+            case mSwitch: {
+                funcEmitterSwitchTable(e, in);
+                break;
+            }
+            case mCall: {
+                auto switch698 = in->aux;
+                switch (switch698) {
+                    case calleeStub: {
+                        objCodeCallStub(e->oc, convert<i64>(in->imm));
+                        break;
                     }
-                    u8 size = in->size;
-                    if (in->aux == u8(1LL)) {
-                        size = u8(4LL);
+                    case calleeJump: {
+                        e->oc->jumpCalls = appendValues(e->oc->jumpCalls, CallFixup{asmCallRel(a), convert<i32>(in->imm)});
+                        break;
                     }
-                    asmMovRR(a, size, in->dst, in->src);
-                    break;
-                }
-                case mFMov: {
-                    if (in->dst != in->src) {
-                        asmFmov(a, in->dst, in->src);
+                    default: {
+                        objCodeCallFunc(e->oc, convert<i64>(in->imm));
+                        break;
                     }
-                    break;
                 }
-                case mMovImm: {
-                    asmMovImm(a, in->size, in->dst, in->imm);
-                    break;
+                break;
+            }
+            case mCallInd: {
+                asmCallReg(a, in->src);
+                break;
+            }
+            case mRet: {
+                if (e->frame > i32(0LL)) {
+                    asmAluRI(a, aluAdd, u8(8LL), RSP, convert<i64>(e->frame));
                 }
-                case mLoad: {
-                    asmLoad(a, in->size, in->dsize, in->aux == u8(1LL), in->dst, funcEmitterMem(e, in->mem));
-                    break;
+                Int i = length(e->pushes) - Int(1LL);
+                for (; i >= Int(0LL); i--) {
+                    asmPop(a, e->pushes[i]);
                 }
-                case mStore: {
-                    asmStore(a, in->size, in->src, funcEmitterMem(e, in->mem));
-                    break;
+                if (e->mf->returnsTwice) {
+                    asmLea(a, u8(8LL), RSP, rspAt(i32(8LL)));
                 }
-                case mStoreImm: {
-                    asmStoreImm(a, in->size, funcEmitterMem(e, in->mem), in->imm);
-                    break;
+                if (e->framed) {
+                    asmPop(a, RBP);
                 }
-                case mLea: {
-                    asmLea(a, in->size, in->dst, funcEmitterMem(e, in->mem));
-                    break;
+                asmRet(a);
+                asmSetSP(a, e->body);
+                break;
+            }
+            case mTrap: {
+                funcEmitterTrapJmp(e, in->imm);
+                break;
+            }
+            case mTrapIf: {
+                funcEmitterTrapJcc(e, in->cc, in->imm);
+                break;
+            }
+            case mCheck: {
+                funcEmitterCheck(e, in);
+                break;
+            }
+            case mParMove: {
+                funcEmitterParMove(e, mInstMoves(in));
+                break;
+            }
+            case mStackArg: {
+                if (vRegIsXMM(in->src)) {
+                    asmFstore(a, u8(8LL), in->src, rspAt(convert<i32>(i64(8LL) * in->imm)));
+                } else {
+                    asmStore(a, u8(8LL), in->src, rspAt(convert<i32>(i64(8LL) * in->imm)));
                 }
-                case mAlu: {
-                    asmAluRR(a, convert<AluOp>(in->aux), in->size, in->dst, in->src);
-                    break;
+                break;
+            }
+            case mLoadArg: {
+                Amem m = rspAt(e->incoming + convert<i32>(i64(8LL) * in->imm));
+                if (vRegIsXMM(in->dst)) {
+                    asmFload(a, u8(8LL), in->dst, m);
+                } else {
+                    asmLoad(a, u8(8LL), u8(8LL), false, in->dst, m);
                 }
-                case mAluImm: {
-                    asmAluRI(a, convert<AluOp>(in->aux), in->size, in->dst, in->imm);
-                    break;
+                break;
+            }
+            case mStoreRet: {
+                Amem m = rspAt(e->incoming + convert<i32>(i64(8LL) * (convert<i64>(e->mf->incoming) + in->imm)));
+                if (vRegIsXMM(in->src)) {
+                    asmFstore(a, u8(8LL), in->src, m);
+                } else {
+                    asmStore(a, u8(8LL), in->src, m);
                 }
-                case mAluMem: {
-                    asmAluRM(a, convert<AluOp>(in->aux), in->size, in->dst, funcEmitterMem(e, in->mem));
-                    break;
-                }
-                case mImul3: {
-                    asmImul3(a, in->size, in->dst, in->src, in->imm);
-                    break;
-                }
-                case mCmp: {
-                    asmAluRR(a, aluCmp, in->size, in->src, in->src2);
-                    break;
-                }
-                case mCmpImm: {
-                    asmAluRI(a, aluCmp, in->size, in->src, in->imm);
-                    break;
-                }
-                case mCmpMem: {
-                    asmAluRM(a, aluCmp, in->size, in->src, funcEmitterMem(e, in->mem));
-                    break;
-                }
-                case mCmpMemImm: {
-                    asmAluMI(a, aluCmp, in->size, funcEmitterMem(e, in->mem), in->imm);
-                    break;
-                }
-                case mTest: {
-                    asmTest(a, in->size, in->src, in->src2);
-                    break;
-                }
-                case mTestImm: {
-                    if (in->aux == u8(1LL) && in->imm >= i64(0LL) && in->imm <= i64(255LL)) {
-                        asmOpRR(a, false, Span<const u8>({u8(246LL)}), Int(0LL), convert<i64>(in->src), true);
-                        asmBytes(a, {u8(convert<u8>(in->imm))});
-                    } else {
-                        asmTestImm(a, in->size, in->src, in->imm);
-                    }
-                    break;
-                }
-                case mSetcc: {
-                    asmSetcc(a, in->cc, in->dst);
-                    break;
-                }
-                case mCmov: {
-                    asmCmov(a, in->cc, in->size, in->dst, in->src);
-                    break;
-                }
-                case mShiftImm: {
-                    asmShiftImm(a, in->aux, in->size, in->dst, in->imm);
-                    break;
-                }
-                case mShiftX: {
-                    asmShiftX(a, in->aux, in->size, in->dst, in->src, in->src2);
-                    break;
-                }
-                case mRotCL: {
-                    asmShiftCL(a, in->aux, in->size, in->dst);
-                    break;
-                }
-                case mUnary: {
-                    asmUnary(a, in->aux, in->size, in->dst);
-                    break;
-                }
-                case mBitCount: {
-                    if (in->dst != in->src) {
-                        asmAluRR(a, aluXor, u8(4LL), in->dst, in->dst);
-                    }
-                    asmBitCount(a, in->aux, in->size, in->dst, in->src);
-                    break;
-                }
-                case mExt: {
-                    asmExt(a, in->size, in->dsize, in->aux == u8(1LL), in->dst, in->src);
-                    break;
-                }
-                case mDiv: {
-                    asmDiv(a, in->aux == u8(1LL), in->size, in->src);
-                    break;
-                }
-                case mSignExtAx: {
-                    if (in->size == u8(8LL)) {
-                        asmBytes(a, {u8(u8(72LL))});
-                    }
-                    asmBytes(a, {u8(u8(153LL))});
-                    break;
-                }
-                case mZeroDx: {
-                    asmAluRR(a, aluXor, u8(4LL), RDX, RDX);
-                    break;
-                }
-                case mFLoad: {
-                    asmFload(a, in->size, in->dst, funcEmitterMem(e, in->mem));
-                    break;
-                }
-                case mFStore: {
-                    asmFstore(a, in->size, in->src, funcEmitterMem(e, in->mem));
-                    break;
-                }
-                case mFConst: {
-                    if (in->imm == i64(0LL)) {
-                        asmFxor(a, in->dst);
-                    } else {
-                        asmFload(a, in->size, in->dst, objCodeFloatConst(e->oc, convert<u64>(in->imm), in->size));
-                    }
-                    break;
-                }
-                case mFAlu: {
-                    asmFalu(a, convert<FAluOp>(in->aux), in->size, in->dst, in->src, in->src2);
-                    break;
-                }
-                case mFSelect: {
-                    VReg mask = mInstTemps(in)[Int(0LL)];
-                    Array<u8, 6> predicates = Array<u8, 6>{{u8(0LL), u8(4LL), u8(17LL), u8(30LL), u8(18LL), u8(29LL)}};
-                    asmFcmpMask(a, in->dsize, mask, mInstUses(in)[Int(0LL)], mInstUses(in)[Int(1LL)], predicates[in->aux]);
-                    if (in->dsize == u8(4LL) && in->size == u8(8LL)) {
-                        asmVexRR(a, pp66, u8(1LL), false, u8(112LL), regNum(mask), Int(-1LL), regNum(mask));
-                        asmBytes(a, {u8(u8(0LL))});
-                    }
-                    asmFblend(a, in->size, in->dst, in->src2, in->src, mask);
-                    break;
-                }
-                case mFAluMem: {
-                    asmFaluM(a, convert<FAluOp>(in->aux), in->size, in->dst, in->src, funcEmitterMem(e, in->mem));
-                    break;
-                }
-                case mFUnary: {
-                    if (in->aux == fSqrt) {
-                        asmFsqrt(a, in->size, in->dst, in->src);
-                    } else {
-                        asmFround(a, in->size, in->dst, in->src, in->imm);
-                    }
-                    break;
-                }
-                case mFCmp: {
-                    asmFcmp(a, in->size, in->src, in->src2);
-                    break;
-                }
-                case mCvtIF: {
-                    asmCvtIF(a, in->size, in->dsize, in->dst, in->src);
-                    break;
-                }
-                case mCvtFI: {
-                    asmCvtFI(a, in->size, in->dsize, in->dst, in->src);
-                    break;
-                }
-                case mCvtFF: {
-                    asmCvtFF(a, in->size, in->dst, in->src);
-                    break;
-                }
-                case mMovGX: {
-                    asmMovGX(a, in->size, in->dst, in->src);
-                    break;
-                }
-                case mMovXG: {
-                    asmMovXG(a, in->size, in->dst, in->src);
-                    break;
-                }
-                case mSwitch: {
-                    funcEmitterSwitchTable(e, in);
-                    break;
-                }
-                case mCall: {
-                    {
-                        auto switch698 = in->aux;
-                        switch (switch698) {
-                            case calleeStub: {
-                                objCodeCallStub(e->oc, convert<i64>(in->imm));
-                                break;
-                            }
-                            case calleeJump: {
-                                e->oc->jumpCalls = appendValues(e->oc->jumpCalls, CallFixup{asmCallRel(a), convert<i32>(in->imm)});
-                                break;
-                            }
-                            default: {
-                                objCodeCallFunc(e->oc, convert<i64>(in->imm));
-                                break;
-                            }
-                        }
-                    }
-                    break;
-                }
-                case mCallInd: {
-                    asmCallReg(a, in->src);
-                    break;
-                }
-                case mRet: {
-                    if (e->frame > i32(0LL)) {
-                        asmAluRI(a, aluAdd, u8(8LL), RSP, convert<i64>(e->frame));
-                    }
-                    {
-                        Int i = length(e->pushes) - Int(1LL);
-                        for (; i >= Int(0LL); i--) {
-                            asmPop(a, e->pushes[i]);
-                        }
-                    }
-                    if (e->mf->returnsTwice) {
-                        asmLea(a, u8(8LL), RSP, rspAt(i32(8LL)));
-                    }
-                    if (e->framed) {
-                        asmPop(a, RBP);
-                    }
-                    asmRet(a);
-                    asmSetSP(a, e->body);
-                    break;
-                }
-                case mTrap: {
-                    funcEmitterTrapJmp(e, in->imm);
-                    break;
-                }
-                case mTrapIf: {
-                    funcEmitterTrapJcc(e, in->cc, in->imm);
-                    break;
-                }
-                case mCheck: {
-                    funcEmitterCheck(e, in);
-                    break;
-                }
-                case mParMove: {
-                    funcEmitterParMove(e, mInstMoves(in));
-                    break;
-                }
-                case mStackArg: {
-                    if (vRegIsXMM(in->src)) {
-                        asmFstore(a, u8(8LL), in->src, rspAt(convert<i32>(i64(8LL) * in->imm)));
-                    } else {
-                        asmStore(a, u8(8LL), in->src, rspAt(convert<i32>(i64(8LL) * in->imm)));
-                    }
-                    break;
-                }
-                case mLoadArg: {
-                    Amem m = rspAt(e->incoming + convert<i32>(i64(8LL) * in->imm));
-                    if (vRegIsXMM(in->dst)) {
-                        asmFload(a, u8(8LL), in->dst, m);
-                    } else {
-                        asmLoad(a, u8(8LL), u8(8LL), false, in->dst, m);
-                    }
-                    break;
-                }
-                case mStoreRet: {
-                    Amem m = rspAt(e->incoming + convert<i32>(i64(8LL) * (convert<i64>(e->mf->incoming) + in->imm)));
-                    if (vRegIsXMM(in->src)) {
-                        asmFstore(a, u8(8LL), in->src, m);
-                    } else {
-                        asmStore(a, u8(8LL), in->src, m);
-                    }
-                    break;
-                }
-                case mDivOvf: {
-                    asmAluRI(a, aluCmp, in->size, in->src2, i64(-1LL));
-                    i32 j = asmJcc8(a, ccNE);
-                    asmAluRI(a, aluCmp, in->size, in->src, i64(1LL));
-                    funcEmitterTrapJcc(e, ccO, trapIntOverflow);
-                    asmHere8(a, j);
-                    break;
-                }
-                case mTruncF: {
-                    funcEmitterTruncF(e, in);
-                    break;
-                }
-                case mFMinMax: {
-                    funcEmitterMinMax(e, in);
-                    break;
-                }
-                case mCvtU64F: {
-                    funcEmitterCvtU64F(e, in);
-                    break;
-                }
-                default: {
-                    compilerError(String("internal error: cannot emit %s"));
-                    break;
-                }
+                break;
+            }
+            case mDivOvf: {
+                asmAluRI(a, aluCmp, in->size, in->src2, i64(-1LL));
+                i32 j = asmJcc8(a, ccNE);
+                asmAluRI(a, aluCmp, in->size, in->src, i64(1LL));
+                funcEmitterTrapJcc(e, ccO, trapIntOverflow);
+                asmHere8(a, j);
+                break;
+            }
+            case mTruncF: {
+                funcEmitterTruncF(e, in);
+                break;
+            }
+            case mFMinMax: {
+                funcEmitterMinMax(e, in);
+                break;
+            }
+            case mCvtU64F: {
+                funcEmitterCvtU64F(e, in);
+                break;
+            }
+            default: {
+                compilerError(String("internal error: cannot emit %s"));
+                break;
             }
         }
     }
@@ -13808,27 +13372,25 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void funcEmitterMove(FuncEmitter* e, VReg dst, VReg src) {
         Asm* a = e->a;
-        {
-            if (isSlot(dst) && isSlot(src)) {
-                asmPushMem(a, funcEmitterSlotMem(e, slotOf(src)));
-                asmPopMem(a, funcEmitterSlotMem(e, slotOf(dst)));
-            } else if (isSlot(dst)) {
-                if (vRegIsXMM(src)) {
-                    asmFstore(a, u8(8LL), src, funcEmitterSlotMem(e, slotOf(dst)));
-                } else {
-                    asmStore(a, u8(8LL), src, funcEmitterSlotMem(e, slotOf(dst)));
-                }
-            } else if (isSlot(src)) {
-                if (vRegIsXMM(dst)) {
-                    asmFload(a, u8(8LL), dst, funcEmitterSlotMem(e, slotOf(src)));
-                } else {
-                    asmLoad(a, u8(8LL), u8(8LL), false, dst, funcEmitterSlotMem(e, slotOf(src)));
-                }
-            } else if (vRegIsXMM(dst)) {
-                asmFmov(a, dst, src);
+        if (isSlot(dst) && isSlot(src)) {
+            asmPushMem(a, funcEmitterSlotMem(e, slotOf(src)));
+            asmPopMem(a, funcEmitterSlotMem(e, slotOf(dst)));
+        } else if (isSlot(dst)) {
+            if (vRegIsXMM(src)) {
+                asmFstore(a, u8(8LL), src, funcEmitterSlotMem(e, slotOf(dst)));
             } else {
-                asmMovRR(a, u8(8LL), dst, src);
+                asmStore(a, u8(8LL), src, funcEmitterSlotMem(e, slotOf(dst)));
             }
+        } else if (isSlot(src)) {
+            if (vRegIsXMM(dst)) {
+                asmFload(a, u8(8LL), dst, funcEmitterSlotMem(e, slotOf(src)));
+            } else {
+                asmLoad(a, u8(8LL), u8(8LL), false, dst, funcEmitterSlotMem(e, slotOf(src)));
+            }
+        } else if (vRegIsXMM(dst)) {
+            asmFmov(a, dst, src);
+        } else {
+            asmMovRR(a, u8(8LL), dst, src);
         }
     }
 
@@ -13836,62 +13398,50 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // once.
     static void funcEmitterParMove(FuncEmitter* e, Span<Move> moves) {
         Slice<Move> pending = makeSlice<Move>(Int(0LL), length(moves));
-        {
-            auto range705 = moves;
-            for (Int index706 = 0, rangeEnd707 = length(range705); index706 < rangeEnd707; ++index706) {
-                Move m = range705[index706];
-                if (m.dst != m.src) {
-                    pending = appendValues(pending, m);
-                }
+        auto range705 = moves;
+        for (Int index706 = 0, rangeEnd707 = length(range705); index706 < rangeEnd707; ++index706) {
+            Move m = range705[index706];
+            if (m.dst != m.src) {
+                pending = appendValues(pending, m);
             }
         }
-        {
-            for (; length(pending) > Int(0LL);) {
-                bool progress = false;
-                {
-                    Int i = Int(0LL);
-                    for (; i < length(pending); i++) {
-                        Move m = pending[i];
-                        bool blocked = false;
-                        {
-                            auto range708 = pending;
-                            for (Int index709 = 0, rangeEnd710 = length(range708); index709 < rangeEnd710; ++index709) {
-                                Int j = index709;
-                                Move o = range708[index709];
-                                if (j != i && o.src == m.dst) {
-                                    blocked = true;
-                                    break;
-                                }
-                            }
-                        }
-                        if (blocked) {
-                            continue;
-                        }
-                        funcEmitterMove(e, m.dst, m.src);
-                        pending = appendSlice(subslice(pending, Int(0), i), subslice(pending, i + Int(1LL), length(pending)));
-                        i--;
-                        progress = true;
+        for (; length(pending) > Int(0LL);) {
+            bool progress = false;
+            Int i = Int(0LL);
+            for (; i < length(pending); i++) {
+                Move m = pending[i];
+                bool blocked = false;
+                auto range708 = pending;
+                for (Int index709 = 0, rangeEnd710 = length(range708); index709 < rangeEnd710; ++index709) {
+                    Int j = index709;
+                    Move o = range708[index709];
+                    if (j != i && o.src == m.dst) {
+                        blocked = true;
+                        break;
                     }
                 }
-                if (progress) {
+                if (blocked) {
                     continue;
                 }
-                Move m = pending[Int(0LL)];
-                funcEmitterSwap(e, m.dst, m.src);
-                pending = subslice(pending, Int(1LL), length(pending));
-                {
-                    auto range711 = pending;
-                    for (Int index712 = 0, rangeEnd713 = length(range711); index712 < rangeEnd713; ++index712) {
-                        Int k = index712;
-                        {
-                            auto switch714 = pending[k].src;
-                            if (switch714 == m.dst) {
-                                pending[k].src = m.src;
-                            } else if (switch714 == m.src) {
-                                pending[k].src = m.dst;
-                            }
-                        }
-                    }
+                funcEmitterMove(e, m.dst, m.src);
+                pending = appendSlice(subslice(pending, Int(0), i), subslice(pending, i + Int(1LL), length(pending)));
+                i--;
+                progress = true;
+            }
+            if (progress) {
+                continue;
+            }
+            Move m = pending[Int(0LL)];
+            funcEmitterSwap(e, m.dst, m.src);
+            pending = subslice(pending, Int(1LL), length(pending));
+            auto range711 = pending;
+            for (Int index712 = 0, rangeEnd713 = length(range711); index712 < rangeEnd713; ++index712) {
+                Int k = index712;
+                auto switch714 = pending[k].src;
+                if (switch714 == m.dst) {
+                    pending[k].src = m.src;
+                } else if (switch714 == m.src) {
+                    pending[k].src = m.dst;
                 }
             }
         }
@@ -13909,39 +13459,37 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             x = temporary716;
             y = temporary717;
         }
-        {
-            if (isSlot(x)) {
-                auto temporary720 = funcEmitterSlotMem(e, slotOf(x));
-                auto temporary721 = funcEmitterSlotMem(e, slotOf(y));
-                Amem mx = temporary720;
-                Amem my = temporary721;
-                asmPushMem(a, mx);
-                my.disp += i32(8LL);
-                asmPushMem(a, my);
-                mx.disp += i32(8LL);
-                asmPopMem(a, mx);
-                my.disp -= i32(8LL);
-                asmPopMem(a, my);
-            } else if (isSlot(y)) {
-                Amem m = funcEmitterSlotMem(e, slotOf(y));
-                asmPushMem(a, m);
-                Amem shifted = m;
-                shifted.disp += i32(8LL);
-                if (vRegIsXMM(x)) {
-                    asmFstore(a, u8(8LL), x, shifted);
-                    asmFload(a, u8(8LL), x, rspAt(i32(0LL)));
-                    asmLea(a, u8(8LL), RSP, rspAt(i32(8LL)));
-                } else {
-                    asmStore(a, u8(8LL), x, shifted);
-                    asmPop(a, x);
-                }
-            } else if (vRegIsXMM(x)) {
-                asmFalu(a, fXor, u8(8LL), x, x, y);
-                asmFalu(a, fXor, u8(8LL), y, y, x);
-                asmFalu(a, fXor, u8(8LL), x, x, y);
+        if (isSlot(x)) {
+            auto temporary720 = funcEmitterSlotMem(e, slotOf(x));
+            auto temporary721 = funcEmitterSlotMem(e, slotOf(y));
+            Amem mx = temporary720;
+            Amem my = temporary721;
+            asmPushMem(a, mx);
+            my.disp += i32(8LL);
+            asmPushMem(a, my);
+            mx.disp += i32(8LL);
+            asmPopMem(a, mx);
+            my.disp -= i32(8LL);
+            asmPopMem(a, my);
+        } else if (isSlot(y)) {
+            Amem m = funcEmitterSlotMem(e, slotOf(y));
+            asmPushMem(a, m);
+            Amem shifted = m;
+            shifted.disp += i32(8LL);
+            if (vRegIsXMM(x)) {
+                asmFstore(a, u8(8LL), x, shifted);
+                asmFload(a, u8(8LL), x, rspAt(i32(0LL)));
+                asmLea(a, u8(8LL), RSP, rspAt(i32(8LL)));
             } else {
-                asmXchg(a, x, y);
+                asmStore(a, u8(8LL), x, shifted);
+                asmPop(a, x);
             }
+        } else if (vRegIsXMM(x)) {
+            asmFalu(a, fXor, u8(8LL), x, x, y);
+            asmFalu(a, fXor, u8(8LL), y, y, x);
+            asmFalu(a, fXor, u8(8LL), x, x, y);
+        } else {
+            asmXchg(a, x, y);
         }
     }
 
@@ -14096,19 +13644,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // last one when they touch. finish puts them in order.
     template <typename T>
     static void intervalAddRange(T* it, i32 from, i32 to) {
-        {
-            Int n = length(it->ranges);
-            if (n > Int(0LL)) {
-                Lrange* last = &it->ranges[n - Int(1LL)];
-                if (to >= last->from) {
-                    if (from < last->from) {
-                        last->from = from;
-                    }
-                    if (to > last->to) {
-                        last->to = to;
-                    }
-                    return;
+        Int n = length(it->ranges);
+        if (n > Int(0LL)) {
+            Lrange* last = &it->ranges[n - Int(1LL)];
+            if (to >= last->from) {
+                if (from < last->from) {
+                    last->from = from;
                 }
+                if (to > last->to) {
+                    last->to = to;
+                }
+                return;
             }
         }
         it->ranges.pushBack(Lrange{from, to});
@@ -14144,10 +13690,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // coversAt is covers for the scan position: p never decreases between
     // calls.
     static bool intervalCoversAt(Interval* it, i32 p) {
-        {
-            for (; it->cursor < length(it->ranges) && it->ranges[it->cursor].to <= p;) {
-                it->cursor++;
-            }
+        for (; it->cursor < length(it->ranges) && it->ranges[it->cursor].to <= p;) {
+            it->cursor++;
         }
         return it->cursor < length(it->ranges) && it->ranges[it->cursor].from <= p;
     }
@@ -14191,22 +13735,20 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void intervalFinishRanges(InlineVec<Lrange, 1>& ranges) {
         Span<Lrange> r = ranges.view();
-        {
-            auto temporary730 = Int(0LL);
-            auto temporary731 = length(r) - Int(1LL);
-            Int i = temporary730;
-            Int j = temporary731;
-            for (; i < j; [&]() {
-                auto temporary732 = i + Int(1LL);
-                auto temporary733 = j - Int(1LL);
-                i = temporary732;
-                j = temporary733;
-            }()) {
-                auto temporary734 = r[j];
-                auto temporary735 = r[i];
-                r[i] = temporary734;
-                r[j] = temporary735;
-            }
+        auto temporary730 = Int(0LL);
+        auto temporary731 = length(r) - Int(1LL);
+        Int i = temporary730;
+        Int j = temporary731;
+        for (; i < j; [&]() {
+            auto temporary732 = i + Int(1LL);
+            auto temporary733 = j - Int(1LL);
+            i = temporary732;
+            j = temporary733;
+        }()) {
+            auto temporary734 = r[j];
+            auto temporary735 = r[i];
+            r[i] = temporary734;
+            r[j] = temporary735;
         }
     }
 
@@ -14236,25 +13778,23 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         auto temporary737 = o->cursor;
         Int i = temporary736;
         Int j = temporary737;
-        {
-            for (; i < length(it->ranges) && j < length(o->ranges);) {
-                auto temporary738 = it->ranges[i];
-                auto temporary739 = o->ranges[j];
-                Lrange a = temporary738;
-                Lrange b = temporary739;
-                if (a.to <= b.from) {
-                    i++;
-                    continue;
-                }
-                if (b.to <= a.from) {
-                    j++;
-                    continue;
-                }
-                if (a.from > b.from) {
-                    return a.from;
-                }
-                return b.from;
+        for (; i < length(it->ranges) && j < length(o->ranges);) {
+            auto temporary738 = it->ranges[i];
+            auto temporary739 = o->ranges[j];
+            Lrange a = temporary738;
+            Lrange b = temporary739;
+            if (a.to <= b.from) {
+                i++;
+                continue;
             }
+            if (b.to <= a.from) {
+                j++;
+                continue;
+            }
+            if (a.from > b.from) {
+                return a.from;
+            }
+            return b.from;
         }
         return maxPos;
     }
@@ -14284,10 +13824,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static Interval* intervalSplit(Interval* it, i32 p) {
         Interval* child = newInterval(it->vreg, noReg, it->classValue, it->hint);
         Int k = Int(0LL);
-        {
-            for (; k < length(it->ranges) && it->ranges[k].to <= p;) {
-                k++;
-            }
+        for (; k < length(it->ranges) && it->ranges[k].to <= p;) {
+            k++;
         }
         if (k < length(it->ranges) && it->ranges[k].from < p) {
             child->ranges.pushBack(Lrange{p, it->ranges[usize(k)].to});
@@ -14414,51 +13952,47 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             lowererEmit(l, in);
             return;
         }
-        {
-            auto temporary743 = lowererImm(l, b, size);
-            i64 x = temporary743.v0;
-            bool ok = temporary743.v1;
-            if (ok) {
-                {
-                    auto switch744 = op;
-                    switch (switch744) {
-                        case OpAdd:
-                        case OpSub: {
-                            if (op == OpSub) {
-                                x = -x;
-                            }
-                            if (x == convert<i64>(convert<i32>(x))) {
-                                MInst in = inst(mLea);
-                                in.dst = d;
-                                in.mem = memAt(lowererUse(l, a), convert<i32>(x));
-                                in.size = size;
-                                lowererEmit(l, in);
-                                return;
-                            }
-                            break;
-                        }
-                        case OpMul: {
-                            MInst in = inst(mImul3);
-                            in.dst = d;
-                            in.src = lowererUse(l, a);
-                            in.imm = x;
-                            in.size = size;
-                            lowererEmit(l, in);
-                            return;
-                            break;
-                        }
+        auto temporary743 = lowererImm(l, b, size);
+        i64 x = temporary743.v0;
+        bool ok = temporary743.v1;
+        if (ok) {
+            auto switch744 = op;
+            switch (switch744) {
+                case OpAdd:
+                case OpSub: {
+                    if (op == OpSub) {
+                        x = -x;
                     }
+                    if (x == convert<i64>(convert<i32>(x))) {
+                        MInst in = inst(mLea);
+                        in.dst = d;
+                        in.mem = memAt(lowererUse(l, a), convert<i32>(x));
+                        in.size = size;
+                        lowererEmit(l, in);
+                        return;
+                    }
+                    break;
                 }
-                if (op != OpAdd && op != OpSub) {
-                    lowererMov(l, d, lowererUse(l, a), size);
-                    MInst in = inst(mAluImm);
+                case OpMul: {
+                    MInst in = inst(mImul3);
                     in.dst = d;
+                    in.src = lowererUse(l, a);
                     in.imm = x;
                     in.size = size;
-                    in.aux = convert<u8>(aluOpcode(op));
                     lowererEmit(l, in);
                     return;
+                    break;
                 }
+            }
+            if (op != OpAdd && op != OpSub) {
+                lowererMov(l, d, lowererUse(l, a), size);
+                MInst in = inst(mAluImm);
+                in.dst = d;
+                in.imm = x;
+                in.size = size;
+                in.aux = convert<u8>(aluOpcode(op));
+                lowererEmit(l, in);
+                return;
             }
         }
         VReg ra = lowererUse(l, a);
@@ -14645,22 +14179,20 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             in.src2 = lowererUse(l, b);
             in.size = size;
             lowererEmit(l, in);
-            {
-                auto switch751 = op;
-                switch (switch751) {
-                    case OpFEq: {
-                        return {ccE, Int(1LL)};
-                        break;
-                    }
-                    case OpFNe: {
-                        return {ccNE, Int(2LL)};
-                        break;
-                    }
-                    case OpFLt:
-                    case OpFGt: {
-                        return {ccA, Int(0LL)};
-                        break;
-                    }
+            auto switch751 = op;
+            switch (switch751) {
+                case OpFEq: {
+                    return {ccE, Int(1LL)};
+                    break;
+                }
+                case OpFNe: {
+                    return {ccNE, Int(2LL)};
+                    break;
+                }
+                case OpFLt:
+                case OpFGt: {
+                    return {ccA, Int(0LL)};
+                    break;
                 }
             }
             return {ccAE, Int(0LL)};
@@ -14673,22 +14205,20 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             b = temporary753;
             cc = swapCC(cc);
         }
-        {
-            auto temporary754 = lowererImm(l, b, size);
-            i64 x = temporary754.v0;
-            bool ok = temporary754.v1;
-            if (ok) {
-                MInst in = inst(mCmpImm);
-                in.src = lowererUse(l, a);
-                in.imm = x;
-                in.size = size;
-                if (x == i64(0LL) && (cc == ccE || cc == ccNE)) {
-                    in.op = mTest;
-                    in.src2 = in.src;
-                }
-                lowererEmit(l, in);
-                return {cc, Int(0LL)};
+        auto temporary754 = lowererImm(l, b, size);
+        i64 x = temporary754.v0;
+        bool ok = temporary754.v1;
+        if (ok) {
+            MInst in = inst(mCmpImm);
+            in.src = lowererUse(l, a);
+            in.imm = x;
+            in.size = size;
+            if (x == i64(0LL) && (cc == ccE || cc == ccNE)) {
+                in.op = mTest;
+                in.src2 = in.src;
             }
+            lowererEmit(l, in);
+            return {cc, Int(0LL)};
         }
         MInst in = inst(mCmp);
         in.src = lowererUse(l, a);
@@ -14786,47 +14316,35 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Function* f = l->f;
         l->uses.resize(f->values.size());
         l->uses.fill(0);
-        {
-            auto range759 = l->ci->order;
-            for (Int index760 = 0, rangeEnd761 = length(range759); index760 < rangeEnd761; ++index760) {
-                i32 b = range759[index760];
-                Block* blk = &f->blocks[b];
-                {
-                    auto range762 = blk->instrs.view();
-                    for (Int index763 = 0, rangeEnd764 = length(range762); index763 < rangeEnd764; ++index763) {
-                        i32 v = range762[index763];
-                        {
-                            auto range765 = functionArgs(f, v);
-                            for (Int index766 = 0, rangeEnd767 = length(range765); index766 < rangeEnd767; ++index766) {
-                                i32 a = range765[index766];
-                                l->uses[a]++;
-                            }
-                        }
-                    }
+        auto range759 = l->ci->order;
+        for (Int index760 = 0, rangeEnd761 = length(range759); index760 < rangeEnd761; ++index760) {
+            i32 b = range759[index760];
+            Block* blk = &f->blocks[b];
+            auto range762 = blk->instrs.view();
+            for (Int index763 = 0, rangeEnd764 = length(range762); index763 < rangeEnd764; ++index763) {
+                i32 v = range762[index763];
+                auto range765 = functionArgs(f, v);
+                for (Int index766 = 0, rangeEnd767 = length(range765); index766 < rangeEnd767; ++index766) {
+                    i32 a = range765[index766];
+                    l->uses[a]++;
                 }
-                Term* t = &blk->term;
-                if (t->kind == TermIf || t->kind == TermSwitch) {
-                    l->uses[t->value]++;
-                }
-                {
-                    auto range768 = t->values;
-                    for (Int index769 = 0, rangeEnd770 = length(range768); index769 < rangeEnd770; ++index769) {
-                        i32 v = range768[index769];
-                        l->uses[v]++;
-                    }
-                }
-                {
-                    auto range771 = t->edges;
-                    for (Int index772 = 0, rangeEnd773 = length(range771); index772 < rangeEnd773; ++index772) {
-                        Edge e = range771[index772];
-                        {
-                            auto range774 = e.args;
-                            for (Int index775 = 0, rangeEnd776 = length(range774); index775 < rangeEnd776; ++index775) {
-                                i32 a = range774[index775];
-                                l->uses[a]++;
-                            }
-                        }
-                    }
+            }
+            Term* t = &blk->term;
+            if (t->kind == TermIf || t->kind == TermSwitch) {
+                l->uses[t->value]++;
+            }
+            auto range768 = t->values;
+            for (Int index769 = 0, rangeEnd770 = length(range768); index769 < rangeEnd770; ++index769) {
+                i32 v = range768[index769];
+                l->uses[v]++;
+            }
+            auto range771 = t->edges;
+            for (Int index772 = 0, rangeEnd773 = length(range771); index772 < rangeEnd773; ++index772) {
+                Edge e = range771[index772];
+                auto range774 = e.args;
+                for (Int index775 = 0, rangeEnd776 = length(range774); index775 < rangeEnd776; ++index775) {
+                    i32 a = range774[index775];
+                    l->uses[a]++;
                 }
             }
         }
@@ -15157,16 +14675,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         Slice<i32> params = l->f->blocks[e->block].params;
         MInst in = inst(mParMove);
-        {
-            auto range778 = e->args;
-            for (Int index779 = 0, rangeEnd780 = length(range778); index779 < rangeEnd780; ++index779) {
-                Int i = index779;
-                i32 a = range778[index779];
-                VReg src = lowererUse(l, a);
-                VReg dst = l->vregs[params[i]];
-                if (src != dst) {
-                    mInstExtra(&in)->moves.pushBack(Move{dst, src});
-                }
+        auto range778 = e->args;
+        for (Int index779 = 0, rangeEnd780 = length(range778); index779 < rangeEnd780; ++index779) {
+            Int i = index779;
+            i32 a = range778[index779];
+            VReg src = lowererUse(l, a);
+            VReg dst = l->vregs[params[i]];
+            if (src != dst) {
+                mInstExtra(&in)->moves.pushBack(Move{dst, src});
             }
         }
         if (length(mInstMoves(&in)) > Int(0LL)) {
@@ -15189,30 +14705,28 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Int xi = temporary782;
         Int stack = Int(0LL);
         MInst pm = inst(mParMove);
-        {
-            auto range783 = params;
-            for (Int index784 = 0, rangeEnd785 = length(range783); index784 < rangeEnd785; ++index784) {
-                i32 p = range783[index784];
-                ValType t = f->values[p].typ;
-                VReg r = l->vregs[p];
-                if (isFloat(t)) {
-                    if (xi < length(argXMMs)) {
-                        mInstExtra(&pm)->moves.pushBack(Move{r, argXMMs[xi]});
-                        xi++;
-                        continue;
-                    }
-                } else if (gi < length(argGPRs)) {
-                    mInstExtra(&pm)->moves.pushBack(Move{r, argGPRs[gi]});
-                    gi++;
+        auto range783 = params;
+        for (Int index784 = 0, rangeEnd785 = length(range783); index784 < rangeEnd785; ++index784) {
+            i32 p = range783[index784];
+            ValType t = f->values[p].typ;
+            VReg r = l->vregs[p];
+            if (isFloat(t)) {
+                if (xi < length(argXMMs)) {
+                    mInstExtra(&pm)->moves.pushBack(Move{r, argXMMs[xi]});
+                    xi++;
                     continue;
                 }
-                MInst in = inst(mLoadArg);
-                in.dst = r;
-                in.imm = convert<i64>(stack);
-                in.size = typeSize(t);
-                lowererEmit(l, in);
-                stack++;
+            } else if (gi < length(argGPRs)) {
+                mInstExtra(&pm)->moves.pushBack(Move{r, argGPRs[gi]});
+                gi++;
+                continue;
             }
+            MInst in = inst(mLoadArg);
+            in.dst = r;
+            in.imm = convert<i64>(stack);
+            in.size = typeSize(t);
+            lowererEmit(l, in);
+            stack++;
         }
         if (length(mInstMoves(&pm)) > Int(0LL)) {
             lowererEmit(l, pm);
@@ -15226,24 +14740,20 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Function* f = l->f;
         Block* blk = &f->blocks[f->values[call].block];
         Slice<i32> out = {};
-        {
-            auto range786 = blk->instrs.view();
-            for (Int index787 = 0, rangeEnd788 = length(range786); index787 < rangeEnd788; ++index787) {
-                Int i = index787;
-                i32 v = range786[index787];
-                if (v != call) {
-                    continue;
+        auto range786 = blk->instrs.view();
+        for (Int index787 = 0, rangeEnd788 = length(range786); index787 < rangeEnd788; ++index787) {
+            Int i = index787;
+            i32 v = range786[index787];
+            if (v != call) {
+                continue;
+            }
+            auto range789 = subslice(blk->instrs.view(), i + Int(1LL), length(blk->instrs));
+            for (Int index790 = 0, rangeEnd791 = length(range789); index790 < rangeEnd791; ++index790) {
+                i32 w = range789[index790];
+                if (f->values[w].op != OpExtract || functionArgs(f, w)[Int(0LL)] != call) {
+                    break;
                 }
-                {
-                    auto range789 = subslice(blk->instrs.view(), i + Int(1LL), length(blk->instrs));
-                    for (Int index790 = 0, rangeEnd791 = length(range789); index790 < rangeEnd791; ++index790) {
-                        i32 w = range789[index790];
-                        if (f->values[w].op != OpExtract || functionArgs(f, w)[Int(0LL)] != call) {
-                            break;
-                        }
-                        out = appendValues(out, w);
-                    }
-                }
+                out = appendValues(out, w);
             }
         }
         return out;
@@ -15258,76 +14768,64 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         l->rawTrunc.resize(f->values.size());
         l->rawTrunc.fill(false);
         Slice<i32> user = makeSlice<i32>(length(f->values));
-        {
-            auto range792 = user;
-            for (Int index793 = 0, rangeEnd794 = length(range792); index793 < rangeEnd794; ++index793) {
-                Int v = index793;
-                user[v] = i32(-1LL);
-            }
+        auto range792 = user;
+        for (Int index793 = 0, rangeEnd794 = length(range792); index793 < rangeEnd794; ++index793) {
+            Int v = index793;
+            user[v] = i32(-1LL);
         }
-        {
-            auto range795 = l->ci->order;
-            for (Int index796 = 0, rangeEnd797 = length(range795); index796 < rangeEnd797; ++index796) {
-                i32 b = range795[index796];
-                {
-                    auto range798 = f->blocks[b].instrs.view();
-                    for (Int index799 = 0, rangeEnd800 = length(range798); index799 < rangeEnd800; ++index799) {
-                        i32 v = range798[index799];
-                        {
-                            auto range801 = functionArgs(f, v);
-                            for (Int index802 = 0, rangeEnd803 = length(range801); index802 < rangeEnd803; ++index802) {
-                                i32 a = range801[index802];
-                                user[a] = v;
-                            }
-                        }
-                    }
+        auto range795 = l->ci->order;
+        for (Int index796 = 0, rangeEnd797 = length(range795); index796 < rangeEnd797; ++index796) {
+            i32 b = range795[index796];
+            auto range798 = f->blocks[b].instrs.view();
+            for (Int index799 = 0, rangeEnd800 = length(range798); index799 < rangeEnd800; ++index799) {
+                i32 v = range798[index799];
+                auto range801 = functionArgs(f, v);
+                for (Int index802 = 0, rangeEnd803 = length(range801); index802 < rangeEnd803; ++index802) {
+                    i32 a = range801[index802];
+                    user[a] = v;
                 }
             }
         }
-        {
-            auto& range804 = f->values;
-            for (Int index805 = 0, rangeEnd806 = length(range804); index805 < rangeEnd806; ++index805) {
-                Int v = index805;
-                Value* val = &f->values[v];
-                if ((val->op != OpTruncSatS && val->op != OpTruncSatU) || val->block < i32(0LL) || l->ci->rpoIndex[val->block] < i32(0LL) || l->uses[v] == i32(0LL)) {
-                    continue;
-                }
-                FloatRanges* r = activePool->make<FloatRanges>(FloatRanges{f, mapOf<i32, FloatRange>({}), mapOf<i32, FloatRange>({})});
-                i32 b = val->block;
-                {
-                    i32 p = l->ci->idom[b];
-                    for (; p != b;) {
-                        Term* t = &f->blocks[p].term;
-                        if (t->kind == TermIf && length(t->edges) == Int(2LL)) {
-                            bool a = cfgInfoDominates(l->ci, t->edges[Int(0LL)].block, b);
-                            bool z = cfgInfoDominates(l->ci, t->edges[Int(1LL)].block, b);
-                            if (a != z) {
-                                floatRangesConstrain(r, t->value, a);
-                            }
-                        }
-                        if (l->ci->idom[p] == p) {
-                            break;
-                        }
-                        p = l->ci->idom[p];
-                    }
-                }
-                if (l->uses[v] == i32(1LL) && user[v] >= i32(0LL)) {
-                    i32 u = user[v];
-                    if (f->values[u].op == OpSelect) {
-                        Span<i32> args = functionArgs(f, u);
-                        if (args[Int(1LL)] != args[Int(2LL)]) {
-                            floatRangesConstrain(r, args[Int(0LL)], args[Int(1LL)] == convert<i32>(v));
-                        }
-                    }
-                }
-                FloatRange bound = floatRangesOf(r, functionArgs(f, convert<i32>(v))[Int(0LL)], Int(0LL));
-                double hi = mathLdexp(double(1.0), convert<i64>(typeSize(val->typ)) * Int(8LL) - Int(1LL));
-                double lo = -hi;
-                if (val->op == OpTruncSatU) {
-                    lo = double(0.0);
-                }
-                l->rawTrunc[v] = !bound.nan && bound.lo <= bound.hi && bound.lo >= lo && bound.hi < hi;
+        auto& range804 = f->values;
+        for (Int index805 = 0, rangeEnd806 = length(range804); index805 < rangeEnd806; ++index805) {
+            Int v = index805;
+            Value* val = &f->values[v];
+            if ((val->op != OpTruncSatS && val->op != OpTruncSatU) || val->block < i32(0LL) || l->ci->rpoIndex[val->block] < i32(0LL) || l->uses[v] == i32(0LL)) {
+                continue;
             }
+            FloatRanges* r = activePool->make<FloatRanges>(FloatRanges{f, mapOf<i32, FloatRange>({}), mapOf<i32, FloatRange>({})});
+            i32 b = val->block;
+            i32 p = l->ci->idom[b];
+            for (; p != b;) {
+                Term* t = &f->blocks[p].term;
+                if (t->kind == TermIf && length(t->edges) == Int(2LL)) {
+                    bool a = cfgInfoDominates(l->ci, t->edges[Int(0LL)].block, b);
+                    bool z = cfgInfoDominates(l->ci, t->edges[Int(1LL)].block, b);
+                    if (a != z) {
+                        floatRangesConstrain(r, t->value, a);
+                    }
+                }
+                if (l->ci->idom[p] == p) {
+                    break;
+                }
+                p = l->ci->idom[p];
+            }
+            if (l->uses[v] == i32(1LL) && user[v] >= i32(0LL)) {
+                i32 u = user[v];
+                if (f->values[u].op == OpSelect) {
+                    Span<i32> args = functionArgs(f, u);
+                    if (args[Int(1LL)] != args[Int(2LL)]) {
+                        floatRangesConstrain(r, args[Int(0LL)], args[Int(1LL)] == convert<i32>(v));
+                    }
+                }
+            }
+            FloatRange bound = floatRangesOf(r, functionArgs(f, convert<i32>(v))[Int(0LL)], Int(0LL));
+            double hi = mathLdexp(double(1.0), convert<i64>(typeSize(val->typ)) * Int(8LL) - Int(1LL));
+            double lo = -hi;
+            if (val->op == OpTruncSatU) {
+                lo = double(0.0);
+            }
+            l->rawTrunc[v] = !bound.nan && bound.lo <= bound.hi && bound.lo >= lo && bound.hi < hi;
         }
     }
 
@@ -15380,18 +14878,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void lowererGlobalSet(Lowerer* l, Int index, i32 value) {
         ValType t = l->m->globals[index].typ;
         Mem mem = lowererGlobalAddr(l, index);
-        {
-            auto temporary807 = lowererImm(l, value, typeSize(t));
-            i64 x = temporary807.v0;
-            bool ok = temporary807.v1;
-            if (ok) {
-                MInst in = inst(mStoreImm);
-                in.mem = mem;
-                in.imm = x;
-                in.size = typeSize(t);
-                lowererEmit(l, in);
-                return;
-            }
+        auto temporary807 = lowererImm(l, value, typeSize(t));
+        i64 x = temporary807.v0;
+        bool ok = temporary807.v1;
+        if (ok) {
+            MInst in = inst(mStoreImm);
+            in.mem = mem;
+            in.imm = x;
+            in.size = typeSize(t);
+            lowererEmit(l, in);
+            return;
         }
         MInst in = inst(mStore);
         if (isFloat(t)) {
@@ -15444,19 +14940,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             folded = true;
         }
         Mem mem = Mem{noReg, noReg, scale, {}, i32(-1LL)};
-        {
-            auto temporary810 = lowererImm(l, a, size);
-            i64 x = temporary810.v0;
-            bool ok = temporary810.v1;
-            if (ok && x >= i64(-2147483648LL) && x <= i64(2147483647LL) && folded) {
-                mem.disp = convert<i32>(x);
-                mem.index = lowererUse(l, b);
-            } else if (!lowererIsConst(l, a) && !lowererIsConst(l, b)) {
-                mem.base = lowererUse(l, a);
-                mem.index = lowererUse(l, b);
-            } else {
-                return false;
-            }
+        auto temporary810 = lowererImm(l, a, size);
+        i64 x = temporary810.v0;
+        bool ok = temporary810.v1;
+        if (ok && x >= i64(-2147483648LL) && x <= i64(2147483647LL) && folded) {
+            mem.disp = convert<i32>(x);
+            mem.index = lowererUse(l, b);
+        } else if (!lowererIsConst(l, a) && !lowererIsConst(l, b)) {
+            mem.base = lowererUse(l, a);
+            mem.index = lowererUse(l, b);
+        } else {
+            return false;
         }
         MInst in = inst(mLea);
         in.dst = lowererDef(l, v);
@@ -15469,51 +14963,39 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // linkBlocks fills successor and predecessor lists from the branches.
     static void lowererLinkBlocks(Lowerer* l) {
         MFunc* mf = l->mf;
-        {
-            auto& range811 = mf->blocks;
-            for (Int index812 = 0, rangeEnd813 = length(range811); index812 < rangeEnd813; ++index812) {
-                Int b = index812;
-                MBlock* blk = &mf->blocks[b];
-                {
-                    auto range814 = blk->insts.view();
-                    for (Int index815 = 0, rangeEnd816 = length(range814); index815 < rangeEnd816; ++index815) {
-                        Int i = index815;
-                        MInst* in = &blk->insts[i];
-                        {
-                            auto switch817 = in->op;
-                            switch (switch817) {
-                                case mJmp:
-                                case mJcc: {
-                                    blk->succs = appendUnique(blk->succs, in->target);
-                                    break;
-                                }
-                                case mSwitch: {
-                                    {
-                                        auto range818 = mInstTable(in);
-                                        for (Int index819 = 0, rangeEnd820 = length(range818); index819 < rangeEnd820; ++index819) {
-                                            i32 t = range818[index819];
-                                            blk->succs = appendUnique(blk->succs, t);
-                                        }
-                                    }
-                                    break;
-                                }
-                            }
+        auto& range811 = mf->blocks;
+        for (Int index812 = 0, rangeEnd813 = length(range811); index812 < rangeEnd813; ++index812) {
+            Int b = index812;
+            MBlock* blk = &mf->blocks[b];
+            auto range814 = blk->insts.view();
+            for (Int index815 = 0, rangeEnd816 = length(range814); index815 < rangeEnd816; ++index815) {
+                Int i = index815;
+                MInst* in = &blk->insts[i];
+                auto switch817 = in->op;
+                switch (switch817) {
+                    case mJmp:
+                    case mJcc: {
+                        blk->succs = appendUnique(blk->succs, in->target);
+                        break;
+                    }
+                    case mSwitch: {
+                        auto range818 = mInstTable(in);
+                        for (Int index819 = 0, rangeEnd820 = length(range818); index819 < rangeEnd820; ++index819) {
+                            i32 t = range818[index819];
+                            blk->succs = appendUnique(blk->succs, t);
                         }
+                        break;
                     }
                 }
             }
         }
-        {
-            auto& range821 = mf->blocks;
-            for (Int index822 = 0, rangeEnd823 = length(range821); index822 < rangeEnd823; ++index822) {
-                Int b = index822;
-                {
-                    auto range824 = mf->blocks[b].succs;
-                    for (Int index825 = 0, rangeEnd826 = length(range824); index825 < rangeEnd826; ++index825) {
-                        i32 s = range824[index825];
-                        mf->blocks[s].preds = appendValues(mf->blocks[s].preds, convert<i32>(b));
-                    }
-                }
+        auto& range821 = mf->blocks;
+        for (Int index822 = 0, rangeEnd823 = length(range821); index822 < rangeEnd823; ++index822) {
+            Int b = index822;
+            auto range824 = mf->blocks[b].succs;
+            for (Int index825 = 0, rangeEnd826 = length(range824); index825 < rangeEnd826; ++index825) {
+                i32 s = range824[index825];
+                mf->blocks[s].preds = appendValues(mf->blocks[s].preds, convert<i32>(b));
             }
         }
     }
@@ -15552,369 +15034,367 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Value* val = &f->values[v];
         Span<i32> args = functionArgs(f, v);
         u8 size = typeSize(val->typ);
-        {
-            auto switch827 = val->op;
-            switch (switch827) {
-                case OpAdd:
-                case OpSub:
-                case OpAnd:
-                case OpOr:
-                case OpXor:
-                case OpMul: {
-                    lowererAlu(l, v, val->op, args[Int(0LL)], args[Int(1LL)], size);
-                    break;
-                }
-                case OpShl:
-                case OpShrS:
-                case OpShrU: {
-                    lowererShift(l, v, val->op, args[Int(0LL)], args[Int(1LL)], size);
-                    break;
-                }
-                case OpRotl:
-                case OpRotr: {
-                    lowererRotate(l, v, val->op, args[Int(0LL)], args[Int(1LL)], size);
-                    break;
-                }
-                case OpDivS:
-                case OpDivU:
-                case OpRemS:
-                case OpRemU: {
-                    lowererDivide(l, v, val->op, args[Int(0LL)], args[Int(1LL)], size);
-                    break;
-                }
-                case OpClz:
-                case OpCtz:
-                case OpPopcnt: {
-                    MInst in = inst(mBitCount);
-                    in.dst = lowererDef(l, v);
-                    in.src = lowererUse(l, args[Int(0LL)]);
-                    in.size = size;
-                    in.aux = convert<u8>(Op(val->op - OpClz));
-                    lowererEmit(l, in);
-                    break;
-                }
-                case OpExtend8S:
-                case OpExtend16S:
-                case OpExtend32S: {
-                    MInst in = inst(mExt);
-                    in.dst = lowererDef(l, v);
-                    in.src = lowererUse(l, args[Int(0LL)]);
-                    in.size = Array<u8, 3>{{u8(1LL), u8(2LL), u8(4LL)}}[Op(val->op - OpExtend8S)];
-                    in.dsize = size;
+        auto switch827 = val->op;
+        switch (switch827) {
+            case OpAdd:
+            case OpSub:
+            case OpAnd:
+            case OpOr:
+            case OpXor:
+            case OpMul: {
+                lowererAlu(l, v, val->op, args[Int(0LL)], args[Int(1LL)], size);
+                break;
+            }
+            case OpShl:
+            case OpShrS:
+            case OpShrU: {
+                lowererShift(l, v, val->op, args[Int(0LL)], args[Int(1LL)], size);
+                break;
+            }
+            case OpRotl:
+            case OpRotr: {
+                lowererRotate(l, v, val->op, args[Int(0LL)], args[Int(1LL)], size);
+                break;
+            }
+            case OpDivS:
+            case OpDivU:
+            case OpRemS:
+            case OpRemU: {
+                lowererDivide(l, v, val->op, args[Int(0LL)], args[Int(1LL)], size);
+                break;
+            }
+            case OpClz:
+            case OpCtz:
+            case OpPopcnt: {
+                MInst in = inst(mBitCount);
+                in.dst = lowererDef(l, v);
+                in.src = lowererUse(l, args[Int(0LL)]);
+                in.size = size;
+                in.aux = convert<u8>(Op(val->op - OpClz));
+                lowererEmit(l, in);
+                break;
+            }
+            case OpExtend8S:
+            case OpExtend16S:
+            case OpExtend32S: {
+                MInst in = inst(mExt);
+                in.dst = lowererDef(l, v);
+                in.src = lowererUse(l, args[Int(0LL)]);
+                in.size = Array<u8, 3>{{u8(1LL), u8(2LL), u8(4LL)}}[Op(val->op - OpExtend8S)];
+                in.dsize = size;
+                in.aux = u8(1LL);
+                lowererEmit(l, in);
+                break;
+            }
+            case OpEqz:
+            case OpEq:
+            case OpNe:
+            case OpLtS:
+            case OpLtU:
+            case OpGtS:
+            case OpGtU:
+            case OpLeS:
+            case OpLeU:
+            case OpGeS:
+            case OpGeU:
+            case OpFEq:
+            case OpFNe:
+            case OpFLt:
+            case OpFGt:
+            case OpFLe:
+            case OpFGe: {
+                lowererSetcc(l, v);
+                break;
+            }
+            case OpFAdd:
+            case OpFSub:
+            case OpFMul:
+            case OpFDiv: {
+                MInst in = inst(mFAlu);
+                in.dst = lowererDef(l, v);
+                in.src = lowererUse(l, args[Int(0LL)]);
+                in.src2 = lowererUse(l, args[Int(1LL)]);
+                in.size = size;
+                in.aux = convert<u8>(Op(val->op - OpFAdd));
+                lowererEmit(l, in);
+                break;
+            }
+            case OpFMin:
+            case OpFMax: {
+                MInst in = inst(mFMinMax);
+                in.dst = lowererDef(l, v);
+                in.src = lowererUse(l, args[Int(0LL)]);
+                in.src2 = lowererUse(l, args[Int(1LL)]);
+                in.size = size;
+                if (val->op == OpFMax) {
                     in.aux = u8(1LL);
-                    lowererEmit(l, in);
-                    break;
                 }
-                case OpEqz:
-                case OpEq:
-                case OpNe:
-                case OpLtS:
-                case OpLtU:
-                case OpGtS:
-                case OpGtU:
-                case OpLeS:
-                case OpLeU:
-                case OpGeS:
-                case OpGeU:
-                case OpFEq:
-                case OpFNe:
-                case OpFLt:
-                case OpFGt:
-                case OpFLe:
-                case OpFGe: {
-                    lowererSetcc(l, v);
-                    break;
+                lowererEmit(l, in);
+                break;
+            }
+            case OpFCopysign: {
+                lowererCopysign(l, v, args[Int(0LL)], args[Int(1LL)], size);
+                break;
+            }
+            case OpFAbs:
+            case OpFNeg: {
+                MInst in = inst(mFAluMem);
+                in.dst = lowererDef(l, v);
+                in.src = lowererUse(l, args[Int(0LL)]);
+                in.size = size;
+                in.aux = u8(6LL);
+                in.mem = Mem{noReg, noReg, {}, {}, constF32Abs};
+                if (val->op == OpFNeg) {
+                    in.aux = u8(9LL);
+                    in.mem.label = constF32Sign;
                 }
-                case OpFAdd:
-                case OpFSub:
-                case OpFMul:
-                case OpFDiv: {
-                    MInst in = inst(mFAlu);
-                    in.dst = lowererDef(l, v);
-                    in.src = lowererUse(l, args[Int(0LL)]);
-                    in.src2 = lowererUse(l, args[Int(1LL)]);
-                    in.size = size;
-                    in.aux = convert<u8>(Op(val->op - OpFAdd));
-                    lowererEmit(l, in);
-                    break;
+                if (size == u8(8LL)) {
+                    in.mem.label += i32(2LL);
                 }
-                case OpFMin:
-                case OpFMax: {
-                    MInst in = inst(mFMinMax);
-                    in.dst = lowererDef(l, v);
-                    in.src = lowererUse(l, args[Int(0LL)]);
-                    in.src2 = lowererUse(l, args[Int(1LL)]);
-                    in.size = size;
-                    if (val->op == OpFMax) {
-                        in.aux = u8(1LL);
-                    }
-                    lowererEmit(l, in);
-                    break;
-                }
-                case OpFCopysign: {
-                    lowererCopysign(l, v, args[Int(0LL)], args[Int(1LL)], size);
-                    break;
-                }
-                case OpFAbs:
-                case OpFNeg: {
-                    MInst in = inst(mFAluMem);
-                    in.dst = lowererDef(l, v);
-                    in.src = lowererUse(l, args[Int(0LL)]);
-                    in.size = size;
-                    in.aux = u8(6LL);
-                    in.mem = Mem{noReg, noReg, {}, {}, constF32Abs};
-                    if (val->op == OpFNeg) {
-                        in.aux = u8(9LL);
-                        in.mem.label = constF32Sign;
-                    }
-                    if (size == u8(8LL)) {
-                        in.mem.label += i32(2LL);
-                    }
-                    lowererEmit(l, in);
-                    break;
-                }
-                case OpFSqrt:
-                case OpFCeil:
-                case OpFFloor:
-                case OpFTrunc:
-                case OpFNearest: {
-                    MInst in = inst(mFUnary);
-                    in.dst = lowererDef(l, v);
-                    in.src = lowererUse(l, args[Int(0LL)]);
-                    in.size = size;
-                    if (val->op != OpFSqrt) {
-                        in.aux = fRound;
-                        switch (val->op) {
-                            case OpFFloor: {
-                                in.imm = 1;
-                                break;
-                            }
-                            case OpFCeil: {
-                                in.imm = 2;
-                                break;
-                            }
-                            case OpFTrunc: {
-                                in.imm = 3;
-                                break;
-                            }
-                            default: {
-                                break;
-                            }
+                lowererEmit(l, in);
+                break;
+            }
+            case OpFSqrt:
+            case OpFCeil:
+            case OpFFloor:
+            case OpFTrunc:
+            case OpFNearest: {
+                MInst in = inst(mFUnary);
+                in.dst = lowererDef(l, v);
+                in.src = lowererUse(l, args[Int(0LL)]);
+                in.size = size;
+                if (val->op != OpFSqrt) {
+                    in.aux = fRound;
+                    switch (val->op) {
+                        case OpFFloor: {
+                            in.imm = 1;
+                            break;
+                        }
+                        case OpFCeil: {
+                            in.imm = 2;
+                            break;
+                        }
+                        case OpFTrunc: {
+                            in.imm = 3;
+                            break;
+                        }
+                        default: {
+                            break;
                         }
                     }
+                }
+                lowererEmit(l, in);
+                break;
+            }
+            case OpWrap: {
+                MInst in = inst(mMov);
+                in.dst = lowererDef(l, v);
+                in.src = lowererUse(l, args[Int(0LL)]);
+                in.size = u8(4LL);
+                in.aux = u8(1LL);
+                lowererEmit(l, in);
+                break;
+            }
+            case OpExtendU: {
+                lowererMov(l, lowererDef(l, v), lowererUse(l, args[Int(0LL)]), u8(8LL));
+                break;
+            }
+            case OpExtendS: {
+                MInst in = inst(mExt);
+                in.dst = lowererDef(l, v);
+                in.src = lowererUse(l, args[Int(0LL)]);
+                in.size = u8(4LL);
+                in.dsize = u8(8LL);
+                in.aux = u8(1LL);
+                lowererEmit(l, in);
+                break;
+            }
+            case OpTruncS:
+            case OpTruncU:
+            case OpTruncSatS:
+            case OpTruncSatU: {
+                MInst in = inst(mTruncF);
+                in.dst = lowererDef(l, v);
+                in.src = lowererUse(l, args[Int(0LL)]);
+                in.size = size;
+                in.dsize = typeSize(f->values[args[Int(0LL)]].typ);
+                if (l->rawTrunc[v]) {
+                    in.op = mCvtFI;
                     lowererEmit(l, in);
                     break;
                 }
-                case OpWrap: {
-                    MInst in = inst(mMov);
-                    in.dst = lowererDef(l, v);
-                    in.src = lowererUse(l, args[Int(0LL)]);
-                    in.size = u8(4LL);
-                    in.aux = u8(1LL);
-                    lowererEmit(l, in);
-                    break;
-                }
-                case OpExtendU: {
-                    lowererMov(l, lowererDef(l, v), lowererUse(l, args[Int(0LL)]), u8(8LL));
-                    break;
-                }
-                case OpExtendS: {
-                    MInst in = inst(mExt);
-                    in.dst = lowererDef(l, v);
-                    in.src = lowererUse(l, args[Int(0LL)]);
-                    in.size = u8(4LL);
-                    in.dsize = u8(8LL);
-                    in.aux = u8(1LL);
-                    lowererEmit(l, in);
-                    break;
-                }
-                case OpTruncS:
-                case OpTruncU:
-                case OpTruncSatS:
-                case OpTruncSatU: {
-                    MInst in = inst(mTruncF);
-                    in.dst = lowererDef(l, v);
-                    in.src = lowererUse(l, args[Int(0LL)]);
-                    in.size = size;
-                    in.dsize = typeSize(f->values[args[Int(0LL)]].typ);
-                    if (l->rawTrunc[v]) {
-                        in.op = mCvtFI;
-                        lowererEmit(l, in);
-                        break;
+                if (val->op == OpTruncU || val->op == OpTruncSatU) {
+                    in.aux |= truncUnsigned;
+                    if (size == u8(4LL)) {
+                        mInstExtra(&in)->temps.assign(Span<const VReg>({mFuncNewReg(l->mf, classGPR)}));
+                    } else {
+                        mInstExtra(&in)->temps.assign(Span<const VReg>({mFuncNewReg(l->mf, classXMM), mFuncNewReg(l->mf, classGPR)}));
                     }
-                    if (val->op == OpTruncU || val->op == OpTruncSatU) {
-                        in.aux |= truncUnsigned;
-                        if (size == u8(4LL)) {
-                            mInstExtra(&in)->temps.assign(Span<const VReg>({mFuncNewReg(l->mf, classGPR)}));
-                        } else {
-                            mInstExtra(&in)->temps.assign(Span<const VReg>({mFuncNewReg(l->mf, classXMM), mFuncNewReg(l->mf, classGPR)}));
-                        }
-                    }
-                    if (val->op == OpTruncSatS || val->op == OpTruncSatU) {
-                        in.aux |= truncSat;
-                    }
-                    lowererEmit(l, in);
-                    break;
                 }
-                case OpConvertS:
-                case OpConvertU: {
-                    lowererConvert(l, v, val->op, args[Int(0LL)], size);
-                    break;
+                if (val->op == OpTruncSatS || val->op == OpTruncSatU) {
+                    in.aux |= truncSat;
                 }
-                case OpDemote:
-                case OpPromote: {
-                    MInst in = inst(mCvtFF);
-                    in.dst = lowererDef(l, v);
-                    in.src = lowererUse(l, args[Int(0LL)]);
-                    in.size = typeSize(f->values[args[Int(0LL)]].typ);
-                    in.dsize = size;
-                    lowererEmit(l, in);
-                    break;
+                lowererEmit(l, in);
+                break;
+            }
+            case OpConvertS:
+            case OpConvertU: {
+                lowererConvert(l, v, val->op, args[Int(0LL)], size);
+                break;
+            }
+            case OpDemote:
+            case OpPromote: {
+                MInst in = inst(mCvtFF);
+                in.dst = lowererDef(l, v);
+                in.src = lowererUse(l, args[Int(0LL)]);
+                in.size = typeSize(f->values[args[Int(0LL)]].typ);
+                in.dsize = size;
+                lowererEmit(l, in);
+                break;
+            }
+            case OpReinterpret: {
+                MInst in = inst(mMovGX);
+                if (!isFloat(val->typ)) {
+                    in.op = mMovXG;
                 }
-                case OpReinterpret: {
-                    MInst in = inst(mMovGX);
-                    if (!isFloat(val->typ)) {
-                        in.op = mMovXG;
-                    }
-                    in.dst = lowererDef(l, v);
-                    in.src = lowererUse(l, args[Int(0LL)]);
-                    in.size = size;
-                    lowererEmit(l, in);
-                    break;
-                }
-                case OpSelect: {
-                    lowererSelectValue(l, v, args);
-                    break;
-                }
-                case OpLoad: {
-                    lowererLoad(l, v, args[Int(0LL)]);
-                    break;
-                }
-                case OpStore: {
-                    lowererStore(l, v, args[Int(0LL)], args[Int(1LL)]);
-                    break;
-                }
-                case OpMemSize: {
-                    MInst in = inst(mLoad);
-                    in.dst = lowererDef(l, v);
-                    in.mem = memAt(ctxReg, offMemSize);
-                    in.size = u8(8LL);
-                    in.dsize = u8(8LL);
-                    lowererEmit(l, in);
-                    MInst sh = inst(mShiftImm);
-                    sh.dst = in.dst;
-                    sh.imm = i64(16LL);
-                    sh.size = u8(8LL);
-                    sh.aux = shiftShr;
-                    lowererEmit(l, sh);
-                    break;
-                }
-                case OpMemGrow: {
-                    lowererStubCall(l, stubMemoryGrow, sliceOf<VReg>({lowererUse(l, args[Int(0LL)])}), sliceOf<ValType>({I32}), v);
-                    break;
-                }
-                case OpMemCopy: {
-                    lowererMemCopy(l, args);
-                    break;
-                }
-                case OpCopyForward: {
-                    auto temporary828 = mFuncNewReg(l->mf, classGPR);
-                    auto temporary829 = mFuncNewReg(l->mf, classGPR);
-                    VReg dst = temporary828;
-                    VReg src = temporary829;
-                    lowererMemAddr(l, dst, lowererUse(l, args[Int(0LL)]));
-                    lowererMemAddr(l, src, lowererUse(l, args[Int(1LL)]));
-                    MInst pm = inst(mParMove);
-                    mInstExtra(&pm)->moves.assign(Span<const Move>({Move{RDI, dst}, Move{RSI, src}, Move{RCX, lowererUse(l, args[Int(2LL)])}}));
-                    lowererEmit(l, pm);
-                    MInst in = inst(mCopyForward);
-                    mInstExtra(&in)->uses.assign(Span<const VReg>({RDI, RSI, RCX}));
-                    mInstExtra(&in)->defs.assign(Span<const VReg>({RAX, RDI, RSI, RCX}));
-                    lowererEmit(l, in);
-                    break;
-                }
-                case OpMemFill: {
-                    lowererMemFill(l, args);
-                    break;
-                }
-                case OpMemInit: {
-                    lowererMemInit(l, convert<i64>(val->aux), args);
-                    break;
-                }
-                case OpDataDrop: {
-                    MInst in = inst(mStoreImm);
-                    in.mem = memAt(ctxReg, layoutDataDropped(l->lay, convert<i64>(val->aux)));
-                    in.size = u8(1LL);
-                    in.imm = i64(1LL);
-                    lowererEmit(l, in);
-                    break;
-                }
-                case OpGlobalGet: {
-                    lowererGlobalGet(l, v, convert<i64>(val->aux));
-                    break;
-                }
-                case OpGlobalSet: {
-                    lowererGlobalSet(l, convert<i64>(val->aux), args[Int(0LL)]);
-                    break;
-                }
-                case OpCall: {
-                    lowererCall(l, v, convert<i64>(val->aux), args);
-                    break;
-                }
-                case OpCallIndirect: {
-                    lowererCallIndirect(l, v, convert<i64>(val->aux), convert<i64>(val->aux2), args);
-                    break;
-                }
-                case OpExtract: {
-                    break;
-                }
-                case OpRefFunc: {
-                    MInst in = inst(mLea);
-                    in.dst = lowererDef(l, v);
-                    in.mem = memAt(ctxReg, layoutDesc(l->lay, convert<i64>(val->aux)));
-                    in.size = u8(8LL);
-                    lowererEmit(l, in);
-                    break;
-                }
-                case OpRefIsNull: {
-                    MInst in = inst(mTest);
-                    VReg a = lowererUse(l, args[Int(0LL)]);
-                    in.src = a;
-                    in.src2 = a;
-                    in.size = u8(8LL);
-                    lowererEmit(l, in);
-                    MInst set = inst(mSetcc);
-                    set.dst = lowererDef(l, v);
-                    set.cc = ccE;
-                    lowererEmit(l, set);
-                    break;
-                }
-                case OpTableGet: {
-                    lowererTableGet(l, v, convert<i64>(val->aux), args[Int(0LL)]);
-                    break;
-                }
-                case OpTableSet: {
-                    lowererTableSet(l, convert<i64>(val->aux), args[Int(0LL)], args[Int(1LL)]);
-                    break;
-                }
-                case OpTableSize: {
-                    MInst in = inst(mLoad);
-                    in.dst = lowererDef(l, v);
-                    in.mem = memAt(ctxReg, l->lay->tables[val->aux] + tableSize);
-                    in.size = u8(4LL);
-                    in.dsize = u8(4LL);
-                    lowererEmit(l, in);
-                    break;
-                }
-                case OpTableGrow: {
-                    VReg table = lowererConstReg(l, val->aux, u8(4LL));
-                    lowererStubCall(l, stubTableGrow, sliceOf<VReg>({table, lowererUse(l, args[Int(1LL)]), lowererUse(l, args[Int(0LL)])}), sliceOf<ValType>({I32, I32, FuncRef}), v);
-                    break;
-                }
-                default: {
-                    compilerError(String("unsupported operator %s in function %d"));
-                    break;
-                }
+                in.dst = lowererDef(l, v);
+                in.src = lowererUse(l, args[Int(0LL)]);
+                in.size = size;
+                lowererEmit(l, in);
+                break;
+            }
+            case OpSelect: {
+                lowererSelectValue(l, v, args);
+                break;
+            }
+            case OpLoad: {
+                lowererLoad(l, v, args[Int(0LL)]);
+                break;
+            }
+            case OpStore: {
+                lowererStore(l, v, args[Int(0LL)], args[Int(1LL)]);
+                break;
+            }
+            case OpMemSize: {
+                MInst in = inst(mLoad);
+                in.dst = lowererDef(l, v);
+                in.mem = memAt(ctxReg, offMemSize);
+                in.size = u8(8LL);
+                in.dsize = u8(8LL);
+                lowererEmit(l, in);
+                MInst sh = inst(mShiftImm);
+                sh.dst = in.dst;
+                sh.imm = i64(16LL);
+                sh.size = u8(8LL);
+                sh.aux = shiftShr;
+                lowererEmit(l, sh);
+                break;
+            }
+            case OpMemGrow: {
+                lowererStubCall(l, stubMemoryGrow, sliceOf<VReg>({lowererUse(l, args[Int(0LL)])}), sliceOf<ValType>({I32}), v);
+                break;
+            }
+            case OpMemCopy: {
+                lowererMemCopy(l, args);
+                break;
+            }
+            case OpCopyForward: {
+                auto temporary828 = mFuncNewReg(l->mf, classGPR);
+                auto temporary829 = mFuncNewReg(l->mf, classGPR);
+                VReg dst = temporary828;
+                VReg src = temporary829;
+                lowererMemAddr(l, dst, lowererUse(l, args[Int(0LL)]));
+                lowererMemAddr(l, src, lowererUse(l, args[Int(1LL)]));
+                MInst pm = inst(mParMove);
+                mInstExtra(&pm)->moves.assign(Span<const Move>({Move{RDI, dst}, Move{RSI, src}, Move{RCX, lowererUse(l, args[Int(2LL)])}}));
+                lowererEmit(l, pm);
+                MInst in = inst(mCopyForward);
+                mInstExtra(&in)->uses.assign(Span<const VReg>({RDI, RSI, RCX}));
+                mInstExtra(&in)->defs.assign(Span<const VReg>({RAX, RDI, RSI, RCX}));
+                lowererEmit(l, in);
+                break;
+            }
+            case OpMemFill: {
+                lowererMemFill(l, args);
+                break;
+            }
+            case OpMemInit: {
+                lowererMemInit(l, convert<i64>(val->aux), args);
+                break;
+            }
+            case OpDataDrop: {
+                MInst in = inst(mStoreImm);
+                in.mem = memAt(ctxReg, layoutDataDropped(l->lay, convert<i64>(val->aux)));
+                in.size = u8(1LL);
+                in.imm = i64(1LL);
+                lowererEmit(l, in);
+                break;
+            }
+            case OpGlobalGet: {
+                lowererGlobalGet(l, v, convert<i64>(val->aux));
+                break;
+            }
+            case OpGlobalSet: {
+                lowererGlobalSet(l, convert<i64>(val->aux), args[Int(0LL)]);
+                break;
+            }
+            case OpCall: {
+                lowererCall(l, v, convert<i64>(val->aux), args);
+                break;
+            }
+            case OpCallIndirect: {
+                lowererCallIndirect(l, v, convert<i64>(val->aux), convert<i64>(val->aux2), args);
+                break;
+            }
+            case OpExtract: {
+                break;
+            }
+            case OpRefFunc: {
+                MInst in = inst(mLea);
+                in.dst = lowererDef(l, v);
+                in.mem = memAt(ctxReg, layoutDesc(l->lay, convert<i64>(val->aux)));
+                in.size = u8(8LL);
+                lowererEmit(l, in);
+                break;
+            }
+            case OpRefIsNull: {
+                MInst in = inst(mTest);
+                VReg a = lowererUse(l, args[Int(0LL)]);
+                in.src = a;
+                in.src2 = a;
+                in.size = u8(8LL);
+                lowererEmit(l, in);
+                MInst set = inst(mSetcc);
+                set.dst = lowererDef(l, v);
+                set.cc = ccE;
+                lowererEmit(l, set);
+                break;
+            }
+            case OpTableGet: {
+                lowererTableGet(l, v, convert<i64>(val->aux), args[Int(0LL)]);
+                break;
+            }
+            case OpTableSet: {
+                lowererTableSet(l, convert<i64>(val->aux), args[Int(0LL)], args[Int(1LL)]);
+                break;
+            }
+            case OpTableSize: {
+                MInst in = inst(mLoad);
+                in.dst = lowererDef(l, v);
+                in.mem = memAt(ctxReg, l->lay->tables[val->aux] + tableSize);
+                in.size = u8(4LL);
+                in.dsize = u8(4LL);
+                lowererEmit(l, in);
+                break;
+            }
+            case OpTableGrow: {
+                VReg table = lowererConstReg(l, val->aux, u8(4LL));
+                lowererStubCall(l, stubTableGrow, sliceOf<VReg>({table, lowererUse(l, args[Int(1LL)]), lowererUse(l, args[Int(0LL)])}), sliceOf<ValType>({I32, I32, FuncRef}), v);
+                break;
+            }
+            default: {
+                compilerError(String("unsupported operator %s in function %d"));
+                break;
             }
         }
     }
@@ -15925,50 +15405,44 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Function* f = l->f;
         l->deferred.resize(f->values.size());
         l->deferred.fill(false);
-        {
-            auto range830 = l->ci->order;
-            for (Int index831 = 0, rangeEnd832 = length(range830); index831 < rangeEnd832; ++index831) {
-                i32 b = range830[index831];
-                Block* blk = &f->blocks[b];
-                if (blk->term.kind == TermIf) {
-                    i32 c = blk->term.value;
-                    if (l->uses[c] == i32(1LL) && f->values[c].block == b && flagCondition(f->values[c].op)) {
-                        l->deferred[c] = true;
+        auto range830 = l->ci->order;
+        for (Int index831 = 0, rangeEnd832 = length(range830); index831 < rangeEnd832; ++index831) {
+            i32 b = range830[index831];
+            Block* blk = &f->blocks[b];
+            if (blk->term.kind == TermIf) {
+                i32 c = blk->term.value;
+                if (l->uses[c] == i32(1LL) && f->values[c].block == b && flagCondition(f->values[c].op)) {
+                    l->deferred[c] = true;
+                }
+            }
+            auto range833 = blk->instrs.view();
+            for (Int index834 = 0, rangeEnd835 = length(range833); index834 < rangeEnd835; ++index834) {
+                i32 v = range833[index834];
+                Value* val = &f->values[v];
+                if (val->op == OpAdd) {
+                    Span<i32> args = functionArgs(f, v);
+                    Int i = length(args) - Int(1LL);
+                    for (; i >= Int(0LL); i--) {
+                        i32 a = args[i];
+                        if (lowererScaledIndex(l, a, b)) {
+                            l->deferred[a] = true;
+                            break;
+                        }
                     }
                 }
-                {
-                    auto range833 = blk->instrs.view();
-                    for (Int index834 = 0, rangeEnd835 = length(range833); index834 < rangeEnd835; ++index834) {
-                        i32 v = range833[index834];
-                        Value* val = &f->values[v];
-                        if (val->op == OpAdd) {
-                            Span<i32> args = functionArgs(f, v);
-                            {
-                                Int i = length(args) - Int(1LL);
-                                for (; i >= Int(0LL); i--) {
-                                    i32 a = args[i];
-                                    if (lowererScaledIndex(l, a, b)) {
-                                        l->deferred[a] = true;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        if (val->op == OpEqz) {
-                            i32 a = functionArgs(f, v)[Int(0LL)];
-                            if (l->uses[a] == i32(1LL) && f->values[a].block == b && f->values[a].op == OpAnd) {
-                                l->deferred[a] = true;
-                            }
-                        }
-                        if (f->values[v].op != OpSelect) {
-                            continue;
-                        }
-                        i32 c = functionArgs(f, v)[Int(0LL)];
-                        Op op = f->values[c].op;
-                        if (l->uses[c] == i32(1LL) && f->values[c].block == b && flagCondition(op)) {
-                            l->deferred[c] = true;
-                        }
+                if (val->op == OpEqz) {
+                    i32 a = functionArgs(f, v)[Int(0LL)];
+                    if (l->uses[a] == i32(1LL) && f->values[a].block == b && f->values[a].op == OpAnd) {
+                        l->deferred[a] = true;
                     }
+                }
+                if (f->values[v].op != OpSelect) {
+                    continue;
+                }
+                i32 c = functionArgs(f, v)[Int(0LL)];
+                Op op = f->values[c].op;
+                if (l->uses[c] == i32(1LL) && f->values[c].block == b && flagCondition(op)) {
+                    l->deferred[c] = true;
                 }
             }
         }
@@ -16103,13 +15577,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // outgoing makes room for a call's stack arguments and results.
     static void lowererOutgoing(Lowerer* l, Int stackArgs, Slice<VReg> regs) {
         Int n = stackArgs;
-        {
-            auto range845 = regs;
-            for (Int index846 = 0, rangeEnd847 = length(range845); index846 < rangeEnd847; ++index846) {
-                VReg r = range845[index846];
-                if (r == noReg) {
-                    n++;
-                }
+        auto range845 = regs;
+        for (Int index846 = 0, rangeEnd847 = length(range845); index846 < rangeEnd847; ++index846) {
+            VReg r = range845[index846];
+            if (r == noReg) {
+                n++;
             }
         }
         if (Int(8LL) * n > l->mf->stackArgs) {
@@ -16122,14 +15594,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static Tuple2<Slice<VReg>, Int> lowererPlaceArgs(Lowerer* l, Span<const i32> args) {
         Slice<VReg> regs = makeSlice<VReg>(length(args));
         Slice<ValType> types = makeSlice<ValType>(length(args));
-        {
-            auto range848 = args;
-            for (Int index849 = 0, rangeEnd850 = length(range848); index849 < rangeEnd850; ++index849) {
-                Int i = index849;
-                i32 a = range848[index849];
-                regs[i] = lowererUse(l, a);
-                types[i] = l->f->values[a].typ;
-            }
+        auto range848 = args;
+        for (Int index849 = 0, rangeEnd850 = length(range848); index849 < rangeEnd850; ++index849) {
+            Int i = index849;
+            i32 a = range848[index849];
+            regs[i] = lowererUse(l, a);
+            types[i] = l->f->values[a].typ;
         }
         return lowererPlaceRegs(l, regs, types);
     }
@@ -16140,12 +15610,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void lowererPlaceFloatConstants(Lowerer* l) {
         Function* f = l->f;
         Slice<i32> homes = makeSlice<i32>(length(f->values));
-        {
-            auto range851 = homes;
-            for (Int index852 = 0, rangeEnd853 = length(range851); index852 < rangeEnd853; ++index852) {
-                Int v = index852;
-                homes[v] = i32(-1LL);
-            }
+        auto range851 = homes;
+        for (Int index852 = 0, rangeEnd853 = length(range851); index852 < rangeEnd853; ++index852) {
+            Int v = index852;
+            homes[v] = i32(-1LL);
         }
         auto use = [&](i32 b, i32 v) mutable -> void {
             Value* val = &f->values[v];
@@ -16158,62 +15626,46 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 homes[v] = cfgInfoIntersect(l->ci, homes[v], b);
             }
         };
-        {
-            auto range854 = l->ci->order;
-            for (Int index855 = 0, rangeEnd856 = length(range854); index855 < rangeEnd856; ++index855) {
-                i32 b = range854[index855];
-                Block* blk = &f->blocks[b];
-                {
-                    auto range857 = blk->instrs.view();
-                    for (Int index858 = 0, rangeEnd859 = length(range857); index858 < rangeEnd859; ++index858) {
-                        i32 v = range857[index858];
-                        {
-                            auto range860 = functionArgs(f, v);
-                            for (Int index861 = 0, rangeEnd862 = length(range860); index861 < rangeEnd862; ++index861) {
-                                i32 a = range860[index861];
-                                use(b, a);
-                            }
-                        }
-                    }
+        auto range854 = l->ci->order;
+        for (Int index855 = 0, rangeEnd856 = length(range854); index855 < rangeEnd856; ++index855) {
+            i32 b = range854[index855];
+            Block* blk = &f->blocks[b];
+            auto range857 = blk->instrs.view();
+            for (Int index858 = 0, rangeEnd859 = length(range857); index858 < rangeEnd859; ++index858) {
+                i32 v = range857[index858];
+                auto range860 = functionArgs(f, v);
+                for (Int index861 = 0, rangeEnd862 = length(range860); index861 < rangeEnd862; ++index861) {
+                    i32 a = range860[index861];
+                    use(b, a);
                 }
-                {
-                    auto range863 = blk->term.values;
-                    for (Int index864 = 0, rangeEnd865 = length(range863); index864 < rangeEnd865; ++index864) {
-                        i32 v = range863[index864];
-                        use(b, v);
-                    }
-                }
-                {
-                    auto range866 = blk->term.edges;
-                    for (Int index867 = 0, rangeEnd868 = length(range866); index867 < rangeEnd868; ++index867) {
-                        Edge e = range866[index867];
-                        {
-                            auto range869 = e.args;
-                            for (Int index870 = 0, rangeEnd871 = length(range869); index870 < rangeEnd871; ++index870) {
-                                i32 v = range869[index870];
-                                use(b, v);
-                            }
-                        }
-                    }
+            }
+            auto range863 = blk->term.values;
+            for (Int index864 = 0, rangeEnd865 = length(range863); index864 < rangeEnd865; ++index864) {
+                i32 v = range863[index864];
+                use(b, v);
+            }
+            auto range866 = blk->term.edges;
+            for (Int index867 = 0, rangeEnd868 = length(range866); index867 < rangeEnd868; ++index867) {
+                Edge e = range866[index867];
+                auto range869 = e.args;
+                for (Int index870 = 0, rangeEnd871 = length(range869); index870 < rangeEnd871; ++index870) {
+                    i32 v = range869[index870];
+                    use(b, v);
                 }
             }
         }
         l->floatHomes = makeSlice<Slice<i32>>(length(f->blocks));
-        {
-            auto range872 = homes;
-            for (Int index873 = 0, rangeEnd874 = length(range872); index873 < rangeEnd874; ++index873) {
-                Int v = index873;
-                i32 b = range872[index873];
-                if (b < i32(0LL)) {
-                    continue;
-                }
-                {
-                    for (; l->ci->depth[b] > i32(0LL) && l->ci->idom[b] != b;) {
-                        b = l->ci->idom[b];
-                    }
-                }
-                l->floatHomes[b] = appendValues(l->floatHomes[b], convert<i32>(v));
+        auto range872 = homes;
+        for (Int index873 = 0, rangeEnd874 = length(range872); index873 < rangeEnd874; ++index873) {
+            Int v = index873;
+            i32 b = range872[index873];
+            if (b < i32(0LL)) {
+                continue;
             }
+            for (; l->ci->depth[b] > i32(0LL) && l->ci->idom[b] != b;) {
+                b = l->ci->idom[b];
+            }
+            l->floatHomes[b] = appendValues(l->floatHomes[b], convert<i32>(v));
         }
     }
 
@@ -16229,32 +15681,30 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Int xi = temporary876;
         Int stack = temporary877;
         MInst pm = inst(mParMove);
-        {
-            auto range878 = regs;
-            for (Int index879 = 0, rangeEnd880 = length(range878); index879 < rangeEnd880; ++index879) {
-                Int i = index879;
-                VReg r = range878[index879];
-                ValType t = types[i];
-                if (isFloat(t)) {
-                    if (xi < length(argXMMs)) {
-                        mInstExtra(&pm)->moves.pushBack(Move{argXMMs[xi], r});
-                        uses = appendValues(uses, argXMMs[xi]);
-                        xi++;
-                        continue;
-                    }
-                } else if (gi < length(argGPRs)) {
-                    mInstExtra(&pm)->moves.pushBack(Move{argGPRs[gi], r});
-                    uses = appendValues(uses, argGPRs[gi]);
-                    gi++;
+        auto range878 = regs;
+        for (Int index879 = 0, rangeEnd880 = length(range878); index879 < rangeEnd880; ++index879) {
+            Int i = index879;
+            VReg r = range878[index879];
+            ValType t = types[i];
+            if (isFloat(t)) {
+                if (xi < length(argXMMs)) {
+                    mInstExtra(&pm)->moves.pushBack(Move{argXMMs[xi], r});
+                    uses = appendValues(uses, argXMMs[xi]);
+                    xi++;
                     continue;
                 }
-                MInst in = inst(mStackArg);
-                in.src = r;
-                in.imm = convert<i64>(stack);
-                in.size = typeSize(t);
-                lowererEmit(l, in);
-                stack++;
+            } else if (gi < length(argGPRs)) {
+                mInstExtra(&pm)->moves.pushBack(Move{argGPRs[gi], r});
+                uses = appendValues(uses, argGPRs[gi]);
+                gi++;
+                continue;
             }
+            MInst in = inst(mStackArg);
+            in.src = r;
+            in.imm = convert<i64>(stack);
+            in.size = typeSize(t);
+            lowererEmit(l, in);
+            stack++;
         }
         if (length(mInstMoves(&pm)) > Int(0LL)) {
             lowererEmit(l, pm);
@@ -16486,18 +15936,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         if (!isFloat(t)) {
-            {
-                auto temporary887 = lowererImm(l, value, width);
-                i64 x = temporary887.v0;
-                bool ok = temporary887.v1;
-                if (ok && width <= u8(8LL)) {
-                    MInst in = inst(mStoreImm);
-                    in.mem = mem;
-                    in.imm = x;
-                    in.size = width;
-                    lowererEmit(l, in);
-                    return;
-                }
+            auto temporary887 = lowererImm(l, value, width);
+            i64 x = temporary887.v0;
+            bool ok = temporary887.v1;
+            if (ok && width <= u8(8LL)) {
+                MInst in = inst(mStoreImm);
+                in.mem = mem;
+                in.imm = x;
+                in.size = width;
+                lowererEmit(l, in);
+                return;
             }
         }
         MInst in = inst(mStore);
@@ -16604,46 +16052,40 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             dsts = sliceOf<VReg>({lowererDef(l, v)});
         } else {
             dsts = makeSlice<VReg>(length(results));
-            {
-                auto range889 = dsts;
-                for (Int index890 = 0, rangeEnd891 = length(range889); index890 < rangeEnd891; ++index890) {
-                    Int i = index890;
-                    dsts[i] = noReg;
-                }
+            auto range889 = dsts;
+            for (Int index890 = 0, rangeEnd891 = length(range889); index890 < rangeEnd891; ++index890) {
+                Int i = index890;
+                dsts[i] = noReg;
             }
-            {
-                auto range892 = lowererExtracts(l, v);
-                for (Int index893 = 0, rangeEnd894 = length(range892); index893 < rangeEnd894; ++index893) {
-                    i32 user = range892[index893];
-                    dsts[l->f->values[user].aux] = lowererDef(l, user);
-                }
+            auto range892 = lowererExtracts(l, v);
+            for (Int index893 = 0, rangeEnd894 = length(range892); index893 < rangeEnd894; ++index893) {
+                i32 user = range892[index893];
+                dsts[l->f->values[user].aux] = lowererDef(l, user);
             }
         }
         MInst pm = inst(mParMove);
         Int slot = stackArgs;
-        {
-            auto range895 = dsts;
-            for (Int index896 = 0, rangeEnd897 = length(range895); index896 < rangeEnd897; ++index896) {
-                Int i = index896;
-                VReg d = range895[index896];
-                if (regs[i] == noReg) {
-                    if (d != noReg) {
-                        MInst in = inst(mLoad);
-                        if (isFloat(results[i])) {
-                            in.op = mFLoad;
-                        }
-                        in.dst = d;
-                        in.mem = memAt(RSP, convert<i32>(Int(8LL) * slot));
-                        in.size = typeSize(results[i]);
-                        in.dsize = in.size;
-                        lowererEmit(l, in);
-                    }
-                    slot++;
-                    continue;
-                }
+        auto range895 = dsts;
+        for (Int index896 = 0, rangeEnd897 = length(range895); index896 < rangeEnd897; ++index896) {
+            Int i = index896;
+            VReg d = range895[index896];
+            if (regs[i] == noReg) {
                 if (d != noReg) {
-                    mInstExtra(&pm)->moves.pushBack(Move{d, regs[i]});
+                    MInst in = inst(mLoad);
+                    if (isFloat(results[i])) {
+                        in.op = mFLoad;
+                    }
+                    in.dst = d;
+                    in.mem = memAt(RSP, convert<i32>(Int(8LL) * slot));
+                    in.size = typeSize(results[i]);
+                    in.dsize = in.size;
+                    lowererEmit(l, in);
                 }
+                slot++;
+                continue;
+            }
+            if (d != noReg) {
+                mInstExtra(&pm)->moves.pushBack(Move{d, regs[i]});
             }
         }
         if (length(mInstMoves(&pm)) > Int(0LL)) {
@@ -16653,160 +16095,152 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void lowererTerminator(Lowerer* l, i32 b) {
         Term* t = &l->f->blocks[b].term;
-        {
-            auto switch898 = t->kind;
-            switch (switch898) {
-                case TermJump: {
-                    lowererEdgeMoves(l, &t->edges[Int(0LL)]);
-                    MInst j = inst(mJmp);
-                    j.target = l->mblk[t->edges[Int(0LL)].block];
-                    lowererEmit(l, j);
-                    break;
+        auto switch898 = t->kind;
+        switch (switch898) {
+            case TermJump: {
+                lowererEdgeMoves(l, &t->edges[Int(0LL)]);
+                MInst j = inst(mJmp);
+                j.target = l->mblk[t->edges[Int(0LL)].block];
+                lowererEmit(l, j);
+                break;
+            }
+            case TermIf: {
+                i32 then = lowererEdgeBlock(l, b, Int(0LL));
+                i32 els = lowererEdgeBlock(l, b, Int(1LL));
+                u8 cc = {};
+                Int parity = Int(0LL);
+                if (l->deferred[t->value]) {
+                    auto temporary899 = lowererCompare(l, t->value);
+                    cc = temporary899.v0;
+                    parity = temporary899.v1;
+                } else {
+                    VReg c = lowererUse(l, t->value);
+                    MInst tst = inst(mTest);
+                    tst.src = c;
+                    tst.src2 = c;
+                    tst.size = u8(4LL);
+                    lowererEmit(l, tst);
+                    cc = ccNE;
                 }
-                case TermIf: {
-                    i32 then = lowererEdgeBlock(l, b, Int(0LL));
-                    i32 els = lowererEdgeBlock(l, b, Int(1LL));
-                    u8 cc = {};
-                    Int parity = Int(0LL);
-                    if (l->deferred[t->value]) {
-                        auto temporary899 = lowererCompare(l, t->value);
-                        cc = temporary899.v0;
-                        parity = temporary899.v1;
-                    } else {
-                        VReg c = lowererUse(l, t->value);
-                        MInst tst = inst(mTest);
-                        tst.src = c;
-                        tst.src2 = c;
-                        tst.size = u8(4LL);
-                        lowererEmit(l, tst);
-                        cc = ccNE;
-                    }
-                    {
-                        auto switch900 = parity;
-                        switch (switch900) {
-                            case Int(1LL): {
-                                MInst j = inst(mJcc);
-                                j.cc = ccNE;
-                                j.target = els;
-                                lowererEmit(l, j);
-                                j = inst(mJcc);
-                                j.cc = ccP;
-                                j.target = els;
-                                lowererEmit(l, j);
-                                j = inst(mJmp);
-                                j.target = then;
-                                lowererEmit(l, j);
-                                break;
-                                break;
-                            }
-                            case Int(2LL): {
-                                MInst j = inst(mJcc);
-                                j.cc = ccNE;
-                                j.target = then;
-                                lowererEmit(l, j);
-                                j = inst(mJcc);
-                                j.cc = ccP;
-                                j.target = then;
-                                lowererEmit(l, j);
-                                j = inst(mJmp);
-                                j.target = els;
-                                lowererEmit(l, j);
-                                break;
-                                break;
-                            }
-                        }
-                    }
-                    if (parity != Int(0LL)) {
-                        break;
-                    }
-                    MInst j = inst(mJcc);
-                    j.cc = cc;
-                    j.target = then;
-                    lowererEmit(l, j);
-                    j = inst(mJmp);
-                    j.target = els;
-                    lowererEmit(l, j);
-                    break;
-                }
-                case TermSwitch: {
-                    MInst in = inst(mSwitch);
-                    in.src = lowererUse(l, t->value);
-                    mInstExtra(&in)->temps.assign(Span<const VReg>({mFuncNewReg(l->mf, classGPR)}));
-                    {
-                        auto range901 = t->edges;
-                        for (Int index902 = 0, rangeEnd903 = length(range901); index902 < rangeEnd903; ++index902) {
-                            Int i = index902;
-                            mInstExtra(&in)->table.pushBack(lowererEdgeBlock(l, b, i));
-                        }
-                    }
-                    if (length(mInstTable(&in)) >= Int(5LL) && mInstTable(&in)[Int(0LL)] != mInstTable(&in)[length(mInstTable(&in)) - Int(1LL)]) {
-                        i32 dispatch = convert<i32>(length(l->mf->blocks));
-                        i32 first = mInstTable(&in)[Int(0LL)];
-                        mInstTable(&in)[Int(0LL)] = mInstTable(&in)[length(mInstTable(&in)) - Int(1LL)];
-                        in.aux = u8(1LL);
-                        l->mf->blocks.pushBack(MBlock{Vec<MInst>({in}), {}, {}, l->mf->blocks[l->cur].depth, i32(-1LL), {}});
-                        MInst test = inst(mTest);
-                        auto temporary904 = in.src;
-                        auto temporary905 = in.src;
-                        auto temporary906 = u8(4LL);
-                        test.src = temporary904;
-                        test.src2 = temporary905;
-                        test.size = temporary906;
-                        lowererEmit(l, test);
+                auto switch900 = parity;
+                switch (switch900) {
+                    case Int(1LL): {
                         MInst j = inst(mJcc);
-                        auto temporary907 = ccE;
-                        auto temporary908 = first;
-                        j.cc = temporary907;
-                        j.target = temporary908;
+                        j.cc = ccNE;
+                        j.target = els;
+                        lowererEmit(l, j);
+                        j = inst(mJcc);
+                        j.cc = ccP;
+                        j.target = els;
                         lowererEmit(l, j);
                         j = inst(mJmp);
-                        j.target = dispatch;
+                        j.target = then;
                         lowererEmit(l, j);
                         break;
+                        break;
                     }
-                    lowererEmit(l, in);
-                    break;
-                }
-                case TermReturn: {
-                    Slice<ValType> results = l->f->typ->results;
-                    Slice<VReg> regs = resultRegs(results);
-                    MInst pm = inst(mParMove);
-                    Int slot = Int(0LL);
-                    {
-                        auto range909 = t->values;
-                        for (Int index910 = 0, rangeEnd911 = length(range909); index910 < rangeEnd911; ++index910) {
-                            Int i = index910;
-                            i32 v = range909[index910];
-                            if (regs[i] != noReg) {
-                                mInstExtra(&pm)->moves.pushBack(Move{regs[i], lowererUse(l, v)});
-                                continue;
-                            }
-                            MInst in = inst(mStoreRet);
-                            in.src = lowererUse(l, v);
-                            in.imm = convert<i64>(slot);
-                            in.size = typeSize(results[i]);
-                            lowererEmit(l, in);
-                            slot++;
-                        }
+                    case Int(2LL): {
+                        MInst j = inst(mJcc);
+                        j.cc = ccNE;
+                        j.target = then;
+                        lowererEmit(l, j);
+                        j = inst(mJcc);
+                        j.cc = ccP;
+                        j.target = then;
+                        lowererEmit(l, j);
+                        j = inst(mJmp);
+                        j.target = els;
+                        lowererEmit(l, j);
+                        break;
+                        break;
                     }
-                    if (length(mInstMoves(&pm)) > Int(0LL)) {
-                        lowererEmit(l, pm);
+                }
+                if (parity != Int(0LL)) {
+                    break;
+                }
+                MInst j = inst(mJcc);
+                j.cc = cc;
+                j.target = then;
+                lowererEmit(l, j);
+                j = inst(mJmp);
+                j.target = els;
+                lowererEmit(l, j);
+                break;
+            }
+            case TermSwitch: {
+                MInst in = inst(mSwitch);
+                in.src = lowererUse(l, t->value);
+                mInstExtra(&in)->temps.assign(Span<const VReg>({mFuncNewReg(l->mf, classGPR)}));
+                auto range901 = t->edges;
+                for (Int index902 = 0, rangeEnd903 = length(range901); index902 < rangeEnd903; ++index902) {
+                    Int i = index902;
+                    mInstExtra(&in)->table.pushBack(lowererEdgeBlock(l, b, i));
+                }
+                if (length(mInstTable(&in)) >= Int(5LL) && mInstTable(&in)[Int(0LL)] != mInstTable(&in)[length(mInstTable(&in)) - Int(1LL)]) {
+                    i32 dispatch = convert<i32>(length(l->mf->blocks));
+                    i32 first = mInstTable(&in)[Int(0LL)];
+                    mInstTable(&in)[Int(0LL)] = mInstTable(&in)[length(mInstTable(&in)) - Int(1LL)];
+                    in.aux = u8(1LL);
+                    l->mf->blocks.pushBack(MBlock{Vec<MInst>({in}), {}, {}, l->mf->blocks[l->cur].depth, i32(-1LL), {}});
+                    MInst test = inst(mTest);
+                    auto temporary904 = in.src;
+                    auto temporary905 = in.src;
+                    auto temporary906 = u8(4LL);
+                    test.src = temporary904;
+                    test.src2 = temporary905;
+                    test.size = temporary906;
+                    lowererEmit(l, test);
+                    MInst j = inst(mJcc);
+                    auto temporary907 = ccE;
+                    auto temporary908 = first;
+                    j.cc = temporary907;
+                    j.target = temporary908;
+                    lowererEmit(l, j);
+                    j = inst(mJmp);
+                    j.target = dispatch;
+                    lowererEmit(l, j);
+                    break;
+                }
+                lowererEmit(l, in);
+                break;
+            }
+            case TermReturn: {
+                Slice<ValType> results = l->f->typ->results;
+                Slice<VReg> regs = resultRegs(results);
+                MInst pm = inst(mParMove);
+                Int slot = Int(0LL);
+                auto range909 = t->values;
+                for (Int index910 = 0, rangeEnd911 = length(range909); index910 < rangeEnd911; ++index910) {
+                    Int i = index910;
+                    i32 v = range909[index910];
+                    if (regs[i] != noReg) {
+                        mInstExtra(&pm)->moves.pushBack(Move{regs[i], lowererUse(l, v)});
+                        continue;
                     }
-                    MInst in = inst(mRet);
-                    mInstExtra(&in)->uses.assign(assigned(regs));
+                    MInst in = inst(mStoreRet);
+                    in.src = lowererUse(l, v);
+                    in.imm = convert<i64>(slot);
+                    in.size = typeSize(results[i]);
                     lowererEmit(l, in);
-                    break;
+                    slot++;
                 }
-                case TermTrap: {
-                    MInst in = inst(mTrap);
-                    in.imm = t->aux;
-                    lowererEmit(l, in);
-                    break;
+                if (length(mInstMoves(&pm)) > Int(0LL)) {
+                    lowererEmit(l, pm);
                 }
-                default: {
-                    compilerError(String("internal error: block %d of function %d has no terminator"));
-                    break;
-                }
+                MInst in = inst(mRet);
+                mInstExtra(&in)->uses.assign(assigned(regs));
+                lowererEmit(l, in);
+                break;
+            }
+            case TermTrap: {
+                MInst in = inst(mTrap);
+                in.imm = t->aux;
+                lowererEmit(l, in);
+                break;
+            }
+            default: {
+                compilerError(String("internal error: block %d of function %d has no terminator"));
+                break;
             }
         }
     }
@@ -16821,17 +16255,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         MInst in = inst(mTest);
         in.size = typeSize(l->f->values[a].typ);
         in.src = lowererUse(l, a);
-        {
-            auto temporary914 = lowererImm(l, b, in.size);
-            i64 x = temporary914.v0;
-            bool ok = temporary914.v1;
-            if (ok) {
-                in.op = mTestImm;
-                in.imm = x;
-                in.aux = u8(1LL);
-            } else {
-                in.src2 = lowererUse(l, b);
-            }
+        auto temporary914 = lowererImm(l, b, in.size);
+        i64 x = temporary914.v0;
+        bool ok = temporary914.v1;
+        if (ok) {
+            in.op = mTestImm;
+            in.imm = x;
+            in.aux = u8(1LL);
+        } else {
+            in.src2 = lowererUse(l, b);
         }
         lowererEmit(l, in);
     }
@@ -16909,68 +16341,58 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 BlockView original{mf->blocks[b].insts.view(), mf->blocks[b].succs, mf->blocks[b].depth};
                 Map<Array<AddressTerm, 4>, Slice<TailRangeGroup*>> active = mapOf<Array<AddressTerm, 4>, Slice<TailRangeGroup*>>({});
                 Slice<TailRangeGroup*> groups = {};
-                {
-                    auto range921 = original.insts;
-                    for (Int index922 = 0, rangeEnd923 = length(range921); index922 < rangeEnd923; ++index922) {
-                        Int j = index922;
-                        MInst in = range921[index922];
-                        if (in.op != mCheck) {
-                            {
-                                auto switch924 = in.op;
-                                switch (switch924) {
-                                    case mCall:
-                                    case mCallInd:
-                                    case mParMove:
-                                    case mGrowMem:
-                                    case mMemCopy:
-                                    case mMemFill:
-                                    case mMemOp:
-                                    case mCopyForward: {
-                                        clearMap(active);
-                                        break;
-                                    }
-                                }
-                            }
-                            continue;
-                        }
-                        AddressExpression expr = addressExpressionsOf(ranges, in.addressValue, Int(0LL));
-                        TailRangeGroup* group = {};
-                        {
-                            auto range925 = active[expr.terms];
-                            for (Int index926 = 0, rangeEnd927 = length(range925); index926 < rangeEnd927; ++index926) {
-                                TailRangeGroup* prior = range925[index926];
-                                u64 delta = convert<u64>(expr.offset - prior->expr.offset);
-                                if (delta + convert<u64>(in.imm) <= l->m->memoryTail) {
-                                    group = prior;
-                                    break;
-                                }
+                auto range921 = original.insts;
+                for (Int index922 = 0, rangeEnd923 = length(range921); index922 < rangeEnd923; ++index922) {
+                    Int j = index922;
+                    MInst in = range921[index922];
+                    if (in.op != mCheck) {
+                        auto switch924 = in.op;
+                        switch (switch924) {
+                            case mCall:
+                            case mCallInd:
+                            case mParMove:
+                            case mGrowMem:
+                            case mMemCopy:
+                            case mMemFill:
+                            case mMemOp:
+                            case mCopyForward: {
+                                clearMap(active);
+                                break;
                             }
                         }
-                        if (isNil(group)) {
-                            group = activePool->make<TailRangeGroup>(TailRangeGroup{j, in.src, expr, {}});
-                            setMap(active, expr.terms, appendValues(active[expr.terms], group));
-                            groups = appendValues(groups, group);
-                        }
-                        group->checks = appendValues(group->checks, j);
+                        continue;
                     }
+                    AddressExpression expr = addressExpressionsOf(ranges, in.addressValue, Int(0LL));
+                    TailRangeGroup* group = {};
+                    auto range925 = active[expr.terms];
+                    for (Int index926 = 0, rangeEnd927 = length(range925); index926 < rangeEnd927; ++index926) {
+                        TailRangeGroup* prior = range925[index926];
+                        u64 delta = convert<u64>(expr.offset - prior->expr.offset);
+                        if (delta + convert<u64>(in.imm) <= l->m->memoryTail) {
+                            group = prior;
+                            break;
+                        }
+                    }
+                    if (isNil(group)) {
+                        group = activePool->make<TailRangeGroup>(TailRangeGroup{j, in.src, expr, {}});
+                        setMap(active, expr.terms, appendValues(active[expr.terms], group));
+                        groups = appendValues(groups, group);
+                    }
+                    group->checks = appendValues(group->checks, j);
                 }
                 Slice<TailRangeGroup*> selected = subslice(groups, Int(0), Int(0LL));
                 Slice<bool> skip = makeSlice<bool>(length(original.insts));
-                {
-                    auto range928 = groups;
-                    for (Int index929 = 0, rangeEnd930 = length(range928); index929 < rangeEnd930; ++index929) {
-                        TailRangeGroup* group = range928[index929];
-                        if (length(group->checks) < Int(2LL)) {
-                            continue;
-                        }
-                        selected = appendValues(selected, group);
-                        {
-                            auto range931 = group->checks;
-                            for (Int index932 = 0, rangeEnd933 = length(range931); index932 < rangeEnd933; ++index932) {
-                                Int j = range931[index932];
-                                skip[j] = true;
-                            }
-                        }
+                auto range928 = groups;
+                for (Int index929 = 0, rangeEnd930 = length(range928); index929 < rangeEnd930; ++index929) {
+                    TailRangeGroup* group = range928[index929];
+                    if (length(group->checks) < Int(2LL)) {
+                        continue;
+                    }
+                    selected = appendValues(selected, group);
+                    auto range931 = group->checks;
+                    for (Int index932 = 0, rangeEnd933 = length(range931); index932 < rangeEnd933; ++index932) {
+                        Int j = range931[index932];
+                        skip[j] = true;
                     }
                 }
                 if (length(selected) == Int(0LL)) {
@@ -16980,18 +16402,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 original.insts = originalInsts.view();
                 changed = true;
                 Slice<TailRangeRegion> regions = {};
-                {
-                    auto range934 = selected;
-                    for (Int index935 = 0, rangeEnd936 = length(range934); index935 < rangeEnd936; ++index935) {
-                        TailRangeGroup* group = range934[index935];
-                        Int end = group->checks[length(group->checks) - Int(1LL)] + Int(1LL);
-                        if (length(regions) == Int(0LL) || group->start > regions[length(regions) - Int(1LL)].end) {
-                            regions = appendValues(regions, TailRangeRegion{{}, group->start, end});
-                        }
-                        TailRangeRegion* region = &regions[length(regions) - Int(1LL)];
-                        region->end = maximum(region->end, end);
-                        region->groups = appendValues(region->groups, group);
+                auto range934 = selected;
+                for (Int index935 = 0, rangeEnd936 = length(range934); index935 < rangeEnd936; ++index935) {
+                    TailRangeGroup* group = range934[index935];
+                    Int end = group->checks[length(group->checks) - Int(1LL)] + Int(1LL);
+                    if (length(regions) == Int(0LL) || group->start > regions[length(regions) - Int(1LL)].end) {
+                        regions = appendValues(regions, TailRangeRegion{{}, group->start, end});
                     }
+                    TailRangeRegion* region = &regions[length(regions) - Int(1LL)];
+                    region->end = maximum(region->end, end);
+                    region->groups = appendValues(region->groups, group);
                 }
                 auto jump = [&](i32 target) mutable -> MInst {
                     MInst in = inst(mJmp);
@@ -17000,193 +16420,167 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 };
                 i32 continuation = convert<i32>(b);
                 Int start = Int(0LL);
-                {
-                    auto range937 = regions;
-                    for (Int index938 = 0, rangeEnd939 = length(range937); index938 < rangeEnd939; ++index938) {
-                        Int r = index938;
-                        TailRangeRegion region = range937[index938];
-                        Slice<i32> guards = makeSlice<i32>(length(region.groups));
-                        Slice<i32> fast = makeSlice<i32>(length(region.groups));
-                        Slice<i32> cold = makeSlice<i32>(length(region.groups));
-                        {
-                            auto range940 = region.groups;
-                            for (Int index941 = 0, rangeEnd942 = length(range940); index941 < rangeEnd942; ++index941) {
-                                Int j = index941;
-                                guards[j] = convert<i32>(length(mf->blocks));
-                                mf->blocks.pushBack(MBlock{{}, {}, {}, original.depth, i32(-1LL), {}});
-                                fast[j] = convert<i32>(length(mf->blocks));
-                                mf->blocks.pushBack(MBlock{{}, {}, {}, original.depth, i32(-1LL), {}});
-                                cold[j] = convert<i32>(length(mf->blocks));
-                                mf->blocks.pushBack(MBlock{{}, {}, {}, original.depth, i32(-1LL), true});
-                            }
-                        }
-                        Vec<MInst> prefix;
-                        prefix.assign(subslice(original.insts, start, region.start));
-                        prefix.pushBack(jump(guards[Int(0LL)]));
-                        mf->blocks[continuation].insts = move(prefix);
-                        mf->blocks[continuation].succs = sliceOf<i32>({guards[Int(0LL)]});
-                        continuation = convert<i32>(length(mf->blocks));
+                auto range937 = regions;
+                for (Int index938 = 0, rangeEnd939 = length(range937); index938 < rangeEnd939; ++index938) {
+                    Int r = index938;
+                    TailRangeRegion region = range937[index938];
+                    Slice<i32> guards = makeSlice<i32>(length(region.groups));
+                    Slice<i32> fast = makeSlice<i32>(length(region.groups));
+                    Slice<i32> cold = makeSlice<i32>(length(region.groups));
+                    auto range940 = region.groups;
+                    for (Int index941 = 0, rangeEnd942 = length(range940); index941 < rangeEnd942; ++index941) {
+                        Int j = index941;
+                        guards[j] = convert<i32>(length(mf->blocks));
                         mf->blocks.pushBack(MBlock{{}, {}, {}, original.depth, i32(-1LL), {}});
-                        {
-                            auto range943 = region.groups;
-                            for (Int index944 = 0, rangeEnd945 = length(range943); index944 < rangeEnd945; ++index944) {
-                                Int j = index944;
-                                TailRangeGroup* group = range943[index944];
-                                Int end = region.end;
-                                auto temporary946 = continuation;
-                                auto temporary947 = continuation;
-                                i32 nextFast = temporary946;
-                                i32 nextCold = temporary947;
-                                if (j + Int(1LL) < length(region.groups)) {
-                                    end = region.groups[j + Int(1LL)]->start;
-                                    auto temporary948 = guards[j + Int(1LL)];
-                                    auto temporary949 = cold[j + Int(1LL)];
-                                    nextFast = temporary948;
-                                    nextCold = temporary949;
-                                }
-                                MInst cmp = inst(mCmpMem);
-                                auto temporary950 = group->src;
-                                auto temporary951 = memAt(ctxReg, offMemSize);
-                                auto temporary952 = u8(8LL);
-                                cmp.src = temporary950;
-                                cmp.mem = temporary951;
-                                cmp.size = temporary952;
-                                MInst branch = inst(mJcc);
-                                auto temporary953 = ccG;
-                                auto temporary954 = cold[j];
-                                branch.cc = temporary953;
-                                branch.target = temporary954;
-                                mf->blocks[guards[j]].insts.assign(Span<const MInst>({cmp, branch, jump(fast[j])}));
-                                mf->blocks[guards[j]].succs = sliceOf<i32>({fast[j], cold[j]});
-                                if (l->m->tailProfile) {
-                                    MInst counter = lowererTailCounter(l, i32(0LL), i64(1LL));
-                                    Vec<MInst> counted({counter});
-                                    counted.append(mf->blocks[guards[j]].insts.view());
-                                    mf->blocks[guards[j]].insts = move(counted);
-                                    i32 miss = convert<i32>(length(mf->blocks));
-                                    mf->blocks.pushBack(MBlock{Vec<MInst>({lowererTailCounter(l, i32(8LL), i64(1LL)), jump(cold[j])}), sliceOf<i32>({cold[j]}), {}, original.depth, i32(-1LL), true});
-                                    mf->blocks[guards[j]].insts[Int(2LL)].target = miss;
-                                    mf->blocks[guards[j]].succs[Int(1LL)] = miss;
-                                }
-                                Vec<MInst> fastBody;
-                                Vec<MInst> coldBody;
-                                i64 omitted = i64(0LL);
-                                {
-                                    Int k = group->start;
-                                    for (; k < end; k++) {
-                                        MInst in = original.insts[k];
-                                        coldBody.pushBack(copyMachineInst(in));
-                                        if (skip[k]) {
-                                            omitted++;
-                                        } else {
-                                            fastBody.pushBack(copyMachineInst(in));
-                                        }
-                                    }
-                                }
-                                if (l->m->tailProfile) {
-                                    Vec<MInst> counted({lowererTailCounter(l, i32(16LL), omitted)});
-                                    counted.append(fastBody.view());
-                                    fastBody = move(counted);
-                                }
-                                fastBody.pushBack(jump(nextFast));
-                                mf->blocks[fast[j]].insts = move(fastBody);
-                                coldBody.pushBack(jump(nextCold));
-                                mf->blocks[cold[j]].insts = move(coldBody);
-                                mf->blocks[fast[j]].succs = sliceOf<i32>({nextFast});
-                                mf->blocks[cold[j]].succs = sliceOf<i32>({nextCold});
+                        fast[j] = convert<i32>(length(mf->blocks));
+                        mf->blocks.pushBack(MBlock{{}, {}, {}, original.depth, i32(-1LL), {}});
+                        cold[j] = convert<i32>(length(mf->blocks));
+                        mf->blocks.pushBack(MBlock{{}, {}, {}, original.depth, i32(-1LL), true});
+                    }
+                    Vec<MInst> prefix;
+                    prefix.assign(subslice(original.insts, start, region.start));
+                    prefix.pushBack(jump(guards[Int(0LL)]));
+                    mf->blocks[continuation].insts = move(prefix);
+                    mf->blocks[continuation].succs = sliceOf<i32>({guards[Int(0LL)]});
+                    continuation = convert<i32>(length(mf->blocks));
+                    mf->blocks.pushBack(MBlock{{}, {}, {}, original.depth, i32(-1LL), {}});
+                    auto range943 = region.groups;
+                    for (Int index944 = 0, rangeEnd945 = length(range943); index944 < rangeEnd945; ++index944) {
+                        Int j = index944;
+                        TailRangeGroup* group = range943[index944];
+                        Int end = region.end;
+                        auto temporary946 = continuation;
+                        auto temporary947 = continuation;
+                        i32 nextFast = temporary946;
+                        i32 nextCold = temporary947;
+                        if (j + Int(1LL) < length(region.groups)) {
+                            end = region.groups[j + Int(1LL)]->start;
+                            auto temporary948 = guards[j + Int(1LL)];
+                            auto temporary949 = cold[j + Int(1LL)];
+                            nextFast = temporary948;
+                            nextCold = temporary949;
+                        }
+                        MInst cmp = inst(mCmpMem);
+                        auto temporary950 = group->src;
+                        auto temporary951 = memAt(ctxReg, offMemSize);
+                        auto temporary952 = u8(8LL);
+                        cmp.src = temporary950;
+                        cmp.mem = temporary951;
+                        cmp.size = temporary952;
+                        MInst branch = inst(mJcc);
+                        auto temporary953 = ccG;
+                        auto temporary954 = cold[j];
+                        branch.cc = temporary953;
+                        branch.target = temporary954;
+                        mf->blocks[guards[j]].insts.assign(Span<const MInst>({cmp, branch, jump(fast[j])}));
+                        mf->blocks[guards[j]].succs = sliceOf<i32>({fast[j], cold[j]});
+                        if (l->m->tailProfile) {
+                            MInst counter = lowererTailCounter(l, i32(0LL), i64(1LL));
+                            Vec<MInst> counted({counter});
+                            counted.append(mf->blocks[guards[j]].insts.view());
+                            mf->blocks[guards[j]].insts = move(counted);
+                            i32 miss = convert<i32>(length(mf->blocks));
+                            mf->blocks.pushBack(MBlock{Vec<MInst>({lowererTailCounter(l, i32(8LL), i64(1LL)), jump(cold[j])}), sliceOf<i32>({cold[j]}), {}, original.depth, i32(-1LL), true});
+                            mf->blocks[guards[j]].insts[Int(2LL)].target = miss;
+                            mf->blocks[guards[j]].succs[Int(1LL)] = miss;
+                        }
+                        Vec<MInst> fastBody;
+                        Vec<MInst> coldBody;
+                        i64 omitted = i64(0LL);
+                        Int k = group->start;
+                        for (; k < end; k++) {
+                            MInst in = original.insts[k];
+                            coldBody.pushBack(copyMachineInst(in));
+                            if (skip[k]) {
+                                omitted++;
+                            } else {
+                                fastBody.pushBack(copyMachineInst(in));
                             }
                         }
-                        start = region.end;
-                        if (r + Int(1LL) == length(regions)) {
-                            mf->blocks[continuation].insts.assign(subslice(original.insts, start, length(original.insts)));
-                            mf->blocks[continuation].succs = appendSlice(Slice<i32>{}, original.succs);
+                        if (l->m->tailProfile) {
+                            Vec<MInst> counted({lowererTailCounter(l, i32(16LL), omitted)});
+                            counted.append(fastBody.view());
+                            fastBody = move(counted);
                         }
+                        fastBody.pushBack(jump(nextFast));
+                        mf->blocks[fast[j]].insts = move(fastBody);
+                        coldBody.pushBack(jump(nextCold));
+                        mf->blocks[cold[j]].insts = move(coldBody);
+                        mf->blocks[fast[j]].succs = sliceOf<i32>({nextFast});
+                        mf->blocks[cold[j]].succs = sliceOf<i32>({nextCold});
+                    }
+                    start = region.end;
+                    if (r + Int(1LL) == length(regions)) {
+                        mf->blocks[continuation].insts.assign(subslice(original.insts, start, length(original.insts)));
+                        mf->blocks[continuation].succs = appendSlice(Slice<i32>{}, original.succs);
                     }
                 }
             }
         }
         if (changed) {
-            {
-                auto& range955 = mf->blocks;
-                for (Int index956 = 0, rangeEnd957 = length(range955); index956 < rangeEnd957; ++index956) {
-                    Int b = index956;
-                    mf->blocks[b].preds = {};
-                }
+            auto& range955 = mf->blocks;
+            for (Int index956 = 0, rangeEnd957 = length(range955); index956 < rangeEnd957; ++index956) {
+                Int b = index956;
+                mf->blocks[b].preds = {};
             }
-            {
-                auto& range958 = mf->blocks;
-                for (Int index959 = 0, rangeEnd960 = length(range958); index959 < rangeEnd960; ++index959) {
-                    Int b = index959;
-                    {
-                        auto range961 = mf->blocks[b].succs;
-                        for (Int index962 = 0, rangeEnd963 = length(range961); index962 < rangeEnd963; ++index962) {
-                            i32 succ = range961[index962];
-                            mf->blocks[succ].preds = appendValues(mf->blocks[succ].preds, convert<i32>(b));
-                        }
-                    }
+            auto& range958 = mf->blocks;
+            for (Int index959 = 0, rangeEnd960 = length(range958); index959 < rangeEnd960; ++index959) {
+                Int b = index959;
+                auto range961 = mf->blocks[b].succs;
+                for (Int index962 = 0, rangeEnd963 = length(range961); index962 < rangeEnd963; ++index962) {
+                    i32 succ = range961[index962];
+                    mf->blocks[succ].preds = appendValues(mf->blocks[succ].preds, convert<i32>(b));
                 }
             }
             Int n = length(mf->blocks);
-            {
-                Int b = Int(0LL);
-                for (; b < n; b++) {
-                    if (length(mf->blocks[b].succs) < Int(2LL)) {
+            Int b = Int(0LL);
+            for (; b < n; b++) {
+                if (length(mf->blocks[b].succs) < Int(2LL)) {
+                    continue;
+                }
+                auto range964 = mf->blocks[b].succs;
+                for (Int index965 = 0, rangeEnd966 = length(range964); index965 < rangeEnd966; ++index965) {
+                    Int j = index965;
+                    i32 succ = range964[index965];
+                    if (length(mf->blocks[succ].preds) < Int(2LL)) {
                         continue;
                     }
-                    {
-                        auto range964 = mf->blocks[b].succs;
-                        for (Int index965 = 0, rangeEnd966 = length(range964); index965 < rangeEnd966; ++index965) {
-                            Int j = index965;
-                            i32 succ = range964[index965];
-                            if (length(mf->blocks[succ].preds) < Int(2LL)) {
-                                continue;
+                    i32 edge = convert<i32>(length(mf->blocks));
+                    MInst jump = inst(mJmp);
+                    jump.target = succ;
+                    mf->blocks.pushBack(MBlock{Vec<MInst>({jump}), sliceOf<i32>({succ}), sliceOf<i32>({convert<i32>(b)}), mf->blocks[b].depth, i32(-1LL), mf->blocks[b].cold || mf->blocks[succ].cold});
+                    mf->blocks[b].succs[j] = edge;
+                    auto range967 = mf->blocks[b].insts.view();
+                    for (Int index968 = 0, rangeEnd969 = length(range967); index968 < rangeEnd969; ++index968) {
+                        Int k = index968;
+                        MInst* in = &mf->blocks[b].insts[k];
+                        auto switch970 = in->op;
+                        switch (switch970) {
+                            case mJmp:
+                            case mJcc: {
+                                if (in->target == succ) {
+                                    in->target = edge;
+                                }
+                                break;
                             }
-                            i32 edge = convert<i32>(length(mf->blocks));
-                            MInst jump = inst(mJmp);
-                            jump.target = succ;
-                            mf->blocks.pushBack(MBlock{Vec<MInst>({jump}), sliceOf<i32>({succ}), sliceOf<i32>({convert<i32>(b)}), mf->blocks[b].depth, i32(-1LL), mf->blocks[b].cold || mf->blocks[succ].cold});
-                            mf->blocks[b].succs[j] = edge;
-                            {
-                                auto range967 = mf->blocks[b].insts.view();
-                                for (Int index968 = 0, rangeEnd969 = length(range967); index968 < rangeEnd969; ++index968) {
-                                    Int k = index968;
-                                    MInst* in = &mf->blocks[b].insts[k];
-                                    {
-                                        auto switch970 = in->op;
-                                        switch (switch970) {
-                                            case mJmp:
-                                            case mJcc: {
-                                                if (in->target == succ) {
-                                                    in->target = edge;
-                                                }
-                                                break;
-                                            }
-                                            case mSwitch: {
-                                                {
-                                                    auto range971 = mInstTable(in);
-                                                    for (Int index972 = 0, rangeEnd973 = length(range971); index972 < rangeEnd973; ++index972) {
-                                                        Int t = index972;
-                                                        if (mInstTable(in)[t] == succ) {
-                                                            mInstTable(in)[t] = edge;
-                                                        }
-                                                    }
-                                                }
-                                                break;
-                                            }
-                                        }
+                            case mSwitch: {
+                                auto range971 = mInstTable(in);
+                                for (Int index972 = 0, rangeEnd973 = length(range971); index972 < rangeEnd973; ++index972) {
+                                    Int t = index972;
+                                    if (mInstTable(in)[t] == succ) {
+                                        mInstTable(in)[t] = edge;
                                     }
                                 }
+                                break;
                             }
-                            {
-                                auto range974 = mf->blocks[succ].preds;
-                                for (Int index975 = 0, rangeEnd976 = length(range974); index975 < rangeEnd976; ++index975) {
-                                    Int k = index975;
-                                    i32 pred = range974[index975];
-                                    if (pred == convert<i32>(b)) {
-                                        mf->blocks[succ].preds[k] = edge;
-                                    }
-                                }
-                            }
+                        }
+                    }
+                    auto range974 = mf->blocks[succ].preds;
+                    for (Int index975 = 0, rangeEnd976 = length(range974); index975 < rangeEnd976; ++index975) {
+                        Int k = index975;
+                        i32 pred = range974[index975];
+                        if (pred == convert<i32>(b)) {
+                            mf->blocks[succ].preds[k] = edge;
                         }
                     }
                 }
@@ -17231,20 +16625,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         objCodeAddBlob(oc, mask(u64(2147483647LL), u64(0LL)), Int(16LL));
         objCodeAddBlob(oc, mask(u64(9223372036854775808ULL), u64(0LL)), Int(16LL));
         objCodeAddBlob(oc, mask(u64(9223372036854775807LL), u64(0LL)), Int(16LL));
-        {
-            auto range977 = oc->m->datas;
-            for (Int index978 = 0, rangeEnd979 = length(range977); index978 < rangeEnd979; ++index978) {
-                Data d = range977[index978];
-                objCodeAddBlob(oc, d.bytes, Int(1LL));
-            }
+        auto range977 = oc->m->datas;
+        for (Int index978 = 0, rangeEnd979 = length(range977); index978 < rangeEnd979; ++index978) {
+            Data d = range977[index978];
+            objCodeAddBlob(oc, d.bytes, Int(1LL));
         }
     }
 
     static void objCodeAlign16(ObjCode* oc) {
-        {
-            for (; length(oc->a.buf) % Int(16LL) != Int(0LL);) {
-                asmBytes(&oc->a, {u8(u8(204LL))});
-            }
+        for (; length(oc->a.buf) % Int(16LL) != Int(0LL);) {
+            asmBytes(&oc->a, {u8(u8(204LL))});
         }
     }
 
@@ -17295,42 +16685,34 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 meta->memory->profileFuncs = convert<u32>(length(m->funcs));
             }
         }
-        {
-            auto range980 = m->tables;
-            for (Int index981 = 0, rangeEnd982 = length(range980); index981 < rangeEnd982; ++index981) {
-                Int i = index981;
-                Table t = range980[index981];
-                u64 max = u64(4294967295LL);
-                if (t.limits.hasMax) {
-                    max = t.limits.max;
-                }
-                meta->tables = appendValues(meta->tables, TableMeta{convert<u32>(lay->tables[i]), t.limits.min, max, t.imported});
+        auto range980 = m->tables;
+        for (Int index981 = 0, rangeEnd982 = length(range980); index981 < rangeEnd982; ++index981) {
+            Int i = index981;
+            Table t = range980[index981];
+            u64 max = u64(4294967295LL);
+            if (t.limits.hasMax) {
+                max = t.limits.max;
+            }
+            meta->tables = appendValues(meta->tables, TableMeta{convert<u32>(lay->tables[i]), t.limits.min, max, t.imported});
+        }
+        auto range983 = m->globals;
+        for (Int index984 = 0, rangeEnd985 = length(range983); index984 < rangeEnd985; ++index984) {
+            Int i = index984;
+            Global g = range983[index984];
+            meta->globals = appendValues(meta->globals, GlobalMeta{convert<u32>(lay->globals[i]), g.typ, g.mutableValue, g.imported});
+        }
+        auto range986 = m->imports;
+        for (Int index987 = 0, rangeEnd988 = length(range986); index987 < rangeEnd988; ++index987) {
+            Import imp = range986[index987];
+            if (imp.kind != externFunc) {
+                meta->imports = appendValues(meta->imports, ImportMeta{imp.kind, imp.module, imp.name, imp.index, {}, {}, {}});
             }
         }
-        {
-            auto range983 = m->globals;
-            for (Int index984 = 0, rangeEnd985 = length(range983); index984 < rangeEnd985; ++index984) {
-                Int i = index984;
-                Global g = range983[index984];
-                meta->globals = appendValues(meta->globals, GlobalMeta{convert<u32>(lay->globals[i]), g.typ, g.mutableValue, g.imported});
-            }
-        }
-        {
-            auto range986 = m->imports;
-            for (Int index987 = 0, rangeEnd988 = length(range986); index987 < rangeEnd988; ++index987) {
-                Import imp = range986[index987];
-                if (imp.kind != externFunc) {
-                    meta->imports = appendValues(meta->imports, ImportMeta{imp.kind, imp.module, imp.name, imp.index, {}, {}, {}});
-                }
-            }
-        }
-        {
-            auto range989 = m->exports;
-            for (Int index990 = 0, rangeEnd991 = length(range989); index990 < rangeEnd991; ++index990) {
-                Export e = range989[index990];
-                if (e.kind != externFunc) {
-                    meta->exports = appendValues(meta->exports, ExportMeta{e.kind, e.name, e.index, {}, {}, {}});
-                }
+        auto range989 = m->exports;
+        for (Int index990 = 0, rangeEnd991 = length(range989); index990 < rangeEnd991; ++index990) {
+            Export e = range989[index990];
+            if (e.kind != externFunc) {
+                meta->exports = appendValues(meta->exports, ExportMeta{e.kind, e.name, e.index, {}, {}, {}});
             }
         }
         return meta;
@@ -17367,33 +16749,27 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             asmAluRR(a, aluXor, u8(4LL), RAX, RAX);
             asmPush(a, RAX);
         }
-        {
-            auto range992 = e->pushes;
-            for (Int index993 = 0, rangeEnd994 = length(range992); index993 < rangeEnd994; ++index993) {
-                VReg r = range992[index993];
-                asmPush(a, r);
-            }
+        auto range992 = e->pushes;
+        for (Int index993 = 0, rangeEnd994 = length(range992); index993 < rangeEnd994; ++index993) {
+            VReg r = range992[index993];
+            asmPush(a, r);
         }
         if (e->frame > i32(0LL)) {
             asmAluRI(a, aluSub, u8(8LL), RSP, convert<i64>(e->frame));
         }
         e->blockAt = makeSlice<i32>(length(mf->blocks));
-        {
-            auto range995 = e->blockAt;
-            for (Int index996 = 0, rangeEnd997 = length(range995); index996 < rangeEnd997; ++index996) {
-                Int i = index996;
-                e->blockAt[i] = i32(-1LL);
-            }
+        auto range995 = e->blockAt;
+        for (Int index996 = 0, rangeEnd997 = length(range995); index996 < rangeEnd997; ++index996) {
+            Int i = index996;
+            e->blockAt[i] = i32(-1LL);
         }
         Span<i32> order = mFuncHotOrder(mf, al->order.view());
         Slice<Int> positions = makeSlice<Int>(length(mf->blocks));
-        {
-            auto range998 = order;
-            for (Int index999 = 0, rangeEnd1000 = length(range998); index999 < rangeEnd1000; ++index999) {
-                Int j = index999;
-                i32 b = range998[index999];
-                positions[b] = j;
-            }
+        auto range998 = order;
+        for (Int index999 = 0, rangeEnd1000 = length(range998); index999 < rangeEnd1000; ++index999) {
+            Int j = index999;
+            i32 b = range998[index999];
+            positions[b] = j;
         }
         // A block of silent instructions and a jump is not emitted: jumps to
         // it go to its final target, unless such blocks form a cycle. Every
@@ -17455,77 +16831,63 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
             }
         }
-        {
-            auto range1001 = order;
-            for (Int index1002 = 0, rangeEnd1003 = length(range1001); index1002 < rangeEnd1003; ++index1002) {
-                Int i = index1002;
-                i32 b = range1001[index1002];
-                asmSetSP(a, e->body);
-                if (e->forward[usize(b)] >= 0) {
-                    continue;
-                }
-                if (header[usize(b)]) {
-                    asmNops(a, -asmPos(a) & i32(31LL));
-                }
-                e->blockAt[b] = asmPos(a);
-                funcEmitterBlock(e, &mf->blocks[b], i);
+        auto range1001 = order;
+        for (Int index1002 = 0, rangeEnd1003 = length(range1001); index1002 < rangeEnd1003; ++index1002) {
+            Int i = index1002;
+            i32 b = range1001[index1002];
+            asmSetSP(a, e->body);
+            if (e->forward[usize(b)] >= 0) {
+                continue;
             }
+            if (header[usize(b)]) {
+                asmNops(a, -asmPos(a) & i32(31LL));
+            }
+            e->blockAt[b] = asmPos(a);
+            funcEmitterBlock(e, &mf->blocks[b], i);
         }
-        {
-            Int i = Int(0LL);
-            for (; i < length(e->late); i++) {
-                asmSetSP(a, e->body);
-                e->late[i]();
-            }
+        Int i = Int(0LL);
+        for (; i < length(e->late); i++) {
+            asmSetSP(a, e->body);
+            e->late[i]();
         }
         if (slow >= i32(0LL)) {
             asmSetSP(a, i32(0LL));
             objCodeSlowPath(oc, slow, start);
         }
         Map<Array<i64, 2>, i32> stubs = mapOf<Array<i64, 2>, i32>({});
-        {
-            auto range1007 = e->traps;
-            for (Int index1008 = 0, rangeEnd1009 = length(range1007); index1008 < rangeEnd1009; ++index1008) {
-                TrapFixup t = range1007[index1008];
-                Array<i64, 2> key = Array<i64, 2>{{t.code, convert<i64>(t.sp)}};
-                auto temporary1010 = lookupMap(stubs, key);
-                i32 at = temporary1010.v0;
-                bool ok = temporary1010.v1;
-                if (!ok) {
-                    at = asmPos(a);
-                    setMap(stubs, key, at);
-                    asmSetSP(a, t.sp);
-                    objCodeTrapCall(oc, t.code);
-                }
-                asmPatch32(a, t.at, at);
+        auto range1007 = e->traps;
+        for (Int index1008 = 0, rangeEnd1009 = length(range1007); index1008 < rangeEnd1009; ++index1008) {
+            TrapFixup t = range1007[index1008];
+            Array<i64, 2> key = Array<i64, 2>{{t.code, convert<i64>(t.sp)}};
+            auto temporary1010 = lookupMap(stubs, key);
+            i32 at = temporary1010.v0;
+            bool ok = temporary1010.v1;
+            if (!ok) {
+                at = asmPos(a);
+                setMap(stubs, key, at);
+                asmSetSP(a, t.sp);
+                objCodeTrapCall(oc, t.code);
             }
+            asmPatch32(a, t.at, at);
         }
-        {
-            auto range1011 = e->jumps;
-            for (Int index1012 = 0, rangeEnd1013 = length(range1011); index1012 < rangeEnd1013; ++index1012) {
-                JumpFixup j = range1011[index1012];
-                asmPatch32(a, j.at, e->blockAt[j.block]);
+        auto range1011 = e->jumps;
+        for (Int index1012 = 0, rangeEnd1013 = length(range1011); index1012 < rangeEnd1013; ++index1012) {
+            JumpFixup j = range1011[index1012];
+            asmPatch32(a, j.at, e->blockAt[j.block]);
+        }
+        auto range1014 = e->tables;
+        for (Int index1015 = 0, rangeEnd1016 = length(range1014); index1015 < rangeEnd1016; ++index1015) {
+            TableFixup t = range1014[index1015];
+            for (; length(a->buf) % Int(8LL) != Int(0LL);) {
+                asmBytes(a, {u8(u8(204LL))});
             }
-        }
-        {
-            auto range1014 = e->tables;
-            for (Int index1015 = 0, rangeEnd1016 = length(range1014); index1015 < rangeEnd1016; ++index1015) {
-                TableFixup t = range1014[index1015];
-                {
-                    for (; length(a->buf) % Int(8LL) != Int(0LL);) {
-                        asmBytes(a, {u8(u8(204LL))});
-                    }
-                }
-                i32 base = asmPos(a);
-                asmPatch32(a, t.lea, base);
-                {
-                    auto range1017 = t.table;
-                    for (Int index1018 = 0, rangeEnd1019 = length(range1017); index1018 < rangeEnd1019; ++index1018) {
-                        i32 b = range1017[index1018];
-                        oc->addresses = appendValues(oc->addresses, TextAddress{asmPos(a), e->blockAt[funcEmitterTarget(e, b)]});
-                        asmU64(a, u64(0LL));
-                    }
-                }
+            i32 base = asmPos(a);
+            asmPatch32(a, t.lea, base);
+            auto range1017 = t.table;
+            for (Int index1018 = 0, rangeEnd1019 = length(range1017); index1018 < rangeEnd1019; ++index1018) {
+                i32 b = range1017[index1018];
+                oc->addresses = appendValues(oc->addresses, TextAddress{asmPos(a), e->blockAt[funcEmitterTarget(e, b)]});
+                asmU64(a, u64(0LL));
             }
         }
         objCodeEndRegion(oc, start);
@@ -17540,16 +16902,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // exportThunks gives every exported function a thunk Go calls, global.
     static void objCodeExportThunks(ObjCode* oc) {
         Module* m = oc->m;
-        {
-            auto range1020 = m->exports;
-            for (Int index1021 = 0, rangeEnd1022 = length(range1020); index1021 < rangeEnd1022; ++index1021) {
-                Export e = range1020[index1021];
-                if (e.kind == externFunc) {
-                    FuncType* t = moduleFuncType(m, e.index);
-                    String sym = exportSymbol(e.name, t);
-                    setMap(oc->globals, sym, true);
-                    objCodeThunk(oc, sym, t->params, t->results, convert<i64>(e.index), {});
-                }
+        auto range1020 = m->exports;
+        for (Int index1021 = 0, rangeEnd1022 = length(range1020); index1021 < rangeEnd1022; ++index1021) {
+            Export e = range1020[index1021];
+            if (e.kind == externFunc) {
+                FuncType* t = moduleFuncType(m, e.index);
+                String sym = exportSymbol(e.name, t);
+                setMap(oc->globals, sym, true);
+                objCodeThunk(oc, sym, t->params, t->results, convert<i64>(e.index), {});
             }
         }
     }
@@ -17618,16 +16978,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         asmLoad(a, u8(8LL), u8(8LL), false, R8, baseAt(RDI, i32(8LL)));
         Slice<i32> top = {};
         Slice<i32> fail = {};
-        {
-            auto range1025 = Array<i32, 2>{{framesEntry, framesResume}};
-            for (Int index1026 = 0, rangeEnd1027 = length(range1025); index1026 < rangeEnd1027; ++index1026) {
-                i32 entry = range1025[index1026];
-                asmAluRM(a, aluCmp, u8(8LL), R8, word(entry));
-                i32 below = asmJcc8(a, ccB);
-                asmAluRM(a, aluCmp, u8(8LL), R8, word(entry + i32(8LL)));
-                top = appendValues(top, asmJccRel(a, ccB));
-                asmHere8(a, below);
-            }
+        auto range1025 = Array<i32, 2>{{framesEntry, framesResume}};
+        for (Int index1026 = 0, rangeEnd1027 = length(range1025); index1026 < rangeEnd1027; ++index1026) {
+            i32 entry = range1025[index1026];
+            asmAluRM(a, aluCmp, u8(8LL), R8, word(entry));
+            i32 below = asmJcc8(a, ccB);
+            asmAluRM(a, aluCmp, u8(8LL), R8, word(entry + i32(8LL)));
+            top = appendValues(top, asmJccRel(a, ccB));
+            asmHere8(a, below);
         }
         asmAluRM(a, aluCmp, u8(8LL), R8, word(framesFuncs));
         fail = appendValues(fail, asmJccRel(a, ccB));
@@ -17640,12 +16998,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         fail = appendValues(fail, asmJccRel(a, ccAE));
         asmMovRR(a, u8(8LL), RDI, R8);
         asmPatch32(a, asmJmpRel(a), walk);
-        {
-            auto range1028 = top;
-            for (Int index1029 = 0, rangeEnd1030 = length(range1028); index1029 < rangeEnd1030; ++index1029) {
-                i32 at = range1028[index1029];
-                asmPatch32(a, at, asmPos(a));
-            }
+        auto range1028 = top;
+        for (Int index1029 = 0, rangeEnd1030 = length(range1028); index1029 < rangeEnd1030; ++index1029) {
+            i32 at = range1028[index1029];
+            asmPatch32(a, at, asmPos(a));
         }
         asmLea(a, u8(8LL), RCX, baseAt(RDI, i32(16LL)));
         asmAluRR(a, aluSub, u8(8LL), RCX, RSI);
@@ -17673,12 +17029,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         asmStoreImm(a, u8(8LL), indexed(R10, R11), i64(0LL));
         asmPatch32(a, small, asmPos(a));
         asmRet(a);
-        {
-            auto range1031 = fail;
-            for (Int index1032 = 0, rangeEnd1033 = length(range1031); index1032 < rangeEnd1033; ++index1032) {
-                i32 at = range1031[index1032];
-                asmPatch32(a, at, asmPos(a));
-            }
+        auto range1031 = fail;
+        for (Int index1032 = 0, rangeEnd1033 = length(range1031); index1032 < rangeEnd1033; ++index1032) {
+            i32 at = range1031[index1032];
+            asmPatch32(a, at, asmPos(a));
         }
         asmStoreImm(a, u8(8LL), word(framesSize), i64(0LL));
         asmRet(a);
@@ -17687,11 +17041,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // funcName names a function's region, which Go shows in tracebacks.
     static String objCodeFuncName(ObjCode* oc, Int i) {
-        {
-            String n = oc->m->funcs[i].name;
-            if ((n != String(""))) {
-                return fmtSprintf(String("f%d:%s"), i, displayName(n));
-            }
+        String n = oc->m->funcs[i].name;
+        if ((n != String(""))) {
+            return fmtSprintf(String("f%d:%s"), i, displayName(n));
         }
         return fmtSprintf(String("f%d"), i);
     }
@@ -17717,12 +17069,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         i32 slow = objCodeStackCheck(oc, total, RAX);
         asmPush(a, RBP);
         asmMovRR(a, u8(8LL), RBP, RSP);
-        {
-            auto range1036 = saved;
-            for (Int index1037 = 0, rangeEnd1038 = length(range1036); index1037 < rangeEnd1038; ++index1037) {
-                VReg r = range1036[index1037];
-                asmPush(a, r);
-            }
+        auto range1036 = saved;
+        for (Int index1037 = 0, rangeEnd1038 = length(range1036); index1037 < rangeEnd1038; ++index1037) {
+            VReg r = range1036[index1037];
+            asmPush(a, r);
         }
         if (g.size > i32(0LL)) {
             asmAluRI(a, aluSub, u8(8LL), RSP, convert<i64>(g.size));
@@ -17731,57 +17081,47 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (record) {
             objCodeRecordFrame(oc);
         }
-        {
-            auto range1039 = params;
-            for (Int index1040 = 0, rangeEnd1041 = length(range1039); index1040 < rangeEnd1041; ++index1040) {
-                Int i = index1040;
-                ValType t = range1039[index1040];
-                GoLoc dst = g.params[i];
-                {
-                    if (pregs[i] != noReg && dst.reg == pregs[i]) {
-                    } else if (pregs[i] == noReg && dst.reg != noReg) {
-                        asmLoad(a, u8(8LL), u8(8LL), false, dst.reg, rspAt(incoming + convert<i32>(Int(8LL) * pslots[i])));
-                    } else if (pregs[i] == noReg) {
-                        asmLoad(a, u8(8LL), u8(8LL), false, RDX, rspAt(incoming + convert<i32>(Int(8LL) * pslots[i])));
-                        asmStore(a, convert<u8>(goSize(t)), RDX, rspAt(dst.off));
-                    } else {
-                        compilerError(String("internal error: parameter %d of %s moves between registers"));
-                    }
-                }
+        auto range1039 = params;
+        for (Int index1040 = 0, rangeEnd1041 = length(range1039); index1040 < rangeEnd1041; ++index1040) {
+            Int i = index1040;
+            ValType t = range1039[index1040];
+            GoLoc dst = g.params[i];
+            if (pregs[i] != noReg && dst.reg == pregs[i]) {
+            } else if (pregs[i] == noReg && dst.reg != noReg) {
+                asmLoad(a, u8(8LL), u8(8LL), false, dst.reg, rspAt(incoming + convert<i32>(Int(8LL) * pslots[i])));
+            } else if (pregs[i] == noReg) {
+                asmLoad(a, u8(8LL), u8(8LL), false, RDX, rspAt(incoming + convert<i32>(Int(8LL) * pslots[i])));
+                asmStore(a, convert<u8>(goSize(t)), RDX, rspAt(dst.off));
+            } else {
+                compilerError(String("internal error: parameter %d of %s moves between registers"));
             }
         }
         asmMovRR(a, u8(8LL), RAX, ctxReg);
         objCodeCallGo(oc, sym);
-        {
-            auto range1044 = results;
-            for (Int index1045 = 0, rangeEnd1046 = length(range1044); index1045 < rangeEnd1046; ++index1045) {
-                Int i = index1045;
-                ValType t = range1044[index1045];
-                GoLoc src = g.results[i];
-                {
-                    if (rregs[i] != noReg && src.reg == rregs[i]) {
-                        if (t == I32) {
-                            asmMovRR(a, u8(4LL), src.reg, src.reg);
-                        }
-                    } else if (rregs[i] == noReg && src.reg != noReg) {
-                        asmStore(a, u8(8LL), src.reg, rspAt(incoming + convert<i32>(Int(8LL) * rslots[i])));
-                    } else if (rregs[i] == noReg) {
-                        asmLoad(a, convert<u8>(goSize(t)), u8(8LL), false, RDX, rspAt(src.off));
-                        asmStore(a, u8(8LL), RDX, rspAt(incoming + convert<i32>(Int(8LL) * rslots[i])));
-                    } else {
-                        compilerError(String("internal error: result %d of %s moves between registers"));
-                    }
+        auto range1044 = results;
+        for (Int index1045 = 0, rangeEnd1046 = length(range1044); index1045 < rangeEnd1046; ++index1045) {
+            Int i = index1045;
+            ValType t = range1044[index1045];
+            GoLoc src = g.results[i];
+            if (rregs[i] != noReg && src.reg == rregs[i]) {
+                if (t == I32) {
+                    asmMovRR(a, u8(4LL), src.reg, src.reg);
                 }
+            } else if (rregs[i] == noReg && src.reg != noReg) {
+                asmStore(a, u8(8LL), src.reg, rspAt(incoming + convert<i32>(Int(8LL) * rslots[i])));
+            } else if (rregs[i] == noReg) {
+                asmLoad(a, convert<u8>(goSize(t)), u8(8LL), false, RDX, rspAt(src.off));
+                asmStore(a, u8(8LL), RDX, rspAt(incoming + convert<i32>(Int(8LL) * rslots[i])));
+            } else {
+                compilerError(String("internal error: result %d of %s moves between registers"));
             }
         }
         if (g.size > i32(0LL)) {
             asmAluRI(a, aluAdd, u8(8LL), RSP, convert<i64>(g.size));
         }
-        {
-            Int i = length(saved) - Int(1LL);
-            for (; i >= Int(0LL); i--) {
-                asmPop(a, saved[i]);
-            }
+        Int i = length(saved) - Int(1LL);
+        for (; i >= Int(0LL); i--) {
+            asmPop(a, saved[i]);
         }
         asmLoad(a, u8(8LL), u8(8LL), false, memReg, baseAt(ctxReg, offMem));
         asmAluMI(a, aluCmp, u8(4LL), baseAt(ctxReg, offInterrupt), i64(0LL));
@@ -17813,20 +17153,18 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // as their callers keep no token.
     static void objCodeImportAdapters(ObjCode* oc) {
         Module* m = oc->m;
-        {
-            auto range1049 = m->imports;
-            for (Int index1050 = 0, rangeEnd1051 = length(range1049); index1050 < rangeEnd1051; ++index1050) {
-                Import imp = range1049[index1050];
-                if (imp.kind != externFunc) {
-                    continue;
-                }
-                FuncType* t = moduleFuncType(m, imp.index);
-                String sym = importSymbol(imp.module, imp.name, t);
-                String name = String("w2o.adapter.") + symbolPart(imp.module) + String(".") + symbolPart(imp.name);
-                oc->funcAt[imp.index] = objCodeGoCall(oc, name, t->params, t->results, sym, false);
-                if (m->funcs[imp.index].returnsTwice) {
-                    setMap(oc->jumpAt, convert<i32>(imp.index), objCodeGoCall(oc, name + String(".jump"), t->params, t->results, sym, true));
-                }
+        auto range1049 = m->imports;
+        for (Int index1050 = 0, rangeEnd1051 = length(range1049); index1050 < rangeEnd1051; ++index1050) {
+            Import imp = range1049[index1050];
+            if (imp.kind != externFunc) {
+                continue;
+            }
+            FuncType* t = moduleFuncType(m, imp.index);
+            String sym = importSymbol(imp.module, imp.name, t);
+            String name = String("w2o.adapter.") + symbolPart(imp.module) + String(".") + symbolPart(imp.name);
+            oc->funcAt[imp.index] = objCodeGoCall(oc, name, t->params, t->results, sym, false);
+            if (m->funcs[imp.index].returnsTwice) {
+                setMap(oc->jumpAt, convert<i32>(imp.index), objCodeGoCall(oc, name + String(".jump"), t->params, t->results, sym, true));
             }
         }
         if (length(oc->jumpAt) > Int(0LL)) {
@@ -17884,75 +17222,69 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Asm* a = &oc->a;
         setMap(oc->globals, symInit, true);
         objCodeThunk(oc, symInit, {}, {}, Int(-1LL), [&]() mutable -> void {
-            {
-                auto range1052 = m->funcs;
-                for (Int index1053 = 0, rangeEnd1054 = length(range1052); index1053 < rangeEnd1054; ++index1053) {
-                    Int i = index1053;
-                    i32 d = layoutDesc(lay, i);
-                    asmBytes(a, {u8(u8(72LL)), u8(u8(141LL)), u8(u8(5LL))});
-                    a->fixups = appendValues(a->fixups, RipFixup{asmPos(a), asmPos(a) + i32(4LL), convert<i32>(i), labelFunc});
-                    asmU32(a, u32(0LL));
-                    asmStore(a, u8(8LL), RAX, baseAt(ctxReg, d));
-                    asmMovImm(a, u8(8LL), RAX, convert<i64>(typeID(moduleFuncType(m, convert<u32>(i)))));
-                    asmStore(a, u8(8LL), RAX, baseAt(ctxReg, d + i32(8LL)));
-                }
+            auto range1052 = m->funcs;
+            for (Int index1053 = 0, rangeEnd1054 = length(range1052); index1053 < rangeEnd1054; ++index1053) {
+                Int i = index1053;
+                i32 d = layoutDesc(lay, i);
+                asmBytes(a, {u8(u8(72LL)), u8(u8(141LL)), u8(u8(5LL))});
+                a->fixups = appendValues(a->fixups, RipFixup{asmPos(a), asmPos(a) + i32(4LL), convert<i32>(i), labelFunc});
+                asmU32(a, u32(0LL));
+                asmStore(a, u8(8LL), RAX, baseAt(ctxReg, d));
+                asmMovImm(a, u8(8LL), RAX, convert<i64>(typeID(moduleFuncType(m, convert<u32>(i)))));
+                asmStore(a, u8(8LL), RAX, baseAt(ctxReg, d + i32(8LL)));
             }
-            {
-                auto range1055 = m->elems;
-                for (Int index1056 = 0, rangeEnd1057 = length(range1055); index1056 < rangeEnd1057; ++index1056) {
-                    Int i = index1056;
-                    Elem e = range1055[index1056];
-                    if (e.mode == segmentActive) {
-                        auto temporary1058 = constOffset(e.offset);
-                        i64 off = temporary1058.v0;
-                        bool ok = temporary1058.v1;
-                        if (!ok) {
-                            compilerError(String("unsupported: element segment %d with a computed offset"));
-                        }
-                        i32 tb = lay->tables[e.table];
-                        i64 n = convert<i64>(length(e.exprs));
-                        Slice<u8> arr = makeSlice<u8>(Int(0LL), i64(4LL) * n);
-                        {
-                            auto range1059 = e.exprs;
-                            for (Int index1060 = 0, rangeEnd1061 = length(range1059); index1060 < rangeEnd1061; ++index1060) {
-                                Slice<u8> x = range1059[index1060];
-                                i32 d = {};
-                                if (x[Int(0LL)] == u8(210LL)) {
-                                    Reader* r = activePool->make<Reader>(Reader{subslice(x, Int(1LL), length(x)), {}});
-                                    d = layoutDesc(lay, convert<i64>(readerU32(r)));
-                                }
-                                arr = littleAppendUint32(arr, convert<u32>(d));
-                            }
-                        }
-                        asmLoad(a, u8(4LL), u8(4LL), false, RAX, baseAt(ctxReg, tb + tableSize));
-                        asmMovImm(a, u8(8LL), RCX, off + n);
-                        asmAluRR(a, aluCmp, u8(8LL), RAX, RCX);
-                        i32 fits = asmJcc8(a, ccAE);
-                        objCodeTrapCall(oc, trapTableOOB);
-                        asmHere8(a, fits);
-                        if (n > i64(0LL)) {
-                            i32 label = objCodeAddBlob(oc, arr, Int(4LL));
-                            asmLea(a, u8(8LL), RSI, Amem{Int(-1LL), Int(-1LL), {}, {}, label, labelModule});
-                            asmLoad(a, u8(8LL), u8(8LL), false, RDI, baseAt(ctxReg, tb + tableEntries));
-                            asmMovImm(a, u8(8LL), RAX, i64(8LL) * off);
-                            asmAluRR(a, aluAdd, u8(8LL), RDI, RAX);
-                            asmMovImm(a, u8(4LL), RCX, n);
-                            i32 loop = asmPos(a);
-                            asmOpRM(a, true, Span<const u8>({u8(99LL)}), Int(0LL), baseAt(RSI, i32(0LL)), Int(0LL), false);
-                            asmTest(a, u8(8LL), RAX, RAX);
-                            i32 null = asmJcc8(a, ccE);
-                            asmAluRR(a, aluAdd, u8(8LL), RAX, ctxReg);
-                            asmHere8(a, null);
-                            asmStore(a, u8(8LL), RAX, baseAt(RDI, i32(0LL)));
-                            asmAluRI(a, aluAdd, u8(8LL), RSI, i64(4LL));
-                            asmAluRI(a, aluAdd, u8(8LL), RDI, i64(8LL));
-                            asmAluRI(a, aluSub, u8(4LL), RCX, i64(1LL));
-                            asmPatch32(a, asmJccRel(a, ccNE), loop);
-                        }
+            auto range1055 = m->elems;
+            for (Int index1056 = 0, rangeEnd1057 = length(range1055); index1056 < rangeEnd1057; ++index1056) {
+                Int i = index1056;
+                Elem e = range1055[index1056];
+                if (e.mode == segmentActive) {
+                    auto temporary1058 = constOffset(e.offset);
+                    i64 off = temporary1058.v0;
+                    bool ok = temporary1058.v1;
+                    if (!ok) {
+                        compilerError(String("unsupported: element segment %d with a computed offset"));
                     }
-                    if (e.mode != segmentPassive) {
-                        asmStoreImm(a, u8(1LL), baseAt(ctxReg, layoutElemDropped(lay, m, i)), i64(1LL));
+                    i32 tb = lay->tables[e.table];
+                    i64 n = convert<i64>(length(e.exprs));
+                    Slice<u8> arr = makeSlice<u8>(Int(0LL), i64(4LL) * n);
+                    auto range1059 = e.exprs;
+                    for (Int index1060 = 0, rangeEnd1061 = length(range1059); index1060 < rangeEnd1061; ++index1060) {
+                        Slice<u8> x = range1059[index1060];
+                        i32 d = {};
+                        if (x[Int(0LL)] == u8(210LL)) {
+                            Reader* r = activePool->make<Reader>(Reader{subslice(x, Int(1LL), length(x)), {}});
+                            d = layoutDesc(lay, convert<i64>(readerU32(r)));
+                        }
+                        arr = littleAppendUint32(arr, convert<u32>(d));
                     }
+                    asmLoad(a, u8(4LL), u8(4LL), false, RAX, baseAt(ctxReg, tb + tableSize));
+                    asmMovImm(a, u8(8LL), RCX, off + n);
+                    asmAluRR(a, aluCmp, u8(8LL), RAX, RCX);
+                    i32 fits = asmJcc8(a, ccAE);
+                    objCodeTrapCall(oc, trapTableOOB);
+                    asmHere8(a, fits);
+                    if (n > i64(0LL)) {
+                        i32 label = objCodeAddBlob(oc, arr, Int(4LL));
+                        asmLea(a, u8(8LL), RSI, Amem{Int(-1LL), Int(-1LL), {}, {}, label, labelModule});
+                        asmLoad(a, u8(8LL), u8(8LL), false, RDI, baseAt(ctxReg, tb + tableEntries));
+                        asmMovImm(a, u8(8LL), RAX, i64(8LL) * off);
+                        asmAluRR(a, aluAdd, u8(8LL), RDI, RAX);
+                        asmMovImm(a, u8(4LL), RCX, n);
+                        i32 loop = asmPos(a);
+                        asmOpRM(a, true, Span<const u8>({u8(99LL)}), Int(0LL), baseAt(RSI, i32(0LL)), Int(0LL), false);
+                        asmTest(a, u8(8LL), RAX, RAX);
+                        i32 null = asmJcc8(a, ccE);
+                        asmAluRR(a, aluAdd, u8(8LL), RAX, ctxReg);
+                        asmHere8(a, null);
+                        asmStore(a, u8(8LL), RAX, baseAt(RDI, i32(0LL)));
+                        asmAluRI(a, aluAdd, u8(8LL), RSI, i64(4LL));
+                        asmAluRI(a, aluAdd, u8(8LL), RDI, i64(8LL));
+                        asmAluRI(a, aluSub, u8(4LL), RCX, i64(1LL));
+                        asmPatch32(a, asmJccRel(a, ccNE), loop);
+                    }
+                }
+                if (e.mode != segmentPassive) {
+                    asmStoreImm(a, u8(1LL), baseAt(ctxReg, layoutElemDropped(lay, m, i)), i64(1LL));
                 }
             }
             objCodeCallFunc(oc, oc->initFn);
@@ -17982,36 +17314,28 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         asmPush(a, RBP);
         asmMovRR(a, u8(8LL), RBP, RSP);
         asmPushf(a);
-        {
-            auto range1062 = saved;
-            for (Int index1063 = 0, rangeEnd1064 = length(range1062); index1063 < rangeEnd1064; ++index1063) {
-                VReg r = range1062[index1063];
-                asmPush(a, r);
-            }
+        auto range1062 = saved;
+        for (Int index1063 = 0, rangeEnd1064 = length(range1062); index1063 < rangeEnd1064; ++index1063) {
+            VReg r = range1062[index1063];
+            asmPush(a, r);
         }
         asmAluRI(a, aluSub, u8(8LL), RSP, convert<i64>(xmms + spill));
-        {
-            auto range1065 = Int(15LL);
-            for (Int index1066 = 0, rangeEnd1067 = range1065; index1066 < rangeEnd1067; ++index1066) {
-                Int i = index1066;
-                asmFstore(a, u8(8LL), XMM0 + convert<VReg>(i), rspAt(spill + convert<i32>(Int(8LL) * i)));
-            }
+        auto range1065 = Int(15LL);
+        for (Int index1066 = 0, rangeEnd1067 = range1065; index1066 < rangeEnd1067; ++index1066) {
+            Int i = index1066;
+            asmFstore(a, u8(8LL), XMM0 + convert<VReg>(i), rspAt(spill + convert<i32>(Int(8LL) * i)));
         }
         asmMovRR(a, u8(8LL), RAX, ctxReg);
         objCodeCallGo(oc, symInterrupt);
-        {
-            auto range1068 = Int(15LL);
-            for (Int index1069 = 0, rangeEnd1070 = range1068; index1069 < rangeEnd1070; ++index1069) {
-                Int i = index1069;
-                asmFload(a, u8(8LL), XMM0 + convert<VReg>(i), rspAt(spill + convert<i32>(Int(8LL) * i)));
-            }
+        auto range1068 = Int(15LL);
+        for (Int index1069 = 0, rangeEnd1070 = range1068; index1069 < rangeEnd1070; ++index1069) {
+            Int i = index1069;
+            asmFload(a, u8(8LL), XMM0 + convert<VReg>(i), rspAt(spill + convert<i32>(Int(8LL) * i)));
         }
         asmAluRI(a, aluAdd, u8(8LL), RSP, convert<i64>(xmms + spill));
-        {
-            Int i = length(saved) - Int(1LL);
-            for (; i >= Int(0LL); i--) {
-                asmPop(a, saved[i]);
-            }
+        Int i = length(saved) - Int(1LL);
+        for (; i >= Int(0LL); i--) {
+            asmPop(a, saved[i]);
         }
         asmLoad(a, u8(8LL), u8(8LL), false, memReg, baseAt(ctxReg, offMem));
         asmPopf(a);
@@ -18078,12 +17402,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         asmMovRR(a, u8(4LL), RAX, RBX);
         asmMovRR(a, u8(8LL), RSP, R8);
         asmRet(a);
-        {
-            auto range1071 = Array<i32, 5>{{down, above, before, after, other}};
-            for (Int index1072 = 0, rangeEnd1073 = length(range1071); index1072 < rangeEnd1073; ++index1072) {
-                i32 at = range1071[index1072];
-                asmPatch32(a, at, asmPos(a));
-            }
+        auto range1071 = Array<i32, 5>{{down, above, before, after, other}};
+        for (Int index1072 = 0, rangeEnd1073 = length(range1071); index1072 < rangeEnd1073; ++index1072) {
+            i32 at = range1071[index1072];
+            asmPatch32(a, at, asmPos(a));
         }
         asmAluRR(a, aluXor, u8(4LL), RAX, RAX);
         asmRet(a);
@@ -18158,53 +17480,43 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // instruction, so the addend takes that distance off.
     static void objCodeResolve(ObjCode* oc) {
         Asm* a = &oc->a;
-        {
-            auto range1077 = a->fixups;
-            for (Int index1078 = 0, rangeEnd1079 = length(range1077); index1078 < rangeEnd1079; ++index1078) {
-                RipFixup f = range1077[index1078];
-                {
-                    auto switch1080 = f.kind;
-                    switch (switch1080) {
-                        case labelModule: {
-                            oc->relocs = appendValues(oc->relocs, TextReloc{f.at, i32(-1LL), convert<i64>(oc->blobAt[f.label]) - convert<i64>(f.end - f.at)});
-                            break;
-                        }
-                        case labelGot: {
-                            oc->relocs = appendValues(oc->relocs, TextReloc{f.at, f.label, -convert<i64>(f.end - f.at)});
-                            break;
-                        }
-                        case labelFunc: {
-                            littlePutUint32(subslice(a->buf, f.at, length(a->buf)), convert<u32>(oc->funcAt[f.label] - f.end));
-                            break;
-                        }
-                        default: {
-                            compilerError(String("internal error: unresolved local label"));
-                            break;
-                        }
-                    }
+        auto range1077 = a->fixups;
+        for (Int index1078 = 0, rangeEnd1079 = length(range1077); index1078 < rangeEnd1079; ++index1078) {
+            RipFixup f = range1077[index1078];
+            auto switch1080 = f.kind;
+            switch (switch1080) {
+                case labelModule: {
+                    oc->relocs = appendValues(oc->relocs, TextReloc{f.at, i32(-1LL), convert<i64>(oc->blobAt[f.label]) - convert<i64>(f.end - f.at)});
+                    break;
+                }
+                case labelGot: {
+                    oc->relocs = appendValues(oc->relocs, TextReloc{f.at, f.label, -convert<i64>(f.end - f.at)});
+                    break;
+                }
+                case labelFunc: {
+                    littlePutUint32(subslice(a->buf, f.at, length(a->buf)), convert<u32>(oc->funcAt[f.label] - f.end));
+                    break;
+                }
+                default: {
+                    compilerError(String("internal error: unresolved local label"));
+                    break;
                 }
             }
         }
-        {
-            auto range1081 = oc->calls;
-            for (Int index1082 = 0, rangeEnd1083 = length(range1081); index1082 < rangeEnd1083; ++index1082) {
-                CallFixup c = range1081[index1082];
-                asmPatch32(a, c.at, oc->funcAt[c.fn]);
-            }
+        auto range1081 = oc->calls;
+        for (Int index1082 = 0, rangeEnd1083 = length(range1081); index1082 < rangeEnd1083; ++index1082) {
+            CallFixup c = range1081[index1082];
+            asmPatch32(a, c.at, oc->funcAt[c.fn]);
         }
-        {
-            auto range1084 = oc->stubCalls;
-            for (Int index1085 = 0, rangeEnd1086 = length(range1084); index1085 < rangeEnd1086; ++index1085) {
-                CallFixup c = range1084[index1085];
-                asmPatch32(a, c.at, oc->stubAt[c.fn]);
-            }
+        auto range1084 = oc->stubCalls;
+        for (Int index1085 = 0, rangeEnd1086 = length(range1084); index1085 < rangeEnd1086; ++index1085) {
+            CallFixup c = range1084[index1085];
+            asmPatch32(a, c.at, oc->stubAt[c.fn]);
         }
-        {
-            auto range1087 = oc->jumpCalls;
-            for (Int index1088 = 0, rangeEnd1089 = length(range1087); index1088 < rangeEnd1089; ++index1088) {
-                CallFixup c = range1087[index1088];
-                asmPatch32(a, c.at, oc->jumpAt[c.fn]);
-            }
+        auto range1087 = oc->jumpCalls;
+        for (Int index1088 = 0, rangeEnd1089 = length(range1087); index1088 < rangeEnd1089; ++index1088) {
+            CallFixup c = range1087[index1088];
+            asmPatch32(a, c.at, oc->jumpAt[c.fn]);
         }
     }
 
@@ -18258,13 +17570,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         asmAluRM(a, aluSub, u8(8LL), R9, word(resumeSP));
         asmStore(a, u8(8LL), R9, baseAt(ctxReg, offBase));
         asmLoad(a, u8(8LL), u8(8LL), false, memReg, baseAt(ctxReg, offMem));
-        {
-            auto range1090 = Array<VReg, 3>{{R10, R11, R12}};
-            for (Int index1091 = 0, rangeEnd1092 = length(range1090); index1091 < rangeEnd1092; ++index1091) {
-                Int k = index1091;
-                VReg r = range1090[index1091];
-                asmLoad(a, u8(8LL), u8(8LL), false, r, word(resumeR10 + i32(8LL) * convert<i32>(k)));
-            }
+        auto range1090 = Array<VReg, 3>{{R10, R11, R12}};
+        for (Int index1091 = 0, rangeEnd1092 = length(range1090); index1091 < rangeEnd1092; ++index1091) {
+            Int k = index1091;
+            VReg r = range1090[index1091];
+            asmLoad(a, u8(8LL), u8(8LL), false, r, word(resumeR10 + i32(8LL) * convert<i32>(k)));
         }
         asmLoad(a, u8(8LL), u8(8LL), false, R9, word(resumePC));
         asmMovRR(a, u8(8LL), RBP, RBX);
@@ -18317,42 +17627,34 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Slice<VReg> saved = sliceOf<VReg>({RAX, RBX, RCX, RDX, RSI, RDI, R8, R9, R10, R11, R12, R13, R15});
         asmPush(a, RBP);
         asmMovRR(a, u8(8LL), RBP, RSP);
-        {
-            auto range1093 = saved;
-            for (Int index1094 = 0, rangeEnd1095 = length(range1093); index1094 < rangeEnd1095; ++index1094) {
-                VReg r = range1093[index1094];
-                asmPush(a, r);
-            }
+        auto range1093 = saved;
+        for (Int index1094 = 0, rangeEnd1095 = length(range1093); index1094 < rangeEnd1095; ++index1094) {
+            VReg r = range1093[index1094];
+            asmPush(a, r);
         }
         i32 xmms = convert<i32>(Int(8LL) * length(goFloatRegs));
         asmAluRI(a, aluSub, u8(8LL), RSP, convert<i64>(xmms));
-        {
-            auto range1096 = goFloatRegs;
-            for (Int index1097 = 0, rangeEnd1098 = length(range1096); index1097 < rangeEnd1098; ++index1097) {
-                Int i = index1097;
-                VReg x = range1096[index1097];
-                asmFstore(a, u8(8LL), x, rspAt(convert<i32>(Int(8LL) * i)));
-            }
+        auto range1096 = goFloatRegs;
+        for (Int index1097 = 0, rangeEnd1098 = length(range1096); index1097 < rangeEnd1098; ++index1097) {
+            Int i = index1097;
+            VReg x = range1096[index1097];
+            asmFstore(a, u8(8LL), x, rspAt(convert<i32>(Int(8LL) * i)));
         }
         asmLoad(a, u8(8LL), u8(8LL), false, RAX, baseAt(R14, gStackHi));
         asmAluRR(a, aluSub, u8(8LL), RAX, RSP);
         asmAluRM(a, aluCmp, u8(8LL), RAX, baseAt(ctxReg, offStackLimit));
         i32 overflow = asmJccRel(a, ccA);
         asmCallMem(a, objCodeGotMem(oc, symMorestack));
-        {
-            auto range1099 = goFloatRegs;
-            for (Int index1100 = 0, rangeEnd1101 = length(range1099); index1100 < rangeEnd1101; ++index1100) {
-                Int i = index1100;
-                VReg x = range1099[index1100];
-                asmFload(a, u8(8LL), x, rspAt(convert<i32>(Int(8LL) * i)));
-            }
+        auto range1099 = goFloatRegs;
+        for (Int index1100 = 0, rangeEnd1101 = length(range1099); index1100 < rangeEnd1101; ++index1100) {
+            Int i = index1100;
+            VReg x = range1099[index1100];
+            asmFload(a, u8(8LL), x, rspAt(convert<i32>(Int(8LL) * i)));
         }
         asmAluRI(a, aluAdd, u8(8LL), RSP, convert<i64>(xmms));
-        {
-            Int i = length(saved) - Int(1LL);
-            for (; i >= Int(0LL); i--) {
-                asmPop(a, saved[i]);
-            }
+        Int i = length(saved) - Int(1LL);
+        for (; i >= Int(0LL); i--) {
+            asmPop(a, saved[i]);
         }
         asmPop(a, RBP);
         asmRet(a);
@@ -18432,29 +17734,25 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         asmLoad(a, u8(8LL), u8(8LL), false, memReg, baseAt(ctxReg, offMem));
         i32 goArgs = total + i32(8LL);
-        {
-            auto range1104 = params;
-            for (Int index1105 = 0, rangeEnd1106 = length(range1104); index1105 < rangeEnd1106; ++index1105) {
-                Int i = index1105;
-                ValType t = range1104[index1105];
-                GoLoc src = g.params[i];
-                {
-                    if (pregs[i] != noReg && src.reg == pregs[i]) {
-                        if (t == I32) {
-                            asmMovRR(a, u8(4LL), src.reg, src.reg);
-                        }
-                    } else if (pregs[i] == noReg && src.reg != noReg) {
-                        if (t == I32) {
-                            asmMovRR(a, u8(4LL), src.reg, src.reg);
-                        }
-                        asmStore(a, u8(8LL), src.reg, rspAt(convert<i32>(Int(8LL) * pslots[i])));
-                    } else if (pregs[i] == noReg) {
-                        asmLoad(a, convert<u8>(goSize(t)), u8(8LL), false, RDX, rspAt(goArgs + src.off));
-                        asmStore(a, u8(8LL), RDX, rspAt(convert<i32>(Int(8LL) * pslots[i])));
-                    } else {
-                        compilerError(String("internal error: parameter %d of %s moves between registers"));
-                    }
+        auto range1104 = params;
+        for (Int index1105 = 0, rangeEnd1106 = length(range1104); index1105 < rangeEnd1106; ++index1105) {
+            Int i = index1105;
+            ValType t = range1104[index1105];
+            GoLoc src = g.params[i];
+            if (pregs[i] != noReg && src.reg == pregs[i]) {
+                if (t == I32) {
+                    asmMovRR(a, u8(4LL), src.reg, src.reg);
                 }
+            } else if (pregs[i] == noReg && src.reg != noReg) {
+                if (t == I32) {
+                    asmMovRR(a, u8(4LL), src.reg, src.reg);
+                }
+                asmStore(a, u8(8LL), src.reg, rspAt(convert<i32>(Int(8LL) * pslots[i])));
+            } else if (pregs[i] == noReg) {
+                asmLoad(a, convert<u8>(goSize(t)), u8(8LL), false, RDX, rspAt(goArgs + src.off));
+                asmStore(a, u8(8LL), RDX, rspAt(convert<i32>(Int(8LL) * pslots[i])));
+            } else {
+                compilerError(String("internal error: parameter %d of %s moves between registers"));
             }
         }
         if (index >= Int(0LL)) {
@@ -18462,23 +17760,19 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         } else {
             body();
         }
-        {
-            auto range1109 = results;
-            for (Int index1110 = 0, rangeEnd1111 = length(range1109); index1110 < rangeEnd1111; ++index1110) {
-                Int i = index1110;
-                ValType t = range1109[index1110];
-                GoLoc dst = g.results[i];
-                {
-                    if (rregs[i] != noReg && dst.reg == rregs[i]) {
-                    } else if (rregs[i] == noReg && dst.reg != noReg) {
-                        asmLoad(a, u8(8LL), u8(8LL), false, dst.reg, rspAt(convert<i32>(Int(8LL) * rslots[i])));
-                    } else if (rregs[i] == noReg) {
-                        asmLoad(a, u8(8LL), u8(8LL), false, RDX, rspAt(convert<i32>(Int(8LL) * rslots[i])));
-                        asmStore(a, convert<u8>(goSize(t)), RDX, rspAt(goArgs + dst.off));
-                    } else {
-                        compilerError(String("internal error: result %d of %s moves between registers"));
-                    }
-                }
+        auto range1109 = results;
+        for (Int index1110 = 0, rangeEnd1111 = length(range1109); index1110 < rangeEnd1111; ++index1110) {
+            Int i = index1110;
+            ValType t = range1109[index1110];
+            GoLoc dst = g.results[i];
+            if (rregs[i] != noReg && dst.reg == rregs[i]) {
+            } else if (rregs[i] == noReg && dst.reg != noReg) {
+                asmLoad(a, u8(8LL), u8(8LL), false, dst.reg, rspAt(convert<i32>(Int(8LL) * rslots[i])));
+            } else if (rregs[i] == noReg) {
+                asmLoad(a, u8(8LL), u8(8LL), false, RDX, rspAt(convert<i32>(Int(8LL) * rslots[i])));
+                asmStore(a, convert<u8>(goSize(t)), RDX, rspAt(goArgs + dst.off));
+            } else {
+                compilerError(String("internal error: result %d of %s moves between registers"));
             }
         }
         if (frame > i32(0LL)) {
@@ -18535,33 +17829,25 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             remaining -= take;
         }
-        {
-            auto& range1117 = f->blocks;
-            for (Int index1118 = 0, rangeEnd1119 = length(range1117); index1118 < rangeEnd1119; ++index1118) {
-                Int b = index1118;
-                Term* t = &f->blocks[b].term;
-                if (t->kind == TermIf || t->kind == TermSwitch) {
-                    t->value = resolve(t->value);
-                }
-                {
-                    auto range1120 = t->values;
-                    for (Int index1121 = 0, rangeEnd1122 = length(range1120); index1121 < rangeEnd1122; ++index1121) {
-                        Int i = index1121;
-                        t->values[i] = resolve(t->values[i]);
-                    }
-                }
-                {
-                    auto range1123 = t->edges;
-                    for (Int index1124 = 0, rangeEnd1125 = length(range1123); index1124 < rangeEnd1125; ++index1124) {
-                        Int i = index1124;
-                        {
-                            auto range1126 = t->edges[i].args;
-                            for (Int index1127 = 0, rangeEnd1128 = length(range1126); index1127 < rangeEnd1128; ++index1127) {
-                                Int j = index1127;
-                                t->edges[i].args[j] = resolve(t->edges[i].args[j]);
-                            }
-                        }
-                    }
+        auto& range1117 = f->blocks;
+        for (Int index1118 = 0, rangeEnd1119 = length(range1117); index1118 < rangeEnd1119; ++index1118) {
+            Int b = index1118;
+            Term* t = &f->blocks[b].term;
+            if (t->kind == TermIf || t->kind == TermSwitch) {
+                t->value = resolve(t->value);
+            }
+            auto range1120 = t->values;
+            for (Int index1121 = 0, rangeEnd1122 = length(range1120); index1121 < rangeEnd1122; ++index1121) {
+                Int i = index1121;
+                t->values[i] = resolve(t->values[i]);
+            }
+            auto range1123 = t->edges;
+            for (Int index1124 = 0, rangeEnd1125 = length(range1123); index1124 < rangeEnd1125; ++index1124) {
+                Int i = index1124;
+                auto range1126 = t->edges[i].args;
+                for (Int index1127 = 0, rangeEnd1128 = length(range1126); index1127 < rangeEnd1128; ++index1127) {
+                    Int j = index1127;
+                    t->edges[i].args[j] = resolve(t->edges[i].args[j]);
                 }
             }
         }
@@ -18573,35 +17859,29 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Function* f = o->f;
         bool changed = false;
         optimizerCountUses(o);
-        {
-            auto& range1129 = f->blocks;
-            for (Int index1130 = 0, rangeEnd1131 = length(range1129); index1130 < rangeEnd1131; ++index1130) {
-                Int b = index1130;
-                Block* blk = &f->blocks[b];
-                if (blk->dead || b == Int(0LL) || length(blk->instrs) != Int(0LL) || blk->term.kind != TermJump || blk->term.edges[Int(0LL)].block == convert<i32>(b)) {
-                    continue;
-                }
-                if (!optimizerLocalParams(o, convert<i32>(b))) {
-                    continue;
-                }
-                Edge next = blk->term.edges[Int(0LL)];
-                {
-                    auto range1132 = blk->preds;
-                    for (Int index1133 = 0, rangeEnd1134 = length(range1132); index1133 < rangeEnd1134; ++index1133) {
-                        i32 p = range1132[index1133];
-                        Term* pt = &f->blocks[p].term;
-                        {
-                            auto range1135 = pt->edges;
-                            for (Int index1136 = 0, rangeEnd1137 = length(range1135); index1136 < rangeEnd1137; ++index1136) {
-                                Int i = index1136;
-                                Edge* e = &pt->edges[i];
-                                if (e->block == convert<i32>(b)) {
-                                    Slice<i32> args = optimizerSubstitute(o, convert<i32>(b), next.args, e->args);
-                                    *e = Edge{next.block, args};
-                                    changed = true;
-                                }
-                            }
-                        }
+        auto& range1129 = f->blocks;
+        for (Int index1130 = 0, rangeEnd1131 = length(range1129); index1130 < rangeEnd1131; ++index1130) {
+            Int b = index1130;
+            Block* blk = &f->blocks[b];
+            if (blk->dead || b == Int(0LL) || length(blk->instrs) != Int(0LL) || blk->term.kind != TermJump || blk->term.edges[Int(0LL)].block == convert<i32>(b)) {
+                continue;
+            }
+            if (!optimizerLocalParams(o, convert<i32>(b))) {
+                continue;
+            }
+            Edge next = blk->term.edges[Int(0LL)];
+            auto range1132 = blk->preds;
+            for (Int index1133 = 0, rangeEnd1134 = length(range1132); index1133 < rangeEnd1134; ++index1133) {
+                i32 p = range1132[index1133];
+                Term* pt = &f->blocks[p].term;
+                auto range1135 = pt->edges;
+                for (Int index1136 = 0, rangeEnd1137 = length(range1135); index1136 < rangeEnd1137; ++index1136) {
+                    Int i = index1136;
+                    Edge* e = &pt->edges[i];
+                    if (e->block == convert<i32>(b)) {
+                        Slice<i32> args = optimizerSubstitute(o, convert<i32>(b), next.args, e->args);
+                        *e = Edge{next.block, args};
+                        changed = true;
                     }
                 }
             }
@@ -18611,57 +17891,47 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         changed = optimizerUnreachable(o) || changed;
         bool merged = false;
-        {
-            auto& range1138 = f->blocks;
-            for (Int index1139 = 0, rangeEnd1140 = length(range1138); index1139 < rangeEnd1140; ++index1139) {
-                Int b = index1139;
-                Block* blk = &f->blocks[b];
-                if (blk->dead || b == Int(0LL) || length(blk->preds) != Int(1LL)) {
-                    continue;
-                }
-                i32 p = blk->preds[Int(0LL)];
-                Block* pb = &f->blocks[p];
-                if (p == convert<i32>(b) || pb->term.kind != TermJump) {
-                    continue;
-                }
-                Edge e = pb->term.edges[Int(0LL)];
-                {
-                    auto range1141 = blk->params;
-                    for (Int index1142 = 0, rangeEnd1143 = length(range1141); index1142 < rangeEnd1143; ++index1142) {
-                        Int i = index1142;
-                        i32 param = range1141[index1142];
-                        optimizerReplace(o, param, optimizerResolve(o, e.args[i]));
-                    }
-                }
-                {
-                    auto range1144 = blk->instrs.view();
-                    for (Int index1145 = 0, rangeEnd1146 = length(range1144); index1145 < rangeEnd1146; ++index1145) {
-                        i32 v = range1144[index1145];
-                        f->values[v].block = p;
-                    }
-                }
-                pb->instrs.append(blk->instrs.view());
-                pb->term = blk->term;
-                *blk = Block{{}, {}, {}, {}, true};
-                {
-                    auto range1147 = pb->term.edges;
-                    for (Int index1148 = 0, rangeEnd1149 = length(range1147); index1148 < rangeEnd1149; ++index1148) {
-                        Edge s = range1147[index1148];
-                        Block* sb = &f->blocks[s.block];
-                        {
-                            auto range1150 = sb->preds;
-                            for (Int index1151 = 0, rangeEnd1152 = length(range1150); index1151 < rangeEnd1152; ++index1151) {
-                                Int i = index1151;
-                                i32 q = range1150[index1151];
-                                if (q == convert<i32>(b)) {
-                                    sb->preds[i] = p;
-                                }
-                            }
-                        }
-                    }
-                }
-                merged = true;
+        auto& range1138 = f->blocks;
+        for (Int index1139 = 0, rangeEnd1140 = length(range1138); index1139 < rangeEnd1140; ++index1139) {
+            Int b = index1139;
+            Block* blk = &f->blocks[b];
+            if (blk->dead || b == Int(0LL) || length(blk->preds) != Int(1LL)) {
+                continue;
             }
+            i32 p = blk->preds[Int(0LL)];
+            Block* pb = &f->blocks[p];
+            if (p == convert<i32>(b) || pb->term.kind != TermJump) {
+                continue;
+            }
+            Edge e = pb->term.edges[Int(0LL)];
+            auto range1141 = blk->params;
+            for (Int index1142 = 0, rangeEnd1143 = length(range1141); index1142 < rangeEnd1143; ++index1142) {
+                Int i = index1142;
+                i32 param = range1141[index1142];
+                optimizerReplace(o, param, optimizerResolve(o, e.args[i]));
+            }
+            auto range1144 = blk->instrs.view();
+            for (Int index1145 = 0, rangeEnd1146 = length(range1144); index1145 < rangeEnd1146; ++index1145) {
+                i32 v = range1144[index1145];
+                f->values[v].block = p;
+            }
+            pb->instrs.append(blk->instrs.view());
+            pb->term = blk->term;
+            *blk = Block{{}, {}, {}, {}, true};
+            auto range1147 = pb->term.edges;
+            for (Int index1148 = 0, rangeEnd1149 = length(range1147); index1148 < rangeEnd1149; ++index1148) {
+                Edge s = range1147[index1148];
+                Block* sb = &f->blocks[s.block];
+                auto range1150 = sb->preds;
+                for (Int index1151 = 0, rangeEnd1152 = length(range1150); index1151 < rangeEnd1152; ++index1151) {
+                    Int i = index1151;
+                    i32 q = range1150[index1151];
+                    if (q == convert<i32>(b)) {
+                        sb->preds[i] = p;
+                    }
+                }
+            }
+            merged = true;
         }
         if (merged) {
             optimizerApply(o);
@@ -18796,50 +18066,38 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Function* f = o->f;
         o->uses.resize(usize(length(f->values)));
         o->uses.fill(0);
-        {
-            auto& range1167 = f->blocks;
-            for (Int index1168 = 0, rangeEnd1169 = length(range1167); index1168 < rangeEnd1169; ++index1168) {
-                Int b = index1168;
-                Block* blk = &f->blocks[b];
-                if (blk->dead) {
-                    continue;
+        auto& range1167 = f->blocks;
+        for (Int index1168 = 0, rangeEnd1169 = length(range1167); index1168 < rangeEnd1169; ++index1168) {
+            Int b = index1168;
+            Block* blk = &f->blocks[b];
+            if (blk->dead) {
+                continue;
+            }
+            auto range1170 = blk->instrs.view();
+            for (Int index1171 = 0, rangeEnd1172 = length(range1170); index1171 < rangeEnd1172; ++index1171) {
+                i32 v = range1170[index1171];
+                auto range1173 = functionArgs(f, v);
+                for (Int index1174 = 0, rangeEnd1175 = length(range1173); index1174 < rangeEnd1175; ++index1174) {
+                    i32 a = range1173[index1174];
+                    o->uses[a]++;
                 }
-                {
-                    auto range1170 = blk->instrs.view();
-                    for (Int index1171 = 0, rangeEnd1172 = length(range1170); index1171 < rangeEnd1172; ++index1171) {
-                        i32 v = range1170[index1171];
-                        {
-                            auto range1173 = functionArgs(f, v);
-                            for (Int index1174 = 0, rangeEnd1175 = length(range1173); index1174 < rangeEnd1175; ++index1174) {
-                                i32 a = range1173[index1174];
-                                o->uses[a]++;
-                            }
-                        }
-                    }
-                }
-                Term* t = &blk->term;
-                if (t->kind == TermIf || t->kind == TermSwitch) {
-                    o->uses[t->value]++;
-                }
-                {
-                    auto range1176 = t->values;
-                    for (Int index1177 = 0, rangeEnd1178 = length(range1176); index1177 < rangeEnd1178; ++index1177) {
-                        i32 v = range1176[index1177];
-                        o->uses[v]++;
-                    }
-                }
-                {
-                    auto range1179 = t->edges;
-                    for (Int index1180 = 0, rangeEnd1181 = length(range1179); index1180 < rangeEnd1181; ++index1180) {
-                        Edge e = range1179[index1180];
-                        {
-                            auto range1182 = e.args;
-                            for (Int index1183 = 0, rangeEnd1184 = length(range1182); index1183 < rangeEnd1184; ++index1183) {
-                                i32 a = range1182[index1183];
-                                o->uses[a]++;
-                            }
-                        }
-                    }
+            }
+            Term* t = &blk->term;
+            if (t->kind == TermIf || t->kind == TermSwitch) {
+                o->uses[t->value]++;
+            }
+            auto range1176 = t->values;
+            for (Int index1177 = 0, rangeEnd1178 = length(range1176); index1177 < rangeEnd1178; ++index1177) {
+                i32 v = range1176[index1177];
+                o->uses[v]++;
+            }
+            auto range1179 = t->edges;
+            for (Int index1180 = 0, rangeEnd1181 = length(range1179); index1180 < rangeEnd1181; ++index1180) {
+                Edge e = range1179[index1180];
+                auto range1182 = e.args;
+                for (Int index1183 = 0, rangeEnd1184 = length(range1182); index1183 < rangeEnd1184; ++index1183) {
+                    i32 a = range1182[index1183];
+                    o->uses[a]++;
                 }
             }
         }
@@ -18849,75 +18107,63 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // edges use.
     static void optimizerDeadCode(Optimizer* o) {
         Function* f = o->f;
-        {
-            for (; true;) {
-                optimizerCountUses(o);
-                bool removed = false;
-                {
-                    auto& range1185 = f->blocks;
-                    for (Int index1186 = 0, rangeEnd1187 = length(range1185); index1186 < rangeEnd1187; ++index1186) {
-                        Int b = index1186;
-                        Block* blk = &f->blocks[b];
-                        if (blk->dead) {
-                            continue;
+        for (; true;) {
+            optimizerCountUses(o);
+            bool removed = false;
+            auto& range1185 = f->blocks;
+            for (Int index1186 = 0, rangeEnd1187 = length(range1185); index1186 < rangeEnd1187; ++index1186) {
+                Int b = index1186;
+                Block* blk = &f->blocks[b];
+                if (blk->dead) {
+                    continue;
+                }
+                const usize count = blk->instrs.size();
+                usize first = count;
+                Int i = length(blk->instrs) - Int(1LL);
+                for (; i >= Int(0LL); i--) {
+                    i32 v = blk->instrs[i];
+                    if (o->uses[v] == i32(0LL) && !hasEffect(f->values[v].op)) {
+                        auto range1188 = functionArgs(f, v);
+                        for (Int index1189 = 0, rangeEnd1190 = length(range1188); index1189 < rangeEnd1190; ++index1189) {
+                            i32 a = range1188[index1189];
+                            o->uses[a]--;
                         }
-                        const usize count = blk->instrs.size();
-                        usize first = count;
-                        {
-                            Int i = length(blk->instrs) - Int(1LL);
-                            for (; i >= Int(0LL); i--) {
-                                i32 v = blk->instrs[i];
-                                if (o->uses[v] == i32(0LL) && !hasEffect(f->values[v].op)) {
-                                    {
-                                        auto range1188 = functionArgs(f, v);
-                                        for (Int index1189 = 0, rangeEnd1190 = length(range1188); index1189 < rangeEnd1190; ++index1189) {
-                                            i32 a = range1188[index1189];
-                                            o->uses[a]--;
-                                        }
-                                    }
-                                    removed = true;
-                                    continue;
-                                }
-                                blk->instrs[--first] = v;
-                            }
-                        }
-                        if (first && first != count) {
-                            copySlice(blk->instrs.view(), subslice(blk->instrs.view(), Int(first), Int(count)));
-                        }
-                        blk->instrs.resize(count - first);
+                        removed = true;
+                        continue;
+                    }
+                    blk->instrs[--first] = v;
+                }
+                if (first && first != count) {
+                    copySlice(blk->instrs.view(), subslice(blk->instrs.view(), Int(first), Int(count)));
+                }
+                blk->instrs.resize(count - first);
+            }
+            auto& range1197 = f->blocks;
+            for (Int index1198 = 0, rangeEnd1199 = length(range1197); index1198 < rangeEnd1199; ++index1198) {
+                Int b = index1198;
+                Block* blk = &f->blocks[b];
+                if (blk->dead || b == Int(0LL) || length(blk->params) == Int(0LL)) {
+                    continue;
+                }
+                Slice<bool> keep = makeSlice<bool>(length(blk->params));
+                bool drop = false;
+                Vec<Edge*> in = optimizerIncoming(o, convert<i32>(b));
+                auto range1200 = blk->params;
+                for (Int index1201 = 0, rangeEnd1202 = length(range1200); index1201 < rangeEnd1202; ++index1201) {
+                    Int k = index1201;
+                    i32 p = range1200[index1201];
+                    keep[k] = o->uses[p] > selfUses(in, k, p);
+                    if (!keep[k]) {
+                        drop = true;
                     }
                 }
-                {
-                    auto& range1197 = f->blocks;
-                    for (Int index1198 = 0, rangeEnd1199 = length(range1197); index1198 < rangeEnd1199; ++index1198) {
-                        Int b = index1198;
-                        Block* blk = &f->blocks[b];
-                        if (blk->dead || b == Int(0LL) || length(blk->params) == Int(0LL)) {
-                            continue;
-                        }
-                        Slice<bool> keep = makeSlice<bool>(length(blk->params));
-                        bool drop = false;
-                        Vec<Edge*> in = optimizerIncoming(o, convert<i32>(b));
-                        {
-                            auto range1200 = blk->params;
-                            for (Int index1201 = 0, rangeEnd1202 = length(range1200); index1201 < rangeEnd1202; ++index1201) {
-                                Int k = index1201;
-                                i32 p = range1200[index1201];
-                                keep[k] = o->uses[p] > selfUses(in, k, p);
-                                if (!keep[k]) {
-                                    drop = true;
-                                }
-                            }
-                        }
-                        if (drop) {
-                            optimizerDropParams(o, convert<i32>(b), keep);
-                            removed = true;
-                        }
-                    }
+                if (drop) {
+                    optimizerDropParams(o, convert<i32>(b), keep);
+                    removed = true;
                 }
-                if (!removed) {
-                    return;
-                }
+            }
+            if (!removed) {
+                return;
             }
         }
     }
@@ -18928,49 +18174,41 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Function* f = o->f;
         Block* blk = &f->blocks[b];
         Slice<i32> params = {};
-        {
-            auto range1203 = blk->params;
-            for (Int index1204 = 0, rangeEnd1205 = length(range1203); index1204 < rangeEnd1205; ++index1204) {
-                Int i = index1204;
-                i32 p = range1203[index1204];
-                if (keep[i]) {
-                    f->values[p].aux = convert<i64>(length(params));
-                    params = appendValues(params, p);
-                }
+        auto range1203 = blk->params;
+        for (Int index1204 = 0, rangeEnd1205 = length(range1203); index1204 < rangeEnd1205; ++index1204) {
+            Int i = index1204;
+            i32 p = range1203[index1204];
+            if (keep[i]) {
+                f->values[p].aux = convert<i64>(length(params));
+                params = appendValues(params, p);
             }
         }
         Map<i32, bool> seen = mapOf<i32, bool>({});
-        {
-            auto range1206 = blk->preds;
-            for (Int index1207 = 0, rangeEnd1208 = length(range1206); index1207 < rangeEnd1208; ++index1207) {
-                i32 p = range1206[index1207];
-                if (seen[p]) {
+        auto range1206 = blk->preds;
+        for (Int index1207 = 0, rangeEnd1208 = length(range1206); index1207 < rangeEnd1208; ++index1207) {
+            i32 p = range1206[index1207];
+            if (seen[p]) {
+                continue;
+            }
+            setMap(seen, p, true);
+            Term* pt = &f->blocks[p].term;
+            auto range1209 = pt->edges;
+            for (Int index1210 = 0, rangeEnd1211 = length(range1209); index1210 < rangeEnd1211; ++index1210) {
+                Int i = index1210;
+                Edge* e = &pt->edges[i];
+                if (e->block != b) {
                     continue;
                 }
-                setMap(seen, p, true);
-                Term* pt = &f->blocks[p].term;
-                {
-                    auto range1209 = pt->edges;
-                    for (Int index1210 = 0, rangeEnd1211 = length(range1209); index1210 < rangeEnd1211; ++index1210) {
-                        Int i = index1210;
-                        Edge* e = &pt->edges[i];
-                        if (e->block != b) {
-                            continue;
-                        }
-                        Slice<i32> args = {};
-                        {
-                            auto range1212 = e->args;
-                            for (Int index1213 = 0, rangeEnd1214 = length(range1212); index1213 < rangeEnd1214; ++index1213) {
-                                Int j = index1213;
-                                i32 a = range1212[index1213];
-                                if (keep[j]) {
-                                    args = appendValues(args, a);
-                                }
-                            }
-                        }
-                        e->args = args;
+                Slice<i32> args = {};
+                auto range1212 = e->args;
+                for (Int index1213 = 0, rangeEnd1214 = length(range1212); index1213 < rangeEnd1214; ++index1213) {
+                    Int j = index1213;
+                    i32 a = range1212[index1213];
+                    if (keep[j]) {
+                        args = appendValues(args, a);
                     }
                 }
+                e->args = args;
             }
         }
         blk->params = params;
@@ -18987,30 +18225,28 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         if (optimizerIsConst(o, b)) {
             u64 c = convert<u64>(optimizerConstOf(o, b)) & mask(t);
-            {
-                if (c == u64(0LL) && (op == OpAdd || op == OpSub || op == OpOr || op == OpXor || op == OpShl || op == OpShrS || op == OpShrU || op == OpRotl || op == OpRotr)) {
-                    optimizerReplace(o, v, a);
-                    return true;
-                } else if (c == u64(0LL) && (op == OpMul || op == OpAnd)) {
-                    optimizerReplace(o, v, b);
-                    return true;
-                } else if (c == u64(1LL) && (op == OpMul || op == OpDivS || op == OpDivU)) {
-                    optimizerReplace(o, v, a);
-                    return true;
-                } else if (c == mask(t) && op == OpAnd) {
-                    optimizerReplace(o, v, a);
-                    return true;
-                } else if (c == u64(0LL) && op == OpEq && t == I32) {
-                    f->values[v].op = OpEqz;
-                    optimizerSetArgs(o, v, Span<const i32>({a}));
-                    return true;
-                } else if (c == u64(0LL) && op == OpGeU) {
-                    optimizerReplace(o, v, optimizerConstant(o, I32, i64(1LL)));
-                    return true;
-                } else if (c == u64(0LL) && op == OpLtU) {
-                    optimizerReplace(o, v, optimizerConstant(o, I32, i64(0LL)));
-                    return true;
-                }
+            if (c == u64(0LL) && (op == OpAdd || op == OpSub || op == OpOr || op == OpXor || op == OpShl || op == OpShrS || op == OpShrU || op == OpRotl || op == OpRotr)) {
+                optimizerReplace(o, v, a);
+                return true;
+            } else if (c == u64(0LL) && (op == OpMul || op == OpAnd)) {
+                optimizerReplace(o, v, b);
+                return true;
+            } else if (c == u64(1LL) && (op == OpMul || op == OpDivS || op == OpDivU)) {
+                optimizerReplace(o, v, a);
+                return true;
+            } else if (c == mask(t) && op == OpAnd) {
+                optimizerReplace(o, v, a);
+                return true;
+            } else if (c == u64(0LL) && op == OpEq && t == I32) {
+                f->values[v].op = OpEqz;
+                optimizerSetArgs(o, v, Span<const i32>({a}));
+                return true;
+            } else if (c == u64(0LL) && op == OpGeU) {
+                optimizerReplace(o, v, optimizerConstant(o, I32, i64(1LL)));
+                return true;
+            } else if (c == u64(0LL) && op == OpLtU) {
+                optimizerReplace(o, v, optimizerConstant(o, I32, i64(0LL)));
+                return true;
             }
             if (op == OpMul && (c & (c - u64(1LL))) == u64(0LL)) {
                 f->values[v].op = OpShl;
@@ -19026,39 +18262,37 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         if (a == b) {
-            {
-                auto switch1219 = op;
-                switch (switch1219) {
-                    case OpSub:
-                    case OpXor: {
-                        optimizerReplace(o, v, optimizerConstant(o, t, i64(0LL)));
-                        return true;
-                        break;
-                    }
-                    case OpAnd:
-                    case OpOr: {
-                        optimizerReplace(o, v, a);
-                        return true;
-                        break;
-                    }
-                    case OpEq:
-                    case OpLeS:
-                    case OpLeU:
-                    case OpGeS:
-                    case OpGeU: {
-                        optimizerReplace(o, v, optimizerConstant(o, I32, i64(1LL)));
-                        return true;
-                        break;
-                    }
-                    case OpNe:
-                    case OpLtS:
-                    case OpLtU:
-                    case OpGtS:
-                    case OpGtU: {
-                        optimizerReplace(o, v, optimizerConstant(o, I32, i64(0LL)));
-                        return true;
-                        break;
-                    }
+            auto switch1219 = op;
+            switch (switch1219) {
+                case OpSub:
+                case OpXor: {
+                    optimizerReplace(o, v, optimizerConstant(o, t, i64(0LL)));
+                    return true;
+                    break;
+                }
+                case OpAnd:
+                case OpOr: {
+                    optimizerReplace(o, v, a);
+                    return true;
+                    break;
+                }
+                case OpEq:
+                case OpLeS:
+                case OpLeU:
+                case OpGeS:
+                case OpGeU: {
+                    optimizerReplace(o, v, optimizerConstant(o, I32, i64(1LL)));
+                    return true;
+                    break;
+                }
+                case OpNe:
+                case OpLtS:
+                case OpLtU:
+                case OpGtS:
+                case OpGtU: {
+                    optimizerReplace(o, v, optimizerConstant(o, I32, i64(0LL)));
+                    return true;
+                    break;
                 }
             }
         }
@@ -19131,33 +18365,25 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (t->kind == TermIf || t->kind == TermSwitch) {
             setMap(own, optimizerResolve(o, t->value), own[optimizerResolve(o, t->value)] + 1);
         }
-        {
-            auto range1226 = t->values;
-            for (Int index1227 = 0, rangeEnd1228 = length(range1226); index1227 < rangeEnd1228; ++index1227) {
-                i32 v = range1226[index1227];
-                setMap(own, optimizerResolve(o, v), own[optimizerResolve(o, v)] + 1);
+        auto range1226 = t->values;
+        for (Int index1227 = 0, rangeEnd1228 = length(range1226); index1227 < rangeEnd1228; ++index1227) {
+            i32 v = range1226[index1227];
+            setMap(own, optimizerResolve(o, v), own[optimizerResolve(o, v)] + 1);
+        }
+        auto range1229 = t->edges;
+        for (Int index1230 = 0, rangeEnd1231 = length(range1229); index1230 < rangeEnd1231; ++index1230) {
+            Edge e = range1229[index1230];
+            auto range1232 = e.args;
+            for (Int index1233 = 0, rangeEnd1234 = length(range1232); index1233 < rangeEnd1234; ++index1233) {
+                i32 a = range1232[index1233];
+                setMap(own, optimizerResolve(o, a), own[optimizerResolve(o, a)] + 1);
             }
         }
-        {
-            auto range1229 = t->edges;
-            for (Int index1230 = 0, rangeEnd1231 = length(range1229); index1230 < rangeEnd1231; ++index1230) {
-                Edge e = range1229[index1230];
-                {
-                    auto range1232 = e.args;
-                    for (Int index1233 = 0, rangeEnd1234 = length(range1232); index1233 < rangeEnd1234; ++index1233) {
-                        i32 a = range1232[index1233];
-                        setMap(own, optimizerResolve(o, a), own[optimizerResolve(o, a)] + 1);
-                    }
-                }
-            }
-        }
-        {
-            auto range1235 = blk->params;
-            for (Int index1236 = 0, rangeEnd1237 = length(range1235); index1236 < rangeEnd1237; ++index1236) {
-                i32 p = range1235[index1236];
-                if (o->uses[p] != own[p]) {
-                    return false;
-                }
+        auto range1235 = blk->params;
+        for (Int index1236 = 0, rangeEnd1237 = length(range1235); index1236 < rangeEnd1237; ++index1236) {
+            i32 p = range1235[index1236];
+            if (o->uses[p] != own[p]) {
+                return false;
             }
         }
         return true;
@@ -19168,18 +18394,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static Tuple2<i32, bool> optimizerLow32(Optimizer* o, i32 v) {
         Function* f = o->f;
         Value* val = &f->values[v];
-        {
-            auto switch1238 = val->op;
-            switch (switch1238) {
-                case OpConst: {
-                    return {optimizerConstant(o, I32, convert<i64>(convert<u32>(val->aux))), true};
-                    break;
-                }
-                case OpExtendU:
-                case OpExtendS: {
-                    return {functionArgs(f, v)[Int(0LL)], true};
-                    break;
-                }
+        auto switch1238 = val->op;
+        switch (switch1238) {
+            case OpConst: {
+                return {optimizerConstant(o, I32, convert<i64>(convert<u32>(val->aux))), true};
+                break;
+            }
+            case OpExtendU:
+            case OpExtendS: {
+                return {functionArgs(f, v)[Int(0LL)], true};
+                break;
             }
         }
         return {i32(0LL), false};
@@ -19192,41 +18416,37 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Function* f = o->f;
         FloatIntegerNarrow* n = activePool->make<FloatIntegerNarrow>(FloatIntegerNarrow{o, makeSlice<u8>(length(f->values)), mapOf<i32, i32>({})});
         bool changed = false;
-        {
-            auto& range1239 = f->values;
-            for (Int index1240 = 0, rangeEnd1241 = length(range1239); index1240 < rangeEnd1241; ++index1240) {
-                Int v = index1240;
-                Value val = f->values[v];
-                if (val.op < OpFEq || val.op > OpFGe || val.block < i32(0LL) || f->blocks[val.block].dead) {
-                    continue;
-                }
-                Span<i32> args = functionArgs(f, convert<i32>(v));
-                if (!floatIntegerNarrowCan(n, args[Int(0LL)], Int(0LL)) || !floatIntegerNarrowCan(n, args[Int(1LL)], Int(0LL))) {
-                    continue;
-                }
-                auto temporary1242 = floatIntegerNarrowInteger(n, args[Int(0LL)]);
-                auto temporary1243 = floatIntegerNarrowInteger(n, args[Int(1LL)]);
-                i32 a = temporary1242;
-                i32 b = temporary1243;
-                Array<Op, 6> ops = Array<Op, 6>{{OpEq, OpNe, OpLtU, OpGtU, OpLeU, OpGeU}};
-                f->values[v].op = ops[Op(val.op - OpFEq)];
-                optimizerSetArgs(o, convert<i32>(v), Span<const i32>({a, b}));
-                changed = true;
+        auto& range1239 = f->values;
+        for (Int index1240 = 0, rangeEnd1241 = length(range1239); index1240 < rangeEnd1241; ++index1240) {
+            Int v = index1240;
+            Value val = f->values[v];
+            if (val.op < OpFEq || val.op > OpFGe || val.block < i32(0LL) || f->blocks[val.block].dead) {
+                continue;
             }
+            Span<i32> args = functionArgs(f, convert<i32>(v));
+            if (!floatIntegerNarrowCan(n, args[Int(0LL)], Int(0LL)) || !floatIntegerNarrowCan(n, args[Int(1LL)], Int(0LL))) {
+                continue;
+            }
+            auto temporary1242 = floatIntegerNarrowInteger(n, args[Int(0LL)]);
+            auto temporary1243 = floatIntegerNarrowInteger(n, args[Int(1LL)]);
+            i32 a = temporary1242;
+            i32 b = temporary1243;
+            Array<Op, 6> ops = Array<Op, 6>{{OpEq, OpNe, OpLtU, OpGtU, OpLeU, OpGeU}};
+            f->values[v].op = ops[Op(val.op - OpFEq)];
+            optimizerSetArgs(o, convert<i32>(v), Span<const i32>({a, b}));
+            changed = true;
         }
         return changed;
     }
 
     // paramIndex returns the position of value v among block b's parameters.
     static Int optimizerParamIndex(Optimizer* o, i32 b, i32 v) {
-        {
-            auto range1244 = o->f->blocks[b].params;
-            for (Int index1245 = 0, rangeEnd1246 = length(range1244); index1245 < rangeEnd1246; ++index1245) {
-                Int i = index1245;
-                i32 p = range1244[index1245];
-                if (p == v) {
-                    return i;
-                }
+        auto range1244 = o->f->blocks[b].params;
+        for (Int index1245 = 0, rangeEnd1246 = length(range1244); index1245 < rangeEnd1246; ++index1245) {
+            Int i = index1245;
+            i32 p = range1244[index1245];
+            if (p == v) {
+                return i;
             }
         }
         return Int(-1LL);
@@ -19270,12 +18490,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Map<i32, Slice<i32>> preds = mapOf<i32, Slice<i32>>({});
         auto seen = [&](auto& recur, i32 b, i32 v) -> i32 {
             v = optimizerResolve(o, v);
-            {
-                i32 j = paramIndex(v);
-                bool ok = j >= 0;
-                if (ok) {
-                    return recur(recur, b, j);
-                }
+            i32 j = paramIndex(v);
+            bool ok = j >= 0;
+            if (ok) {
+                return recur(recur, b, j);
             }
             return v;
         };
@@ -19290,14 +18508,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     return found.v0;
                 }
             }
-            {
-                auto found = lookupMap(bypasses, b);
-                if (found.v1) {
-                    const Bypass d = found.v0;
-                    const i32 v = seen(recur, d.pred, d.args[j]);
-                    setMap(memo, key, v);
-                    return v;
-                }
+            auto found = lookupMap(bypasses, b);
+            if (found.v1) {
+                const Bypass d = found.v0;
+                const i32 v = seen(recur, d.pred, d.args[j]);
+                setMap(memo, key, v);
+                return v;
             }
             auto temporary1253 = lookupMap(preds, b);
             Slice<i32> from = temporary1253.v0;
@@ -19320,110 +18536,84 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             i32 x = functionNewValue(f, OpParam, f->values[params[j]].typ, b, convert<i64>(at), Span<const i32>({}));
             f->blocks[b].params = appendValues(f->blocks[b].params, x);
             setMap(memo, key, x);
-            {
-                auto range1254 = from;
-                for (Int index1255 = 0, rangeEnd1256 = length(range1254); index1255 < rangeEnd1256; ++index1255) {
-                    i32 q = range1254[index1255];
-                    {
-                        auto range1257 = f->blocks[q].term.edges;
-                        for (Int index1258 = 0, rangeEnd1259 = length(range1257); index1258 < rangeEnd1259; ++index1258) {
-                            Int i = index1258;
-                            {
-                                Edge* e = &f->blocks[q].term.edges[i];
-                                if (e->block == b) {
-                                    e->args = appendValues(e->args, x);
-                                }
-                            }
-                        }
+            auto range1254 = from;
+            for (Int index1255 = 0, rangeEnd1256 = length(range1254); index1255 < rangeEnd1256; ++index1255) {
+                i32 q = range1254[index1255];
+                auto range1257 = f->blocks[q].term.edges;
+                for (Int index1258 = 0, rangeEnd1259 = length(range1257); index1258 < rangeEnd1259; ++index1258) {
+                    Int i = index1258;
+                    Edge* e = &f->blocks[q].term.edges[i];
+                    if (e->block == b) {
+                        e->args = appendValues(e->args, x);
                     }
                 }
             }
-            {
-                auto range1260 = from;
-                for (Int index1261 = 0, rangeEnd1262 = length(range1260); index1261 < rangeEnd1262; ++index1261) {
-                    i32 q = range1260[index1261];
-                    {
-                        auto range1263 = f->blocks[q].term.edges;
-                        for (Int index1264 = 0, rangeEnd1265 = length(range1263); index1264 < rangeEnd1265; ++index1264) {
-                            Int i = index1264;
-                            if (f->blocks[q].term.edges[i].block == b) {
-                                i32 arg = recur(recur, q, j);
-                                f->blocks[q].term.edges[i].args[at] = arg;
-                            }
-                        }
+            auto range1260 = from;
+            for (Int index1261 = 0, rangeEnd1262 = length(range1260); index1261 < rangeEnd1262; ++index1261) {
+                i32 q = range1260[index1261];
+                auto range1263 = f->blocks[q].term.edges;
+                for (Int index1264 = 0, rangeEnd1265 = length(range1263); index1264 < rangeEnd1265; ++index1264) {
+                    Int i = index1264;
+                    if (f->blocks[q].term.edges[i].block == b) {
+                        i32 arg = recur(recur, q, j);
+                        f->blocks[q].term.edges[i].args[at] = arg;
                     }
                 }
             }
             return x;
         };
-        {
-            i32 b = i32(0LL);
-            for (; b < convert<i32>(length(f->blocks)); b++) {
-                if (b == h || f->blocks[b].dead) {
-                    continue;
+        i32 b = i32(0LL);
+        for (; b < convert<i32>(length(f->blocks)); b++) {
+            if (b == h || f->blocks[b].dead) {
+                continue;
+            }
+            auto temporary1266 = lookupMap(bypasses, b);
+            bool isBypass = temporary1266.v1;
+            auto at = [&](i32 v) mutable -> i32 {
+                if (isBypass) {
+                    return seen(value, bypasses[b].pred, v);
                 }
-                auto temporary1266 = lookupMap(bypasses, b);
-                bool isBypass = temporary1266.v1;
-                auto at = [&](i32 v) mutable -> i32 {
-                    if (isBypass) {
-                        return seen(value, bypasses[b].pred, v);
-                    }
-                    return seen(value, b, v);
-                };
-                {
-                    auto range1267 = f->blocks[b].instrs.view();
-                    for (Int index1268 = 0, rangeEnd1269 = length(range1267); index1268 < rangeEnd1269; ++index1268) {
-                        i32 v = range1267[index1268];
-                        Span<i32> args = functionArgs(f, v);
-                        {
-                            auto range1270 = args;
-                            for (Int index1271 = 0, rangeEnd1272 = length(range1270); index1271 < rangeEnd1272; ++index1271) {
-                                Int i = index1271;
-                                i32 a = range1270[index1271];
-                                {
-                                    bool ok = paramIndex(optimizerResolve(o, a)) >= 0;
-                                    if (ok) {
-                                        args[i] = at(a);
-                                    }
-                                }
-                            }
-                        }
+                return seen(value, b, v);
+            };
+            auto range1267 = f->blocks[b].instrs.view();
+            for (Int index1268 = 0, rangeEnd1269 = length(range1267); index1268 < rangeEnd1269; ++index1268) {
+                i32 v = range1267[index1268];
+                Span<i32> args = functionArgs(f, v);
+                auto range1270 = args;
+                for (Int index1271 = 0, rangeEnd1272 = length(range1270); index1271 < rangeEnd1272; ++index1271) {
+                    Int i = index1271;
+                    i32 a = range1270[index1271];
+                    bool ok = paramIndex(optimizerResolve(o, a)) >= 0;
+                    if (ok) {
+                        args[i] = at(a);
                     }
                 }
-                Term* t = &f->blocks[b].term;
-                if (t->kind == TermIf || t->kind == TermSwitch) {
-                    t->value = at(t->value);
-                }
-                {
-                    auto range1274 = t->values;
-                    for (Int index1275 = 0, rangeEnd1276 = length(range1274); index1275 < rangeEnd1276; ++index1275) {
-                        Int i = index1275;
-                        t->values[i] = at(t->values[i]);
-                    }
-                }
-                {
-                    auto range1277 = t->edges;
-                    for (Int index1278 = 0, rangeEnd1279 = length(range1277); index1278 < rangeEnd1279; ++index1278) {
-                        Int i = index1278;
-                        {
-                            auto range1280 = t->edges[i].args;
-                            for (Int index1281 = 0, rangeEnd1282 = length(range1280); index1281 < rangeEnd1282; ++index1281) {
-                                Int k = index1281;
-                                i32 a = range1280[index1281];
-                                t->edges[i].args[k] = at(a);
-                            }
-                        }
-                    }
+            }
+            Term* t = &f->blocks[b].term;
+            if (t->kind == TermIf || t->kind == TermSwitch) {
+                t->value = at(t->value);
+            }
+            auto range1274 = t->values;
+            for (Int index1275 = 0, rangeEnd1276 = length(range1274); index1275 < rangeEnd1276; ++index1275) {
+                Int i = index1275;
+                t->values[i] = at(t->values[i]);
+            }
+            auto range1277 = t->edges;
+            for (Int index1278 = 0, rangeEnd1279 = length(range1277); index1278 < rangeEnd1279; ++index1278) {
+                Int i = index1278;
+                auto range1280 = t->edges[i].args;
+                for (Int index1281 = 0, rangeEnd1282 = length(range1280); index1281 < rangeEnd1282; ++index1281) {
+                    Int k = index1281;
+                    i32 a = range1280[index1281];
+                    t->edges[i].args[k] = at(a);
                 }
             }
         }
     }
 
     static void optimizerReplace(Optimizer* o, i32 v, i32 w) {
-        {
-            for (; length(o->alias) < length(o->f->values);) {
-                o->alias.pushBack(-1);
-            }
+        for (; length(o->alias) < length(o->f->values);) {
+            o->alias.pushBack(-1);
         }
         if (v != w) {
             o->alias[v] = w;
@@ -19431,10 +18621,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static i32 optimizerResolve(Optimizer* o, i32 v) {
-        {
-            for (; convert<i64>(v) < length(o->alias) && o->alias[v] >= i32(0LL);) {
-                v = o->alias[v];
-            }
+        for (; convert<i64>(v) < length(o->alias) && o->alias[v] >= i32(0LL);) {
+            v = o->alias[v];
         }
         return v;
     }
@@ -19444,130 +18632,112 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // scalar rounding code to apply a small correction on ties.
     static void optimizerSelectTriangles(Optimizer* o) {
         Function* f = o->f;
-        {
-            Int round = Int(0LL);
-            for (; round < Int(8LL); round++) {
-                bool changed = false;
-                {
-                    auto range1283 = functionRpo(f);
-                    for (Int index1284 = 0, rangeEnd1285 = length(range1283); index1284 < rangeEnd1285; ++index1284) {
-                        i32 b = range1283[index1284];
-                        Block* blk = &f->blocks[b];
-                        Term t = blk->term;
-                        if (blk->dead || t.kind != TermIf) {
-                            continue;
-                        }
-                        Int budget = Int(0LL);
-                        {
-                            auto switch1286 = f->values[t.value].op;
-                            switch (switch1286) {
-                                case OpAnd: {
-                                    budget = Int(8LL);
-                                    break;
-                                }
-                                case OpFEq:
-                                case OpFNe: {
-                                    budget = Int(4LL);
-                                    break;
-                                }
-                            }
-                        }
-                        if (budget == Int(0LL)) {
-                            continue;
-                        }
-                        {
-                            Int side = Int(0LL);
-                            for (; side < Int(2LL); side++) {
-                                auto temporary1287 = t.edges[side];
-                                auto temporary1288 = t.edges[Int(1LL) - side];
-                                Edge arm = temporary1287;
-                                Edge merge = temporary1288;
-                                Block* body = &f->blocks[arm.block];
-                                if (arm.block == b || body->dead || length(body->params) != Int(0LL) || length(body->preds) != Int(1LL) || body->preds[Int(0LL)] != b || body->term.kind != TermJump || body->term.edges[Int(0LL)].block != merge.block) {
-                                    continue;
-                                }
-                                if (length(body->instrs) > budget) {
-                                    continue;
-                                }
-                                bool pure = true;
-                                {
-                                    auto range1289 = body->instrs.view();
-                                    for (Int index1290 = 0, rangeEnd1291 = length(range1289); index1290 < rangeEnd1291; ++index1290) {
-                                        i32 v = range1289[index1290];
-                                        Op op = f->values[v].op;
-                                        pure = pure && !readsState(op);
-                                        {
-                                            auto switch1292 = op;
-                                            switch (switch1292) {
-                                                case OpFDiv:
-                                                case OpFSqrt:
-                                                case OpFMin:
-                                                case OpFMax:
-                                                case OpTruncSatS:
-                                                case OpTruncSatU:
-                                                case OpConvertU: {
-                                                    pure = false;
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                {
-                                    auto range1293 = f->blocks[merge.block].params;
-                                    for (Int index1294 = 0, rangeEnd1295 = length(range1293); index1294 < rangeEnd1295; ++index1294) {
-                                        i32 p = range1293[index1294];
-                                        ValType typ = f->values[p].typ;
-                                        pure = pure && (typ == I32 || typ == I64 || typ == F32 || typ == F64);
-                                    }
-                                }
-                                if (!pure) {
-                                    continue;
-                                }
-                                auto temporary1296 = body->term.edges[Int(0LL)].args;
-                                auto temporary1297 = merge.args;
-                                Slice<i32> yes = temporary1296;
-                                Slice<i32> no = temporary1297;
-                                if (side == Int(1LL)) {
-                                    auto temporary1298 = no;
-                                    auto temporary1299 = yes;
-                                    yes = temporary1298;
-                                    no = temporary1299;
-                                }
-                                {
-                                    auto range1300 = body->instrs.view();
-                                    for (Int index1301 = 0, rangeEnd1302 = length(range1300); index1301 < rangeEnd1302; ++index1301) {
-                                        i32 v = range1300[index1301];
-                                        f->values[v].block = b;
-                                        blk->instrs.pushBack(v);
-                                    }
-                                }
-                                Slice<i32> args = makeSlice<i32>(length(yes));
-                                {
-                                    auto range1303 = yes;
-                                    for (Int index1304 = 0, rangeEnd1305 = length(range1303); index1304 < rangeEnd1305; ++index1304) {
-                                        Int j = index1304;
-                                        i32 x = range1303[index1304];
-                                        args[j] = x;
-                                        if (x != no[j]) {
-                                            i32 v = functionNewValue(f, OpSelect, f->values[x].typ, b, i64(0LL), Span<const i32>({t.value, x, no[j]}));
-                                            blk->instrs.pushBack(v);
-                                            args[j] = v;
-                                        }
-                                    }
-                                }
-                                blk->term = Term{TermJump, {}, sliceOf<Edge>({Edge{merge.block, args}}), {}, {}};
-                                *body = Block{{}, {}, {}, {}, true};
-                                functionComputePreds(f);
-                                changed = true;
+        Int round = Int(0LL);
+        for (; round < Int(8LL); round++) {
+            bool changed = false;
+            auto range1283 = functionRpo(f);
+            for (Int index1284 = 0, rangeEnd1285 = length(range1283); index1284 < rangeEnd1285; ++index1284) {
+                i32 b = range1283[index1284];
+                Block* blk = &f->blocks[b];
+                Term t = blk->term;
+                if (blk->dead || t.kind != TermIf) {
+                    continue;
+                }
+                Int budget = Int(0LL);
+                auto switch1286 = f->values[t.value].op;
+                switch (switch1286) {
+                    case OpAnd: {
+                        budget = Int(8LL);
+                        break;
+                    }
+                    case OpFEq:
+                    case OpFNe: {
+                        budget = Int(4LL);
+                        break;
+                    }
+                }
+                if (budget == Int(0LL)) {
+                    continue;
+                }
+                Int side = Int(0LL);
+                for (; side < Int(2LL); side++) {
+                    auto temporary1287 = t.edges[side];
+                    auto temporary1288 = t.edges[Int(1LL) - side];
+                    Edge arm = temporary1287;
+                    Edge merge = temporary1288;
+                    Block* body = &f->blocks[arm.block];
+                    if (arm.block == b || body->dead || length(body->params) != Int(0LL) || length(body->preds) != Int(1LL) || body->preds[Int(0LL)] != b || body->term.kind != TermJump || body->term.edges[Int(0LL)].block != merge.block) {
+                        continue;
+                    }
+                    if (length(body->instrs) > budget) {
+                        continue;
+                    }
+                    bool pure = true;
+                    auto range1289 = body->instrs.view();
+                    for (Int index1290 = 0, rangeEnd1291 = length(range1289); index1290 < rangeEnd1291; ++index1290) {
+                        i32 v = range1289[index1290];
+                        Op op = f->values[v].op;
+                        pure = pure && !readsState(op);
+                        auto switch1292 = op;
+                        switch (switch1292) {
+                            case OpFDiv:
+                            case OpFSqrt:
+                            case OpFMin:
+                            case OpFMax:
+                            case OpTruncSatS:
+                            case OpTruncSatU:
+                            case OpConvertU: {
+                                pure = false;
                                 break;
                             }
                         }
                     }
-                }
-                if (!changed) {
+                    auto range1293 = f->blocks[merge.block].params;
+                    for (Int index1294 = 0, rangeEnd1295 = length(range1293); index1294 < rangeEnd1295; ++index1294) {
+                        i32 p = range1293[index1294];
+                        ValType typ = f->values[p].typ;
+                        pure = pure && (typ == I32 || typ == I64 || typ == F32 || typ == F64);
+                    }
+                    if (!pure) {
+                        continue;
+                    }
+                    auto temporary1296 = body->term.edges[Int(0LL)].args;
+                    auto temporary1297 = merge.args;
+                    Slice<i32> yes = temporary1296;
+                    Slice<i32> no = temporary1297;
+                    if (side == Int(1LL)) {
+                        auto temporary1298 = no;
+                        auto temporary1299 = yes;
+                        yes = temporary1298;
+                        no = temporary1299;
+                    }
+                    auto range1300 = body->instrs.view();
+                    for (Int index1301 = 0, rangeEnd1302 = length(range1300); index1301 < rangeEnd1302; ++index1301) {
+                        i32 v = range1300[index1301];
+                        f->values[v].block = b;
+                        blk->instrs.pushBack(v);
+                    }
+                    Slice<i32> args = makeSlice<i32>(length(yes));
+                    auto range1303 = yes;
+                    for (Int index1304 = 0, rangeEnd1305 = length(range1303); index1304 < rangeEnd1305; ++index1304) {
+                        Int j = index1304;
+                        i32 x = range1303[index1304];
+                        args[j] = x;
+                        if (x != no[j]) {
+                            i32 v = functionNewValue(f, OpSelect, f->values[x].typ, b, i64(0LL), Span<const i32>({t.value, x, no[j]}));
+                            blk->instrs.pushBack(v);
+                            args[j] = v;
+                        }
+                    }
+                    blk->term = Term{TermJump, {}, sliceOf<Edge>({Edge{merge.block, args}}), {}, {}};
+                    *body = Block{{}, {}, {}, {}, true};
+                    functionComputePreds(f);
+                    changed = true;
                     break;
                 }
+            }
+            if (!changed) {
+                break;
             }
         }
     }
@@ -19591,26 +18761,22 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Function* f = o->f;
         bool changed = false;
         optimizerCountUses(o);
-        {
-            auto& range1306 = f->blocks;
-            for (Int index1307 = 0, rangeEnd1308 = length(range1306); index1307 < rangeEnd1308; ++index1307) {
-                Int b = index1307;
-                Block* blk = &f->blocks[b];
-                if (blk->dead) {
-                    continue;
-                }
-                {
-                    auto range1309 = blk->instrs.view();
-                    for (Int index1310 = 0, rangeEnd1311 = length(range1309); index1310 < rangeEnd1311; ++index1310) {
-                        i32 v = range1309[index1310];
-                        if (optimizerSimplifyValue(o, v)) {
-                            changed = true;
-                        }
-                    }
-                }
-                if (optimizerSimplifyTerm(o, convert<i32>(b))) {
+        auto& range1306 = f->blocks;
+        for (Int index1307 = 0, rangeEnd1308 = length(range1306); index1307 < rangeEnd1308; ++index1307) {
+            Int b = index1307;
+            Block* blk = &f->blocks[b];
+            if (blk->dead) {
+                continue;
+            }
+            auto range1309 = blk->instrs.view();
+            for (Int index1310 = 0, rangeEnd1311 = length(range1309); index1310 < rangeEnd1311; ++index1310) {
+                i32 v = range1309[index1310];
+                if (optimizerSimplifyValue(o, v)) {
                     changed = true;
                 }
+            }
+            if (optimizerSimplifyTerm(o, convert<i32>(b))) {
+                changed = true;
             }
         }
         optimizerApply(o);
@@ -19620,52 +18786,50 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static bool optimizerSimplifyTerm(Optimizer* o, i32 b) {
         Function* f = o->f;
         Term* t = &f->blocks[b].term;
-        {
-            auto switch1312 = t->kind;
-            switch (switch1312) {
-                case TermIf: {
-                    i32 c = optimizerResolve(o, t->value);
-                    t->value = c;
-                    Value* val = &f->values[c];
-                    if (val->op == OpConst) {
-                        Edge e = t->edges[Int(1LL)];
-                        if (val->aux != i64(0LL)) {
-                            e = t->edges[Int(0LL)];
-                        }
-                        *t = Term{TermJump, {}, sliceOf<Edge>({e}), {}, {}};
-                        return true;
+        auto switch1312 = t->kind;
+        switch (switch1312) {
+            case TermIf: {
+                i32 c = optimizerResolve(o, t->value);
+                t->value = c;
+                Value* val = &f->values[c];
+                if (val->op == OpConst) {
+                    Edge e = t->edges[Int(1LL)];
+                    if (val->aux != i64(0LL)) {
+                        e = t->edges[Int(0LL)];
                     }
-                    if (val->op == OpEqz && f->values[functionArgs(f, c)[Int(0LL)]].typ == I32) {
-                        t->value = functionArgs(f, c)[Int(0LL)];
-                        auto temporary1313 = t->edges[Int(1LL)];
-                        auto temporary1314 = t->edges[Int(0LL)];
-                        t->edges[Int(0LL)] = temporary1313;
-                        t->edges[Int(1LL)] = temporary1314;
-                        return true;
-                    }
-                    if (val->op == OpNe && optimizerIsConst(o, functionArgs(f, c)[Int(1LL)]) && optimizerConstOf(o, functionArgs(f, c)[Int(1LL)]) == i64(0LL) && f->values[functionArgs(f, c)[Int(0LL)]].typ == I32) {
-                        t->value = functionArgs(f, c)[Int(0LL)];
-                        return true;
-                    }
-                    if (t->edges[Int(0LL)].block == t->edges[Int(1LL)].block && sameArgs(o, t->edges[Int(0LL)].args, t->edges[Int(1LL)].args)) {
-                        *t = Term{TermJump, {}, sliceOf<Edge>({t->edges[Int(0LL)]}), {}, {}};
-                        return true;
-                    }
-                    break;
+                    *t = Term{TermJump, {}, sliceOf<Edge>({e}), {}, {}};
+                    return true;
                 }
-                case TermSwitch: {
-                    i32 c = optimizerResolve(o, t->value);
-                    t->value = c;
-                    if (f->values[c].op == OpConst) {
-                        u64 i = convert<u64>(convert<u32>(f->values[c].aux));
-                        if (i >= convert<u64>(length(t->edges) - Int(1LL))) {
-                            i = convert<u64>(length(t->edges) - Int(1LL));
-                        }
-                        *t = Term{TermJump, {}, sliceOf<Edge>({t->edges[i]}), {}, {}};
-                        return true;
-                    }
-                    break;
+                if (val->op == OpEqz && f->values[functionArgs(f, c)[Int(0LL)]].typ == I32) {
+                    t->value = functionArgs(f, c)[Int(0LL)];
+                    auto temporary1313 = t->edges[Int(1LL)];
+                    auto temporary1314 = t->edges[Int(0LL)];
+                    t->edges[Int(0LL)] = temporary1313;
+                    t->edges[Int(1LL)] = temporary1314;
+                    return true;
                 }
+                if (val->op == OpNe && optimizerIsConst(o, functionArgs(f, c)[Int(1LL)]) && optimizerConstOf(o, functionArgs(f, c)[Int(1LL)]) == i64(0LL) && f->values[functionArgs(f, c)[Int(0LL)]].typ == I32) {
+                    t->value = functionArgs(f, c)[Int(0LL)];
+                    return true;
+                }
+                if (t->edges[Int(0LL)].block == t->edges[Int(1LL)].block && sameArgs(o, t->edges[Int(0LL)].args, t->edges[Int(1LL)].args)) {
+                    *t = Term{TermJump, {}, sliceOf<Edge>({t->edges[Int(0LL)]}), {}, {}};
+                    return true;
+                }
+                break;
+            }
+            case TermSwitch: {
+                i32 c = optimizerResolve(o, t->value);
+                t->value = c;
+                if (f->values[c].op == OpConst) {
+                    u64 i = convert<u64>(convert<u32>(f->values[c].aux));
+                    if (i >= convert<u64>(length(t->edges) - Int(1LL))) {
+                        i = convert<u64>(length(t->edges) - Int(1LL));
+                    }
+                    *t = Term{TermJump, {}, sliceOf<Edge>({t->edges[i]}), {}, {}};
+                    return true;
+                }
+                break;
             }
         }
         return false;
@@ -19678,72 +18842,64 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return false;
         }
         Span<i32> args = functionArgs(f, v);
-        {
-            auto range1315 = args;
-            for (Int index1316 = 0, rangeEnd1317 = length(range1315); index1316 < rangeEnd1317; ++index1316) {
-                Int i = index1316;
-                i32 a = range1315[index1316];
-                args[i] = optimizerResolve(o, a);
-            }
+        auto range1315 = args;
+        for (Int index1316 = 0, rangeEnd1317 = length(range1315); index1316 < rangeEnd1317; ++index1316) {
+            Int i = index1316;
+            i32 a = range1315[index1316];
+            args[i] = optimizerResolve(o, a);
         }
         ValType t = val->typ;
-        {
-            if (val->nargs == u16(2LL) && isIntOp(val->op) && val->op != OpEqz && !isFloat(f->values[args[Int(0LL)]].typ)) {
-                auto temporary1320 = args[Int(0LL)];
-                auto temporary1321 = args[Int(1LL)];
-                i32 a = temporary1320;
-                i32 b = temporary1321;
-                ValType at = f->values[a].typ;
-                if (optimizerIsConst(o, a) && optimizerIsConst(o, b)) {
-                    {
-                        auto temporary1322 = foldInt(val->op, at, convert<u64>(optimizerConstOf(o, a)), convert<u64>(optimizerConstOf(o, b)));
-                        u64 r = temporary1322.v0;
-                        bool ok = temporary1322.v1;
-                        if (ok) {
-                            optimizerReplace(o, v, optimizerConstant(o, t, convert<i64>(r)));
-                            return true;
-                        }
-                    }
-                    return false;
+        if (val->nargs == u16(2LL) && isIntOp(val->op) && val->op != OpEqz && !isFloat(f->values[args[Int(0LL)]].typ)) {
+            auto temporary1320 = args[Int(0LL)];
+            auto temporary1321 = args[Int(1LL)];
+            i32 a = temporary1320;
+            i32 b = temporary1321;
+            ValType at = f->values[a].typ;
+            if (optimizerIsConst(o, a) && optimizerIsConst(o, b)) {
+                auto temporary1322 = foldInt(val->op, at, convert<u64>(optimizerConstOf(o, a)), convert<u64>(optimizerConstOf(o, b)));
+                u64 r = temporary1322.v0;
+                bool ok = temporary1322.v1;
+                if (ok) {
+                    optimizerReplace(o, v, optimizerConstant(o, t, convert<i64>(r)));
+                    return true;
                 }
-                return optimizerIdentity(o, v, val->op, a, b, at);
-            } else if (val->nargs == u16(1LL) && ((val->op >= OpClz && val->op <= OpEqz) || val->op == OpWrap || val->op == OpExtendU || val->op == OpExtendS)) {
-                i32 a = args[Int(0LL)];
-                ValType from = f->values[a].typ;
-                if (isFloat(from)) {
-                    return false;
+                return false;
+            }
+            return optimizerIdentity(o, v, val->op, a, b, at);
+        } else if (val->nargs == u16(1LL) && ((val->op >= OpClz && val->op <= OpEqz) || val->op == OpWrap || val->op == OpExtendU || val->op == OpExtendS)) {
+            i32 a = args[Int(0LL)];
+            ValType from = f->values[a].typ;
+            if (isFloat(from)) {
+                return false;
+            }
+            if (optimizerIsConst(o, a)) {
+                auto temporary1323 = foldUnary(val->op, t, from, convert<u64>(optimizerConstOf(o, a)));
+                u64 r = temporary1323.v0;
+                bool ok = temporary1323.v1;
+                if (ok) {
+                    optimizerReplace(o, v, optimizerConstant(o, t, convert<i64>(r)));
+                    return true;
                 }
-                if (optimizerIsConst(o, a)) {
-                    {
-                        auto temporary1323 = foldUnary(val->op, t, from, convert<u64>(optimizerConstOf(o, a)));
-                        u64 r = temporary1323.v0;
-                        bool ok = temporary1323.v1;
-                        if (ok) {
-                            optimizerReplace(o, v, optimizerConstant(o, t, convert<i64>(r)));
-                            return true;
-                        }
-                    }
-                }
-                return optimizerUnaryIdentity(o, v, val->op, a);
-            } else if (val->op == OpSelect) {
-                auto temporary1324 = args[Int(0LL)];
-                auto temporary1325 = args[Int(1LL)];
-                auto temporary1326 = args[Int(2LL)];
-                i32 c = temporary1324;
-                i32 x = temporary1325;
-                i32 y = temporary1326;
-                if (x == y) {
+            }
+            return optimizerUnaryIdentity(o, v, val->op, a);
+        } else if (val->op == OpSelect) {
+            auto temporary1324 = args[Int(0LL)];
+            auto temporary1325 = args[Int(1LL)];
+            auto temporary1326 = args[Int(2LL)];
+            i32 c = temporary1324;
+            i32 x = temporary1325;
+            i32 y = temporary1326;
+            if (x == y) {
+                optimizerReplace(o, v, x);
+                return true;
+            }
+            if (optimizerIsConst(o, c)) {
+                if (optimizerConstOf(o, c) != i64(0LL)) {
                     optimizerReplace(o, v, x);
-                    return true;
+                } else {
+                    optimizerReplace(o, v, y);
                 }
-                if (optimizerIsConst(o, c)) {
-                    if (optimizerConstOf(o, c) != i64(0LL)) {
-                        optimizerReplace(o, v, x);
-                    } else {
-                        optimizerReplace(o, v, y);
-                    }
-                    return true;
-                }
+                return true;
             }
         }
         return false;
@@ -19753,20 +18909,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // an incoming edge with args: b's parameters become those.
     static Slice<i32> optimizerSubstitute(Optimizer* o, i32 b, Slice<i32> out, Slice<i32> in) {
         Slice<i32> res = makeSlice<i32>(length(out));
-        {
-            auto range1327 = out;
-            for (Int index1328 = 0, rangeEnd1329 = length(range1327); index1328 < rangeEnd1329; ++index1328) {
-                Int i = index1328;
-                i32 a = range1327[index1328];
-                a = optimizerResolve(o, a);
-                {
-                    Int k = optimizerParamIndex(o, b, a);
-                    if (k >= Int(0LL)) {
-                        res[i] = in[k];
-                    } else {
-                        res[i] = a;
-                    }
-                }
+        auto range1327 = out;
+        for (Int index1328 = 0, rangeEnd1329 = length(range1327); index1328 < rangeEnd1329; ++index1328) {
+            Int i = index1328;
+            i32 a = range1327[index1328];
+            a = optimizerResolve(o, a);
+            Int k = optimizerParamIndex(o, b, a);
+            if (k >= Int(0LL)) {
+                res[i] = in[k];
+            } else {
+                res[i] = a;
             }
         }
         return res;
@@ -19783,69 +18935,63 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         bool changed = false;
         optimizerApply(o);
         optimizerCountUses(o);
-        {
-            i32 h = i32(0LL);
-            for (; h < convert<i32>(length(f->blocks)); h++) {
-                Block* blk = &f->blocks[h];
-                if (blk->dead || h == i32(0LL) || length(blk->instrs) != Int(0LL) || (blk->term.kind != TermSwitch && blk->term.kind != TermIf)) {
-                    continue;
-                }
-                Int k = optimizerParamIndex(o, h, optimizerResolve(o, blk->term.value));
-                if (k < Int(0LL)) {
-                    continue;
-                }
-                bool local = optimizerLocalParams(o, h);
-                Map<i32, Bypass> bypasses = mapOf<i32, Bypass>({});
-                TermKind kind = f->blocks[h].term.kind;
-                Slice<Edge> targets = slicesClone(f->blocks[h].term.edges);
-                {
-                    auto range1330 = f->blocks[h].preds;
-                    for (Int index1331 = 0, rangeEnd1332 = length(range1330); index1331 < rangeEnd1332; ++index1331) {
-                        i32 p = range1330[index1331];
-                        {
-                            auto range1333 = f->blocks[p].term.edges;
-                            for (Int index1334 = 0, rangeEnd1335 = length(range1333); index1334 < rangeEnd1335; ++index1334) {
-                                Int i = index1334;
-                                Edge e = f->blocks[p].term.edges[i];
-                                if (e.block != h || length(e.args) <= k) {
-                                    continue;
-                                }
-                                i32 c = optimizerResolve(o, e.args[k]);
-                                if (!optimizerIsConst(o, c)) {
-                                    continue;
-                                }
-                                u64 x = convert<u64>(convert<u32>(optimizerConstOf(o, c)));
-                                Edge target = {};
-                                if (kind == TermIf) {
-                                    target = targets[Int(1LL)];
-                                    if (x != u64(0LL)) {
-                                        target = targets[Int(0LL)];
-                                    }
-                                } else {
-                                    if (x >= convert<u64>(length(targets) - Int(1LL))) {
-                                        x = convert<u64>(length(targets) - Int(1LL));
-                                    }
-                                    target = targets[x];
-                                }
-                                Slice<i32> args = optimizerSubstitute(o, h, target.args, e.args);
-                                changed = true;
-                                if (local) {
-                                    f->blocks[p].term.edges[i] = Edge{target.block, args};
-                                    continue;
-                                }
-                                i32 b = functionNewBlock(f);
-                                f->blocks[b].term = Term{TermJump, {}, sliceOf<Edge>({Edge{target.block, args}}), {}, {}};
-                                setMap(bypasses, b, Bypass{p, appendSlice(Slice<i32>{}, e.args)});
-                                f->blocks[p].term.edges[i] = Edge{b, {}};
-                            }
-                        }
+        i32 h = i32(0LL);
+        for (; h < convert<i32>(length(f->blocks)); h++) {
+            Block* blk = &f->blocks[h];
+            if (blk->dead || h == i32(0LL) || length(blk->instrs) != Int(0LL) || (blk->term.kind != TermSwitch && blk->term.kind != TermIf)) {
+                continue;
+            }
+            Int k = optimizerParamIndex(o, h, optimizerResolve(o, blk->term.value));
+            if (k < Int(0LL)) {
+                continue;
+            }
+            bool local = optimizerLocalParams(o, h);
+            Map<i32, Bypass> bypasses = mapOf<i32, Bypass>({});
+            TermKind kind = f->blocks[h].term.kind;
+            Slice<Edge> targets = slicesClone(f->blocks[h].term.edges);
+            auto range1330 = f->blocks[h].preds;
+            for (Int index1331 = 0, rangeEnd1332 = length(range1330); index1331 < rangeEnd1332; ++index1331) {
+                i32 p = range1330[index1331];
+                auto range1333 = f->blocks[p].term.edges;
+                for (Int index1334 = 0, rangeEnd1335 = length(range1333); index1334 < rangeEnd1335; ++index1334) {
+                    Int i = index1334;
+                    Edge e = f->blocks[p].term.edges[i];
+                    if (e.block != h || length(e.args) <= k) {
+                        continue;
                     }
+                    i32 c = optimizerResolve(o, e.args[k]);
+                    if (!optimizerIsConst(o, c)) {
+                        continue;
+                    }
+                    u64 x = convert<u64>(convert<u32>(optimizerConstOf(o, c)));
+                    Edge target = {};
+                    if (kind == TermIf) {
+                        target = targets[Int(1LL)];
+                        if (x != u64(0LL)) {
+                            target = targets[Int(0LL)];
+                        }
+                    } else {
+                        if (x >= convert<u64>(length(targets) - Int(1LL))) {
+                            x = convert<u64>(length(targets) - Int(1LL));
+                        }
+                        target = targets[x];
+                    }
+                    Slice<i32> args = optimizerSubstitute(o, h, target.args, e.args);
+                    changed = true;
+                    if (local) {
+                        f->blocks[p].term.edges[i] = Edge{target.block, args};
+                        continue;
+                    }
+                    i32 b = functionNewBlock(f);
+                    f->blocks[b].term = Term{TermJump, {}, sliceOf<Edge>({Edge{target.block, args}}), {}, {}};
+                    setMap(bypasses, b, Bypass{p, appendSlice(Slice<i32>{}, e.args)});
+                    f->blocks[p].term.edges[i] = Edge{b, {}};
                 }
-                if (length(bypasses) > Int(0LL)) {
-                    functionComputePreds(f);
-                    optimizerRepair(o, h, bypasses);
-                    optimizerCountUses(o);
-                }
+            }
+            if (length(bypasses) > Int(0LL)) {
+                functionComputePreds(f);
+                optimizerRepair(o, h, bypasses);
+                optimizerCountUses(o);
             }
         }
         if (changed) {
@@ -19859,59 +19005,53 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static bool optimizerTrivialParams(Optimizer* o) {
         Function* f = o->f;
         bool changed = false;
-        {
-            auto& range1336 = f->blocks;
-            for (Int index1337 = 0, rangeEnd1338 = length(range1336); index1337 < rangeEnd1338; ++index1337) {
-                Int b = index1337;
-                Block* blk = &f->blocks[b];
-                if (blk->dead || b == Int(0LL) || length(blk->params) == Int(0LL)) {
-                    continue;
-                }
-                Slice<bool> keep = {};
-                bool removed = false;
-                Vec<Edge*> in = optimizerIncoming(o, convert<i32>(b));
-                {
-                    auto range1339 = blk->params;
-                    for (Int index1340 = 0, rangeEnd1341 = length(range1339); index1340 < rangeEnd1341; ++index1340) {
-                        Int k = index1340;
-                        i32 param = range1339[index1340];
-                        i32 same = i32(-1LL);
-                        bool trivial = true;
-                        {
-                            auto range1342 = in.view();
-                            for (Int index1343 = 0, rangeEnd1344 = length(range1342); index1343 < rangeEnd1344; ++index1343) {
-                                Edge* e = range1342[index1343];
-                                i32 a = optimizerResolve(o, e->args[k]);
-                                if (a == param || a == same) {
-                                    continue;
-                                }
-                                if (same >= i32(0LL)) {
-                                    trivial = false;
-                                    break;
-                                }
-                                same = a;
-                            }
-                        }
-                        if (isNil(keep)) {
-                            keep = makeSlice<bool>(length(blk->params));
-                        }
-                        keep[k] = true;
-                        if (trivial) {
-                            if (same < i32(0LL)) {
-                                same = functionNewValue(f, OpUndef, f->values[param].typ, i32(-1LL), i64(0LL), Span<const i32>({}));
-                            }
-                            optimizerReplace(o, param, same);
-                            keep[k] = false;
-                            removed = true;
-                        }
-                    }
-                }
-                if (!removed) {
-                    continue;
-                }
-                optimizerDropParams(o, convert<i32>(b), keep);
-                changed = true;
+        auto& range1336 = f->blocks;
+        for (Int index1337 = 0, rangeEnd1338 = length(range1336); index1337 < rangeEnd1338; ++index1337) {
+            Int b = index1337;
+            Block* blk = &f->blocks[b];
+            if (blk->dead || b == Int(0LL) || length(blk->params) == Int(0LL)) {
+                continue;
             }
+            Slice<bool> keep = {};
+            bool removed = false;
+            Vec<Edge*> in = optimizerIncoming(o, convert<i32>(b));
+            auto range1339 = blk->params;
+            for (Int index1340 = 0, rangeEnd1341 = length(range1339); index1340 < rangeEnd1341; ++index1340) {
+                Int k = index1340;
+                i32 param = range1339[index1340];
+                i32 same = i32(-1LL);
+                bool trivial = true;
+                auto range1342 = in.view();
+                for (Int index1343 = 0, rangeEnd1344 = length(range1342); index1343 < rangeEnd1344; ++index1343) {
+                    Edge* e = range1342[index1343];
+                    i32 a = optimizerResolve(o, e->args[k]);
+                    if (a == param || a == same) {
+                        continue;
+                    }
+                    if (same >= i32(0LL)) {
+                        trivial = false;
+                        break;
+                    }
+                    same = a;
+                }
+                if (isNil(keep)) {
+                    keep = makeSlice<bool>(length(blk->params));
+                }
+                keep[k] = true;
+                if (trivial) {
+                    if (same < i32(0LL)) {
+                        same = functionNewValue(f, OpUndef, f->values[param].typ, i32(-1LL), i64(0LL), Span<const i32>({}));
+                    }
+                    optimizerReplace(o, param, same);
+                    keep[k] = false;
+                    removed = true;
+                }
+            }
+            if (!removed) {
+                continue;
+            }
+            optimizerDropParams(o, convert<i32>(b), keep);
+            changed = true;
         }
         if (changed) {
             optimizerApply(o);
@@ -19922,78 +19062,72 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static bool optimizerUnaryIdentity(Optimizer* o, i32 v, Op op, i32 a) {
         Function* f = o->f;
         Value* src = &f->values[a];
-        {
-            auto switch1345 = op;
-            switch (switch1345) {
-                case OpEqz: {
-                    {
-                        auto temporary1346 = invertComparison(src->op);
-                        Op invert = temporary1346.v0;
-                        bool ok = temporary1346.v1;
-                        if (ok && o->uses[a] == i32(1LL) && src->block == f->values[v].block) {
-                            Span<i32> sa = functionArgs(f, a);
-                            auto temporary1347 = sa[Int(0LL)];
-                            auto temporary1348 = sa[Int(1LL)];
-                            i32 x = temporary1347;
-                            i32 y = temporary1348;
-                            f->values[v].op = invert;
+        auto switch1345 = op;
+        switch (switch1345) {
+            case OpEqz: {
+                auto temporary1346 = invertComparison(src->op);
+                Op invert = temporary1346.v0;
+                bool ok = temporary1346.v1;
+                if (ok && o->uses[a] == i32(1LL) && src->block == f->values[v].block) {
+                    Span<i32> sa = functionArgs(f, a);
+                    auto temporary1347 = sa[Int(0LL)];
+                    auto temporary1348 = sa[Int(1LL)];
+                    i32 x = temporary1347;
+                    i32 y = temporary1348;
+                    f->values[v].op = invert;
+                    optimizerSetArgs(o, v, Span<const i32>({x, y}));
+                    return true;
+                }
+                if (src->op == OpEqz && f->values[functionArgs(f, a)[Int(0LL)]].typ == I32) {
+                    i32 x = functionArgs(f, a)[Int(0LL)];
+                    f->values[v].op = OpNe;
+                    optimizerSetArgs(o, v, Span<const i32>({x, optimizerConstant(o, I32, i64(0LL))}));
+                    return true;
+                }
+                break;
+            }
+            case OpWrap: {
+                auto switch1349 = src->op;
+                switch (switch1349) {
+                    case OpExtendU:
+                    case OpExtendS: {
+                        optimizerReplace(o, v, functionArgs(f, a)[Int(0LL)]);
+                        return true;
+                        break;
+                    }
+                    case OpAdd:
+                    case OpSub:
+                    case OpMul:
+                    case OpAnd:
+                    case OpOr:
+                    case OpXor:
+                    case OpShl: {
+                        Span<i32> sa = functionArgs(f, a);
+                        auto temporary1350 = optimizerLow32(o, sa[Int(0LL)]);
+                        i32 x = temporary1350.v0;
+                        bool ok1 = temporary1350.v1;
+                        auto temporary1351 = optimizerLow32(o, sa[Int(1LL)]);
+                        i32 y = temporary1351.v0;
+                        bool ok2 = temporary1351.v1;
+                        if (ok1 && ok2 && (src->op != OpShl || optimizerIsConst(o, sa[Int(1LL)]))) {
+                            if (src->op == OpShl && (convert<u64>(optimizerConstOf(o, sa[Int(1LL)])) & u64(63LL)) >= u64(32LL)) {
+                                return false;
+                            }
+                            f->values[v].op = src->op;
                             optimizerSetArgs(o, v, Span<const i32>({x, y}));
                             return true;
                         }
+                        break;
                     }
-                    if (src->op == OpEqz && f->values[functionArgs(f, a)[Int(0LL)]].typ == I32) {
-                        i32 x = functionArgs(f, a)[Int(0LL)];
-                        f->values[v].op = OpNe;
-                        optimizerSetArgs(o, v, Span<const i32>({x, optimizerConstant(o, I32, i64(0LL))}));
-                        return true;
-                    }
-                    break;
                 }
-                case OpWrap: {
-                    {
-                        auto switch1349 = src->op;
-                        switch (switch1349) {
-                            case OpExtendU:
-                            case OpExtendS: {
-                                optimizerReplace(o, v, functionArgs(f, a)[Int(0LL)]);
-                                return true;
-                                break;
-                            }
-                            case OpAdd:
-                            case OpSub:
-                            case OpMul:
-                            case OpAnd:
-                            case OpOr:
-                            case OpXor:
-                            case OpShl: {
-                                Span<i32> sa = functionArgs(f, a);
-                                auto temporary1350 = optimizerLow32(o, sa[Int(0LL)]);
-                                i32 x = temporary1350.v0;
-                                bool ok1 = temporary1350.v1;
-                                auto temporary1351 = optimizerLow32(o, sa[Int(1LL)]);
-                                i32 y = temporary1351.v0;
-                                bool ok2 = temporary1351.v1;
-                                if (ok1 && ok2 && (src->op != OpShl || optimizerIsConst(o, sa[Int(1LL)]))) {
-                                    if (src->op == OpShl && (convert<u64>(optimizerConstOf(o, sa[Int(1LL)])) & u64(63LL)) >= u64(32LL)) {
-                                        return false;
-                                    }
-                                    f->values[v].op = src->op;
-                                    optimizerSetArgs(o, v, Span<const i32>({x, y}));
-                                    return true;
-                                }
-                                break;
-                            }
-                        }
-                    }
-                    break;
+                break;
+            }
+            case OpExtendU: {
+                if (src->op == OpWrap && optimizerIsZext(o, functionArgs(f, a)[Int(0LL)])) {
+                    optimizerReplace(o, v, functionArgs(f, a)[Int(0LL)]);
+                    return true;
                 }
-                case OpExtendU: {
-                    if (src->op == OpWrap && optimizerIsZext(o, functionArgs(f, a)[Int(0LL)])) {
-                        optimizerReplace(o, v, functionArgs(f, a)[Int(0LL)]);
-                        return true;
-                    }
-                    break;
-                }
+                break;
             }
         }
         return false;
@@ -20004,31 +19138,25 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Slice<bool> reached = makeSlice<bool>(length(f->blocks));
         Slice<i32> work = sliceOf<i32>({i32(0LL)});
         reached[Int(0LL)] = true;
-        {
-            for (; length(work) > Int(0LL);) {
-                i32 b = work[length(work) - Int(1LL)];
-                work = subslice(work, Int(0), length(work) - Int(1LL));
-                {
-                    auto range1352 = f->blocks[b].term.edges;
-                    for (Int index1353 = 0, rangeEnd1354 = length(range1352); index1353 < rangeEnd1354; ++index1353) {
-                        Edge e = range1352[index1353];
-                        if (!reached[e.block]) {
-                            reached[e.block] = true;
-                            work = appendValues(work, e.block);
-                        }
-                    }
+        for (; length(work) > Int(0LL);) {
+            i32 b = work[length(work) - Int(1LL)];
+            work = subslice(work, Int(0), length(work) - Int(1LL));
+            auto range1352 = f->blocks[b].term.edges;
+            for (Int index1353 = 0, rangeEnd1354 = length(range1352); index1353 < rangeEnd1354; ++index1353) {
+                Edge e = range1352[index1353];
+                if (!reached[e.block]) {
+                    reached[e.block] = true;
+                    work = appendValues(work, e.block);
                 }
             }
         }
         bool changed = false;
-        {
-            auto& range1355 = f->blocks;
-            for (Int index1356 = 0, rangeEnd1357 = length(range1355); index1356 < rangeEnd1357; ++index1356) {
-                Int b = index1356;
-                if (!reached[b] && !f->blocks[b].dead) {
-                    f->blocks[b] = Block{{}, {}, {}, {}, true};
-                    changed = true;
-                }
+        auto& range1355 = f->blocks;
+        for (Int index1356 = 0, rangeEnd1357 = length(range1355); index1356 < rangeEnd1357; ++index1356) {
+            Int b = index1356;
+            if (!reached[b] && !f->blocks[b].dead) {
+                f->blocks[b] = Block{{}, {}, {}, {}, true};
+                changed = true;
             }
         }
         if (changed) {
@@ -20059,61 +19187,57 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // its end opcode.
     static Slice<u8> readerConstExpr(Reader* r) {
         Int start = r->pos;
-        {
-            for (; true;) {
-                u8 op = readerByte(r);
-                {
-                    auto switch1358 = op;
-                    switch (switch1358) {
-                        case u8(11LL): {
-                            return subslice(r->data, start, r->pos);
-                            break;
-                        }
-                        case u8(65LL): {
-                            readerS32(r);
-                            break;
-                        }
-                        case u8(66LL): {
-                            readerS64(r);
-                            break;
-                        }
-                        case u8(67LL): {
-                            readerBytes(r, Int(4LL));
-                            break;
-                        }
-                        case u8(68LL): {
-                            readerBytes(r, Int(8LL));
-                            break;
-                        }
-                        case u8(35LL):
-                        case u8(210LL): {
-                            readerU32(r);
-                            break;
-                        }
-                        case u8(208LL): {
-                            readerRefType(r);
-                            break;
-                        }
-                        case u8(106LL):
-                        case u8(107LL):
-                        case u8(108LL):
-                        case u8(124LL):
-                        case u8(125LL):
-                        case u8(126LL): {
-                            break;
-                        }
-                        case u8(253LL): {
-                            if (readerU32(r) != u32(12LL)) {
-                                compilerError(String("constant expression required at offset %d"));
-                            }
-                            readerBytes(r, Int(16LL));
-                            break;
-                        }
-                        default: {
-                            compilerError(String("constant expression required: opcode 0x%02x at offset %d"));
-                            break;
-                        }
+        for (; true;) {
+            u8 op = readerByte(r);
+            auto switch1358 = op;
+            switch (switch1358) {
+                case u8(11LL): {
+                    return subslice(r->data, start, r->pos);
+                    break;
+                }
+                case u8(65LL): {
+                    readerS32(r);
+                    break;
+                }
+                case u8(66LL): {
+                    readerS64(r);
+                    break;
+                }
+                case u8(67LL): {
+                    readerBytes(r, Int(4LL));
+                    break;
+                }
+                case u8(68LL): {
+                    readerBytes(r, Int(8LL));
+                    break;
+                }
+                case u8(35LL):
+                case u8(210LL): {
+                    readerU32(r);
+                    break;
+                }
+                case u8(208LL): {
+                    readerRefType(r);
+                    break;
+                }
+                case u8(106LL):
+                case u8(107LL):
+                case u8(108LL):
+                case u8(124LL):
+                case u8(125LL):
+                case u8(126LL): {
+                    break;
+                }
+                case u8(253LL): {
+                    if (readerU32(r) != u32(12LL)) {
+                        compilerError(String("constant expression required at offset %d"));
                     }
+                    readerBytes(r, Int(16LL));
+                    break;
+                }
+                default: {
+                    compilerError(String("constant expression required: opcode 0x%02x at offset %d"));
+                    break;
                 }
             }
         }
@@ -20141,20 +19265,18 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static u64 readerLeb(Reader* r, Uint bits) {
         u64 result = {};
         Uint shift = {};
-        {
-            for (; true;) {
-                u8 b = readerByte(r);
-                if (shift + Uint(7LL) >= bits && shiftRight(u8(b & u8(127LL)), bits - shift) != u8(0LL)) {
-                    compilerError(String("integer too large at offset %d"));
-                }
-                result |= shiftLeft(convert<u64>(u8(b & u8(127LL))), shift);
-                if (u8(b & u8(128LL)) == u8(0LL)) {
-                    return result;
-                }
-                shift += Uint(7LL);
-                if (shift >= bits) {
-                    compilerError(String("integer representation too long at offset %d"));
-                }
+        for (; true;) {
+            u8 b = readerByte(r);
+            if (shift + Uint(7LL) >= bits && shiftRight(u8(b & u8(127LL)), bits - shift) != u8(0LL)) {
+                compilerError(String("integer too large at offset %d"));
+            }
+            result |= shiftLeft(convert<u64>(u8(b & u8(127LL))), shift);
+            if (u8(b & u8(128LL)) == u8(0LL)) {
+                return result;
+            }
+            shift += Uint(7LL);
+            if (shift >= bits) {
+                compilerError(String("integer representation too long at offset %d"));
             }
         }
     }
@@ -20211,26 +19333,24 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static i64 readerSleb(Reader* r, Uint bits) {
         i64 result = {};
         Uint shift = {};
-        {
-            for (; true;) {
-                u8 b = readerByte(r);
-                if (shift + Uint(7LL) >= bits) {
-                    i8 rest = shiftRight(convert<i8>(shiftLeft(b, Int(1LL))), bits - shift);
-                    if (u8(b & u8(128LL)) != u8(0LL) || (rest != i8(0LL) && rest != i8(-1LL))) {
-                        if (u8(b & u8(128LL)) != u8(0LL)) {
-                            compilerError(String("integer representation too long at offset %d"));
-                        }
-                        compilerError(String("integer too large at offset %d"));
+        for (; true;) {
+            u8 b = readerByte(r);
+            if (shift + Uint(7LL) >= bits) {
+                i8 rest = shiftRight(convert<i8>(shiftLeft(b, Int(1LL))), bits - shift);
+                if (u8(b & u8(128LL)) != u8(0LL) || (rest != i8(0LL) && rest != i8(-1LL))) {
+                    if (u8(b & u8(128LL)) != u8(0LL)) {
+                        compilerError(String("integer representation too long at offset %d"));
                     }
+                    compilerError(String("integer too large at offset %d"));
                 }
-                result |= shiftLeft(convert<i64>(u8(b & u8(127LL))), shift);
-                shift += Uint(7LL);
-                if (u8(b & u8(128LL)) == u8(0LL)) {
-                    if (shift < Uint(64LL) && u8(b & u8(64LL)) != u8(0LL)) {
-                        result |= shiftLeft(i64(-1LL), shift);
-                    }
-                    return result;
+            }
+            result |= shiftLeft(convert<i64>(u8(b & u8(127LL))), shift);
+            shift += Uint(7LL);
+            if (u8(b & u8(128LL)) == u8(0LL)) {
+                if (shift < Uint(64LL) && u8(b & u8(64LL)) != u8(0LL)) {
+                    result |= shiftLeft(i64(-1LL), shift);
                 }
+                return result;
             }
         }
     }
@@ -20246,19 +19366,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static ValType readerValType(Reader* r) {
         ValType t = convert<ValType>(readerByte(r));
-        {
-            auto switch1359 = t;
-            switch (switch1359) {
-                case I32:
-                case I64:
-                case F32:
-                case F64:
-                case V128:
-                case FuncRef:
-                case ExternRef: {
-                    return t;
-                    break;
-                }
+        auto switch1359 = t;
+        switch (switch1359) {
+            case I32:
+            case I64:
+            case F32:
+            case F64:
+            case V128:
+            case FuncRef:
+            case ExternRef: {
+                return t;
+                break;
             }
         }
         compilerError(String("malformed value type 0x%02x at offset %d"));
@@ -20364,61 +19482,51 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static Tuple2<AddressExpression, bool> addAddressExpression(AddressExpression a, AddressExpression b, u32 factor) {
         AddressExpression out = AddressExpression{{}, a.offset + factor * b.offset};
-        {
-            auto range1366 = Array<Anonymous4, 2>{{Anonymous4{a, u32(1LL)}, Anonymous4{b, factor}}};
-            for (Int index1367 = 0, rangeEnd1368 = length(range1366); index1367 < rangeEnd1368; ++index1367) {
-                Anonymous4 source = range1366[index1367];
-                {
-                    auto range1369 = source.expr.terms;
-                    for (Int index1370 = 0, rangeEnd1371 = length(range1369); index1370 < rangeEnd1371; ++index1370) {
-                        AddressTerm term = range1369[index1370];
-                        term.mul *= source.mul;
-                        if (term.mul == u32(0LL)) {
-                            continue;
-                        }
-                        Int at = Int(-1LL);
-                        {
-                            auto range1372 = out.terms;
-                            for (Int index1373 = 0, rangeEnd1374 = length(range1372); index1373 < rangeEnd1374; ++index1373) {
-                                Int j = index1373;
-                                AddressTerm prior = range1372[index1373];
-                                if (prior.mul != u32(0LL) && prior.value == term.value) {
-                                    at = j;
-                                    break;
-                                }
-                            }
-                        }
-                        if (at < Int(0LL)) {
-                            {
-                                auto range1375 = out.terms;
-                                for (Int index1376 = 0, rangeEnd1377 = length(range1375); index1376 < rangeEnd1377; ++index1376) {
-                                    Int j = index1376;
-                                    AddressTerm prior = range1375[index1376];
-                                    if (prior.mul == u32(0LL)) {
-                                        at = j;
-                                        out.terms[j].value = term.value;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        if (at < Int(0LL)) {
-                            return {AddressExpression{}, false};
-                        }
-                        out.terms[at].mul += term.mul;
+        auto range1366 = Array<Anonymous4, 2>{{Anonymous4{a, u32(1LL)}, Anonymous4{b, factor}}};
+        for (Int index1367 = 0, rangeEnd1368 = length(range1366); index1367 < rangeEnd1368; ++index1367) {
+            Anonymous4 source = range1366[index1367];
+            auto range1369 = source.expr.terms;
+            for (Int index1370 = 0, rangeEnd1371 = length(range1369); index1370 < rangeEnd1371; ++index1370) {
+                AddressTerm term = range1369[index1370];
+                term.mul *= source.mul;
+                if (term.mul == u32(0LL)) {
+                    continue;
+                }
+                Int at = Int(-1LL);
+                auto range1372 = out.terms;
+                for (Int index1373 = 0, rangeEnd1374 = length(range1372); index1373 < rangeEnd1374; ++index1373) {
+                    Int j = index1373;
+                    AddressTerm prior = range1372[index1373];
+                    if (prior.mul != u32(0LL) && prior.value == term.value) {
+                        at = j;
+                        break;
                     }
                 }
+                if (at < Int(0LL)) {
+                    auto range1375 = out.terms;
+                    for (Int index1376 = 0, rangeEnd1377 = length(range1375); index1376 < rangeEnd1377; ++index1376) {
+                        Int j = index1376;
+                        AddressTerm prior = range1375[index1376];
+                        if (prior.mul == u32(0LL)) {
+                            at = j;
+                            out.terms[j].value = term.value;
+                            break;
+                        }
+                    }
+                }
+                if (at < Int(0LL)) {
+                    return {AddressExpression{}, false};
+                }
+                out.terms[at].mul += term.mul;
             }
         }
         Int n = Int(0LL);
-        {
-            auto range1378 = out.terms;
-            for (Int index1379 = 0, rangeEnd1380 = length(range1378); index1379 < rangeEnd1380; ++index1379) {
-                Int j = index1379;
-                if (out.terms[j].mul != u32(0LL)) {
-                    out.terms[n] = out.terms[j];
-                    n++;
-                }
+        auto range1378 = out.terms;
+        for (Int index1379 = 0, rangeEnd1380 = length(range1378); index1379 < rangeEnd1380; ++index1379) {
+            Int j = index1379;
+            if (out.terms[j].mul != u32(0LL)) {
+                out.terms[n] = out.terms[j];
+                n++;
             }
         }
         {
@@ -20427,18 +19535,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 out.terms[j] = AddressTerm{};
             }
         }
-        {
-            Int j = Int(1LL);
-            for (; j < n; j++) {
-                {
-                    Int k = j;
-                    for (; k > Int(0LL) && out.terms[k].value < out.terms[k - Int(1LL)].value; k--) {
-                        auto temporary1381 = out.terms[k - Int(1LL)];
-                        auto temporary1382 = out.terms[k];
-                        out.terms[k] = temporary1381;
-                        out.terms[k - Int(1LL)] = temporary1382;
-                    }
-                }
+        Int j = Int(1LL);
+        for (; j < n; j++) {
+            Int k = j;
+            for (; k > Int(0LL) && out.terms[k].value < out.terms[k - Int(1LL)].value; k--) {
+                auto temporary1381 = out.terms[k - Int(1LL)];
+                auto temporary1382 = out.terms[k];
+                out.terms[k] = temporary1381;
+                out.terms[k - Int(1LL)] = temporary1382;
             }
         }
         return {out, true};
@@ -20452,28 +19556,24 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (a.factor == u64(0LL)) {
             out.stride = b.stride;
         }
-        {
-            auto range1383 = Array<Array<i64, 2>, 4>{{Array<i64, 2>{{convert<i64>(a.base), convert<i64>(a.mul)}}, Array<i64, 2>{{convert<i64>(a.base2), convert<i64>(a.mul2)}}, Array<i64, 2>{{convert<i64>(b.base), convert<i64>(b.mul)}}, Array<i64, 2>{{convert<i64>(b.base2), convert<i64>(b.mul2)}}}};
-            for (Int index1384 = 0, rangeEnd1385 = length(range1383); index1384 < rangeEnd1385; ++index1384) {
-                Array<i64, 2> term = range1383[index1384];
-                auto temporary1386 = convert<i32>(term[Int(0LL)]);
-                auto temporary1387 = convert<u64>(term[Int(1LL)]);
-                i32 v = temporary1386;
-                u64 mul = temporary1387;
-                if (mul == u64(0LL)) {
-                    continue;
-                }
-                {
-                    if (out.mul == u64(0LL) || out.base == v) {
-                        out.base = v;
-                        out.mul += mul;
-                    } else if (out.mul2 == u64(0LL) || out.base2 == v) {
-                        out.base2 = v;
-                        out.mul2 += mul;
-                    } else {
-                        return LoopSpan{};
-                    }
-                }
+        auto range1383 = Array<Array<i64, 2>, 4>{{Array<i64, 2>{{convert<i64>(a.base), convert<i64>(a.mul)}}, Array<i64, 2>{{convert<i64>(a.base2), convert<i64>(a.mul2)}}, Array<i64, 2>{{convert<i64>(b.base), convert<i64>(b.mul)}}, Array<i64, 2>{{convert<i64>(b.base2), convert<i64>(b.mul2)}}}};
+        for (Int index1384 = 0, rangeEnd1385 = length(range1383); index1384 < rangeEnd1385; ++index1384) {
+            Array<i64, 2> term = range1383[index1384];
+            auto temporary1386 = convert<i32>(term[Int(0LL)]);
+            auto temporary1387 = convert<u64>(term[Int(1LL)]);
+            i32 v = temporary1386;
+            u64 mul = temporary1387;
+            if (mul == u64(0LL)) {
+                continue;
+            }
+            if (out.mul == u64(0LL) || out.base == v) {
+                out.base = v;
+                out.mul += mul;
+            } else if (out.mul2 == u64(0LL) || out.base2 == v) {
+                out.base2 = v;
+                out.mul2 += mul;
+            } else {
+                return LoopSpan{};
             }
         }
         if (out.mul2 != u64(0LL) && out.base2 < out.base) {
@@ -20538,28 +19638,24 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static Slice<u8> appendLeb(Slice<u8> b, u64 v) {
-        {
-            for (; true;) {
-                u8 c = convert<u8>(v & u64(127LL));
-                v = shiftRight(v, Int(7LL));
-                if (v == u64(0LL)) {
-                    return appendValues(b, c);
-                }
-                b = appendValues(b, u8(c | u8(128LL)));
+        for (; true;) {
+            u8 c = convert<u8>(v & u64(127LL));
+            v = shiftRight(v, Int(7LL));
+            if (v == u64(0LL)) {
+                return appendValues(b, c);
             }
+            b = appendValues(b, u8(c | u8(128LL)));
         }
     }
 
     static Slice<u8> appendSleb(Slice<u8> b, i64 v) {
-        {
-            for (; true;) {
-                u8 c = convert<u8>(v & i64(127LL));
-                v = shiftRight(v, Int(7LL));
-                if ((v == i64(0LL) && u8(c & u8(64LL)) == u8(0LL)) || (v == i64(-1LL) && u8(c & u8(64LL)) != u8(0LL))) {
-                    return appendValues(b, c);
-                }
-                b = appendValues(b, u8(c | u8(128LL)));
+        for (; true;) {
+            u8 c = convert<u8>(v & i64(127LL));
+            v = shiftRight(v, Int(7LL));
+            if ((v == i64(0LL) && u8(c & u8(64LL)) == u8(0LL)) || (v == i64(-1LL) && u8(c & u8(64LL)) != u8(0LL))) {
+                return appendValues(b, c);
             }
+            b = appendValues(b, u8(c | u8(128LL)));
         }
     }
 
@@ -20568,13 +19664,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static Slice<i32> appendUnique(Slice<i32> list, i32 x) {
-        {
-            auto range1394 = list;
-            for (Int index1395 = 0, rangeEnd1396 = length(range1394); index1395 < rangeEnd1396; ++index1395) {
-                i32 y = range1394[index1395];
-                if (y == x) {
-                    return list;
-                }
+        auto range1394 = list;
+        for (Int index1395 = 0, rangeEnd1396 = length(range1394); index1395 < rangeEnd1396; ++index1395) {
+            i32 y = range1394[index1395];
+            if (y == x) {
+                return list;
             }
         }
         return appendValues(list, x);
@@ -20582,13 +19676,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static Slice<VReg> assigned(Slice<VReg> regs) {
         Slice<VReg> out = {};
-        {
-            auto range1397 = regs;
-            for (Int index1398 = 0, rangeEnd1399 = length(range1397); index1398 < rangeEnd1399; ++index1398) {
-                VReg r = range1397[index1398];
-                if (r != noReg) {
-                    out = appendValues(out, r);
-                }
+        auto range1397 = regs;
+        for (Int index1398 = 0, rangeEnd1399 = length(range1397); index1398 < rangeEnd1399; ++index1398) {
+            VReg r = range1397[index1398];
+            if (r != noReg) {
+                out = appendValues(out, r);
             }
         }
         return out;
@@ -20606,15 +19698,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (lengthValue >= Int(8LL)) {
             Xorshift random = convert<Xorshift>(lengthValue);
             Uint modulus = nextPowerOfTwo(lengthValue);
-            {
-                Int idx = a + (lengthValue / Int(4LL)) * Int(2LL) - Int(1LL);
-                for (; idx <= a + (lengthValue / Int(4LL)) * Int(2LL) + Int(1LL); idx++) {
-                    Int other = convert<i64>(convert<Uint>(xorshiftNext(&(random))) & (modulus - Uint(1LL)));
-                    if (other >= lengthValue) {
-                        other -= lengthValue;
-                    }
-                    data.Swap(idx, a + other);
+            Int idx = a + (lengthValue / Int(4LL)) * Int(2LL) - Int(1LL);
+            for (; idx <= a + (lengthValue / Int(4LL)) * Int(2LL) + Int(1LL); idx++) {
+                Int other = convert<i64>(convert<Uint>(xorshiftNext(&(random))) & (modulus - Uint(1LL)));
+                if (other >= lengthValue) {
+                    other -= lengthValue;
                 }
+                data.Swap(idx, a + other);
             }
         }
     }
@@ -20644,27 +19734,21 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         ObjPool temporary;
         PoolScope scope(temporary);
         Slice<Slice<CheckedEdge>> incoming = makeSlice<Slice<CheckedEdge>>(length(f->blocks));
-        {
-            auto range1400 = ci->order;
-            for (Int index1401 = 0, rangeEnd1402 = length(range1400); index1401 < rangeEnd1402; ++index1401) {
-                i32 b = range1400[index1401];
-                {
-                    auto range1403 = f->blocks[b].term.edges;
-                    for (Int index1404 = 0, rangeEnd1405 = length(range1403); index1404 < rangeEnd1405; ++index1404) {
-                        Int j = index1404;
-                        Edge* e = &f->blocks[b].term.edges[j];
-                        incoming[e->block] = appendValues(incoming[e->block], CheckedEdge{b, e});
-                    }
-                }
+        auto range1400 = ci->order;
+        for (Int index1401 = 0, rangeEnd1402 = length(range1400); index1401 < rangeEnd1402; ++index1401) {
+            i32 b = range1400[index1401];
+            auto range1403 = f->blocks[b].term.edges;
+            for (Int index1404 = 0, rangeEnd1405 = length(range1403); index1404 < rangeEnd1405; ++index1404) {
+                Int j = index1404;
+                Edge* e = &f->blocks[b].term.edges[j];
+                incoming[e->block] = appendValues(incoming[e->block], CheckedEdge{b, e});
             }
         }
         Slice<i32> tracked = makeSlice<i32>(length(f->values));
-        {
-            auto range1406 = tracked;
-            for (Int index1407 = 0, rangeEnd1408 = length(range1406); index1407 < rangeEnd1408; ++index1407) {
-                Int j = index1407;
-                tracked[j] = i32(-1LL);
-            }
+        auto range1406 = tracked;
+        for (Int index1407 = 0, rangeEnd1408 = length(range1406); index1407 < rangeEnd1408; ++index1407) {
+            Int j = index1407;
+            tracked[j] = i32(-1LL);
         }
         Slice<i32> values = {};
         Fn<void(i32)> add = {};
@@ -20676,30 +19760,24 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             values = appendValues(values, v);
             Value* val = &f->values[v];
             if (val->op == OpParam) {
-                {
-                    auto range1409 = incoming[val->block];
-                    for (Int index1410 = 0, rangeEnd1411 = length(range1409); index1410 < rangeEnd1411; ++index1410) {
-                        CheckedEdge e = range1409[index1410];
-                        add(e.edge->args[val->aux]);
-                    }
+                auto range1409 = incoming[val->block];
+                for (Int index1410 = 0, rangeEnd1411 = length(range1409); index1410 < rangeEnd1411; ++index1410) {
+                    CheckedEdge e = range1409[index1410];
+                    add(e.edge->args[val->aux]);
                 }
             }
         };
-        {
-            auto range1412 = ci->order;
-            for (Int index1413 = 0, rangeEnd1414 = length(range1412); index1413 < rangeEnd1414; ++index1413) {
-                i32 b = range1412[index1413];
-                {
-                    auto range1415 = f->blocks[b].instrs.view();
-                    for (Int index1416 = 0, rangeEnd1417 = length(range1415); index1416 < rangeEnd1417; ++index1416) {
-                        i32 v = range1415[index1416];
-                        Value* val = &f->values[v];
-                        if (val->op == OpLoad || val->op == OpStore) {
-                            i32 addr = functionArgs(f, v)[Int(0LL)];
-                            if (f->values[addr].op == OpParam) {
-                                add(addr);
-                            }
-                        }
+        auto range1412 = ci->order;
+        for (Int index1413 = 0, rangeEnd1414 = length(range1412); index1413 < rangeEnd1414; ++index1413) {
+            i32 b = range1412[index1413];
+            auto range1415 = f->blocks[b].instrs.view();
+            for (Int index1416 = 0, rangeEnd1417 = length(range1415); index1416 < rangeEnd1417; ++index1416) {
+                i32 v = range1415[index1416];
+                Value* val = &f->values[v];
+                if (val->op == OpLoad || val->op == OpStore) {
+                    i32 addr = functionArgs(f, v)[Int(0LL)];
+                    if (f->values[addr].op == OpParam) {
+                        add(addr);
                     }
                 }
             }
@@ -20709,17 +19787,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return {};
         }
         Slice<Slice<Int>> defs = makeSlice<Slice<Int>>(length(f->blocks));
-        {
-            auto range1418 = values;
-            for (Int index1419 = 0, rangeEnd1420 = length(range1418); index1419 < rangeEnd1420; ++index1419) {
-                Int j = index1419;
-                i32 v = range1418[index1419];
-                {
-                    i32 b = f->values[v].block;
-                    if (b >= i32(0LL)) {
-                        defs[b] = appendValues(defs[b], j);
-                    }
-                }
+        auto range1418 = values;
+        for (Int index1419 = 0, rangeEnd1420 = length(range1418); index1419 < rangeEnd1420; ++index1419) {
+            Int j = index1419;
+            i32 v = range1418[index1419];
+            i32 b = f->values[v].block;
+            if (b >= i32(0LL)) {
+                defs[b] = appendValues(defs[b], j);
             }
         }
         // Each block's checked ends form one row of n values, an allocation
@@ -20758,84 +19832,68 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             if (first) {
                 zeroBytes(cur, rowBytes);
             }
-            {
-                auto range1427 = defs[b];
-                for (Int index1428 = 0, rangeEnd1429 = length(range1427); index1428 < rangeEnd1429; ++index1428) {
-                    Int j = range1427[index1428];
-                    cur[j] = i64(0LL);
-                }
+            auto range1427 = defs[b];
+            for (Int index1428 = 0, rangeEnd1429 = length(range1427); index1428 < rangeEnd1429; ++index1428) {
+                Int j = range1427[index1428];
+                cur[j] = i64(0LL);
             }
-            {
-                auto range1430 = f->blocks[b].params;
-                for (Int index1431 = 0, rangeEnd1432 = length(range1430); index1431 < rangeEnd1432; ++index1431) {
-                    i32 p = range1430[index1431];
-                    i32 j = tracked[p];
-                    if (j < i32(0LL) || b == i32(0LL) || length(incoming[b]) == Int(0LL)) {
-                        continue;
-                    }
-                    i64 end = i64(4611686018427387904LL);
-                    {
-                        auto range1433 = incoming[b];
-                        for (Int index1434 = 0, rangeEnd1435 = length(range1433); index1434 < rangeEnd1435; ++index1434) {
-                            CheckedEdge e = range1433[index1434];
-                            i32 arg = tracked[e.edge->args[f->values[p].aux]];
-                            end = minimum(end, rows[e.pred][arg]);
-                        }
-                    }
-                    cur[j] = end;
+            auto range1430 = f->blocks[b].params;
+            for (Int index1431 = 0, rangeEnd1432 = length(range1430); index1431 < rangeEnd1432; ++index1431) {
+                i32 p = range1430[index1431];
+                i32 j = tracked[p];
+                if (j < i32(0LL) || b == i32(0LL) || length(incoming[b]) == Int(0LL)) {
+                    continue;
                 }
+                i64 end = i64(4611686018427387904LL);
+                auto range1433 = incoming[b];
+                for (Int index1434 = 0, rangeEnd1435 = length(range1433); index1434 < rangeEnd1435; ++index1434) {
+                    CheckedEdge e = range1433[index1434];
+                    i32 arg = tracked[e.edge->args[f->values[p].aux]];
+                    end = minimum(end, rows[e.pred][arg]);
+                }
+                cur[j] = end;
             }
         };
-        {
-            Int round = Int(0LL);
-            for (; round < Int(16LL); round++) {
-                bool changed = false;
-                {
-                    auto range1436 = ci->order;
-                    for (Int index1437 = 0, rangeEnd1438 = length(range1436); index1437 < rangeEnd1438; ++index1437) {
-                        i32 b = range1436[index1437];
-                        entry(b);
-                        {
-                            auto range1439 = f->blocks[b].instrs.view();
-                            for (Int index1440 = 0, rangeEnd1441 = length(range1439); index1440 < rangeEnd1441; ++index1440) {
-                                i32 v = range1439[index1440];
-                                Value* val = &f->values[v];
-                                if (val->op == OpLoad || val->op == OpStore) {
-                                    {
-                                        i32 j = tracked[functionArgs(f, v)[Int(0LL)]];
-                                        if (j >= i32(0LL)) {
-                                            cur[j] = maximum(cur[j], val->aux + convert<i64>(memKindWidth(convert<MemKind>(val->aux2))));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        i64* row = rows[b];
-                        for (Int j = 0; j < n; ++j) {
-                            changed = changed || row[j] != cur[j];
-                            row[j] = cur[j];
+        Int round = Int(0LL);
+        for (; round < Int(16LL); round++) {
+            bool changed = false;
+            auto range1436 = ci->order;
+            for (Int index1437 = 0, rangeEnd1438 = length(range1436); index1437 < rangeEnd1438; ++index1437) {
+                i32 b = range1436[index1437];
+                entry(b);
+                auto range1439 = f->blocks[b].instrs.view();
+                for (Int index1440 = 0, rangeEnd1441 = length(range1439); index1440 < rangeEnd1441; ++index1440) {
+                    i32 v = range1439[index1440];
+                    Value* val = &f->values[v];
+                    if (val->op == OpLoad || val->op == OpStore) {
+                        i32 j = tracked[functionArgs(f, v)[Int(0LL)]];
+                        if (j >= i32(0LL)) {
+                            cur[j] = maximum(cur[j], val->aux + convert<i64>(memKindWidth(convert<MemKind>(val->aux2))));
                         }
                     }
                 }
-                if (!changed) {
-                    break;
+                i64* row = rows[b];
+                for (Int j = 0; j < n; ++j) {
+                    changed = changed || row[j] != cur[j];
+                    row[j] = cur[j];
                 }
+            }
+            if (!changed) {
+                break;
             }
         }
         PoolScope results(*caller);
         Slice<Slice<CheckedValue>> proofs = makeSlice<Slice<CheckedValue>>(length(f->blocks));
-        {
-            auto range1445 = ci->order;
-            for (Int index1446 = 0, rangeEnd1447 = length(range1445); index1446 < rangeEnd1447; ++index1446) {
-                i32 b = range1445[index1446];
-                entry(b);
-                for (Int j = 0; j < n; ++j) {
-                    const i64 end = cur[j];
-                    i32 v = values[j];
-                    i32 owner = f->values[v].block;
-                    if (end > i64(0LL) && (owner < i32(0LL) || cfgInfoDominates(ci, owner, b))) {
-                        proofs[b] = appendValues(proofs[b], CheckedValue{v, end});
-                    }
+        auto range1445 = ci->order;
+        for (Int index1446 = 0, rangeEnd1447 = length(range1445); index1446 < rangeEnd1447; ++index1446) {
+            i32 b = range1445[index1446];
+            entry(b);
+            for (Int j = 0; j < n; ++j) {
+                const i64 end = cur[j];
+                i32 v = values[j];
+                i32 owner = f->values[v].block;
+                if (end > i64(0LL) && (owner < i32(0LL) || cfgInfoDominates(ci, owner, b))) {
+                    proofs[b] = appendValues(proofs[b], CheckedValue{v, end});
                 }
             }
         }
@@ -20866,21 +19924,19 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             j = median_func(data, i, j, k, &(swaps));
         }
-        {
-            auto switch1451 = swaps;
-            switch (switch1451) {
-                case Int(0LL): {
-                    return {j, increasingHint};
-                    break;
-                }
-                case Int(12LL): {
-                    return {j, decreasingHint};
-                    break;
-                }
-                default: {
-                    return {j, unknownHint};
-                    break;
-                }
+        auto switch1451 = swaps;
+        switch (switch1451) {
+            case Int(0LL): {
+                return {j, increasingHint};
+                break;
+            }
+            case Int(12LL): {
+                return {j, decreasingHint};
+                break;
+            }
+            default: {
+                return {j, unknownHint};
+                break;
             }
         }
     }
@@ -20892,21 +19948,19 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Reader* r = &reader;
         u8 op = readerByte(r);
         i64 v = {};
-        {
-            auto switch1452 = op;
-            switch (switch1452) {
-                case u8(65LL): {
-                    v = convert<i64>(convert<u32>(readerS32(r)));
-                    break;
-                }
-                case u8(66LL): {
-                    v = readerS64(r);
-                    break;
-                }
-                default: {
-                    return {i64(0LL), false};
-                    break;
-                }
+        auto switch1452 = op;
+        switch (switch1452) {
+            case u8(65LL): {
+                v = convert<i64>(convert<u32>(readerS32(r)));
+                break;
+            }
+            case u8(66LL): {
+                v = readerS64(r);
+                break;
+            }
+            default: {
+                return {i64(0LL), false};
+                break;
             }
         }
         return {v, readerByte(r) == u8(11LL) && readerEof(r)};
@@ -20941,122 +19995,108 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Slice<u32> funcTypes = {};
         Int codes = {};
         u8 last = u8(0LL);
-        {
-            for (; !readerEof(r);) {
-                u8 id = readerByte(r);
-                u32 size = readerU32(r);
-                Reader* body = activePool->make<Reader>(Reader{readerBytes(r, convert<i64>(size)), {}});
-                Int base = r->pos - convert<i64>(size);
-                if (id != u8(0LL)) {
-                    if (order(id) <= order(last)) {
-                        compilerError(String("unexpected content after last section"));
+        for (; !readerEof(r);) {
+            u8 id = readerByte(r);
+            u32 size = readerU32(r);
+            Reader* body = activePool->make<Reader>(Reader{readerBytes(r, convert<i64>(size)), {}});
+            Int base = r->pos - convert<i64>(size);
+            if (id != u8(0LL)) {
+                if (order(id) <= order(last)) {
+                    compilerError(String("unexpected content after last section"));
+                }
+                last = id;
+            }
+            auto switch1453 = id;
+            switch (switch1453) {
+                case u8(0LL): {
+                    moduleCustom(m, body);
+                    break;
+                }
+                case u8(1LL): {
+                    moduleTypeSection(m, body);
+                    break;
+                }
+                case u8(2LL): {
+                    moduleImportSection(m, body);
+                    break;
+                }
+                case u8(3LL): {
+                    u32 n = readerU32(body);
+                    u32 i = u32(0LL);
+                    for (; i < n; i++) {
+                        funcTypes = appendValues(funcTypes, readerU32(body));
                     }
-                    last = id;
+                    break;
                 }
-                {
-                    auto switch1453 = id;
-                    switch (switch1453) {
-                        case u8(0LL): {
-                            moduleCustom(m, body);
-                            break;
-                        }
-                        case u8(1LL): {
-                            moduleTypeSection(m, body);
-                            break;
-                        }
-                        case u8(2LL): {
-                            moduleImportSection(m, body);
-                            break;
-                        }
-                        case u8(3LL): {
-                            u32 n = readerU32(body);
-                            {
-                                u32 i = u32(0LL);
-                                for (; i < n; i++) {
-                                    funcTypes = appendValues(funcTypes, readerU32(body));
-                                }
-                            }
-                            break;
-                        }
-                        case u8(4LL): {
-                            u32 n = readerU32(body);
-                            {
-                                u32 i = u32(0LL);
-                                for (; i < n; i++) {
-                                    ValType elem = readerRefType(body);
-                                    m->tables = appendValues(m->tables, Table{elem, readerLimits(body, false), {}});
-                                }
-                            }
-                            break;
-                        }
-                        case u8(5LL): {
-                            u32 n = readerU32(body);
-                            {
-                                u32 i = u32(0LL);
-                                for (; i < n; i++) {
-                                    m->mems = appendValues(m->mems, Memory{readerLimits(body, true), {}});
-                                }
-                            }
-                            break;
-                        }
-                        case u8(6LL): {
-                            u32 n = readerU32(body);
-                            {
-                                u32 i = u32(0LL);
-                                for (; i < n; i++) {
-                                    Global g = Global{readerValType(body), {}, {}, {}};
-                                    g.mutableValue = globalMutability(body);
-                                    g.init = readerConstExpr(body);
-                                    m->globals = appendValues(m->globals, g);
-                                }
-                            }
-                            break;
-                        }
-                        case u8(7LL): {
-                            moduleExportSection(m, body);
-                            break;
-                        }
-                        case u8(8LL): {
-                            m->start = convert<i64>(readerU32(body));
-                            break;
-                        }
-                        case u8(9LL): {
-                            moduleElemSection(m, body);
-                            break;
-                        }
-                        case u8(10LL): {
-                            Int n = convert<i64>(readerU32(body));
-                            if (n != length(funcTypes)) {
-                                compilerError(String("function and code section have inconsistent lengths"));
-                            }
-                            {
-                                Int i = Int(0LL);
-                                for (; i < n; i++) {
-                                    Int size = convert<i64>(readerU32(body));
-                                    Int offset = base + body->pos;
-                                    m->funcs = appendValues(m->funcs, Func{funcTypes[i], {}, {}, {}, readerBytes(body, size), offset});
-                                }
-                            }
-                            codes = n;
-                            break;
-                        }
-                        case u8(11LL): {
-                            moduleDataSection(m, body);
-                            break;
-                        }
-                        case u8(12LL): {
-                            m->dataCount = convert<i64>(readerU32(body));
-                            break;
-                        }
-                        default: {
-                            compilerError(String("malformed section id %d"));
-                            break;
-                        }
+                case u8(4LL): {
+                    u32 n = readerU32(body);
+                    u32 i = u32(0LL);
+                    for (; i < n; i++) {
+                        ValType elem = readerRefType(body);
+                        m->tables = appendValues(m->tables, Table{elem, readerLimits(body, false), {}});
                     }
+                    break;
                 }
-                if (!readerEof(body)) {
-                    compilerError(String("section size mismatch in section %d"));
+                case u8(5LL): {
+                    u32 n = readerU32(body);
+                    u32 i = u32(0LL);
+                    for (; i < n; i++) {
+                        m->mems = appendValues(m->mems, Memory{readerLimits(body, true), {}});
+                    }
+                    break;
                 }
+                case u8(6LL): {
+                    u32 n = readerU32(body);
+                    u32 i = u32(0LL);
+                    for (; i < n; i++) {
+                        Global g = Global{readerValType(body), {}, {}, {}};
+                        g.mutableValue = globalMutability(body);
+                        g.init = readerConstExpr(body);
+                        m->globals = appendValues(m->globals, g);
+                    }
+                    break;
+                }
+                case u8(7LL): {
+                    moduleExportSection(m, body);
+                    break;
+                }
+                case u8(8LL): {
+                    m->start = convert<i64>(readerU32(body));
+                    break;
+                }
+                case u8(9LL): {
+                    moduleElemSection(m, body);
+                    break;
+                }
+                case u8(10LL): {
+                    Int n = convert<i64>(readerU32(body));
+                    if (n != length(funcTypes)) {
+                        compilerError(String("function and code section have inconsistent lengths"));
+                    }
+                    Int i = Int(0LL);
+                    for (; i < n; i++) {
+                        Int size = convert<i64>(readerU32(body));
+                        Int offset = base + body->pos;
+                        m->funcs = appendValues(m->funcs, Func{funcTypes[i], {}, {}, {}, readerBytes(body, size), offset});
+                    }
+                    codes = n;
+                    break;
+                }
+                case u8(11LL): {
+                    moduleDataSection(m, body);
+                    break;
+                }
+                case u8(12LL): {
+                    m->dataCount = convert<i64>(readerU32(body));
+                    break;
+                }
+                default: {
+                    compilerError(String("malformed section id %d"));
+                    break;
+                }
+            }
+            if (!readerEof(body)) {
+                compilerError(String("section size mismatch in section %d"));
             }
         }
         if (codes != length(funcTypes)) {
@@ -21065,26 +20105,22 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (m->dataCount >= i64(0LL) && convert<i64>(m->dataCount) != length(m->datas)) {
             compilerError(String("data count and data section have inconsistent lengths"));
         }
-        {
-            auto range1454 = m->funcs;
-            for (Int index1455 = 0, rangeEnd1456 = length(range1454); index1455 < rangeEnd1456; ++index1455) {
-                Int i = index1455;
-                if (convert<i64>(m->funcs[i].typ) >= length(m->types)) {
-                    compilerError(String("unknown type %d"));
-                }
+        auto range1454 = m->funcs;
+        for (Int index1455 = 0, rangeEnd1456 = length(range1454); index1455 < rangeEnd1456; ++index1455) {
+            Int i = index1455;
+            if (convert<i64>(m->funcs[i].typ) >= length(m->types)) {
+                compilerError(String("unknown type %d"));
             }
         }
         if (length(m->mems) > Int(1LL)) {
             compilerError(String("unsupported: %d memories"));
         }
-        {
-            auto range1457 = m->datas;
-            for (Int index1458 = 0, rangeEnd1459 = length(range1457); index1458 < rangeEnd1459; ++index1458) {
-                Int i = index1458;
-                Data d = range1457[index1458];
-                if (d.memory != u32(0LL)) {
-                    compilerError(String("unsupported: data segment %d of memory %d"));
-                }
+        auto range1457 = m->datas;
+        for (Int index1458 = 0, rangeEnd1459 = length(range1457); index1458 < rangeEnd1459; ++index1458) {
+            Int i = index1458;
+            Data d = range1457[index1458];
+            if (d.memory != u32(0LL)) {
+                compilerError(String("unsupported: data segment %d of memory %d"));
             }
         }
         return m;
@@ -21095,13 +20131,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return xs;
         }
         Slice<i32> out = subslice(xs, Int(0), Int(1LL));
-        {
-            auto range1460 = subslice(xs, Int(1LL), length(xs));
-            for (Int index1461 = 0, rangeEnd1462 = length(range1460); index1461 < rangeEnd1462; ++index1461) {
-                i32 x = range1460[index1461];
-                if (x != out[length(out) - Int(1LL)]) {
-                    out = appendValues(out, x);
-                }
+        auto range1460 = subslice(xs, Int(1LL), length(xs));
+        for (Int index1461 = 0, rangeEnd1462 = length(range1460); index1461 < rangeEnd1462; ++index1461) {
+            i32 x = range1460[index1461];
+            if (x != out[length(out) - Int(1LL)]) {
+                out = appendValues(out, x);
             }
         }
         return out;
@@ -21111,17 +20145,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // which a symbol table cannot hold or show, become _XX.
     static String displayName(String s) {
         Slice<u8> b = makeSlice<u8>(Int(0LL), length(s));
-        {
-            Int i = Int(0LL);
-            for (; i < length(s); i++) {
-                {
-                    u8 c = s[i];
-                    if (c < u8(32LL) || c == u8(127LL)) {
-                        b = appendSlice(b, fmtSprintf(String("_%02X"), c));
-                    } else {
-                        b = appendValues(b, c);
-                    }
-                }
+        Int i = Int(0LL);
+        for (; i < length(s); i++) {
+            u8 c = s[i];
+            if (c < u8(32LL) || c == u8(127LL)) {
+                b = appendSlice(b, fmtSprintf(String("_%02X"), c));
+            } else {
+                b = appendValues(b, c);
             }
         }
         return asString(b);
@@ -21129,13 +20159,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static Span<Move> dropSelfMoves(Span<Move> moves) {
         Int count = 0;
-        {
-            auto range1463 = moves;
-            for (Int index1464 = 0, rangeEnd1465 = length(range1463); index1464 < rangeEnd1465; ++index1464) {
-                Move m = range1463[index1464];
-                if (m.dst != m.src) {
-                    moves[count++] = m;
-                }
+        auto range1463 = moves;
+        for (Int index1464 = 0, rangeEnd1465 = length(range1463); index1464 < rangeEnd1465; ++index1464) {
+            Move m = range1463[index1464];
+            if (m.dst != m.src) {
+                moves[count++] = m;
             }
         }
         return subslice(moves, 0, count);
@@ -21147,54 +20175,46 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Slice<u8> out = {};
         Slice<u32> starts = {};
         auto entry = [&](Slice<u8> body) mutable -> void {
-            {
-                for (; (Int(4LL) + length(body)) % Int(8LL) != Int(0LL);) {
-                    body = appendValues(body, u8(0LL));
-                }
+            for (; (Int(4LL) + length(body)) % Int(8LL) != Int(0LL);) {
+                body = appendValues(body, u8(0LL));
             }
             out = littleAppendUint32(out, convert<u32>(length(body)));
             out = appendSlice(out, body);
         };
         Slice<u8> cie = sliceOf<u8>({u8(0LL), u8(0LL), u8(0LL), u8(0LL), u8(1LL), u8(122LL), u8(82LL), u8(0LL), u8(1LL), u8(120LL), u8(16LL), u8(1LL), u8(27LL), u8(12LL), u8(7LL), u8(8LL), u8(144LL), u8(1LL)});
         entry(cie);
-        {
-            auto range1466 = regions;
-            for (Int index1467 = 0, rangeEnd1468 = length(range1466); index1467 < rangeEnd1468; ++index1467) {
-                Region r = range1466[index1467];
-                Int at = length(out);
-                Slice<u8> body = littleAppendUint32({}, convert<u32>(at + Int(4LL)));
-                starts = appendValues(starts, convert<u32>(at + Int(8LL)));
-                body = littleAppendUint32(body, u32(0LL));
-                body = littleAppendUint32(body, r.end - r.start);
-                body = appendValues(body, u8(0LL));
-                i32 loc = i32(0LL);
-                {
-                    auto range1469 = r.sp;
-                    for (Int index1470 = 0, rangeEnd1471 = length(range1469); index1470 < rangeEnd1471; ++index1470) {
-                        Int k = index1470;
-                        SpEntry e = range1469[index1470];
-                        if (k == Int(0LL) && e.delta == i32(0LL)) {
-                            continue;
-                        }
-                        {
-                            i32 d = e.pc - loc;
-                            if (d == i32(0LL)) {
-                            } else if (d < i32(64LL)) {
-                                body = appendValues(body, u8(u8(64LL) | convert<u8>(d)));
-                            } else if (d < i32(256LL)) {
-                                body = appendValues(body, u8(2LL), convert<u8>(d));
-                            } else if (d < i32(65536LL)) {
-                                body = littleAppendUint16(appendValues(body, u8(3LL)), convert<u16>(d));
-                            } else {
-                                body = littleAppendUint32(appendValues(body, u8(4LL)), convert<u32>(d));
-                            }
-                        }
-                        loc = e.pc;
-                        body = appendUleb(appendValues(body, u8(14LL)), convert<u64>(e.delta + i32(8LL)));
-                    }
+        auto range1466 = regions;
+        for (Int index1467 = 0, rangeEnd1468 = length(range1466); index1467 < rangeEnd1468; ++index1467) {
+            Region r = range1466[index1467];
+            Int at = length(out);
+            Slice<u8> body = littleAppendUint32({}, convert<u32>(at + Int(4LL)));
+            starts = appendValues(starts, convert<u32>(at + Int(8LL)));
+            body = littleAppendUint32(body, u32(0LL));
+            body = littleAppendUint32(body, r.end - r.start);
+            body = appendValues(body, u8(0LL));
+            i32 loc = i32(0LL);
+            auto range1469 = r.sp;
+            for (Int index1470 = 0, rangeEnd1471 = length(range1469); index1470 < rangeEnd1471; ++index1470) {
+                Int k = index1470;
+                SpEntry e = range1469[index1470];
+                if (k == Int(0LL) && e.delta == i32(0LL)) {
+                    continue;
                 }
-                entry(body);
+                i32 d = e.pc - loc;
+                if (d == i32(0LL)) {
+                } else if (d < i32(64LL)) {
+                    body = appendValues(body, u8(u8(64LL) | convert<u8>(d)));
+                } else if (d < i32(256LL)) {
+                    body = appendValues(body, u8(2LL), convert<u8>(d));
+                } else if (d < i32(65536LL)) {
+                    body = littleAppendUint16(appendValues(body, u8(3LL)), convert<u16>(d));
+                } else {
+                    body = littleAppendUint32(appendValues(body, u8(4LL)), convert<u32>(d));
+                }
+                loc = e.pc;
+                body = appendUleb(appendValues(body, u8(14LL)), convert<u64>(e.delta + i32(8LL)));
             }
+            entry(body);
         }
         return {out, starts};
     }
@@ -21211,47 +20231,39 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             metaWriterFlag(w, m->memory->imported);
         }
         metaWriterU(w, convert<u64>(length(m->tables)));
-        {
-            auto range1474 = m->tables;
-            for (Int index1475 = 0, rangeEnd1476 = length(range1474); index1475 < rangeEnd1476; ++index1475) {
-                TableMeta t = range1474[index1475];
-                metaWriterU(w, convert<u64>(t.offset));
-                metaWriterU(w, t.min);
-                metaWriterU(w, t.max);
-                metaWriterFlag(w, t.imported);
-            }
+        auto range1474 = m->tables;
+        for (Int index1475 = 0, rangeEnd1476 = length(range1474); index1475 < rangeEnd1476; ++index1475) {
+            TableMeta t = range1474[index1475];
+            metaWriterU(w, convert<u64>(t.offset));
+            metaWriterU(w, t.min);
+            metaWriterU(w, t.max);
+            metaWriterFlag(w, t.imported);
         }
         metaWriterU(w, convert<u64>(length(m->globals)));
-        {
-            auto range1477 = m->globals;
-            for (Int index1478 = 0, rangeEnd1479 = length(range1477); index1478 < rangeEnd1479; ++index1478) {
-                GlobalMeta g = range1477[index1478];
-                metaWriterU(w, convert<u64>(g.offset));
-                metaWriterU(w, convert<u64>(g.typ));
-                metaWriterFlag(w, g.mutableValue);
-                metaWriterFlag(w, g.imported);
-            }
+        auto range1477 = m->globals;
+        for (Int index1478 = 0, rangeEnd1479 = length(range1477); index1478 < rangeEnd1479; ++index1478) {
+            GlobalMeta g = range1477[index1478];
+            metaWriterU(w, convert<u64>(g.offset));
+            metaWriterU(w, convert<u64>(g.typ));
+            metaWriterFlag(w, g.mutableValue);
+            metaWriterFlag(w, g.imported);
         }
         metaWriterU(w, convert<u64>(length(m->imports)));
-        {
-            auto range1480 = m->imports;
-            for (Int index1481 = 0, rangeEnd1482 = length(range1480); index1481 < rangeEnd1482; ++index1481) {
-                ImportMeta i = range1480[index1481];
-                metaWriterU(w, convert<u64>(i.kind));
-                metaWriterStr(w, i.module);
-                metaWriterStr(w, i.name);
-                metaWriterU(w, convert<u64>(i.index));
-            }
+        auto range1480 = m->imports;
+        for (Int index1481 = 0, rangeEnd1482 = length(range1480); index1481 < rangeEnd1482; ++index1481) {
+            ImportMeta i = range1480[index1481];
+            metaWriterU(w, convert<u64>(i.kind));
+            metaWriterStr(w, i.module);
+            metaWriterStr(w, i.name);
+            metaWriterU(w, convert<u64>(i.index));
         }
         metaWriterU(w, convert<u64>(length(m->exports)));
-        {
-            auto range1483 = m->exports;
-            for (Int index1484 = 0, rangeEnd1485 = length(range1483); index1484 < rangeEnd1485; ++index1484) {
-                ExportMeta e = range1483[index1484];
-                metaWriterU(w, convert<u64>(e.kind));
-                metaWriterStr(w, e.name);
-                metaWriterU(w, convert<u64>(e.index));
-            }
+        auto range1483 = m->exports;
+        for (Int index1484 = 0, rangeEnd1485 = length(range1483); index1484 < rangeEnd1485; ++index1484) {
+            ExportMeta e = range1483[index1484];
+            metaWriterU(w, convert<u64>(e.kind));
+            metaWriterStr(w, e.name);
+            metaWriterU(w, convert<u64>(e.index));
         }
         if (!isNil(m->memory) && m->memory->tail != u64(0LL)) {
             metaWriterU(w, m->memory->tail);
@@ -21277,73 +20289,63 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static MemoryLoop* findMemoryLoop(Function* f, CfgInfo* ci, i32 h) {
         MemoryLoop* l = activePool->make<MemoryLoop>(MemoryLoop{f, ci, h, i32(-1LL), i32(-1LL), i32(-1LL), {}, makeSlice<bool>(length(f->blocks)), {}, {}, i32(-1LL), u64(1LL), {}, {}, {}, i32(-1LL), i32(-1LL), {}, mapOf<i32, LoopSpan>({}), mapOf<i32, LoopSpan>({}), {}, {}, {}, {}, {}, {}});
-        {
-            auto range1486 = f->blocks[h].preds;
-            for (Int index1487 = 0, rangeEnd1488 = length(range1486); index1487 < rangeEnd1488; ++index1487) {
-                i32 p = range1486[index1487];
-                if (cfgInfoDominates(ci, h, p)) {
-                    if (l->latch >= i32(0LL)) {
-                        return {};
-                    }
-                    l->latch = p;
-                } else {
-                    if (l->preheader >= i32(0LL)) {
-                        return {};
-                    }
-                    l->preheader = p;
+        auto range1486 = f->blocks[h].preds;
+        for (Int index1487 = 0, rangeEnd1488 = length(range1486); index1487 < rangeEnd1488; ++index1487) {
+            i32 p = range1486[index1487];
+            if (cfgInfoDominates(ci, h, p)) {
+                if (l->latch >= i32(0LL)) {
+                    return {};
                 }
+                l->latch = p;
+            } else {
+                if (l->preheader >= i32(0LL)) {
+                    return {};
+                }
+                l->preheader = p;
             }
         }
         if (l->latch < i32(0LL) || l->preheader < i32(0LL)) {
             return {};
         }
-        {
-            auto range1489 = f->blocks[l->preheader].term.edges;
-            for (Int index1490 = 0, rangeEnd1491 = length(range1489); index1490 < rangeEnd1491; ++index1490) {
-                Edge e = range1489[index1490];
-                if (e.block == h) {
-                    l->entry = e;
-                }
+        auto range1489 = f->blocks[l->preheader].term.edges;
+        for (Int index1490 = 0, rangeEnd1491 = length(range1489); index1490 < rangeEnd1491; ++index1490) {
+            Edge e = range1489[index1490];
+            if (e.block == h) {
+                l->entry = e;
             }
         }
         l->members[h] = true;
         Slice<i32> work = sliceOf<i32>({l->latch});
-        {
-            for (; length(work) > Int(0LL);) {
-                i32 b = work[length(work) - Int(1LL)];
-                work = subslice(work, Int(0), length(work) - Int(1LL));
-                if (l->members[b]) {
-                    continue;
-                }
-                if (ci->header[b] || !cfgInfoDominates(ci, h, b)) {
-                    return {};
-                }
-                l->members[b] = true;
-                work = appendSlice(work, f->blocks[b].preds);
+        for (; length(work) > Int(0LL);) {
+            i32 b = work[length(work) - Int(1LL)];
+            work = subslice(work, Int(0), length(work) - Int(1LL));
+            if (l->members[b]) {
+                continue;
             }
+            if (ci->header[b] || !cfgInfoDominates(ci, h, b)) {
+                return {};
+            }
+            l->members[b] = true;
+            work = appendSlice(work, f->blocks[b].preds);
         }
         Int insts = Int(0LL);
         bool multipleExits = false;
-        {
-            auto range1492 = ci->order;
-            for (Int index1493 = 0, rangeEnd1494 = length(range1492); index1493 < rangeEnd1494; ++index1493) {
-                i32 b = range1492[index1493];
-                if (!l->members[b]) {
-                    continue;
-                }
-                l->order = appendValues(l->order, b);
-                insts += length(f->blocks[b].instrs);
-                {
-                    auto range1495 = f->blocks[b].term.edges;
-                    for (Int index1496 = 0, rangeEnd1497 = length(range1495); index1496 < rangeEnd1497; ++index1496) {
-                        Edge e = range1495[index1496];
-                        if (!l->members[e.block]) {
-                            if (l->exit >= i32(0LL) && l->exit != e.block) {
-                                multipleExits = true;
-                            } else {
-                                l->exit = e.block;
-                            }
-                        }
+        auto range1492 = ci->order;
+        for (Int index1493 = 0, rangeEnd1494 = length(range1492); index1493 < rangeEnd1494; ++index1493) {
+            i32 b = range1492[index1493];
+            if (!l->members[b]) {
+                continue;
+            }
+            l->order = appendValues(l->order, b);
+            insts += length(f->blocks[b].instrs);
+            auto range1495 = f->blocks[b].term.edges;
+            for (Int index1496 = 0, rangeEnd1497 = length(range1495); index1496 < rangeEnd1497; ++index1496) {
+                Edge e = range1495[index1496];
+                if (!l->members[e.block]) {
+                    if (l->exit >= i32(0LL) && l->exit != e.block) {
+                        multipleExits = true;
+                    } else {
+                        l->exit = e.block;
                     }
                 }
             }
@@ -21352,12 +20354,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return {};
         }
         bool outsidePred = false;
-        {
-            auto range1498 = f->blocks[l->exit].preds;
-            for (Int index1499 = 0, rangeEnd1500 = length(range1498); index1499 < rangeEnd1500; ++index1499) {
-                i32 p = range1498[index1499];
-                outsidePred = outsidePred || !l->members[p];
-            }
+        auto range1498 = f->blocks[l->exit].preds;
+        for (Int index1499 = 0, rangeEnd1500 = length(range1498); index1499 < rangeEnd1500; ++index1499) {
+            i32 p = range1498[index1499];
+            outsidePred = outsidePred || !l->members[p];
         }
         Term* t = &f->blocks[l->latch].term;
         if (t->kind != TermIf) {
@@ -21391,89 +20391,81 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return {};
         }
         Edge back = {};
-        {
-            auto range1501 = t->edges;
-            for (Int index1502 = 0, rangeEnd1503 = length(range1501); index1502 < rangeEnd1503; ++index1502) {
-                Edge e = range1501[index1502];
-                if (e.block == h) {
-                    back = e;
-                }
+        auto range1501 = t->edges;
+        for (Int index1502 = 0, rangeEnd1503 = length(range1501); index1502 < rangeEnd1503; ++index1502) {
+            Edge e = range1501[index1502];
+            if (e.block == h) {
+                back = e;
             }
         }
         l->count = i32(-1LL);
-        {
-            auto range1504 = f->blocks[h].params;
-            for (Int index1505 = 0, rangeEnd1506 = length(range1504); index1505 < rangeEnd1506; ++index1505) {
-                Int j = index1505;
-                i32 p = range1504[index1505];
-                auto temporary1507 = next;
-                auto temporary1508 = i32(-1LL);
-                i32 candidate = temporary1507;
-                i32 bias = temporary1508;
-                if (unsignedStop >= i64(0LL) && back.args[j] != next && f->values[next].op == OpAdd) {
-                    Span<i32> a = functionArgs(f, next);
-                    {
-                        Int k = Int(0LL);
-                        for (; k < Int(2LL); k++) {
-                            i32 other = f->values[a[Int(1LL) - k]].block;
-                            if (a[k] == back.args[j] && (other < i32(0LL) || (!l->members[other] && cfgInfoDominates(ci, other, h)))) {
-                                auto temporary1509 = a[k];
-                                auto temporary1510 = a[Int(1LL) - k];
-                                candidate = temporary1509;
-                                bias = temporary1510;
-                            }
-                        }
+        auto range1504 = f->blocks[h].params;
+        for (Int index1505 = 0, rangeEnd1506 = length(range1504); index1505 < rangeEnd1506; ++index1505) {
+            Int j = index1505;
+            i32 p = range1504[index1505];
+            auto temporary1507 = next;
+            auto temporary1508 = i32(-1LL);
+            i32 candidate = temporary1507;
+            i32 bias = temporary1508;
+            if (unsignedStop >= i64(0LL) && back.args[j] != next && f->values[next].op == OpAdd) {
+                Span<i32> a = functionArgs(f, next);
+                Int k = Int(0LL);
+                for (; k < Int(2LL); k++) {
+                    i32 other = f->values[a[Int(1LL) - k]].block;
+                    if (a[k] == back.args[j] && (other < i32(0LL) || (!l->members[other] && cfgInfoDominates(ci, other, h)))) {
+                        auto temporary1509 = a[k];
+                        auto temporary1510 = a[Int(1LL) - k];
+                        candidate = temporary1509;
+                        bias = temporary1510;
                     }
                 }
-                if (back.args[j] != candidate) {
+            }
+            if (back.args[j] != candidate) {
+                continue;
+            }
+            i64 step = inductionStep(f, p, candidate);
+            if (l->limit >= i32(0LL) && step == i64(1LL)) {
+                l->start = l->entry.args[j];
+            } else if (l->limit < i32(0LL) && step < i64(0LL) && step >= i64(-65536LL)) {
+                u64 n = convert<u64>(-step);
+                auto temporary1511 = u64(0LL);
+                auto temporary1512 = u64(0LL);
+                u64 stop = temporary1511;
+                u64 mask = temporary1512;
+                if (unsignedStop >= i64(0LL) && convert<u64>(unsignedStop) + u64(1LL) >= n) {
+                    stop = convert<u64>(unsignedStop);
+                } else if (zeroTest && (n & (n - u64(1LL))) == u64(0LL)) {
+                    auto temporary1513 = n - u64(1LL);
+                    auto temporary1514 = n - u64(1LL);
+                    stop = temporary1513;
+                    mask = temporary1514;
+                } else if (step != i64(-1LL) || unsignedStop >= i64(0LL)) {
                     continue;
                 }
-                i64 step = inductionStep(f, p, candidate);
-                if (l->limit >= i32(0LL) && step == i64(1LL)) {
-                    l->start = l->entry.args[j];
-                } else if (l->limit < i32(0LL) && step < i64(0LL) && step >= i64(-65536LL)) {
-                    u64 n = convert<u64>(-step);
-                    auto temporary1511 = u64(0LL);
-                    auto temporary1512 = u64(0LL);
-                    u64 stop = temporary1511;
-                    u64 mask = temporary1512;
-                    if (unsignedStop >= i64(0LL) && convert<u64>(unsignedStop) + u64(1LL) >= n) {
-                        stop = convert<u64>(unsignedStop);
-                    } else if (zeroTest && (n & (n - u64(1LL))) == u64(0LL)) {
-                        auto temporary1513 = n - u64(1LL);
-                        auto temporary1514 = n - u64(1LL);
-                        stop = temporary1513;
-                        mask = temporary1514;
-                    } else if (step != i64(-1LL) || unsignedStop >= i64(0LL)) {
-                        continue;
-                    }
-                    l->count = l->entry.args[j];
-                    auto temporary1515 = bias;
-                    auto temporary1516 = n;
-                    auto temporary1517 = stop;
-                    auto temporary1518 = mask;
-                    l->countBias = temporary1515;
-                    l->countStep = temporary1516;
-                    l->countStop = temporary1517;
-                    l->countMask = temporary1518;
-                    if (step == i64(-1LL) && bias < i32(0LL)) {
-                        setMap(l->induction, p, LoopSpan{i32(-1LL), {}, u64(1LL), u64(1LL), {}, {}, {}, {}, true});
-                    }
+                l->count = l->entry.args[j];
+                auto temporary1515 = bias;
+                auto temporary1516 = n;
+                auto temporary1517 = stop;
+                auto temporary1518 = mask;
+                l->countBias = temporary1515;
+                l->countStep = temporary1516;
+                l->countStop = temporary1517;
+                l->countMask = temporary1518;
+                if (step == i64(-1LL) && bias < i32(0LL)) {
+                    setMap(l->induction, p, LoopSpan{i32(-1LL), {}, u64(1LL), u64(1LL), {}, {}, {}, {}, true});
                 }
             }
         }
         if (l->count < i32(0LL) && l->start < i32(0LL)) {
             return {};
         }
-        {
-            auto range1519 = f->blocks[h].params;
-            for (Int index1520 = 0, rangeEnd1521 = length(range1519); index1520 < rangeEnd1521; ++index1520) {
-                Int j = index1520;
-                i32 p = range1519[index1520];
-                i64 step = inductionStep(f, p, back.args[j]);
-                if (step > i64(0LL) && step <= i64(65536LL)) {
-                    setMap(l->induction, p, LoopSpan{l->entry.args[j], u64(1LL), convert<u64>(step), {}, {}, {}, {}, {}, true});
-                }
+        auto range1519 = f->blocks[h].params;
+        for (Int index1520 = 0, rangeEnd1521 = length(range1519); index1520 < rangeEnd1521; ++index1520) {
+            Int j = index1520;
+            i32 p = range1519[index1520];
+            i64 step = inductionStep(f, p, back.args[j]);
+            if (step > i64(0LL) && step <= i64(65536LL)) {
+                setMap(l->induction, p, LoopSpan{l->entry.args[j], u64(1LL), convert<u64>(step), {}, {}, {}, {}, {}, true});
             }
         }
         // Only countable loops need the whole-function live-out scan.
@@ -21487,24 +20479,20 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // firstBranch returns the index of the branch sequence ending a block.
     static Int firstBranch(Span<MInst> insts) {
         Int i = length(insts);
-        {
-            for (; i > Int(0LL);) {
-                {
-                    auto switch1522 = insts[i - Int(1LL)].op;
-                    switch (switch1522) {
-                        case mJmp:
-                        case mJcc:
-                        case mSwitch:
-                        case mRet:
-                        case mTrap: {
-                            i--;
-                            continue;
-                            break;
-                        }
-                    }
+        for (; i > Int(0LL);) {
+            auto switch1522 = insts[i - Int(1LL)].op;
+            switch (switch1522) {
+                case mJmp:
+                case mJcc:
+                case mSwitch:
+                case mRet:
+                case mTrap: {
+                    i--;
+                    continue;
+                    break;
                 }
-                break;
             }
+            break;
         }
         return i;
     }
@@ -21542,130 +20530,128 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             return {u64(0LL), true};
         };
-        {
-            auto switch1523 = op;
-            switch (switch1523) {
-                case OpAdd: {
-                    return {(a + b) & m, true};
-                    break;
+        auto switch1523 = op;
+        switch (switch1523) {
+            case OpAdd: {
+                return {(a + b) & m, true};
+                break;
+            }
+            case OpSub: {
+                return {(a - b) & m, true};
+                break;
+            }
+            case OpMul: {
+                return {(a * b) & m, true};
+                break;
+            }
+            case OpAnd: {
+                return {a & b, true};
+                break;
+            }
+            case OpOr: {
+                return {a | b, true};
+                break;
+            }
+            case OpXor: {
+                return {a ^ b, true};
+                break;
+            }
+            case OpShl: {
+                return {shiftLeft(a, sh) & m, true};
+                break;
+            }
+            case OpShrU: {
+                return {shiftRight(a, sh), true};
+                break;
+            }
+            case OpShrS: {
+                return {convert<u64>(shiftRight(sa, sh)) & m, true};
+                break;
+            }
+            case OpRotl: {
+                if (w == Uint(32LL)) {
+                    return {convert<u64>(bitsRotateLeft32(convert<u32>(a), convert<i64>(sh))), true};
                 }
-                case OpSub: {
-                    return {(a - b) & m, true};
-                    break;
+                return {bitsRotateLeft64(a, convert<i64>(sh)), true};
+                break;
+            }
+            case OpRotr: {
+                if (w == Uint(32LL)) {
+                    return {convert<u64>(bitsRotateLeft32(convert<u32>(a), -convert<i64>(sh))), true};
                 }
-                case OpMul: {
-                    return {(a * b) & m, true};
-                    break;
+                return {bitsRotateLeft64(a, -convert<i64>(sh)), true};
+                break;
+            }
+            case OpDivU: {
+                if (b == u64(0LL)) {
+                    return {u64(0LL), false};
                 }
-                case OpAnd: {
-                    return {a & b, true};
-                    break;
+                return {a / b, true};
+                break;
+            }
+            case OpRemU: {
+                if (b == u64(0LL)) {
+                    return {u64(0LL), false};
                 }
-                case OpOr: {
-                    return {a | b, true};
-                    break;
+                return {a % b, true};
+                break;
+            }
+            case OpDivS: {
+                if (b == u64(0LL) || (sb == i64(-1LL) && a == shiftLeft(u64(1LL), w - Uint(1LL)))) {
+                    return {u64(0LL), false};
                 }
-                case OpXor: {
-                    return {a ^ b, true};
-                    break;
+                return {convert<u64>(sa / sb) & m, true};
+                break;
+            }
+            case OpRemS: {
+                if (b == u64(0LL)) {
+                    return {u64(0LL), false};
                 }
-                case OpShl: {
-                    return {shiftLeft(a, sh) & m, true};
-                    break;
+                if (sb == i64(-1LL)) {
+                    return {u64(0LL), true};
                 }
-                case OpShrU: {
-                    return {shiftRight(a, sh), true};
-                    break;
-                }
-                case OpShrS: {
-                    return {convert<u64>(shiftRight(sa, sh)) & m, true};
-                    break;
-                }
-                case OpRotl: {
-                    if (w == Uint(32LL)) {
-                        return {convert<u64>(bitsRotateLeft32(convert<u32>(a), convert<i64>(sh))), true};
-                    }
-                    return {bitsRotateLeft64(a, convert<i64>(sh)), true};
-                    break;
-                }
-                case OpRotr: {
-                    if (w == Uint(32LL)) {
-                        return {convert<u64>(bitsRotateLeft32(convert<u32>(a), -convert<i64>(sh))), true};
-                    }
-                    return {bitsRotateLeft64(a, -convert<i64>(sh)), true};
-                    break;
-                }
-                case OpDivU: {
-                    if (b == u64(0LL)) {
-                        return {u64(0LL), false};
-                    }
-                    return {a / b, true};
-                    break;
-                }
-                case OpRemU: {
-                    if (b == u64(0LL)) {
-                        return {u64(0LL), false};
-                    }
-                    return {a % b, true};
-                    break;
-                }
-                case OpDivS: {
-                    if (b == u64(0LL) || (sb == i64(-1LL) && a == shiftLeft(u64(1LL), w - Uint(1LL)))) {
-                        return {u64(0LL), false};
-                    }
-                    return {convert<u64>(sa / sb) & m, true};
-                    break;
-                }
-                case OpRemS: {
-                    if (b == u64(0LL)) {
-                        return {u64(0LL), false};
-                    }
-                    if (sb == i64(-1LL)) {
-                        return {u64(0LL), true};
-                    }
-                    return {convert<u64>(sa % sb) & m, true};
-                    break;
-                }
-                case OpEq: {
-                    return boolean(a == b);
-                    break;
-                }
-                case OpNe: {
-                    return boolean(a != b);
-                    break;
-                }
-                case OpLtS: {
-                    return boolean(sa < sb);
-                    break;
-                }
-                case OpLtU: {
-                    return boolean(a < b);
-                    break;
-                }
-                case OpGtS: {
-                    return boolean(sa > sb);
-                    break;
-                }
-                case OpGtU: {
-                    return boolean(a > b);
-                    break;
-                }
-                case OpLeS: {
-                    return boolean(sa <= sb);
-                    break;
-                }
-                case OpLeU: {
-                    return boolean(a <= b);
-                    break;
-                }
-                case OpGeS: {
-                    return boolean(sa >= sb);
-                    break;
-                }
-                case OpGeU: {
-                    return boolean(a >= b);
-                    break;
-                }
+                return {convert<u64>(sa % sb) & m, true};
+                break;
+            }
+            case OpEq: {
+                return boolean(a == b);
+                break;
+            }
+            case OpNe: {
+                return boolean(a != b);
+                break;
+            }
+            case OpLtS: {
+                return boolean(sa < sb);
+                break;
+            }
+            case OpLtU: {
+                return boolean(a < b);
+                break;
+            }
+            case OpGtS: {
+                return boolean(sa > sb);
+                break;
+            }
+            case OpGtU: {
+                return boolean(a > b);
+                break;
+            }
+            case OpLeS: {
+                return boolean(sa <= sb);
+                break;
+            }
+            case OpLeU: {
+                return boolean(a <= b);
+                break;
+            }
+            case OpGeS: {
+                return boolean(sa >= sb);
+                break;
+            }
+            case OpGeU: {
+                return boolean(a >= b);
+                break;
             }
         }
         return {u64(0LL), false};
@@ -21673,58 +20659,56 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static Tuple2<u64, bool> foldUnary(Op op, ValType t, ValType from, u64 a) {
         u64 m = mask(t);
-        {
-            auto switch1524 = op;
-            switch (switch1524) {
-                case OpEqz: {
-                    if ((a & mask(from)) == u64(0LL)) {
-                        return {u64(1LL), true};
-                    }
-                    return {u64(0LL), true};
-                    break;
+        auto switch1524 = op;
+        switch (switch1524) {
+            case OpEqz: {
+                if ((a & mask(from)) == u64(0LL)) {
+                    return {u64(1LL), true};
                 }
-                case OpClz: {
-                    if (t == I32) {
-                        return {convert<u64>(bitsLeadingZeros32(convert<u32>(a))), true};
-                    }
-                    return {convert<u64>(bitsLeadingZeros64(a)), true};
-                    break;
+                return {u64(0LL), true};
+                break;
+            }
+            case OpClz: {
+                if (t == I32) {
+                    return {convert<u64>(bitsLeadingZeros32(convert<u32>(a))), true};
                 }
-                case OpCtz: {
-                    if (t == I32) {
-                        return {convert<u64>(bitsTrailingZeros32(convert<u32>(a))), true};
-                    }
-                    return {convert<u64>(bitsTrailingZeros64(a)), true};
-                    break;
+                return {convert<u64>(bitsLeadingZeros64(a)), true};
+                break;
+            }
+            case OpCtz: {
+                if (t == I32) {
+                    return {convert<u64>(bitsTrailingZeros32(convert<u32>(a))), true};
                 }
-                case OpPopcnt: {
-                    return {convert<u64>(bitsOnesCount64(a & m)), true};
-                    break;
-                }
-                case OpExtend8S: {
-                    return {convert<u64>(convert<i64>(convert<i8>(a))) & m, true};
-                    break;
-                }
-                case OpExtend16S: {
-                    return {convert<u64>(convert<i64>(convert<i16>(a))) & m, true};
-                    break;
-                }
-                case OpExtend32S: {
-                    return {convert<u64>(convert<i64>(convert<i32>(a))) & m, true};
-                    break;
-                }
-                case OpWrap: {
-                    return {a & u64(4294967295LL), true};
-                    break;
-                }
-                case OpExtendU: {
-                    return {a & u64(4294967295LL), true};
-                    break;
-                }
-                case OpExtendS: {
-                    return {convert<u64>(convert<i64>(convert<i32>(a))), true};
-                    break;
-                }
+                return {convert<u64>(bitsTrailingZeros64(a)), true};
+                break;
+            }
+            case OpPopcnt: {
+                return {convert<u64>(bitsOnesCount64(a & m)), true};
+                break;
+            }
+            case OpExtend8S: {
+                return {convert<u64>(convert<i64>(convert<i8>(a))) & m, true};
+                break;
+            }
+            case OpExtend16S: {
+                return {convert<u64>(convert<i64>(convert<i16>(a))) & m, true};
+                break;
+            }
+            case OpExtend32S: {
+                return {convert<u64>(convert<i64>(convert<i32>(a))) & m, true};
+                break;
+            }
+            case OpWrap: {
+                return {a & u64(4294967295LL), true};
+                break;
+            }
+            case OpExtendU: {
+                return {a & u64(4294967295LL), true};
+                break;
+            }
+            case OpExtendS: {
+                return {convert<u64>(convert<i64>(convert<i32>(a))), true};
+                break;
             }
         }
         return {u64(0LL), false};
@@ -21744,24 +20728,20 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         auto assign = [&](Slice<ValType> types, Int ints) mutable -> Slice<GoLoc> {
             Int floats = Int(0LL);
             Slice<GoLoc> locs = makeSlice<GoLoc>(length(types));
-            {
-                auto range1525 = types;
-                for (Int index1526 = 0, rangeEnd1527 = length(range1525); index1526 < rangeEnd1527; ++index1526) {
-                    Int i = index1526;
-                    ValType t = range1525[index1526];
-                    {
-                        if (isFloat(t) && floats < length(goFloatRegs)) {
-                            locs[i] = GoLoc{goFloatRegs[floats], {}};
-                            floats++;
-                        } else if (!isFloat(t) && ints < length(goIntRegs)) {
-                            locs[i] = GoLoc{goIntRegs[ints], {}};
-                            ints++;
-                        } else {
-                            off = alignTo(off, goSize(t));
-                            locs[i] = GoLoc{noReg, off};
-                            off += goSize(t);
-                        }
-                    }
+            auto range1525 = types;
+            for (Int index1526 = 0, rangeEnd1527 = length(range1525); index1526 < rangeEnd1527; ++index1526) {
+                Int i = index1526;
+                ValType t = range1525[index1526];
+                if (isFloat(t) && floats < length(goFloatRegs)) {
+                    locs[i] = GoLoc{goFloatRegs[floats], {}};
+                    floats++;
+                } else if (!isFloat(t) && ints < length(goIntRegs)) {
+                    locs[i] = GoLoc{goIntRegs[ints], {}};
+                    ints++;
+                } else {
+                    off = alignTo(off, goSize(t));
+                    locs[i] = GoLoc{noReg, off};
+                    off += goSize(t);
                 }
             }
             off = alignTo(off, i32(8LL));
@@ -21770,14 +20750,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         f.params = assign(params, Int(1LL));
         f.results = assign(results, Int(0LL));
         off += i32(8LL);
-        {
-            auto range1530 = f.params;
-            for (Int index1531 = 0, rangeEnd1532 = length(range1530); index1531 < rangeEnd1532; ++index1531) {
-                Int i = index1531;
-                GoLoc l = range1530[index1531];
-                if (l.reg != noReg) {
-                    off = alignTo(off, goSize(params[i])) + goSize(params[i]);
-                }
+        auto range1530 = f.params;
+        for (Int index1531 = 0, rangeEnd1532 = length(range1530); index1531 < rangeEnd1532; ++index1531) {
+            Int i = index1531;
+            GoLoc l = range1530[index1531];
+            if (l.reg != noReg) {
+                off = alignTo(off, goSize(params[i])) + goSize(params[i]);
             }
         }
         f.size = alignTo(off, i32(8LL));
@@ -21794,36 +20772,34 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // hasEffect reports whether a value must stay even when nothing uses it:
     // it writes state, or it may trap.
     static bool hasEffect(Op op) {
-        {
-            auto switch1533 = op;
-            switch (switch1533) {
-                case OpDivS:
-                case OpDivU:
-                case OpRemS:
-                case OpRemU:
-                case OpTruncS:
-                case OpTruncU:
-                case OpLoad:
-                case OpStore:
-                case OpMemGrow:
-                case OpMemCopy:
-                case OpMemFill:
-                case OpMemInit:
-                case OpDataDrop:
-                case OpCopyForward:
-                case OpGlobalSet:
-                case OpCall:
-                case OpCallIndirect:
-                case OpTableGet:
-                case OpTableSet:
-                case OpTableGrow:
-                case OpTableFill:
-                case OpTableCopy:
-                case OpTableInit:
-                case OpElemDrop: {
-                    return true;
-                    break;
-                }
+        auto switch1533 = op;
+        switch (switch1533) {
+            case OpDivS:
+            case OpDivU:
+            case OpRemS:
+            case OpRemU:
+            case OpTruncS:
+            case OpTruncU:
+            case OpLoad:
+            case OpStore:
+            case OpMemGrow:
+            case OpMemCopy:
+            case OpMemFill:
+            case OpMemInit:
+            case OpDataDrop:
+            case OpCopyForward:
+            case OpGlobalSet:
+            case OpCall:
+            case OpCallIndirect:
+            case OpTableGet:
+            case OpTableSet:
+            case OpTableGrow:
+            case OpTableFill:
+            case OpTableCopy:
+            case OpTableInit:
+            case OpElemDrop: {
+                return true;
+                break;
             }
         }
         return false;
@@ -21840,12 +20816,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 siftDown_func(data, i, hi, first);
             }
         }
-        {
-            Int i = hi - Int(1LL);
-            for (; i >= Int(0LL); i--) {
-                data.Swap(first, first + i);
-                siftDown_func(data, lo, i, first);
-            }
+        Int i = hi - Int(1LL);
+        for (; i >= Int(0LL); i--) {
+            data.Swap(first, first + i);
+            siftDown_func(data, lo, i, first);
         }
     }
 
@@ -21899,17 +20873,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return {{}, false};
         }
         Span<i32> args = functionArgs(f, v);
-        {
-            Int j = Int(0LL);
-            for (; j < Int(2LL); j++) {
-                {
-                    auto temporary1538 = inductionTerms(f, args[j], phi, depth + Int(1LL));
-                    Slice<i32> terms = temporary1538.v0;
-                    bool ok = temporary1538.v1;
-                    if (ok) {
-                        return {appendValues(terms, args[Int(1LL) - j]), true};
-                    }
-                }
+        Int j = Int(0LL);
+        for (; j < Int(2LL); j++) {
+            auto temporary1538 = inductionTerms(f, args[j], phi, depth + Int(1LL));
+            Slice<i32> terms = temporary1538.v0;
+            bool ok = temporary1538.v1;
+            if (ok) {
+                return {appendValues(terms, args[Int(1LL) - j]), true};
             }
         }
         return {{}, false};
@@ -21918,15 +20888,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // insertionSort_func sorts data[a:b] using insertion sort.
     template <typename Data>
     static void insertionSort_func(Data data, Int a, Int b) {
-        {
-            Int i = a + Int(1LL);
-            for (; i < b; i++) {
-                {
-                    Int j = i;
-                    for (; j > a && data.Less(j, j - Int(1LL)); j--) {
-                        data.Swap(j, j - Int(1LL));
-                    }
-                }
+        Int i = a + Int(1LL);
+        for (; i < b; i++) {
+            Int j = i;
+            for (; j > a && data.Less(j, j - Int(1LL)); j--) {
+                data.Swap(j, j - Int(1LL));
             }
         }
     }
@@ -21946,24 +20912,20 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Int slot = temporary1541;
         Slice<VReg> regs = makeSlice<VReg>(length(types));
         Slice<Int> slots = makeSlice<Int>(length(types));
-        {
-            auto range1542 = types;
-            for (Int index1543 = 0, rangeEnd1544 = length(range1542); index1543 < rangeEnd1544; ++index1543) {
-                Int i = index1543;
-                ValType t = range1542[index1543];
-                regs[i] = noReg;
-                {
-                    if (isFloat(t) && xi < length(xmms)) {
-                        regs[i] = xmms[xi];
-                        xi++;
-                    } else if (!isFloat(t) && gi < length(gprs)) {
-                        regs[i] = gprs[gi];
-                        gi++;
-                    } else {
-                        slots[i] = slot;
-                        slot++;
-                    }
-                }
+        auto range1542 = types;
+        for (Int index1543 = 0, rangeEnd1544 = length(range1542); index1543 < rangeEnd1544; ++index1543) {
+            Int i = index1543;
+            ValType t = range1542[index1543];
+            regs[i] = noReg;
+            if (isFloat(t) && xi < length(xmms)) {
+                regs[i] = xmms[xi];
+                xi++;
+            } else if (!isFloat(t) && gi < length(gprs)) {
+                regs[i] = gprs[gi];
+                gi++;
+            } else {
+                slots[i] = slot;
+                slot++;
             }
         }
         return {regs, slots, slot};
@@ -22001,96 +20963,78 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Slice<Slice<CheckedValue>> proofs = checkedValues(f, l->ci);
         l->mblk.resize(f->blocks.size());
         l->mblk.fill(-1);
-        {
-            auto range1553 = l->ci->order;
-            for (Int index1554 = 0, rangeEnd1555 = length(range1553); index1554 < rangeEnd1555; ++index1554) {
-                i32 b = range1553[index1554];
-                l->mblk[b] = convert<i32>(length(l->mf->blocks));
-                l->mf->blocks.pushBack(MBlock{{}, {}, {}, l->ci->depth[b], b, {}});
-            }
+        auto range1553 = l->ci->order;
+        for (Int index1554 = 0, rangeEnd1555 = length(range1553); index1554 < rangeEnd1555; ++index1554) {
+            i32 b = range1553[index1554];
+            l->mblk[b] = convert<i32>(length(l->mf->blocks));
+            l->mf->blocks.pushBack(MBlock{{}, {}, {}, l->ci->depth[b], b, {}});
         }
-        {
-            auto range1556 = l->ci->order;
-            for (Int index1557 = 0, rangeEnd1558 = length(range1556); index1557 < rangeEnd1558; ++index1557) {
-                i32 b = range1556[index1557];
-                {
-                    auto range1559 = f->blocks[b].params;
-                    for (Int index1560 = 0, rangeEnd1561 = length(range1559); index1560 < rangeEnd1561; ++index1560) {
-                        i32 p = range1559[index1560];
-                        lowererDef(l, p);
-                    }
-                }
+        auto range1556 = l->ci->order;
+        for (Int index1557 = 0, rangeEnd1558 = length(range1556); index1557 < rangeEnd1558; ++index1557) {
+            i32 b = range1556[index1557];
+            auto range1559 = f->blocks[b].params;
+            for (Int index1560 = 0, rangeEnd1561 = length(range1559); index1560 < rangeEnd1561; ++index1560) {
+                i32 p = range1559[index1560];
+                lowererDef(l, p);
             }
         }
         auto children = cfgInfoChildren(l->ci);
         Vec<LowerVisit> visits;
         visits.pushBack({l->ci->order[0], false, 0});
-        {
-            for (; length(visits) > Int(0LL);) {
-                const LowerVisit visit = visits.popBack();
-                if (visit.leave) {
-                    {
-                        for (; length(l->checkUndo) > visit.undo;) {
-                            CheckUndo u = l->checkUndo[length(l->checkUndo) - Int(1LL)];
-                            l->checkUndo = subslice(l->checkUndo, Int(0), length(l->checkUndo) - Int(1LL));
-                            if (u.set) {
-                                setMap(l->checked, u.value, u.end);
-                            } else {
-                                eraseMap(l->checked, u.value);
-                            }
-                        }
-                    }
-                    continue;
-                }
-                i32 b = visit.block;
-                Int undo = length(l->checkUndo);
-                l->cur = l->mblk[b];
-                if (!isNil(proofs)) {
-                    {
-                        auto range1562 = proofs[b];
-                        for (Int index1563 = 0, rangeEnd1564 = length(range1562); index1563 < rangeEnd1564; ++index1563) {
-                            CheckedValue proof = range1562[index1563];
-                            auto temporary1565 = lookupMap(l->checked, proof.value);
-                            i64 prior = temporary1565.v0;
-                            bool had = temporary1565.v1;
-                            if (!had || prior < proof.end) {
-                                l->checkUndo = appendValues(l->checkUndo, CheckUndo{proof.value, prior, had});
-                                setMap(l->checked, proof.value, proof.end);
-                            }
-                        }
+        for (; length(visits) > Int(0LL);) {
+            const LowerVisit visit = visits.popBack();
+            if (visit.leave) {
+                for (; length(l->checkUndo) > visit.undo;) {
+                    CheckUndo u = l->checkUndo[length(l->checkUndo) - Int(1LL)];
+                    l->checkUndo = subslice(l->checkUndo, Int(0), length(l->checkUndo) - Int(1LL));
+                    if (u.set) {
+                        setMap(l->checked, u.value, u.end);
+                    } else {
+                        eraseMap(l->checked, u.value);
                     }
                 }
-                if (b == l->ci->order[Int(0LL)]) {
-                    lowererEntry(l);
-                }
-                {
-                    auto range1566 = l->floatHomes[b];
-                    for (Int index1567 = 0, rangeEnd1568 = length(range1566); index1567 < rangeEnd1568; ++index1567) {
-                        i32 v = range1566[index1567];
-                        Value* val = &f->values[v];
-                        MInst in = inst(mFConst);
-                        in.dst = lowererDef(l, v);
-                        in.imm = val->aux;
-                        in.size = typeSize(val->typ);
-                        lowererEmit(l, in);
+                continue;
+            }
+            i32 b = visit.block;
+            Int undo = length(l->checkUndo);
+            l->cur = l->mblk[b];
+            if (!isNil(proofs)) {
+                auto range1562 = proofs[b];
+                for (Int index1563 = 0, rangeEnd1564 = length(range1562); index1563 < rangeEnd1564; ++index1563) {
+                    CheckedValue proof = range1562[index1563];
+                    auto temporary1565 = lookupMap(l->checked, proof.value);
+                    i64 prior = temporary1565.v0;
+                    bool had = temporary1565.v1;
+                    if (!had || prior < proof.end) {
+                        l->checkUndo = appendValues(l->checkUndo, CheckUndo{proof.value, prior, had});
+                        setMap(l->checked, proof.value, proof.end);
                     }
                 }
-                {
-                    auto range1569 = f->blocks[b].instrs.view();
-                    for (Int index1570 = 0, rangeEnd1571 = length(range1569); index1570 < rangeEnd1571; ++index1570) {
-                        i32 v = range1569[index1570];
-                        if (!l->deferred[v]) {
-                            lowererLowerValue(l, v);
-                        }
-                    }
+            }
+            if (b == l->ci->order[Int(0LL)]) {
+                lowererEntry(l);
+            }
+            auto range1566 = l->floatHomes[b];
+            for (Int index1567 = 0, rangeEnd1568 = length(range1566); index1567 < rangeEnd1568; ++index1567) {
+                i32 v = range1566[index1567];
+                Value* val = &f->values[v];
+                MInst in = inst(mFConst);
+                in.dst = lowererDef(l, v);
+                in.imm = val->aux;
+                in.size = typeSize(val->typ);
+                lowererEmit(l, in);
+            }
+            auto range1569 = f->blocks[b].instrs.view();
+            for (Int index1570 = 0, rangeEnd1571 = length(range1569); index1570 < rangeEnd1571; ++index1570) {
+                i32 v = range1569[index1570];
+                if (!l->deferred[v]) {
+                    lowererLowerValue(l, v);
                 }
-                lowererTerminator(l, b);
-                visits.pushBack({b, true, undo});
-                {
-                    for (i32 child = children.first[usize(b)]; child >= 0; child = children.next[usize(child)]) {
-                        visits.pushBack({child, false, 0});
-                    }
-                }
+            }
+            lowererTerminator(l, b);
+            visits.pushBack({b, true, undo});
+            for (i32 child = children.first[usize(b)]; child >= 0; child = children.next[usize(child)]) {
+                visits.pushBack({child, false, 0});
             }
         }
         lowererLinkBlocks(l);
@@ -22267,27 +21211,23 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             l->memoryEnd = off;
             off += i32(8LL);
         }
-        {
-            auto range1577 = m->globals;
-            for (Int index1578 = 0, rangeEnd1579 = length(range1577); index1578 < rangeEnd1579; ++index1578) {
-                Global g = range1577[index1578];
-                if (g.typ == V128) {
-                    off = (off + i32(15LL)) & ~i32(15LL);
-                }
-                l->globals = appendValues(l->globals, off);
+        auto range1577 = m->globals;
+        for (Int index1578 = 0, rangeEnd1579 = length(range1577); index1578 < rangeEnd1579; ++index1578) {
+            Global g = range1577[index1578];
+            if (g.typ == V128) {
+                off = (off + i32(15LL)) & ~i32(15LL);
+            }
+            l->globals = appendValues(l->globals, off);
+            off += i32(8LL);
+            if (g.typ == V128 && !g.imported) {
                 off += i32(8LL);
-                if (g.typ == V128 && !g.imported) {
-                    off += i32(8LL);
-                }
             }
         }
         off = (off + i32(15LL)) & ~i32(15LL);
-        {
-            auto range1580 = m->tables;
-            for (Int index1581 = 0, rangeEnd1582 = length(range1580); index1581 < rangeEnd1582; ++index1581) {
-                l->tables = appendValues(l->tables, off);
-                off += tableBytes;
-            }
+        auto range1580 = m->tables;
+        for (Int index1581 = 0, rangeEnd1582 = length(range1580); index1581 < rangeEnd1582; ++index1581) {
+            l->tables = appendValues(l->tables, off);
+            off += tableBytes;
         }
         l->descs = off;
         off += convert<i32>(length(m->funcs)) * descBytes;
@@ -22309,20 +21249,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void optimize(Function* f) {
         Optimizer* o = activePool->make<Optimizer>(Optimizer{f, {}, mapOf<ConstKey, i32>({}), {}});
-        {
-            auto& range1583 = f->values;
-            for (Int index1584 = 0, rangeEnd1585 = length(range1583); index1584 < rangeEnd1585; ++index1584) {
-                Int v = index1584;
-                Value* val = &f->values[v];
-                if (val->op == OpConst && val->block < i32(0LL)) {
-                    ConstKey key = ConstKey{val->typ, val->aux};
-                    {
-                        auto temporary1586 = lookupMap(o->consts, key);
-                        bool ok = temporary1586.v1;
-                        if (!ok) {
-                            setMap(o->consts, key, convert<i32>(v));
-                        }
-                    }
+        auto& range1583 = f->values;
+        for (Int index1584 = 0, rangeEnd1585 = length(range1583); index1584 < rangeEnd1585; ++index1584) {
+            Int v = index1584;
+            Value* val = &f->values[v];
+            if (val->op == OpConst && val->block < i32(0LL)) {
+                ConstKey key = ConstKey{val->typ, val->aux};
+                auto temporary1586 = lookupMap(o->consts, key);
+                bool ok = temporary1586.v1;
+                if (!ok) {
+                    setMap(o->consts, key, convert<i32>(v));
                 }
             }
         }
@@ -22345,14 +21281,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         optimizerSelectTriangles(o);
         versionMemoryLoops(f);
-        {
-            Int round = Int(0LL);
-            for (; round < Int(4LL); round++) {
-                bool changed = optimizerCleanup(o);
-                changed = optimizerTrivialParams(o) || changed;
-                if (!changed) {
-                    break;
-                }
+        Int round = Int(0LL);
+        for (; round < Int(4LL); round++) {
+            bool changed = optimizerCleanup(o);
+            changed = optimizerTrivialParams(o) || changed;
+            if (!changed) {
+                break;
             }
         }
         optimizerDeadCode(o);
@@ -22361,18 +21295,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // order ranks section ids in their required order; datacount goes before
     // code.
     static Int order(u8 id) {
-        {
-            auto switch1587 = id;
-            switch (switch1587) {
-                case u8(12LL): {
-                    return Int(10LL);
-                    break;
-                }
-                case u8(10LL):
-                case u8(11LL): {
-                    return convert<i64>(id) + Int(1LL);
-                    break;
-                }
+        auto switch1587 = id;
+        switch (switch1587) {
+            case u8(12LL): {
+                return Int(10LL);
+                break;
+            }
+            case u8(10LL):
+            case u8(11LL): {
+                return convert<i64>(id) + Int(1LL);
+                break;
             }
         }
         return convert<i64>(id);
@@ -22394,17 +21326,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         auto temporary1589 = Int(0LL);
         Int i = temporary1588;
         Int j = temporary1589;
-        {
-            for (; i < length(x) && j < length(y);) {
-                {
-                    if (x[i].to <= y[j].from) {
-                        i++;
-                    } else if (y[j].to <= x[i].from) {
-                        j++;
-                    } else {
-                        return true;
-                    }
-                }
+        for (; i < length(x) && j < length(y);) {
+            if (x[i].to <= y[j].from) {
+                i++;
+            } else if (y[j].to <= x[i].from) {
+                j++;
+            } else {
+                return true;
             }
         }
         return false;
@@ -22429,42 +21357,34 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         constexpr Int maxSteps = Int(5LL);
         constexpr Int shortestShifting = Int(50LL);
         Int i = a + Int(1LL);
-        {
-            Int j = Int(0LL);
-            for (; j < Int(5LL); j++) {
-                {
-                    for (; i < b && !data.Less(i, i - Int(1LL));) {
-                        i++;
+        Int j = Int(0LL);
+        for (; j < Int(5LL); j++) {
+            for (; i < b && !data.Less(i, i - Int(1LL));) {
+                i++;
+            }
+            if (i == b) {
+                return true;
+            }
+            if (b - a < Int(50LL)) {
+                return false;
+            }
+            data.Swap(i, i - Int(1LL));
+            if (i - a >= Int(2LL)) {
+                Int j = i - Int(1LL);
+                for (; j >= Int(1LL); j--) {
+                    if (!data.Less(j, j - Int(1LL))) {
+                        break;
                     }
+                    data.Swap(j, j - Int(1LL));
                 }
-                if (i == b) {
-                    return true;
-                }
-                if (b - a < Int(50LL)) {
-                    return false;
-                }
-                data.Swap(i, i - Int(1LL));
-                if (i - a >= Int(2LL)) {
-                    {
-                        Int j = i - Int(1LL);
-                        for (; j >= Int(1LL); j--) {
-                            if (!data.Less(j, j - Int(1LL))) {
-                                break;
-                            }
-                            data.Swap(j, j - Int(1LL));
-                        }
+            }
+            if (b - i >= Int(2LL)) {
+                Int j = i + Int(1LL);
+                for (; j < b; j++) {
+                    if (!data.Less(j, j - Int(1LL))) {
+                        break;
                     }
-                }
-                if (b - i >= Int(2LL)) {
-                    {
-                        Int j = i + Int(1LL);
-                        for (; j < b; j++) {
-                            if (!data.Less(j, j - Int(1LL))) {
-                                break;
-                            }
-                            data.Swap(j, j - Int(1LL));
-                        }
-                    }
+                    data.Swap(j, j - Int(1LL));
                 }
             }
         }
@@ -22481,25 +21401,19 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         auto temporary1593 = b - Int(1LL);
         Int i = temporary1592;
         Int j = temporary1593;
-        {
-            for (; true;) {
-                {
-                    for (; i <= j && !data.Less(a, i);) {
-                        i++;
-                    }
-                }
-                {
-                    for (; i <= j && data.Less(a, j);) {
-                        j--;
-                    }
-                }
-                if (i > j) {
-                    break;
-                }
-                data.Swap(i, j);
+        for (; true;) {
+            for (; i <= j && !data.Less(a, i);) {
                 i++;
+            }
+            for (; i <= j && data.Less(a, j);) {
                 j--;
             }
+            if (i > j) {
+                break;
+            }
+            data.Swap(i, j);
+            i++;
+            j--;
         }
         return i;
     }
@@ -22517,15 +21431,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         auto temporary1595 = b - Int(1LL);
         Int i = temporary1594;
         Int j = temporary1595;
-        {
-            for (; i <= j && data.Less(i, a);) {
-                i++;
-            }
+        for (; i <= j && data.Less(i, a);) {
+            i++;
         }
-        {
-            for (; i <= j && !data.Less(j, a);) {
-                j--;
-            }
+        for (; i <= j && !data.Less(j, a);) {
+            j--;
         }
         if (i > j) {
             data.Swap(j, a);
@@ -22534,25 +21444,19 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         data.Swap(i, j);
         i++;
         j--;
-        {
-            for (; true;) {
-                {
-                    for (; i <= j && data.Less(i, a);) {
-                        i++;
-                    }
-                }
-                {
-                    for (; i <= j && !data.Less(j, a);) {
-                        j--;
-                    }
-                }
-                if (i > j) {
-                    break;
-                }
-                data.Swap(i, j);
+        for (; true;) {
+            for (; i <= j && data.Less(i, a);) {
                 i++;
+            }
+            for (; i <= j && !data.Less(j, a);) {
                 j--;
             }
+            if (i > j) {
+                break;
+            }
+            data.Swap(i, j);
+            i++;
+            j--;
         }
         data.Swap(j, a);
         return {j, false};
@@ -22569,57 +21473,55 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         constexpr Int maxInsertion = Int(12LL);
         bool wasBalanced = true;
         bool wasPartitioned = true;
-        {
-            for (; true;) {
-                Int lengthValue = b - a;
-                if (lengthValue <= Int(12LL)) {
-                    insertionSort_func(data, a, b);
+        for (; true;) {
+            Int lengthValue = b - a;
+            if (lengthValue <= Int(12LL)) {
+                insertionSort_func(data, a, b);
+                return;
+            }
+            if (limit == Int(0LL)) {
+                heapSort_func(data, a, b);
+                return;
+            }
+            if (!wasBalanced) {
+                breakPatterns_func(data, a, b);
+                limit--;
+            }
+            auto temporary1596 = choosePivot_func(data, a, b);
+            Int pivot = temporary1596.v0;
+            SortedHint hint = temporary1596.v1;
+            if (hint == decreasingHint) {
+                reverseRange_func(data, a, b);
+                pivot = b - Int(1LL) - (pivot - a);
+                hint = increasingHint;
+            }
+            if (wasBalanced && wasPartitioned && hint == increasingHint) {
+                if (partialInsertionSort_func(data, a, b)) {
                     return;
                 }
-                if (limit == Int(0LL)) {
-                    heapSort_func(data, a, b);
-                    return;
-                }
-                if (!wasBalanced) {
-                    breakPatterns_func(data, a, b);
-                    limit--;
-                }
-                auto temporary1596 = choosePivot_func(data, a, b);
-                Int pivot = temporary1596.v0;
-                SortedHint hint = temporary1596.v1;
-                if (hint == decreasingHint) {
-                    reverseRange_func(data, a, b);
-                    pivot = b - Int(1LL) - (pivot - a);
-                    hint = increasingHint;
-                }
-                if (wasBalanced && wasPartitioned && hint == increasingHint) {
-                    if (partialInsertionSort_func(data, a, b)) {
-                        return;
-                    }
-                }
-                if (a > Int(0LL) && !data.Less(a - Int(1LL), pivot)) {
-                    Int mid = partitionEqual_func(data, a, b, pivot);
-                    a = mid;
-                    continue;
-                }
-                auto temporary1597 = partition_func(data, a, b, pivot);
-                Int mid = temporary1597.v0;
-                bool alreadyPartitioned = temporary1597.v1;
-                wasPartitioned = alreadyPartitioned;
-                auto temporary1598 = mid - a;
-                auto temporary1599 = b - mid;
-                Int leftLen = temporary1598;
-                Int rightLen = temporary1599;
-                Int balanceThreshold = lengthValue / Int(8LL);
-                if (leftLen < rightLen) {
-                    wasBalanced = leftLen >= balanceThreshold;
-                    pdqsort_func(data, a, mid, limit);
-                    a = mid + Int(1LL);
-                } else {
-                    wasBalanced = rightLen >= balanceThreshold;
-                    pdqsort_func(data, mid + Int(1LL), b, limit);
-                    b = mid;
-                }
+            }
+            if (a > Int(0LL) && !data.Less(a - Int(1LL), pivot)) {
+                Int mid = partitionEqual_func(data, a, b, pivot);
+                a = mid;
+                continue;
+            }
+            auto temporary1597 = partition_func(data, a, b, pivot);
+            Int mid = temporary1597.v0;
+            bool alreadyPartitioned = temporary1597.v1;
+            wasPartitioned = alreadyPartitioned;
+            auto temporary1598 = mid - a;
+            auto temporary1599 = b - mid;
+            Int leftLen = temporary1598;
+            Int rightLen = temporary1599;
+            Int balanceThreshold = lengthValue / Int(8LL);
+            if (leftLen < rightLen) {
+                wasBalanced = leftLen >= balanceThreshold;
+                pdqsort_func(data, a, mid, limit);
+                a = mid + Int(1LL);
+            } else {
+                wasBalanced = rightLen >= balanceThreshold;
+                pdqsort_func(data, mid + Int(1LL), b, limit);
+                b = mid;
             }
         }
     }
@@ -22627,20 +21529,18 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // readsState reports whether a value depends on mutable state, so two equal
     // instructions may produce different results.
     static bool readsState(Op op) {
-        {
-            auto switch1600 = op;
-            switch (switch1600) {
-                case OpLoad:
-                case OpMemSize:
-                case OpGlobalGet:
-                case OpTableGet:
-                case OpTableSize:
-                case OpExtract:
-                case OpParam:
-                case OpUndef: {
-                    return true;
-                    break;
-                }
+        auto switch1600 = op;
+        switch (switch1600) {
+            case OpLoad:
+            case OpMemSize:
+            case OpGlobalGet:
+            case OpTableGet:
+            case OpTableSize:
+            case OpExtract:
+            case OpParam:
+            case OpUndef: {
+                return true;
+                break;
             }
         }
         return hasEffect(op);
@@ -22669,21 +21569,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Int gi = temporary1601;
         Int xi = temporary1602;
         Slice<VReg> regs = makeSlice<VReg>(length(results));
-        {
-            auto range1603 = results;
-            for (Int index1604 = 0, rangeEnd1605 = length(range1603); index1604 < rangeEnd1605; ++index1604) {
-                Int i = index1604;
-                ValType t = range1603[index1604];
-                regs[i] = noReg;
-                {
-                    if (isFloat(t) && xi < length(resultXMMs)) {
-                        regs[i] = resultXMMs[xi];
-                        xi++;
-                    } else if (!isFloat(t) && gi < length(resultGPRs)) {
-                        regs[i] = resultGPRs[gi];
-                        gi++;
-                    }
-                }
+        auto range1603 = results;
+        for (Int index1604 = 0, rangeEnd1605 = length(range1603); index1604 < rangeEnd1605; ++index1604) {
+            Int i = index1604;
+            ValType t = range1603[index1604];
+            regs[i] = noReg;
+            if (isFloat(t) && xi < length(resultXMMs)) {
+                regs[i] = resultXMMs[xi];
+                xi++;
+            } else if (!isFloat(t) && gi < length(resultGPRs)) {
+                regs[i] = resultGPRs[gi];
+                gi++;
             }
         }
         return regs;
@@ -22692,11 +21588,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // returnsTwice tells the imports that return twice by their names, as C
     // compilers do.
     static bool returnsTwice(String name) {
-        {
-            auto switch1608 = name;
-            if (switch1608 == String("setjmp") || switch1608 == String("_setjmp") || switch1608 == String("sigsetjmp") || switch1608 == String("vfork") || switch1608 == String("fork")) {
-                return true;
-            }
+        auto switch1608 = name;
+        if (switch1608 == String("setjmp") || switch1608 == String("_setjmp") || switch1608 == String("sigsetjmp") || switch1608 == String("vfork") || switch1608 == String("fork")) {
+            return true;
         }
         return false;
     }
@@ -22705,12 +21599,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void reverseRange_func(Data data, Int a, Int b) {
         Int i = a;
         Int j = b - Int(1LL);
-        {
-            for (; i < j;) {
-                data.Swap(i, j);
-                i++;
-                j--;
-            }
+        for (; i < j;) {
+            data.Swap(i, j);
+            i++;
+            j--;
         }
     }
 
@@ -22722,15 +21614,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void rotate_func(Data data, Int a, Int m, Int b) {
         Int i = m - a;
         Int j = b - m;
-        {
-            for (; i != j;) {
-                if (i > j) {
-                    swapRange_func(data, m - i, m, j);
-                    i -= j;
-                } else {
-                    swapRange_func(data, m - i, m + j - i, i);
-                    j -= i;
-                }
+        for (; i != j;) {
+            if (i > j) {
+                swapRange_func(data, m - i, m, j);
+                i -= j;
+            } else {
+                swapRange_func(data, m - i, m + j - i, i);
+                j -= i;
             }
         }
         swapRange_func(data, m - i, m, i);
@@ -22744,13 +21634,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (length(x) != length(y)) {
             return false;
         }
-        {
-            auto range1610 = x;
-            for (Int index1611 = 0, rangeEnd1612 = length(range1610); index1611 < rangeEnd1612; ++index1611) {
-                Int i = index1611;
-                if (optimizerResolve(o, x[i]) != optimizerResolve(o, y[i])) {
-                    return false;
-                }
+        auto range1610 = x;
+        for (Int index1611 = 0, rangeEnd1612 = length(range1610); index1611 < rangeEnd1612; ++index1611) {
+            Int i = index1611;
+            if (optimizerResolve(o, x[i]) != optimizerResolve(o, y[i])) {
+                return false;
             }
         }
         return true;
@@ -22764,21 +21652,19 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static u8 scaleBits(u8 s) {
-        {
-            auto switch1613 = s;
-            switch (switch1613) {
-                case u8(2LL): {
-                    return u8(1LL);
-                    break;
-                }
-                case u8(4LL): {
-                    return u8(2LL);
-                    break;
-                }
-                case u8(8LL): {
-                    return u8(3LL);
-                    break;
-                }
+        auto switch1613 = s;
+        switch (switch1613) {
+            case u8(2LL): {
+                return u8(1LL);
+                break;
+            }
+            case u8(4LL): {
+                return u8(2LL);
+                break;
+            }
+            case u8(8LL): {
+                return u8(3LL);
+                break;
             }
         }
         return u8(0LL);
@@ -22788,13 +21674,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // argument on the edges in, into b.
     static i32 selfUses(Span<Edge*> in, Int k, i32 p) {
         i32 n = i32(0LL);
-        {
-            auto range1614 = in;
-            for (Int index1615 = 0, rangeEnd1616 = length(range1614); index1615 < rangeEnd1616; ++index1615) {
-                Edge* e = range1614[index1615];
-                if (k < length(e->args) && e->args[k] == p) {
-                    n++;
-                }
+        auto range1614 = in;
+        for (Int index1615 = 0, rangeEnd1616 = length(range1614); index1615 < rangeEnd1616; ++index1615) {
+            Edge* e = range1614[index1615];
+            if (k < length(e->args) && e->args[k] == p) {
+                n++;
             }
         }
         return n;
@@ -22805,21 +21689,19 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     template <typename Data>
     static void siftDown_func(Data data, Int lo, Int hi, Int first) {
         Int root = lo;
-        {
-            for (; true;) {
-                Int child = Int(2LL) * root + Int(1LL);
-                if (child >= hi) {
-                    break;
-                }
-                if (child + Int(1LL) < hi && data.Less(first + child, first + child + Int(1LL))) {
-                    child++;
-                }
-                if (!data.Less(first + root, first + child)) {
-                    return;
-                }
-                data.Swap(first + root, first + child);
-                root = child;
+        for (; true;) {
+            Int child = Int(2LL) * root + Int(1LL);
+            if (child >= hi) {
+                break;
             }
+            if (child + Int(1LL) < hi && data.Less(first + child, first + child + Int(1LL))) {
+                child++;
+            }
+            if (!data.Less(first + root, first + child)) {
+                return;
+            }
+            data.Swap(first + root, first + child);
+            root = child;
         }
     }
 
@@ -22838,74 +21720,64 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         auto temporary1618 = blockSize;
         Int a = temporary1617;
         Int b = temporary1618;
-        {
-            for (; b <= n;) {
-                insertionSort_func(data, a, b);
-                a = b;
-                b += blockSize;
-            }
+        for (; b <= n;) {
+            insertionSort_func(data, a, b);
+            a = b;
+            b += blockSize;
         }
         insertionSort_func(data, a, n);
-        {
-            for (; blockSize < n;) {
-                auto temporary1619 = Int(0LL);
-                auto temporary1620 = Int(2LL) * blockSize;
-                a = temporary1619;
-                b = temporary1620;
-                {
-                    for (; b <= n;) {
-                        symMerge_func(data, a, a + blockSize, b);
-                        a = b;
-                        b += Int(2LL) * blockSize;
-                    }
-                }
-                {
-                    Int m = a + blockSize;
-                    if (m < n) {
-                        symMerge_func(data, a, m, n);
-                    }
-                }
-                blockSize *= Int(2LL);
+        for (; blockSize < n;) {
+            auto temporary1619 = Int(0LL);
+            auto temporary1620 = Int(2LL) * blockSize;
+            a = temporary1619;
+            b = temporary1620;
+            for (; b <= n;) {
+                symMerge_func(data, a, a + blockSize, b);
+                a = b;
+                b += Int(2LL) * blockSize;
             }
+            Int m = a + blockSize;
+            if (m < n) {
+                symMerge_func(data, a, m, n);
+            }
+            blockSize *= Int(2LL);
         }
     }
 
     static u8 swapCC(u8 cc) {
-        {
-            auto switch1621 = cc;
-            switch (switch1621) {
-                case ccL: {
-                    return ccG;
-                    break;
-                }
-                case ccG: {
-                    return ccL;
-                    break;
-                }
-                case ccLE: {
-                    return ccGE;
-                    break;
-                }
-                case ccGE: {
-                    return ccLE;
-                    break;
-                }
-                case ccB: {
-                    return ccA;
-                    break;
-                }
-                case ccA: {
-                    return ccB;
-                    break;
-                }
-                case ccBE: {
-                    return ccAE;
-                    break;
-                }
-                case ccAE: {
-                    return ccBE;
-                    break;
-                }
+        auto switch1621 = cc;
+        switch (switch1621) {
+            case ccL: {
+                return ccG;
+                break;
+            }
+            case ccG: {
+                return ccL;
+                break;
+            }
+            case ccLE: {
+                return ccGE;
+                break;
+            }
+            case ccGE: {
+                return ccLE;
+                break;
+            }
+            case ccB: {
+                return ccA;
+                break;
+            }
+            case ccA: {
+                return ccB;
+                break;
+            }
+            case ccBE: {
+                return ccAE;
+                break;
+            }
+            case ccAE: {
+                return ccBE;
+                break;
             }
         }
         return cc;
@@ -22913,11 +21785,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     template <typename Data>
     static void swapRange_func(Data data, Int a, Int b, Int n) {
-        {
-            Int i = Int(0LL);
-            for (; i < n; i++) {
-                data.Swap(a + i, b + i);
-            }
+        Int i = Int(0LL);
+        for (; i < n; i++) {
+            data.Swap(a + i, b + i);
         }
     }
 
@@ -22945,42 +21815,34 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (m - a == Int(1LL)) {
             Int i = m;
             Int j = b;
-            {
-                for (; i < j;) {
-                    Int h = convert<i64>(shiftRight(convert<Uint>(i + j), Int(1LL)));
-                    if (data.Less(h, a)) {
-                        i = h + Int(1LL);
-                    } else {
-                        j = h;
-                    }
+            for (; i < j;) {
+                Int h = convert<i64>(shiftRight(convert<Uint>(i + j), Int(1LL)));
+                if (data.Less(h, a)) {
+                    i = h + Int(1LL);
+                } else {
+                    j = h;
                 }
             }
-            {
-                Int k = a;
-                for (; k < i - Int(1LL); k++) {
-                    data.Swap(k, k + Int(1LL));
-                }
+            Int k = a;
+            for (; k < i - Int(1LL); k++) {
+                data.Swap(k, k + Int(1LL));
             }
             return;
         }
         if (b - m == Int(1LL)) {
             Int i = a;
             Int j = m;
-            {
-                for (; i < j;) {
-                    Int h = convert<i64>(shiftRight(convert<Uint>(i + j), Int(1LL)));
-                    if (!data.Less(m, h)) {
-                        i = h + Int(1LL);
-                    } else {
-                        j = h;
-                    }
+            for (; i < j;) {
+                Int h = convert<i64>(shiftRight(convert<Uint>(i + j), Int(1LL)));
+                if (!data.Less(m, h)) {
+                    i = h + Int(1LL);
+                } else {
+                    j = h;
                 }
             }
-            {
-                Int k = m;
-                for (; k > i; k--) {
-                    data.Swap(k, k - Int(1LL));
-                }
+            Int k = m;
+            for (; k > i; k--) {
+                data.Swap(k, k - Int(1LL));
             }
             return;
         }
@@ -22996,14 +21858,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             r = m;
         }
         Int p = n - Int(1LL);
-        {
-            for (; start < r;) {
-                Int c = convert<i64>(shiftRight(convert<Uint>(start + r), Int(1LL)));
-                if (!data.Less(p - c, c)) {
-                    start = c + Int(1LL);
-                } else {
-                    r = c;
-                }
+        for (; start < r;) {
+            Int c = convert<i64>(shiftRight(convert<Uint>(start + r), Int(1LL)));
+            if (!data.Less(p - c, c)) {
+                start = c + Int(1LL);
+            } else {
+                r = c;
             }
         }
         Int end = n - start;
@@ -23023,17 +21883,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // one and leaves "." to join parts.
     static String symbolPart(String s) {
         Slice<u8> b = makeSlice<u8>(Int(0LL), length(s));
-        {
-            Int i = Int(0LL);
-            for (; i < length(s); i++) {
-                u8 c = s[i];
-                {
-                    if ((c >= u8(97LL) && c <= u8(122LL)) || (c >= u8(65LL) && c <= u8(90LL)) || (c >= u8(48LL) && c <= u8(57LL))) {
-                        b = appendValues(b, c);
-                    } else {
-                        b = appendSlice(b, fmtSprintf(String("_%02X"), c));
-                    }
-                }
+        Int i = Int(0LL);
+        for (; i < length(s); i++) {
+            u8 c = s[i];
+            if ((c >= u8(97LL) && c <= u8(122LL)) || (c >= u8(65LL) && c <= u8(90LL)) || (c >= u8(48LL) && c <= u8(57LL))) {
+                b = appendValues(b, c);
+            } else {
+                b = appendSlice(b, fmtSprintf(String("_%02X"), c));
             }
         }
         return asString(b);
@@ -23067,56 +21923,46 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             id = shiftLeft(id, Int(3LL)) | code;
             bits += Int(3LL);
         };
-        {
-            auto range1624 = t->params;
-            for (Int index1625 = 0, rangeEnd1626 = length(range1624); index1625 < rangeEnd1626; ++index1625) {
-                ValType p = range1624[index1625];
-                push(valTypeCode(p));
-            }
+        auto range1624 = t->params;
+        for (Int index1625 = 0, rangeEnd1626 = length(range1624); index1625 < rangeEnd1626; ++index1625) {
+            ValType p = range1624[index1625];
+            push(valTypeCode(p));
         }
         push(u64(0LL));
-        {
-            auto range1627 = t->results;
-            for (Int index1628 = 0, rangeEnd1629 = length(range1627); index1628 < rangeEnd1629; ++index1628) {
-                ValType r = range1627[index1628];
-                push(valTypeCode(r));
-            }
+        auto range1627 = t->results;
+        for (Int index1628 = 0, rangeEnd1629 = length(range1627); index1628 < rangeEnd1629; ++index1628) {
+            ValType r = range1627[index1628];
+            push(valTypeCode(r));
         }
         if (bits <= Int(63LL)) {
             return id;
         }
         u64 h = u64(14695981039346656037ULL);
-        {
-            auto range1630 = t->params;
-            for (Int index1631 = 0, rangeEnd1632 = length(range1630); index1631 < rangeEnd1632; ++index1631) {
-                ValType p = range1630[index1631];
-                h = (h ^ valTypeCode(p)) * u64(1099511628211LL);
-            }
+        auto range1630 = t->params;
+        for (Int index1631 = 0, rangeEnd1632 = length(range1630); index1631 < rangeEnd1632; ++index1631) {
+            ValType p = range1630[index1631];
+            h = (h ^ valTypeCode(p)) * u64(1099511628211LL);
         }
         h = (h ^ u64(7LL)) * u64(1099511628211LL);
-        {
-            auto range1633 = t->results;
-            for (Int index1634 = 0, rangeEnd1635 = length(range1633); index1634 < rangeEnd1635; ++index1634) {
-                ValType r = range1633[index1634];
-                h = (h ^ valTypeCode(r)) * u64(1099511628211LL);
-            }
+        auto range1633 = t->results;
+        for (Int index1634 = 0, rangeEnd1635 = length(range1633); index1634 < rangeEnd1635; ++index1634) {
+            ValType r = range1633[index1634];
+            h = (h ^ valTypeCode(r)) * u64(1099511628211LL);
         }
         return h | u64(9223372036854775808ULL);
     }
 
     static u8 typeSize(ValType t) {
-        {
-            auto switch1636 = t;
-            switch (switch1636) {
-                case I32:
-                case F32: {
-                    return u8(4LL);
-                    break;
-                }
-                case V128: {
-                    return u8(16LL);
-                    break;
-                }
+        auto switch1636 = t;
+        switch (switch1636) {
+            case I32:
+            case F32: {
+                return u8(4LL);
+                break;
+            }
+            case V128: {
+                return u8(16LL);
+                break;
             }
         }
         return u8(8LL);
@@ -23124,19 +21970,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static String typesPart(Slice<ValType> ts) {
         Slice<u8> b = makeSlice<u8>(length(ts));
-        {
-            auto range1637 = ts;
-            for (Int index1638 = 0, rangeEnd1639 = length(range1637); index1638 < rangeEnd1639; ++index1638) {
-                Int i = index1638;
-                ValType t = range1637[index1638];
-                auto temporary1640 = typeLetter(t);
-                u8 c = temporary1640.v0;
-                bool ok = temporary1640.v1;
-                if (!ok) {
-                    compilerError(String("unsupported: a %s at the boundary"));
-                }
-                b[i] = c;
+        auto range1637 = ts;
+        for (Int index1638 = 0, rangeEnd1639 = length(range1637); index1638 < rangeEnd1639; ++index1638) {
+            Int i = index1638;
+            ValType t = range1637[index1638];
+            auto temporary1640 = typeLetter(t);
+            u8 c = temporary1640.v0;
+            bool ok = temporary1640.v1;
+            if (!ok) {
+                compilerError(String("unsupported: a %s at the boundary"));
             }
+            b[i] = c;
         }
         return asString(b);
     }
@@ -23160,33 +22004,31 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static u64 valTypeCode(ValType t) {
-        {
-            auto switch1644 = t;
-            switch (switch1644) {
-                case I32: {
-                    return u64(1LL);
-                    break;
-                }
-                case I64: {
-                    return u64(2LL);
-                    break;
-                }
-                case F32: {
-                    return u64(3LL);
-                    break;
-                }
-                case F64: {
-                    return u64(4LL);
-                    break;
-                }
-                case V128: {
-                    return u64(5LL);
-                    break;
-                }
-                case FuncRef: {
-                    return u64(6LL);
-                    break;
-                }
+        auto switch1644 = t;
+        switch (switch1644) {
+            case I32: {
+                return u64(1LL);
+                break;
+            }
+            case I64: {
+                return u64(2LL);
+                break;
+            }
+            case F32: {
+                return u64(3LL);
+                break;
+            }
+            case F64: {
+                return u64(4LL);
+                break;
+            }
+            case V128: {
+                return u64(5LL);
+                break;
+            }
+            case FuncRef: {
+                return u64(6LL);
+                break;
             }
         }
         return u64(7LL);
@@ -23198,57 +22040,49 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         LoopBodyUses bodyUses(f);
         Map<i32, bool> done = mapOf<i32, bool>({});
-        {
-            Int round = Int(0LL);
-            for (; round < Int(64LL); round++) {
-                ObjPool cfgPool;
-                CfgInfo* ci;
-                {
-                    PoolScope analysisScope(cfgPool);
-                    ci = functionAnalyze(f);
+        Int round = Int(0LL);
+        for (; round < Int(64LL); round++) {
+            ObjPool cfgPool;
+            CfgInfo* ci;
+            {
+                PoolScope analysisScope(cfgPool);
+                ci = functionAnalyze(f);
+            }
+            bool changed = false;
+            auto range1645 = ci->order;
+            for (Int index1646 = 0, rangeEnd1647 = length(range1645); index1646 < rangeEnd1647; ++index1646) {
+                i32 h = range1645[index1646];
+                if (!ci->header[h] || done[h]) {
+                    continue;
                 }
-                bool changed = false;
+                setMap(done, h, true);
+                ObjPool loopPool;
+                MemoryLoop* loop;
                 {
-                    auto range1645 = ci->order;
-                    for (Int index1646 = 0, rangeEnd1647 = length(range1645); index1646 < rangeEnd1647; ++index1646) {
-                        i32 h = range1645[index1646];
-                        if (!ci->header[h] || done[h]) {
-                            continue;
-                        }
-                        setMap(done, h, true);
-                        ObjPool loopPool;
-                        MemoryLoop* loop;
-                        {
-                            PoolScope analysisScope(loopPool);
-                            loop = findMemoryLoop(f, ci, h);
-                            if (loop) {
-                                loop->bodyUses = &bodyUses;
-                                loop->invariantNodes = makeSlice<i32>(0);
-                                loop->copies = makeSlice<i32>(0);
-                            }
-                        }
-                        if (isNil(loop)) {
-                            continue;
-                        }
-                        {
-                            i32 fast = memoryLoopVersion(loop);
-                            if (fast >= i32(0LL)) {
-                                {
-                                    auto range1648 = loop->copies;
-                                    for (Int index1649 = 0, rangeEnd1650 = length(range1648); index1649 < rangeEnd1650; ++index1649) {
-                                        i32 h = range1648[index1649];
-                                        setMap(done, h, true);
-                                    }
-                                }
-                                changed = true;
-                                break;
-                            }
-                        }
+                    PoolScope analysisScope(loopPool);
+                    loop = findMemoryLoop(f, ci, h);
+                    if (loop) {
+                        loop->bodyUses = &bodyUses;
+                        loop->invariantNodes = makeSlice<i32>(0);
+                        loop->copies = makeSlice<i32>(0);
                     }
                 }
-                if (!changed) {
+                if (isNil(loop)) {
+                    continue;
+                }
+                i32 fast = memoryLoopVersion(loop);
+                if (fast >= i32(0LL)) {
+                    auto range1648 = loop->copies;
+                    for (Int index1649 = 0, rangeEnd1650 = length(range1648); index1649 < rangeEnd1650; ++index1649) {
+                        i32 h = range1648[index1649];
+                        setMap(done, h, true);
+                    }
+                    changed = true;
                     break;
                 }
+            }
+            if (!changed) {
+                break;
             }
         }
     }
@@ -23292,34 +22126,28 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         sym(u32(0LL), u8(3LL), u16(1LL), u64(0LL), u64(0LL));
         sym(u32(0LL), u8(3LL), u16(3LL), u64(0LL), u64(0LL));
         Int count = Int(3LL);
-        {
-            auto range1651 = oc->regions;
-            for (Int index1652 = 0, rangeEnd1653 = length(range1651); index1652 < rangeEnd1653; ++index1652) {
-                Region r = range1651[index1652];
-                if (!oc->globals[r.name]) {
-                    sym(str(r.name), u8(2LL), u16(1LL), convert<u64>(r.start), convert<u64>(r.end - r.start));
-                    count++;
-                }
+        auto range1651 = oc->regions;
+        for (Int index1652 = 0, rangeEnd1653 = length(range1651); index1652 < rangeEnd1653; ++index1652) {
+            Region r = range1651[index1652];
+            if (!oc->globals[r.name]) {
+                sym(str(r.name), u8(2LL), u16(1LL), convert<u64>(r.start), convert<u64>(r.end - r.start));
+                count++;
             }
         }
         Int firstGlobal = count;
-        {
-            auto range1654 = oc->regions;
-            for (Int index1655 = 0, rangeEnd1656 = length(range1654); index1655 < rangeEnd1656; ++index1655) {
-                Region r = range1654[index1655];
-                if (oc->globals[r.name]) {
-                    sym(str(r.name), u8(18LL), u16(1LL), convert<u64>(r.start), convert<u64>(r.end - r.start));
-                    count++;
-                }
+        auto range1654 = oc->regions;
+        for (Int index1655 = 0, rangeEnd1656 = length(range1654); index1655 < rangeEnd1656; ++index1655) {
+            Region r = range1654[index1655];
+            if (oc->globals[r.name]) {
+                sym(str(r.name), u8(18LL), u16(1LL), convert<u64>(r.start), convert<u64>(r.end - r.start));
+                count++;
             }
         }
         Int externBase = count;
-        {
-            auto range1657 = oc->externs;
-            for (Int index1658 = 0, rangeEnd1659 = length(range1657); index1658 < rangeEnd1659; ++index1658) {
-                String name = range1657[index1658];
-                sym(str(name), u8(16LL), u16(0LL), u64(0LL), u64(0LL));
-            }
+        auto range1657 = oc->externs;
+        for (Int index1658 = 0, rangeEnd1659 = length(range1657); index1658 < rangeEnd1659; ++index1658) {
+            String name = range1657[index1658];
+            sym(str(name), u8(16LL), u16(0LL), u64(0LL), u64(0LL));
         }
         auto rela = [&](Slice<u8> out, u64 at, Int symbol, u32 typ, i64 addend) mutable -> Slice<u8> {
             out = littleAppendUint64(out, at);
@@ -23327,50 +22155,40 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return littleAppendUint64(out, convert<u64>(addend));
         };
         Slice<u8> relaText = {};
-        {
-            auto range1660 = oc->relocs;
-            for (Int index1661 = 0, rangeEnd1662 = length(range1660); index1661 < rangeEnd1662; ++index1661) {
-                TextReloc r = range1660[index1661];
-                if (r.sym < i32(0LL)) {
-                    relaText = rela(relaText, convert<u64>(r.at), Int(2LL), rX86_64_PC32, r.addend);
-                } else {
-                    relaText = rela(relaText, convert<u64>(r.at), externBase + convert<i64>(r.sym), rX86_64_GOTPCREL, r.addend);
-                }
+        auto range1660 = oc->relocs;
+        for (Int index1661 = 0, rangeEnd1662 = length(range1660); index1661 < rangeEnd1662; ++index1661) {
+            TextReloc r = range1660[index1661];
+            if (r.sym < i32(0LL)) {
+                relaText = rela(relaText, convert<u64>(r.at), Int(2LL), rX86_64_PC32, r.addend);
+            } else {
+                relaText = rela(relaText, convert<u64>(r.at), externBase + convert<i64>(r.sym), rX86_64_GOTPCREL, r.addend);
             }
         }
-        {
-            auto range1663 = oc->addresses;
-            for (Int index1664 = 0, rangeEnd1665 = length(range1663); index1664 < rangeEnd1665; ++index1664) {
-                TextAddress r = range1663[index1664];
-                relaText = rela(relaText, convert<u64>(r.at), Int(1LL), rX86_64_64, convert<i64>(r.target));
-            }
+        auto range1663 = oc->addresses;
+        for (Int index1664 = 0, rangeEnd1665 = length(range1663); index1664 < rangeEnd1665; ++index1664) {
+            TextAddress r = range1663[index1664];
+            relaText = rela(relaText, convert<u64>(r.at), Int(1LL), rX86_64_64, convert<i64>(r.target));
         }
         auto temporary1666 = ehFrame(oc->regions);
         Slice<u8> eh = temporary1666.v0;
         Slice<u32> starts = temporary1666.v1;
         Slice<u8> relaEh = {};
-        {
-            auto range1667 = starts;
-            for (Int index1668 = 0, rangeEnd1669 = length(range1667); index1668 < rangeEnd1669; ++index1668) {
-                Int k = index1668;
-                u32 at = range1667[index1668];
-                relaEh = rela(relaEh, convert<u64>(at), Int(1LL), rX86_64_PC32, convert<i64>(oc->regions[k].start));
-            }
+        auto range1667 = starts;
+        for (Int index1668 = 0, rangeEnd1669 = length(range1667); index1668 < rangeEnd1669; ++index1668) {
+            Int k = index1668;
+            u32 at = range1667[index1668];
+            relaEh = rela(relaEh, convert<u64>(at), Int(1LL), rX86_64_PC32, convert<i64>(oc->regions[k].start));
         }
         Slice<u8> noteBody = littleAppendUint32({}, u32(7LL));
         noteBody = littleAppendUint32(noteBody, convert<u32>(length(note)));
         noteBody = littleAppendUint32(noteBody, u32(1LL));
         noteBody = appendValues(appendSlice(noteBody, noteOwner), u8(0LL));
-        {
-            for (; length(noteBody) % Int(4LL) != Int(0LL);) {
-                noteBody = appendValues(noteBody, u8(0LL));
-            }
+        for (; length(noteBody) % Int(4LL) != Int(0LL);) {
+            noteBody = appendValues(noteBody, u8(0LL));
         }
         noteBody = appendSlice(noteBody, note);
-        {
-            for (; length(noteBody) % Int(4LL) != Int(0LL);) {
-                noteBody = appendValues(noteBody, u8(0LL));
-            }
+        for (; length(noteBody) % Int(4LL) != Int(0LL);) {
+            noteBody = appendValues(noteBody, u8(0LL));
         }
         Slice<u8> shstrtab = {};
         auto sh = [&](String s) mutable -> u32 {
@@ -23381,12 +22199,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         };
         sh(String(""));
         Array<u32, 11> names = Array<u32, 11>{{}};
-        {
-            auto range1670 = Array<Anonymous24, 10>{{Anonymous24{Int(1LL), String(".text")}, Anonymous24{Int(2LL), String(".rela.text")}, Anonymous24{Int(3LL), String(".rodata")}, Anonymous24{Int(4LL), String(".eh_frame")}, Anonymous24{Int(5LL), String(".rela.eh_frame")}, Anonymous24{Int(6LL), String(".note.wasm2o")}, Anonymous24{Int(7LL), String(".symtab")}, Anonymous24{Int(8LL), String(".strtab")}, Anonymous24{Int(9LL), String(".shstrtab")}, Anonymous24{Int(10LL), String(".note.GNU-stack")}}};
-            for (Int index1671 = 0, rangeEnd1672 = length(range1670); index1671 < rangeEnd1672; ++index1671) {
-                Anonymous24 sec = range1670[index1671];
-                names[sec.index] = sh(sec.name);
-            }
+        auto range1670 = Array<Anonymous24, 10>{{Anonymous24{Int(1LL), String(".text")}, Anonymous24{Int(2LL), String(".rela.text")}, Anonymous24{Int(3LL), String(".rodata")}, Anonymous24{Int(4LL), String(".eh_frame")}, Anonymous24{Int(5LL), String(".rela.eh_frame")}, Anonymous24{Int(6LL), String(".note.wasm2o")}, Anonymous24{Int(7LL), String(".symtab")}, Anonymous24{Int(8LL), String(".strtab")}, Anonymous24{Int(9LL), String(".shstrtab")}, Anonymous24{Int(10LL), String(".note.GNU-stack")}}};
+        for (Int index1671 = 0, rangeEnd1672 = length(range1670); index1671 < rangeEnd1672; ++index1671) {
+            Anonymous24 sec = range1670[index1671];
+            names[sec.index] = sh(sec.name);
         }
         Array<u64, 11> offsets{};
         Array<u64, 11> sizes{};
@@ -23469,12 +22285,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static Slice<VReg> xmmRange(Int n) {
         Slice<VReg> out = makeSlice<VReg>(n);
-        {
-            auto range1673 = out;
-            for (Int index1674 = 0, rangeEnd1675 = length(range1673); index1674 < rangeEnd1675; ++index1674) {
-                Int i = index1674;
-                out[i] = XMM0 + convert<VReg>(i);
-            }
+        auto range1673 = out;
+        for (Int index1674 = 0, rangeEnd1675 = length(range1673); index1674 < rangeEnd1675; ++index1674) {
+            Int i = index1674;
+            out[i] = XMM0 + convert<VReg>(i);
         }
         return out;
     }
@@ -23793,20 +22607,18 @@ namespace {
             heap.release(current);
         }
     #if defined(__wasm__) || defined(wasm)
-        {
-            const usize oldPages = __builtin_wasm_memory_grow(0, 1);
-            require(oldPages != ~usize(0), "test memory growth");
-            auto* first = reinterpret_cast<u8*>(oldPages * pageBytes);
-            heap.adoptPages(first, pageBytes);
-            HeapPage* recycled[1];
-            for (usize i = 0; i < 1; ++i) {
-                recycled[i] = heap.takePage();
-                const uptr address = heap.pageAddress(recycled[i]);
-                require(address >= reinterpret_cast<uptr>(first) && address < reinterpret_cast<uptr>(first) + pageBytes, "I/O page recycling");
-            }
-            for (usize i = 0; i < 1; ++i) {
-                heap.releasePage(recycled[i]);
-            }
+        const usize oldPages = __builtin_wasm_memory_grow(0, 1);
+        require(oldPages != ~usize(0), "test memory growth");
+        auto* first = reinterpret_cast<u8*>(oldPages * pageBytes);
+        heap.adoptPages(first, pageBytes);
+        HeapPage* recycled[1];
+        for (usize i = 0; i < 1; ++i) {
+            recycled[i] = heap.takePage();
+            const uptr address = heap.pageAddress(recycled[i]);
+            require(address >= reinterpret_cast<uptr>(first) && address < reinterpret_cast<uptr>(first) + pageBytes, "I/O page recycling");
+        }
+        for (usize i = 0; i < 1; ++i) {
+            heap.releasePage(recycled[i]);
         }
     #endif
     }
