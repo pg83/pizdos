@@ -7166,15 +7166,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         CfgInfo* ci = activePool->make<CfgInfo>(CfgInfo{functionRpo(f), {}, {}, {}, {}});
         Int n = length(f->blocks);
         ci->rpoIndex = makeSlice<i32>(n);
-        auto range53 = ci->rpoIndex;
-        for (Int index54 = 0, rangeEnd55 = length(range53); index54 < rangeEnd55; ++index54) {
-            Int i = index54;
+        for (Int i = 0, end = length(ci->rpoIndex); i < end; ++i) {
             ci->rpoIndex[i] = -1;
         }
-        auto range56 = ci->order;
-        for (Int index57 = 0, rangeEnd58 = length(range56); index57 < rangeEnd58; ++index57) {
-            Int i = index57;
-            i32 b = range56[index57];
+        auto order = ci->order;
+        for (Int i = 0; i < length(order); ++i) {
+            i32 b = order[i];
             ci->rpoIndex[b] = convert<i32>(i);
         }
         functionComputePreds(f);
@@ -7200,20 +7197,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         // Predecessors belong to the graph even when the caller is building
         // a short-lived analysis in another pool.
         PoolScope graphScope(*f->blocks.owner);
-        auto& range59 = f->blocks;
-        for (Int index60 = 0, rangeEnd61 = length(range59); index60 < rangeEnd61; ++index60) {
-            Int i = index60;
+        for (Int i = 0, end = length(f->blocks); i < end; ++i) {
             f->blocks[i].preds = subslice(f->blocks[i].preds, 0, 0);
         }
-        auto& range62 = f->blocks;
-        for (Int index63 = 0, rangeEnd64 = length(range62); index63 < rangeEnd64; ++index63) {
-            Int i = index63;
+        for (Int i = 0, end = length(f->blocks); i < end; ++i) {
             if (f->blocks[i].dead) {
                 continue;
             }
-            auto range65 = f->blocks[i].term.edges;
-            for (Int index66 = 0, rangeEnd67 = length(range65); index66 < rangeEnd67; ++index66) {
-                Edge e = range65[index66];
+            auto edges = f->blocks[i].term.edges;
+            for (Int j = 0; j < length(edges); ++j) {
+                Edge e = edges[j];
                 f->blocks[e.block].preds = appendValues(f->blocks[e.block].preds, convert<i32>(i));
             }
         }
@@ -7288,10 +7281,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // the allocator's exact order.
     static Span<i32> mFuncHotOrder(MFunc* mf, Span<i32> order) {
         Int first = -1;
-        auto range74 = order;
-        for (Int index75 = 0, rangeEnd76 = length(range74); index75 < rangeEnd76; ++index75) {
-            Int j = index75;
-            i32 b = range74[index75];
+        for (Int j = 0; j < length(order); ++j) {
+            i32 b = order[j];
             if (mf->blocks[b].cold) {
                 first = j;
                 break;
@@ -7324,9 +7315,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         for (; j >= 0; j--) {
             out = appendValues(out, post[j]);
         }
-        auto range77 = order;
-        for (Int index78 = 0, rangeEnd79 = length(range77); index78 < rangeEnd79; ++index78) {
-            i32 b = range77[index78];
+        for (Int i = 0; i < length(order); ++i) {
+            i32 b = order[i];
             if (mf->blocks[b].cold) {
                 out = appendValues(out, b);
             }
@@ -7489,14 +7479,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 break;
             }
             case mParMove: {
-                auto range83 = mInstMoves(in);
-                for (Int index84 = 0, rangeEnd85 = length(range83); index84 < rangeEnd85; ++index84) {
-                    Int i = index84;
+                for (Int i = 0, end = length(mInstMoves(in)); i < end; ++i) {
                     cb(&mInstMoves(in)[i].src, roleUse);
                 }
-                auto range86 = mInstMoves(in);
-                for (Int index87 = 0, rangeEnd88 = length(range86); index87 < rangeEnd88; ++index87) {
-                    Int i = index87;
+                for (Int i = 0, end = length(mInstMoves(in)); i < end; ++i) {
                     cb(&mInstMoves(in)[i].dst, roleDef);
                 }
                 break;
@@ -7525,9 +7511,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             case mFSelect: {
                 cb(&in->src, roleUse);
                 cb(&in->src2, roleUse);
-                auto range89 = mInstUses(in);
-                for (Int index90 = 0, rangeEnd91 = length(range89); index90 < rangeEnd91; ++index90) {
-                    Int i = index90;
+                for (Int i = 0, end = length(mInstUses(in)); i < end; ++i) {
                     cb(&mInstUses(in)[i], roleUse);
                 }
                 cb(&in->dst, roleDef);
@@ -7540,23 +7524,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 break;
             }
         }
-        auto range92 = mInstTemps(in);
-        for (Int index93 = 0, rangeEnd94 = length(range92); index93 < rangeEnd94; ++index93) {
-            Int i = index93;
+        for (Int i = 0, end = length(mInstTemps(in)); i < end; ++i) {
             cb(&mInstTemps(in)[i], roleTemp);
         }
         if (in->op == mDiv || in->op == mCall || in->op == mCallInd || in->op == mRet || in->op == mSignExtAx || in->op == mZeroDx || in->op == mGrowMem || in->op == mCopyForward) {
             if (in->op == mDiv || in->op == mGrowMem) {
                 cb(&in->src, roleUse);
             }
-            auto range95 = mInstUses(in);
-            for (Int index96 = 0, rangeEnd97 = length(range95); index96 < rangeEnd97; ++index96) {
-                Int i = index96;
+            for (Int i = 0, end = length(mInstUses(in)); i < end; ++i) {
                 cb(&mInstUses(in)[i], roleUse);
             }
-            auto range98 = mInstDefs(in);
-            for (Int index99 = 0, rangeEnd100 = length(range98); index99 < rangeEnd100; ++index99) {
-                Int i = index99;
+            for (Int i = 0, end = length(mInstDefs(in)); i < end; ++i) {
                 cb(&mInstDefs(in)[i], roleDef);
             }
         }
@@ -7975,9 +7953,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Slice<i32> loads = {};
         Slice<i32> stores = {};
         i32 pending = -1;
-        auto range208 = f->blocks[l->header].instrs.view();
-        for (Int index209 = 0, rangeEnd210 = length(range208); index209 < rangeEnd210; ++index209) {
-            i32 v = range208[index209];
+        auto instrs = f->blocks[l->header].instrs.view();
+        for (Int i = 0; i < length(instrs); ++i) {
+            i32 v = instrs[i];
             Value* val = &f->values[v];
             switch (val->op) {
                 case OpLoad: {
@@ -8009,9 +7987,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         Edge back = {};
         Edge exit = {};
-        auto range212 = f->blocks[l->header].term.edges;
-        for (Int index213 = 0, rangeEnd214 = length(range212); index213 < rangeEnd214; ++index213) {
-            Edge e = range212[index213];
+        auto edges = f->blocks[l->header].term.edges;
+        for (Int i = 0; i < length(edges); ++i) {
+            Edge e = edges[i];
             if (e.block == l->header) {
                 back = e;
             } else {
@@ -8019,10 +7997,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         Slice<i64> steps = makeSlice<i64>(length(f->blocks[l->header].params));
-        auto range215 = f->blocks[l->header].params;
-        for (Int index216 = 0, rangeEnd217 = length(range215); index216 < rangeEnd217; ++index216) {
-            Int j = index216;
-            i32 p = range215[index216];
+        auto params = f->blocks[l->header].params;
+        for (Int j = 0; j < length(params); ++j) {
+            i32 p = params[j];
             if (f->values[p].typ != I32) {
                 return -1;
             }
@@ -8253,9 +8230,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             i32 b = f->values[v].block;
             return b >= 0 && l->members[b];
         };
-        auto& range257 = f->blocks;
-        for (Int index258 = 0, rangeEnd259 = length(range257); index258 < rangeEnd259; ++index258) {
-            Int b = index258;
+        for (Int b = 0, end = length(f->blocks); b < end; ++b) {
             // The header dominates every definition in the loop and
             // therefore every direct use. Merged exit parameters have
             // their own definitions outside the loop.
@@ -8263,12 +8238,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 continue;
             }
             Block* blk = &f->blocks[b];
-            auto range260 = blk->instrs.view();
-            for (Int index261 = 0, rangeEnd262 = length(range260); index261 < rangeEnd262; ++index261) {
-                i32 v = range260[index261];
-                auto range263 = functionArgs(f, v);
-                for (Int index264 = 0, rangeEnd265 = length(range263); index264 < rangeEnd265; ++index264) {
-                    i32 a = range263[index264];
+            auto instrs = blk->instrs.view();
+            for (Int i = 0; i < length(instrs); ++i) {
+                i32 v = instrs[i];
+                auto args = functionArgs(f, v);
+                for (Int i = 0; i < length(args); ++i) {
+                    i32 a = args[i];
                     if (inside(a)) {
                         return true;
                     }
@@ -8277,19 +8252,19 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             if ((blk->term.kind == TermIf || blk->term.kind == TermSwitch) && inside(blk->term.value)) {
                 return true;
             }
-            auto range266 = blk->term.values;
-            for (Int index267 = 0, rangeEnd268 = length(range266); index267 < rangeEnd268; ++index267) {
-                i32 v = range266[index267];
+            auto values = blk->term.values;
+            for (Int i = 0; i < length(values); ++i) {
+                i32 v = values[i];
                 if (inside(v)) {
                     return true;
                 }
             }
-            auto range269 = blk->term.edges;
-            for (Int index270 = 0, rangeEnd271 = length(range269); index270 < rangeEnd271; ++index270) {
-                Edge e = range269[index270];
-                auto range272 = e.args;
-                for (Int index273 = 0, rangeEnd274 = length(range272); index273 < rangeEnd274; ++index273) {
-                    i32 v = range272[index273];
+            auto edges = blk->term.edges;
+            for (Int i = 0; i < length(edges); ++i) {
+                Edge e = edges[i];
+                auto args = e.args;
+                for (Int i = 0; i < length(args); ++i) {
+                    i32 v = args[i];
                     if (inside(v)) {
                         return true;
                     }
@@ -8324,9 +8299,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         } else if (readsState(val->op)) {
             return false;
         }
-        auto range276 = functionArgs(l->f, v);
-        for (Int index277 = 0, rangeEnd278 = length(range276); index277 < rangeEnd278; ++index277) {
-            i32 a = range276[index277];
+        auto args = functionArgs(l->f, v);
+        for (Int i = 0; i < length(args); ++i) {
+            i32 a = args[i];
             if (!memoryLoopInvariant(l, a, depth + 1)) {
                 return false;
             }
@@ -8421,12 +8396,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
             }
             l->allowLoads = attempt == 0 && l->f->module->importedFuncs == 0 && !l->f->module->mems[0].imported;
-            auto range287 = l->order;
-            for (Int index288 = 0, rangeEnd289 = length(range287); index288 < rangeEnd289; ++index288) {
-                i32 b = range287[index288];
-                auto range290 = l->f->blocks[b].instrs.view();
-                for (Int index291 = 0, rangeEnd292 = length(range290); index291 < rangeEnd292; ++index291) {
-                    i32 v = range290[index291];
+            auto order = l->order;
+            for (Int i = 0; i < length(order); ++i) {
+                i32 b = order[i];
+                auto instrs = l->f->blocks[b].instrs.view();
+                for (Int i = 0; i < length(instrs); ++i) {
+                    i32 v = instrs[i];
                     switch (l->f->values[v].op) {
                         case OpCall:
                         case OpCallIndirect:
@@ -8458,9 +8433,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return -1;
         }
         Slice<i32> switches = {};
-        auto range294 = l->order;
-        for (Int index295 = 0, rangeEnd296 = length(range294); index295 < rangeEnd296; ++index295) {
-            i32 b = range294[index295];
+        auto order = l->order;
+        for (Int i = 0; i < length(order); ++i) {
+            i32 b = order[i];
             Term* t = &f->blocks[b].term;
             if (t->kind == TermSwitch && length(t->edges) >= 5 && t->edges[0].block != t->edges[length(t->edges) - 1].block && memoryLoopInvariant(l, t->value, 0)) {
                 switches = appendValues(switches, b);
@@ -8471,16 +8446,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         auto keyOf = [&](LoopSpan bound) mutable -> RangeKeyLoop_version570 {
             return RangeKeyLoop_version570{bound.base, bound.base2, bound.stride, bound.mul, bound.mul2, bound.factor};
         };
-        auto range297 = f->blocks[l->latch].term.edges;
-        for (Int index298 = 0, rangeEnd299 = length(range297); index298 < rangeEnd299; ++index298) {
-            Edge e = range297[index298];
+        auto edges = f->blocks[l->latch].term.edges;
+        for (Int i = 0; i < length(edges); ++i) {
+            Edge e = edges[i];
             if (e.block != l->header) {
                 continue;
             }
-            auto range300 = f->blocks[l->header].params;
-            for (Int index301 = 0, rangeEnd302 = length(range300); index301 < rangeEnd302; ++index301) {
-                Int j = index301;
-                i32 p = range300[index301];
+            auto params = f->blocks[l->header].params;
+            for (Int j = 0; j < length(params); ++j) {
+                i32 p = params[j];
                 auto temporary303 = lookupMap(l->induction, p);
                 bool known = temporary303.v1;
                 if (known) {
@@ -8493,9 +8467,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     continue;
                 }
                 LoopSpan bound = LoopSpan{l->entry.args[j], u64(1LL), {}, {}, {}, {}, {}, {}, true};
-                auto range305 = terms;
-                for (Int index306 = 0, rangeEnd307 = length(range305); index306 < rangeEnd307; ++index306) {
-                    i32 v = range305[index306];
+                for (Int i = 0; i < length(terms); ++i) {
+                    i32 v = terms[i];
                     Value* val = &f->values[v];
                     if (val->op == OpConst && bound.stride == 0 && val->aux >= 0 && val->aux <= 65536) {
                         bound.factor += convert<u64>(val->aux);
@@ -8519,9 +8492,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         auto range308 = l->order;
         for (Int index309 = 0, rangeEnd310 = length(range308); index309 < rangeEnd310; ++index309) {
             i32 b = range308[index309];
-            auto range311 = f->blocks[b].instrs.view();
-            for (Int index312 = 0, rangeEnd313 = length(range311); index312 < rangeEnd313; ++index312) {
-                i32 v = range311[index312];
+            auto instrs = f->blocks[b].instrs.view();
+            for (Int i = 0; i < length(instrs); ++i) {
+                i32 v = instrs[i];
                 Value* val = &f->values[v];
                 if ((val->op != OpLoad && val->op != OpStore) || MemKind(convert<MemKind>(val->aux2) & memProven) != MemKind(0LL)) {
                     continue;
@@ -8570,9 +8543,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         bool hasLoad = false;
-        auto range316 = l->invariantNodes;
-        for (Int index317 = 0, rangeEnd318 = length(range316); index317 < rangeEnd318; ++index317) {
-            i32 v = range316[index317];
+        auto invariantNodes = l->invariantNodes;
+        for (Int i = 0; i < length(invariantNodes); ++i) {
+            i32 v = invariantNodes[i];
             hasLoad = hasLoad || f->values[v].op == OpLoad;
         }
         if (length(proven) < 2 || length(guards) > 24 || (unboundedWrite && hasLoad)) {
@@ -8635,9 +8608,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             i32 v = range320[index321];
             Value val = f->values[v];
             Slice<i32> args = appendSlice(Slice<i32>{}, functionArgs(f, v));
-            auto range323 = args;
-            for (Int index324 = 0, rangeEnd325 = length(range323); index324 < rangeEnd325; ++index324) {
-                Int j = index324;
+            for (Int j = 0; j < length(args); ++j) {
                 args[j] = mapValue(args[j]);
             }
             CseKey key = CseKey{val.op, val.typ, val.nargs, val.aux, val.aux2, {}};
@@ -8760,9 +8731,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         f->blocks[current].term = Term{TermIf, condition, sliceOf<Edge>({entry, l->entry}), {}, {}};
-        auto range346 = f->blocks[l->preheader].term.edges;
-        for (Int index347 = 0, rangeEnd348 = length(range346); index347 < rangeEnd348; ++index347) {
-            Int j = index347;
+        for (Int j = 0, end = length(f->blocks[l->preheader].term.edges); j < end; ++j) {
             if (f->blocks[l->preheader].term.edges[j].block == l->header) {
                 f->blocks[l->preheader].term.edges[j] = Edge{guard, {}};
             }
@@ -8832,10 +8801,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 code = appendLeb(code, convert<u64>(i));
             }
         }
-        auto range349 = m->datas;
-        for (Int index350 = 0, rangeEnd351 = length(range349); index350 < rangeEnd351; ++index350) {
-            Int i = index350;
-            Data d = range349[index350];
+        auto datas = m->datas;
+        for (Int i = 0; i < length(datas); ++i) {
+            Data d = datas[i];
             if (m->batchData || d.mode != segmentActive) {
                 continue;
             }
@@ -8849,10 +8817,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             code = appendLeb(code, convert<u64>(i));
         }
         Int typ = -1;
-        auto range352 = m->types;
-        for (Int index353 = 0, rangeEnd354 = length(range352); index353 < rangeEnd354; ++index353) {
-            Int i = index353;
-            FuncType t = range352[index353];
+        auto types = m->types;
+        for (Int i = 0; i < length(types); ++i) {
+            FuncType t = types[i];
             if (length(t.params) == 0 && length(t.results) == 0) {
                 typ = i;
                 break;
@@ -9162,12 +9129,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             case OpParam: {
                 bool first = true;
-                auto range368 = r->f->blocks[val->block].preds;
-                for (Int index369 = 0, rangeEnd370 = length(range368); index369 < rangeEnd370; ++index369) {
-                    i32 p = range368[index369];
-                    auto range371 = r->f->blocks[p].term.edges;
-                    for (Int index372 = 0, rangeEnd373 = length(range371); index372 < rangeEnd373; ++index372) {
-                        Edge e = range371[index372];
+                auto preds = r->f->blocks[val->block].preds;
+                for (Int i = 0; i < length(preds); ++i) {
+                    i32 p = preds[i];
+                    auto edges = r->f->blocks[p].term.edges;
+                    for (Int i = 0; i < length(edges); ++i) {
+                        Edge e = edges[i];
                         if (e.block != val->block) {
                             continue;
                         }
@@ -9237,9 +9204,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void allocatorAllocateBlocked(Allocator* a, Interval* cur) {
         Array<i32, 32> nextUse = {};
         Array<i32, 32> blockPos = {};
-        auto range384 = allocatorCandidates(a, cur->classValue);
-        for (Int index385 = 0, rangeEnd386 = length(range384); index385 < rangeEnd386; ++index385) {
-            VReg r = range384[index385];
+        auto candidates = allocatorCandidates(a, cur->classValue);
+        for (Int i = 0; i < length(candidates); ++i) {
+            VReg r = candidates[i];
             nextUse[r] = maxPos;
             blockPos[r] = maxPos;
         }
@@ -9479,9 +9446,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // calleeSavedUsed lists the callee-saved registers the function writes.
     static Slice<VReg> allocatorCalleeSavedUsed(Allocator* a) {
         Slice<VReg> out = {};
-        auto range418 = calleeSaved;
-        for (Int index419 = 0, rangeEnd420 = length(range418); index419 < rangeEnd420; ++index419) {
-            VReg r = range418[index419];
+        for (Int i = 0; i < length(calleeSaved); ++i) {
+            VReg r = calleeSaved[i];
             if (a->used[r]) {
                 out = appendValues(out, r);
             }
@@ -9675,12 +9641,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 mf->classValue[count++] = mf->classValue[x];
             }
         }
-        auto& range441 = mf->blocks;
-        for (Int index442 = 0, rangeEnd443 = length(range441); index442 < rangeEnd443; ++index442) {
-            Int b = index442;
-            auto range444 = mf->blocks[b].insts.view();
-            for (Int index445 = 0, rangeEnd446 = length(range444); index445 < rangeEnd446; ++index445) {
-                Int i = index445;
+        for (Int b = 0, end = length(mf->blocks); b < end; ++b) {
+            for (Int i = 0, end = length(mf->blocks[b].insts.view()); i < end; ++i) {
                 MInst* in = &mf->blocks[b].insts[i];
                 mInstForEachOperand(in, [&](VReg* r, Int role) mutable -> void {
                     if (*r != noReg && !vRegIsPhys(*r)) {
@@ -9999,10 +9961,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         MFunc* mf = a->mf;
         PositionedMoves inner;
         Bitset split;
-        auto range478 = a->intervals.view();
-        for (Int index479 = 0, rangeEnd480 = length(range478); index479 < rangeEnd480; ++index479) {
-            Int x = index479;
-            Interval* it = range478[index479];
+        auto intervals = a->intervals.view();
+        for (Int j = 0; j < length(intervals); ++j) {
+            Int x = j;
+            Interval* it = intervals[j];
             if (isNil(it)) {
                 continue;
             }
@@ -10048,13 +10010,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         // An unsplit interval has one location throughout the CFG. Only
         // split registers can need a move between predecessor and successor.
         if (split.data) {
-            auto range485 = a->order.view();
-            for (Int index486 = 0, rangeEnd487 = length(range485); index486 < rangeEnd487; ++index486) {
-                i32 b = range485[index486];
+            auto order = a->order.view();
+            for (Int i = 0; i < length(order); ++i) {
+                i32 b = order[i];
                 MBlock* blk = &mf->blocks[b];
-                auto range488 = blk->succs;
-                for (Int index489 = 0, rangeEnd490 = length(range488); index489 < rangeEnd490; ++index489) {
-                    i32 s = range488[index489];
+                auto succs = blk->succs;
+                for (Int i = 0; i < length(succs); ++i) {
+                    i32 s = succs[i];
                     Slice<Move> moves = {};
                     bitsetEachIntersection(a->liveIn[s], split, [&](Int x) mutable -> void {
                         VReg r = convert<VReg>(x) + firstVirtual;
@@ -10184,12 +10146,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return;
         }
         Slice<SpillDef> defs = makeSlice<SpillDef>(a->mf->nregs);
-        auto range509 = a->order.view();
-        for (Int index510 = 0, rangeEnd511 = length(range509); index510 < rangeEnd511; ++index510) {
-            i32 b = range509[index510];
-            auto range512 = a->mf->blocks[b].insts.view();
-            for (Int index513 = 0, rangeEnd514 = length(range512); index513 < rangeEnd514; ++index513) {
-                Int i = index513;
+        auto order = a->order.view();
+        for (Int j = 0; j < length(order); ++j) {
+            i32 b = order[j];
+            for (Int j = 0, end = length(a->mf->blocks[b].insts.view()); j < end; ++j) {
+                Int i = j;
                 MInst* in = &a->mf->blocks[b].insts[i];
                 mInstForEachOperand(in, [&](VReg* r, Int role) mutable -> void {
                     if (*r == noReg || vRegIsPhys(*r) || (role & roleDef) == 0 || role == roleTemp) {
@@ -10203,10 +10164,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         Map<VReg, Int> owners = makeMap<VReg, Int>();
-        auto range515 = a->slots.view();
-        for (Int index516 = 0, rangeEnd517 = length(range515); index516 < rangeEnd517; ++index516) {
-            Int x = index516;
-            i32 slot = range515[index516];
+        auto slots = a->slots.view();
+        for (Int x = 0; x < length(slots); ++x) {
+            i32 slot = slots[x];
             if (slot >= 0 && defs[x].count == 1) {
                 setMap(owners, slotLoc(slot), x);
             }
@@ -10329,9 +10289,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             a->unhandled.initial[i].order = u32(i);
         }
         a->unhandled.nextOrder = u32(a->unhandled.initial.size());
-        auto range550 = a->fixed;
-        for (Int index551 = 0, rangeEnd552 = length(range550); index551 < rangeEnd552; ++index551) {
-            Int r = index551;
+        for (Int r = 0, end = length(a->fixed); r < end; ++r) {
             if (!isNil(a->fixed[r]) && length(a->fixed[r]->ranges) > 0) {
                 a->inactive.pushBack(a->fixed[r]);
             }
@@ -10399,19 +10357,19 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static bool allocatorTryFree(Allocator* a, Interval* cur) {
         Array<i32, 32> freeUntil = {};
-        auto range556 = allocatorCandidates(a, cur->classValue);
-        for (Int index557 = 0, rangeEnd558 = length(range556); index557 < rangeEnd558; ++index557) {
-            VReg r = range556[index557];
+        auto candidates = allocatorCandidates(a, cur->classValue);
+        for (Int i = 0; i < length(candidates); ++i) {
+            VReg r = candidates[i];
             freeUntil[r] = maxPos;
         }
-        auto range559 = a->active.view();
-        for (Int index560 = 0, rangeEnd561 = length(range559); index560 < rangeEnd561; ++index560) {
-            Interval* it = range559[index560];
+        auto active = a->active.view();
+        for (Int i = 0; i < length(active); ++i) {
+            Interval* it = active[i];
             freeUntil[it->reg] = 0;
         }
-        auto range562 = a->inactive.view();
-        for (Int index563 = 0, rangeEnd564 = length(range562); index563 < rangeEnd564; ++index563) {
-            Interval* it = range562[index563];
+        auto inactive = a->inactive.view();
+        for (Int i = 0; i < length(inactive); ++i) {
+            Interval* it = inactive[i];
             if (freeUntil[it->reg] == 0) {
                 continue;
             }
@@ -10441,9 +10399,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         if (reg == noReg) {
             VReg best = noReg;
-            auto range570 = allocatorCandidates(a, cur->classValue);
-            for (Int index571 = 0, rangeEnd572 = length(range570); index571 < rangeEnd572; ++index571) {
-                VReg r = range570[index571];
+            auto candidates = allocatorCandidates(a, cur->classValue);
+            for (Int i = 0; i < length(candidates); ++i) {
+                VReg r = candidates[i];
                 if (freeUntil[r] >= end) {
                     reg = r;
                     break;
@@ -11018,9 +10976,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (k > 0) {
             out[0].delta = a->sps[k - 1].delta;
         }
-        auto range588 = subslice(a->sps, k, length(a->sps));
-        for (Int index589 = 0, rangeEnd590 = length(range588); index589 < rangeEnd590; ++index589) {
-            SpEntry e = range588[index589];
+        auto sps = subslice(a->sps, k, length(a->sps));
+        for (Int i = 0; i < length(sps); ++i) {
+            SpEntry e = sps[i];
             if (e.pc >= end) {
                 break;
             }
@@ -11200,9 +11158,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void cfgInfoDominators(CfgInfo* ci, Function* f) {
         Int n = length(f->blocks);
         ci->idom = makeSlice<i32>(n);
-        auto range599 = ci->idom;
-        for (Int index600 = 0, rangeEnd601 = length(range599); index600 < rangeEnd601; ++index600) {
-            Int i = index600;
+        for (Int i = 0, end = length(ci->idom); i < end; ++i) {
             ci->idom[i] = -1;
         }
         i32 entry = ci->order[0];
@@ -11210,13 +11166,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         bool changed = true;
         while (changed) {
             changed = false;
-            auto range602 = subslice(ci->order, 1, length(ci->order));
-            for (Int index603 = 0, rangeEnd604 = length(range602); index603 < rangeEnd604; ++index603) {
-                i32 b = range602[index603];
+            auto order = subslice(ci->order, 1, length(ci->order));
+            for (Int i = 0; i < length(order); ++i) {
+                i32 b = order[i];
                 i32 newIdom = -1;
-                auto range605 = f->blocks[b].preds;
-                for (Int index606 = 0, rangeEnd607 = length(range605); index606 < rangeEnd607; ++index606) {
-                    i32 p = range605[index606];
+                auto preds = f->blocks[b].preds;
+                for (Int i = 0; i < length(preds); ++i) {
+                    i32 p = preds[i];
                     if (ci->idom[p] < 0) {
                         continue;
                     }
@@ -11252,18 +11208,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         ci->header = makeSlice<bool>(n);
         Slice<i32> work = {};
         Slice<i32> inLoop = makeSlice<i32>(n);
-        auto range608 = inLoop;
-        for (Int index609 = 0, rangeEnd610 = length(range608); index609 < rangeEnd610; ++index609) {
-            Int i = index609;
+        for (Int i = 0; i < length(inLoop); ++i) {
             inLoop[i] = -1;
         }
-        auto range611 = ci->order;
-        for (Int index612 = 0, rangeEnd613 = length(range611); index612 < rangeEnd613; ++index612) {
-            i32 h = range611[index612];
+        auto order = ci->order;
+        for (Int i = 0; i < length(order); ++i) {
+            i32 h = order[i];
             Slice<i32> latches = {};
-            auto range614 = f->blocks[h].preds;
-            for (Int index615 = 0, rangeEnd616 = length(range614); index615 < rangeEnd616; ++index615) {
-                i32 p = range614[index615];
+            auto preds = f->blocks[h].preds;
+            for (Int i = 0; i < length(preds); ++i) {
+                i32 p = preds[i];
                 if (ci->rpoIndex[p] >= ci->rpoIndex[h]) {
                     latches = appendValues(latches, p);
                 }
@@ -11411,10 +11365,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         i32 header = frontendNewBlock(fe);
                         c.target = header;
                         Slice<i32> vals = makeSlice<i32>(length(params));
-                        auto range623 = params;
-                        for (Int index624 = 0, rangeEnd625 = length(range623); index624 < rangeEnd625; ++index624) {
-                            Int i = index624;
-                            ValType t = range623[index624];
+                        for (Int i = 0; i < length(params); ++i) {
+                            ValType t = params[i];
                             vals[i] = frontendAddExplicit(fe, header, t);
                         }
                         frontendJump(fe, header, args);
@@ -11422,9 +11374,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         args = vals;
                     } else {
                         c.target = frontendNewBlock(fe);
-                        auto range626 = results;
-                        for (Int index627 = 0, rangeEnd628 = length(range626); index627 < rangeEnd628; ++index627) {
-                            ValType t = range626[index627];
+                        for (Int i = 0; i < length(results); ++i) {
+                            ValType t = results[i];
                             frontendAddExplicit(fe, c.target, t);
                         }
                     }
@@ -11440,9 +11391,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     Slice<i32> args = frontendPopN(fe, length(params));
                     Control c = Control{ctrlIf, params, results, length(fe->stack), {}, {}, args, {}, {}};
                     c.target = frontendNewBlock(fe);
-                    auto range630 = results;
-                    for (Int index631 = 0, rangeEnd632 = length(range630); index631 < rangeEnd632; ++index631) {
-                        ValType t = range630[index631];
+                    for (Int i = 0; i < length(results); ++i) {
+                        ValType t = results[i];
                         frontendAddExplicit(fe, c.target, t);
                     }
                     i32 then = frontendNewBlock(fe);
@@ -11493,9 +11443,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         compilerError(String("br_table too large"));
                     }
                     Slice<u32> labels = makeSlice<u32>(n + 1);
-                    auto range633 = labels;
-                    for (Int index634 = 0, rangeEnd635 = length(range633); index634 < rangeEnd635; ++index634) {
-                        Int i = index634;
+                    for (Int i = 0; i < length(labels); ++i) {
                         labels[i] = readerU32(r);
                     }
                     i32 index = frontendPop(fe);
@@ -11504,9 +11452,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     Block* blk = &fe->f->blocks[fe->cur];
                     blk->term.kind = TermSwitch;
                     blk->term.value = index;
-                    auto range636 = labels;
-                    for (Int index637 = 0, rangeEnd638 = length(range636); index637 < rangeEnd638; ++index637) {
-                        u32 l = range636[index637];
+                    for (Int i = 0; i < length(labels); ++i) {
+                        u32 l = labels[i];
                         Control* c = frontendLabel(fe, l);
                         if (length(frontendLabelTypes(fe, c)) != arity) {
                             compilerError(String("type mismatch: br_table arity"));
@@ -11998,10 +11945,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (length(t->results) == 1) {
             frontendPush(fe, v);
         } else {
-            auto range640 = t->results;
-            for (Int index641 = 0, rangeEnd642 = length(range640); index641 < rangeEnd642; ++index641) {
-                Int i = index641;
-                ValType rt = range640[index641];
+            auto results = t->results;
+            for (Int i = 0; i < length(results); ++i) {
+                ValType rt = results[i];
                 frontendPush(fe, frontendEmit(fe, OpExtract, rt, convert<i64>(i), Span<const i32>({v})));
             }
         }
@@ -12492,9 +12438,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // operands to the incoming edges.
     static void frontendResolveAliases(Frontend* fe) {
         Function* f = fe->f;
-        auto& range648 = f->blocks;
-        for (Int index649 = 0, rangeEnd650 = length(range648); index649 < rangeEnd650; ++index649) {
-            Int b = index649;
+        for (Int b = 0, end = length(f->blocks); b < end; ++b) {
             Block* blk = &f->blocks[b];
             if (blk->dead) {
                 continue;
@@ -12549,10 +12493,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         i32 entry = frontendNewBlock(fe);
         frontendSeal(fe, entry);
         fe->cur = entry;
-        auto range672 = f->typ->params;
-        for (Int index673 = 0, rangeEnd674 = length(range672); index673 < rangeEnd674; ++index673) {
-            Int i = index673;
-            ValType t = range672[index673];
+        auto params = f->typ->params;
+        for (Int i = 0; i < length(params); ++i) {
+            ValType t = params[i];
             frontendWrite(fe, convert<i32>(i), entry, frontendAddExplicit(fe, entry, t));
         }
         Int i = length(f->typ->params);
@@ -12561,9 +12504,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         i32 ret = frontendNewBlock(fe);
         fe->ctrls = appendValues(fe->ctrls, Control{ctrlFunc, {}, f->typ->results, {}, ret, -1, {}, {}, {}});
-        auto range675 = f->typ->results;
-        for (Int index676 = 0, rangeEnd677 = length(range675); index676 < rangeEnd677; ++index676) {
-            ValType t = range675[index676];
+        auto results = f->typ->results;
+        for (Int i = 0; i < length(results); ++i) {
+            ValType t = results[i];
             frontendAddExplicit(fe, ret, t);
         }
         frontendBody(fe);
@@ -12577,9 +12520,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         fe->sealed[b] = true;
         Slice<PendingPhi> pending = fe->incomplete[b];
         fe->incomplete[b] = {};
-        auto range678 = pending;
-        for (Int index679 = 0, rangeEnd680 = length(range678); index679 < rangeEnd680; ++index679) {
-            PendingPhi p = range678[index679];
+        for (Int i = 0; i < length(pending); ++i) {
+            PendingPhi p = pending[i];
             frontendAddOperands(fe, p.local, p.phi);
         }
     }
@@ -12747,9 +12689,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // itself) on every edge by that value.
     static i32 frontendTryRemoveTrivial(Frontend* fe, i32 phi, Span<const i32> ops) {
         i32 same = -1;
-        auto range684 = ops;
-        for (Int index685 = 0, rangeEnd686 = length(range684); index685 < rangeEnd686; ++index685) {
-            i32 op = range684[index685];
+        for (Int i = 0; i < length(ops); ++i) {
+            i32 op = ops[i];
             i32 arg = frontendResolve(fe, op);
             if (arg == same || arg == phi) {
                 continue;
@@ -12781,9 +12722,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void frontendWrite(Frontend* fe, i32 local, i32 b, i32 v) {
         if (isNil(fe->defs[b])) {
             fe->defs[b] = makeSlice<i32>(length(fe->locals));
-            auto range687 = fe->defs[b];
-            for (Int index688 = 0, rangeEnd689 = length(range687); index688 < rangeEnd689; ++index688) {
-                Int i = index688;
+            for (Int i = 0, end = length(fe->defs[b]); i < end; ++i) {
                 fe->defs[b][i] = -1;
             }
         }
@@ -13363,9 +13302,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // once.
     static void funcEmitterParMove(FuncEmitter* e, Span<Move> moves) {
         Slice<Move> pending = makeSlice<Move>(0, length(moves));
-        auto range705 = moves;
-        for (Int index706 = 0, rangeEnd707 = length(range705); index706 < rangeEnd707; ++index706) {
-            Move m = range705[index706];
+        for (Int i = 0; i < length(moves); ++i) {
+            Move m = moves[i];
             if (m.dst != m.src) {
                 pending = appendValues(pending, m);
             }
@@ -13399,9 +13337,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             Move m = pending[0];
             funcEmitterSwap(e, m.dst, m.src);
             pending = subslice(pending, 1, length(pending));
-            auto range711 = pending;
-            for (Int index712 = 0, rangeEnd713 = length(range711); index712 < rangeEnd713; ++index712) {
-                Int k = index712;
+            for (Int k = 0, end = length(pending); k < end; ++k) {
                 auto switch714 = pending[k].src;
                 if (switch714 == m.dst) {
                     pending[k].src = m.src;
@@ -14275,16 +14211,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Function* f = l->f;
         l->uses.resize(f->values.size());
         l->uses.fill(0);
-        auto range759 = l->ci->order;
-        for (Int index760 = 0, rangeEnd761 = length(range759); index760 < rangeEnd761; ++index760) {
-            i32 b = range759[index760];
+        auto order = l->ci->order;
+        for (Int i = 0; i < length(order); ++i) {
+            i32 b = order[i];
             Block* blk = &f->blocks[b];
-            auto range762 = blk->instrs.view();
-            for (Int index763 = 0, rangeEnd764 = length(range762); index763 < rangeEnd764; ++index763) {
-                i32 v = range762[index763];
-                auto range765 = functionArgs(f, v);
-                for (Int index766 = 0, rangeEnd767 = length(range765); index766 < rangeEnd767; ++index766) {
-                    i32 a = range765[index766];
+            auto instrs = blk->instrs.view();
+            for (Int i = 0; i < length(instrs); ++i) {
+                i32 v = instrs[i];
+                auto args = functionArgs(f, v);
+                for (Int i = 0; i < length(args); ++i) {
+                    i32 a = args[i];
                     l->uses[a]++;
                 }
             }
@@ -14292,17 +14228,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             if (t->kind == TermIf || t->kind == TermSwitch) {
                 l->uses[t->value]++;
             }
-            auto range768 = t->values;
-            for (Int index769 = 0, rangeEnd770 = length(range768); index769 < rangeEnd770; ++index769) {
-                i32 v = range768[index769];
+            auto values = t->values;
+            for (Int i = 0; i < length(values); ++i) {
+                i32 v = values[i];
                 l->uses[v]++;
             }
-            auto range771 = t->edges;
-            for (Int index772 = 0, rangeEnd773 = length(range771); index772 < rangeEnd773; ++index772) {
-                Edge e = range771[index772];
-                auto range774 = e.args;
-                for (Int index775 = 0, rangeEnd776 = length(range774); index775 < rangeEnd776; ++index775) {
-                    i32 a = range774[index775];
+            auto edges = t->edges;
+            for (Int i = 0; i < length(edges); ++i) {
+                Edge e = edges[i];
+                auto args = e.args;
+                for (Int i = 0; i < length(args); ++i) {
+                    i32 a = args[i];
                     l->uses[a]++;
                 }
             }
@@ -14634,10 +14570,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         Slice<i32> params = l->f->blocks[e->block].params;
         MInst in = inst(mParMove);
-        auto range778 = e->args;
-        for (Int index779 = 0, rangeEnd780 = length(range778); index779 < rangeEnd780; ++index779) {
-            Int i = index779;
-            i32 a = range778[index779];
+        auto args = e->args;
+        for (Int i = 0; i < length(args); ++i) {
+            i32 a = args[i];
             VReg src = lowererUse(l, a);
             VReg dst = l->vregs[params[i]];
             if (src != dst) {
@@ -14664,9 +14599,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Int xi = temporary782;
         Int stack = 0;
         MInst pm = inst(mParMove);
-        auto range783 = params;
-        for (Int index784 = 0, rangeEnd785 = length(range783); index784 < rangeEnd785; ++index784) {
-            i32 p = range783[index784];
+        for (Int i = 0; i < length(params); ++i) {
+            i32 p = params[i];
             ValType t = f->values[p].typ;
             VReg r = l->vregs[p];
             if (isFloat(t)) {
@@ -14699,10 +14633,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Function* f = l->f;
         Block* blk = &f->blocks[f->values[call].block];
         Slice<i32> out = {};
-        auto range786 = blk->instrs.view();
-        for (Int index787 = 0, rangeEnd788 = length(range786); index787 < rangeEnd788; ++index787) {
-            Int i = index787;
-            i32 v = range786[index787];
+        auto instrs = blk->instrs.view();
+        for (Int i = 0; i < length(instrs); ++i) {
+            i32 v = instrs[i];
             if (v != call) {
                 continue;
             }
@@ -14727,17 +14660,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         l->rawTrunc.resize(f->values.size());
         l->rawTrunc.fill(false);
         Slice<i32> user = makeSlice<i32>(length(f->values));
-        auto range792 = user;
-        for (Int index793 = 0, rangeEnd794 = length(range792); index793 < rangeEnd794; ++index793) {
-            Int v = index793;
+        for (Int v = 0; v < length(user); ++v) {
             user[v] = -1;
         }
-        auto range795 = l->ci->order;
-        for (Int index796 = 0, rangeEnd797 = length(range795); index796 < rangeEnd797; ++index796) {
-            i32 b = range795[index796];
-            auto range798 = f->blocks[b].instrs.view();
-            for (Int index799 = 0, rangeEnd800 = length(range798); index799 < rangeEnd800; ++index799) {
-                i32 v = range798[index799];
+        auto order = l->ci->order;
+        for (Int i = 0; i < length(order); ++i) {
+            i32 b = order[i];
+            auto instrs = f->blocks[b].instrs.view();
+            for (Int i = 0; i < length(instrs); ++i) {
+                i32 v = instrs[i];
                 auto range801 = functionArgs(f, v);
                 for (Int index802 = 0, rangeEnd803 = length(range801); index802 < rangeEnd803; ++index802) {
                     i32 a = range801[index802];
@@ -14745,9 +14676,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
             }
         }
-        auto& range804 = f->values;
-        for (Int index805 = 0, rangeEnd806 = length(range804); index805 < rangeEnd806; ++index805) {
-            Int v = index805;
+        for (Int v = 0, end = length(f->values); v < end; ++v) {
             Value* val = &f->values[v];
             if ((val->op != OpTruncSatS && val->op != OpTruncSatU) || val->block < 0 || l->ci->rpoIndex[val->block] < 0 || l->uses[v] == 0) {
                 continue;
@@ -14922,13 +14851,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // linkBlocks fills successor and predecessor lists from the branches.
     static void lowererLinkBlocks(Lowerer* l) {
         MFunc* mf = l->mf;
-        auto& range811 = mf->blocks;
-        for (Int index812 = 0, rangeEnd813 = length(range811); index812 < rangeEnd813; ++index812) {
-            Int b = index812;
+        for (Int b = 0, end = length(mf->blocks); b < end; ++b) {
             MBlock* blk = &mf->blocks[b];
-            auto range814 = blk->insts.view();
-            for (Int index815 = 0, rangeEnd816 = length(range814); index815 < rangeEnd816; ++index815) {
-                Int i = index815;
+            for (Int i = 0, end = length(blk->insts.view()); i < end; ++i) {
                 MInst* in = &blk->insts[i];
                 switch (in->op) {
                     case mJmp:
@@ -14937,9 +14862,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         break;
                     }
                     case mSwitch: {
-                        auto range818 = mInstTable(in);
-                        for (Int index819 = 0, rangeEnd820 = length(range818); index819 < rangeEnd820; ++index819) {
-                            i32 t = range818[index819];
+                        auto table = mInstTable(in);
+                        for (Int i = 0; i < length(table); ++i) {
+                            i32 t = table[i];
                             blk->succs = appendUnique(blk->succs, t);
                         }
                         break;
@@ -14947,12 +14872,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
             }
         }
-        auto& range821 = mf->blocks;
-        for (Int index822 = 0, rangeEnd823 = length(range821); index822 < rangeEnd823; ++index822) {
-            Int b = index822;
-            auto range824 = mf->blocks[b].succs;
-            for (Int index825 = 0, rangeEnd826 = length(range824); index825 < rangeEnd826; ++index825) {
-                i32 s = range824[index825];
+        for (Int b = 0, end = length(mf->blocks); b < end; ++b) {
+            auto succs = mf->blocks[b].succs;
+            for (Int i = 0; i < length(succs); ++i) {
+                i32 s = succs[i];
                 mf->blocks[s].preds = appendValues(mf->blocks[s].preds, convert<i32>(b));
             }
         }
@@ -15362,9 +15285,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Function* f = l->f;
         l->deferred.resize(f->values.size());
         l->deferred.fill(false);
-        auto range830 = l->ci->order;
-        for (Int index831 = 0, rangeEnd832 = length(range830); index831 < rangeEnd832; ++index831) {
-            i32 b = range830[index831];
+        auto order = l->ci->order;
+        for (Int j = 0; j < length(order); ++j) {
+            i32 b = order[j];
             Block* blk = &f->blocks[b];
             if (blk->term.kind == TermIf) {
                 i32 c = blk->term.value;
@@ -15372,9 +15295,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     l->deferred[c] = true;
                 }
             }
-            auto range833 = blk->instrs.view();
-            for (Int index834 = 0, rangeEnd835 = length(range833); index834 < rangeEnd835; ++index834) {
-                i32 v = range833[index834];
+            auto instrs = blk->instrs.view();
+            for (Int j = 0; j < length(instrs); ++j) {
+                i32 v = instrs[j];
                 Value* val = &f->values[v];
                 if (val->op == OpAdd) {
                     Span<i32> args = functionArgs(f, v);
@@ -15534,9 +15457,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // outgoing makes room for a call's stack arguments and results.
     static void lowererOutgoing(Lowerer* l, Int stackArgs, Slice<VReg> regs) {
         Int n = stackArgs;
-        auto range845 = regs;
-        for (Int index846 = 0, rangeEnd847 = length(range845); index846 < rangeEnd847; ++index846) {
-            VReg r = range845[index846];
+        for (Int i = 0; i < length(regs); ++i) {
+            VReg r = regs[i];
             if (r == noReg) {
                 n++;
             }
@@ -15551,10 +15473,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static Tuple2<Slice<VReg>, Int> lowererPlaceArgs(Lowerer* l, Span<const i32> args) {
         Slice<VReg> regs = makeSlice<VReg>(length(args));
         Slice<ValType> types = makeSlice<ValType>(length(args));
-        auto range848 = args;
-        for (Int index849 = 0, rangeEnd850 = length(range848); index849 < rangeEnd850; ++index849) {
-            Int i = index849;
-            i32 a = range848[index849];
+        for (Int i = 0; i < length(args); ++i) {
+            i32 a = args[i];
             regs[i] = lowererUse(l, a);
             types[i] = l->f->values[a].typ;
         }
@@ -15567,9 +15487,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void lowererPlaceFloatConstants(Lowerer* l) {
         Function* f = l->f;
         Slice<i32> homes = makeSlice<i32>(length(f->values));
-        auto range851 = homes;
-        for (Int index852 = 0, rangeEnd853 = length(range851); index852 < rangeEnd853; ++index852) {
-            Int v = index852;
+        for (Int v = 0, end = length(homes); v < end; ++v) {
             homes[v] = -1;
         }
         auto use = [&](i32 b, i32 v) mutable -> void {
@@ -15583,30 +15501,30 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 homes[v] = cfgInfoIntersect(l->ci, homes[v], b);
             }
         };
-        auto range854 = l->ci->order;
-        for (Int index855 = 0, rangeEnd856 = length(range854); index855 < rangeEnd856; ++index855) {
-            i32 b = range854[index855];
+        auto order = l->ci->order;
+        for (Int i = 0; i < length(order); ++i) {
+            i32 b = order[i];
             Block* blk = &f->blocks[b];
-            auto range857 = blk->instrs.view();
-            for (Int index858 = 0, rangeEnd859 = length(range857); index858 < rangeEnd859; ++index858) {
-                i32 v = range857[index858];
-                auto range860 = functionArgs(f, v);
-                for (Int index861 = 0, rangeEnd862 = length(range860); index861 < rangeEnd862; ++index861) {
-                    i32 a = range860[index861];
+            auto instrs = blk->instrs.view();
+            for (Int i = 0; i < length(instrs); ++i) {
+                i32 v = instrs[i];
+                auto args = functionArgs(f, v);
+                for (Int i = 0; i < length(args); ++i) {
+                    i32 a = args[i];
                     use(b, a);
                 }
             }
-            auto range863 = blk->term.values;
-            for (Int index864 = 0, rangeEnd865 = length(range863); index864 < rangeEnd865; ++index864) {
-                i32 v = range863[index864];
+            auto values = blk->term.values;
+            for (Int i = 0; i < length(values); ++i) {
+                i32 v = values[i];
                 use(b, v);
             }
-            auto range866 = blk->term.edges;
-            for (Int index867 = 0, rangeEnd868 = length(range866); index867 < rangeEnd868; ++index867) {
-                Edge e = range866[index867];
-                auto range869 = e.args;
-                for (Int index870 = 0, rangeEnd871 = length(range869); index870 < rangeEnd871; ++index870) {
-                    i32 v = range869[index870];
+            auto edges = blk->term.edges;
+            for (Int i = 0; i < length(edges); ++i) {
+                Edge e = edges[i];
+                auto args = e.args;
+                for (Int i = 0; i < length(args); ++i) {
+                    i32 v = args[i];
                     use(b, v);
                 }
             }
@@ -15638,10 +15556,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Int xi = temporary876;
         Int stack = temporary877;
         MInst pm = inst(mParMove);
-        auto range878 = regs;
-        for (Int index879 = 0, rangeEnd880 = length(range878); index879 < rangeEnd880; ++index879) {
-            Int i = index879;
-            VReg r = range878[index879];
+        for (Int i = 0; i < length(regs); ++i) {
+            VReg r = regs[i];
             ValType t = types[i];
             if (isFloat(t)) {
                 if (xi < length(argXMMs)) {
@@ -16009,14 +15925,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             dsts = sliceOf<VReg>({lowererDef(l, v)});
         } else {
             dsts = makeSlice<VReg>(length(results));
-            auto range889 = dsts;
-            for (Int index890 = 0, rangeEnd891 = length(range889); index890 < rangeEnd891; ++index890) {
-                Int i = index890;
+            for (Int i = 0, end = length(dsts); i < end; ++i) {
                 dsts[i] = noReg;
             }
-            auto range892 = lowererExtracts(l, v);
-            for (Int index893 = 0, rangeEnd894 = length(range892); index893 < rangeEnd894; ++index893) {
-                i32 user = range892[index893];
+            auto extracts = lowererExtracts(l, v);
+            for (Int i = 0; i < length(extracts); ++i) {
+                i32 user = extracts[i];
                 dsts[l->f->values[user].aux] = lowererDef(l, user);
             }
         }
@@ -16124,9 +16038,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 MInst in = inst(mSwitch);
                 in.src = lowererUse(l, t->value);
                 mInstExtra(&in)->temps.assign(Span<const VReg>({mFuncNewReg(l->mf, classGPR)}));
-                auto range901 = t->edges;
-                for (Int index902 = 0, rangeEnd903 = length(range901); index902 < rangeEnd903; ++index902) {
-                    Int i = index902;
+                for (Int i = 0, end = length(t->edges); i < end; ++i) {
                     mInstExtra(&in)->table.pushBack(lowererEdgeBlock(l, b, i));
                 }
                 if (length(mInstTable(&in)) >= 5 && mInstTable(&in)[0] != mInstTable(&in)[length(mInstTable(&in)) - 1]) {
@@ -16162,10 +16074,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 Slice<VReg> regs = resultRegs(results);
                 MInst pm = inst(mParMove);
                 Int slot = 0;
-                auto range909 = t->values;
-                for (Int index910 = 0, rangeEnd911 = length(range909); index910 < rangeEnd911; ++index910) {
-                    Int i = index910;
-                    i32 v = range909[index910];
+                auto values = t->values;
+                for (Int i = 0; i < length(values); ++i) {
+                    i32 v = values[i];
                     if (regs[i] != noReg) {
                         mInstExtra(&pm)->moves.pushBack(Move{regs[i], lowererUse(l, v)});
                         continue;
@@ -16316,9 +16227,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     }
                     AddressExpression expr = addressExpressionsOf(ranges, in.addressValue, 0);
                     TailRangeGroup* group = {};
-                    auto range925 = active[expr.terms];
-                    for (Int index926 = 0, rangeEnd927 = length(range925); index926 < rangeEnd927; ++index926) {
-                        TailRangeGroup* prior = range925[index926];
+                    auto terms = active[expr.terms];
+                    for (Int i = 0; i < length(terms); ++i) {
+                        TailRangeGroup* prior = terms[i];
                         u64 delta = convert<u64>(expr.offset - prior->expr.offset);
                         if (delta + convert<u64>(in.imm) <= l->m->memoryTail) {
                             group = prior;
@@ -16341,9 +16252,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         continue;
                     }
                     selected = appendValues(selected, group);
-                    auto range931 = group->checks;
-                    for (Int index932 = 0, rangeEnd933 = length(range931); index932 < rangeEnd933; ++index932) {
-                        Int j = range931[index932];
+                    auto checks = group->checks;
+                    for (Int i = 0; i < length(checks); ++i) {
+                        Int j = checks[i];
                         skip[j] = true;
                     }
                 }
@@ -16379,9 +16290,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     Slice<i32> guards = makeSlice<i32>(length(region.groups));
                     Slice<i32> fast = makeSlice<i32>(length(region.groups));
                     Slice<i32> cold = makeSlice<i32>(length(region.groups));
-                    auto range940 = region.groups;
-                    for (Int index941 = 0, rangeEnd942 = length(range940); index941 < rangeEnd942; ++index941) {
-                        Int j = index941;
+                    for (Int j = 0, end = length(region.groups); j < end; ++j) {
                         guards[j] = convert<i32>(length(mf->blocks));
                         mf->blocks.pushBack(MBlock{{}, {}, {}, original.depth, -1, {}});
                         fast[j] = convert<i32>(length(mf->blocks));
@@ -16470,14 +16379,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         if (changed) {
-            auto& range955 = mf->blocks;
-            for (Int index956 = 0, rangeEnd957 = length(range955); index956 < rangeEnd957; ++index956) {
-                Int b = index956;
+            for (Int b = 0, end = length(mf->blocks); b < end; ++b) {
                 mf->blocks[b].preds = {};
             }
-            auto& range958 = mf->blocks;
-            for (Int index959 = 0, rangeEnd960 = length(range958); index959 < rangeEnd960; ++index959) {
-                Int b = index959;
+            for (Int b = 0, end = length(mf->blocks); b < end; ++b) {
                 auto range961 = mf->blocks[b].succs;
                 for (Int index962 = 0, rangeEnd963 = length(range961); index962 < rangeEnd963; ++index962) {
                     i32 succ = range961[index962];
@@ -16502,9 +16407,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     jump.target = succ;
                     mf->blocks.pushBack(MBlock{Vec<MInst>({jump}), sliceOf<i32>({succ}), sliceOf<i32>({convert<i32>(b)}), mf->blocks[b].depth, -1, mf->blocks[b].cold || mf->blocks[succ].cold});
                     mf->blocks[b].succs[j] = edge;
-                    auto range967 = mf->blocks[b].insts.view();
-                    for (Int index968 = 0, rangeEnd969 = length(range967); index968 < rangeEnd969; ++index968) {
-                        Int k = index968;
+                    for (Int k = 0, end = length(mf->blocks[b].insts.view()); k < end; ++k) {
                         MInst* in = &mf->blocks[b].insts[k];
                         switch (in->op) {
                             case mJmp:
@@ -16515,9 +16418,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                                 break;
                             }
                             case mSwitch: {
-                                auto range971 = mInstTable(in);
-                                for (Int index972 = 0, rangeEnd973 = length(range971); index972 < rangeEnd973; ++index972) {
-                                    Int t = index972;
+                                for (Int t = 0, end = length(mInstTable(in)); t < end; ++t) {
                                     if (mInstTable(in)[t] == succ) {
                                         mInstTable(in)[t] = edge;
                                     }
@@ -16526,10 +16427,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             }
                         }
                     }
-                    auto range974 = mf->blocks[succ].preds;
-                    for (Int index975 = 0, rangeEnd976 = length(range974); index975 < rangeEnd976; ++index975) {
-                        Int k = index975;
-                        i32 pred = range974[index975];
+                    auto preds = mf->blocks[succ].preds;
+                    for (Int k = 0; k < length(preds); ++k) {
+                        i32 pred = preds[k];
                         if (pred == convert<i32>(b)) {
                             mf->blocks[succ].preds[k] = edge;
                         }
@@ -16576,9 +16476,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         objCodeAddBlob(oc, mask(u64(2147483647LL), u64(0LL)), 16);
         objCodeAddBlob(oc, mask(u64(9223372036854775808ULL), u64(0LL)), 16);
         objCodeAddBlob(oc, mask(u64(9223372036854775807LL), u64(0LL)), 16);
-        auto range977 = oc->m->datas;
-        for (Int index978 = 0, rangeEnd979 = length(range977); index978 < rangeEnd979; ++index978) {
-            Data d = range977[index978];
+        auto datas = oc->m->datas;
+        for (Int i = 0; i < length(datas); ++i) {
+            Data d = datas[i];
             objCodeAddBlob(oc, d.bytes, 1);
         }
     }
@@ -16636,32 +16536,30 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 meta->memory->profileFuncs = convert<u32>(length(m->funcs));
             }
         }
-        auto range980 = m->tables;
-        for (Int index981 = 0, rangeEnd982 = length(range980); index981 < rangeEnd982; ++index981) {
-            Int i = index981;
-            Table t = range980[index981];
+        auto tables = m->tables;
+        for (Int i = 0; i < length(tables); ++i) {
+            Table t = tables[i];
             u64 max = u64(4294967295LL);
             if (t.limits.hasMax) {
                 max = t.limits.max;
             }
             meta->tables = appendValues(meta->tables, TableMeta{convert<u32>(lay->tables[i]), t.limits.min, max, t.imported});
         }
-        auto range983 = m->globals;
-        for (Int index984 = 0, rangeEnd985 = length(range983); index984 < rangeEnd985; ++index984) {
-            Int i = index984;
-            Global g = range983[index984];
+        auto globals = m->globals;
+        for (Int i = 0; i < length(globals); ++i) {
+            Global g = globals[i];
             meta->globals = appendValues(meta->globals, GlobalMeta{convert<u32>(lay->globals[i]), g.typ, g.mutableValue, g.imported});
         }
-        auto range986 = m->imports;
-        for (Int index987 = 0, rangeEnd988 = length(range986); index987 < rangeEnd988; ++index987) {
-            Import imp = range986[index987];
+        auto imports = m->imports;
+        for (Int i = 0; i < length(imports); ++i) {
+            Import imp = imports[i];
             if (imp.kind != externFunc) {
                 meta->imports = appendValues(meta->imports, ImportMeta{imp.kind, imp.module, imp.name, imp.index, {}, {}, {}});
             }
         }
-        auto range989 = m->exports;
-        for (Int index990 = 0, rangeEnd991 = length(range989); index990 < rangeEnd991; ++index990) {
-            Export e = range989[index990];
+        auto exports = m->exports;
+        for (Int i = 0; i < length(exports); ++i) {
+            Export e = exports[i];
             if (e.kind != externFunc) {
                 meta->exports = appendValues(meta->exports, ExportMeta{e.kind, e.name, e.index, {}, {}, {}});
             }
@@ -16700,26 +16598,22 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             asmAluRR(a, aluXor, 4, RAX, RAX);
             asmPush(a, RAX);
         }
-        auto range992 = e->pushes;
-        for (Int index993 = 0, rangeEnd994 = length(range992); index993 < rangeEnd994; ++index993) {
-            VReg r = range992[index993];
+        auto pushes = e->pushes;
+        for (Int i = 0; i < length(pushes); ++i) {
+            VReg r = pushes[i];
             asmPush(a, r);
         }
         if (e->frame > 0) {
             asmAluRI(a, aluSub, 8, RSP, convert<i64>(e->frame));
         }
         e->blockAt = makeSlice<i32>(length(mf->blocks));
-        auto range995 = e->blockAt;
-        for (Int index996 = 0, rangeEnd997 = length(range995); index996 < rangeEnd997; ++index996) {
-            Int i = index996;
+        for (Int i = 0, end = length(e->blockAt); i < end; ++i) {
             e->blockAt[i] = -1;
         }
         Span<i32> order = mFuncHotOrder(mf, al->order.view());
         Slice<Int> positions = makeSlice<Int>(length(mf->blocks));
-        auto range998 = order;
-        for (Int index999 = 0, rangeEnd1000 = length(range998); index999 < rangeEnd1000; ++index999) {
-            Int j = index999;
-            i32 b = range998[index999];
+        for (Int j = 0; j < length(order); ++j) {
+            i32 b = order[j];
             positions[b] = j;
         }
         // A block of silent instructions and a jump is not emitted: jumps to
@@ -16782,10 +16676,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
             }
         }
-        auto range1001 = order;
-        for (Int index1002 = 0, rangeEnd1003 = length(range1001); index1002 < rangeEnd1003; ++index1002) {
-            Int i = index1002;
-            i32 b = range1001[index1002];
+        for (Int i = 0; i < length(order); ++i) {
+            i32 b = order[i];
             asmSetSP(a, e->body);
             if (e->forward[usize(b)] >= 0) {
                 continue;
@@ -16806,9 +16698,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             objCodeSlowPath(oc, slow, start);
         }
         Map<Array<i64, 2>, i32> stubs = mapOf<Array<i64, 2>, i32>({});
-        auto range1007 = e->traps;
-        for (Int index1008 = 0, rangeEnd1009 = length(range1007); index1008 < rangeEnd1009; ++index1008) {
-            TrapFixup t = range1007[index1008];
+        auto traps = e->traps;
+        for (Int i = 0; i < length(traps); ++i) {
+            TrapFixup t = traps[i];
             Array<i64, 2> key = Array<i64, 2>{{t.code, convert<i64>(t.sp)}};
             auto temporary1010 = lookupMap(stubs, key);
             i32 at = temporary1010.v0;
@@ -16826,17 +16718,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             JumpFixup j = range1011[index1012];
             asmPatch32(a, j.at, e->blockAt[j.block]);
         }
-        auto range1014 = e->tables;
-        for (Int index1015 = 0, rangeEnd1016 = length(range1014); index1015 < rangeEnd1016; ++index1015) {
-            TableFixup t = range1014[index1015];
+        auto tables = e->tables;
+        for (Int i = 0; i < length(tables); ++i) {
+            TableFixup t = tables[i];
             while (length(a->buf) % Int(8LL) != Int(0LL)) {
                 asmBytes(a, {u8(u8(204LL))});
             }
             i32 base = asmPos(a);
             asmPatch32(a, t.lea, base);
-            auto range1017 = t.table;
-            for (Int index1018 = 0, rangeEnd1019 = length(range1017); index1018 < rangeEnd1019; ++index1018) {
-                i32 b = range1017[index1018];
+            auto table = t.table;
+            for (Int i = 0; i < length(table); ++i) {
+                i32 b = table[i];
                 oc->addresses = appendValues(oc->addresses, TextAddress{asmPos(a), e->blockAt[funcEmitterTarget(e, b)]});
                 asmU64(a, 0);
             }
@@ -16853,9 +16745,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // exportThunks gives every exported function a thunk Go calls, global.
     static void objCodeExportThunks(ObjCode* oc) {
         Module* m = oc->m;
-        auto range1020 = m->exports;
-        for (Int index1021 = 0, rangeEnd1022 = length(range1020); index1021 < rangeEnd1022; ++index1021) {
-            Export e = range1020[index1021];
+        auto exports = m->exports;
+        for (Int i = 0; i < length(exports); ++i) {
+            Export e = exports[i];
             if (e.kind == externFunc) {
                 FuncType* t = moduleFuncType(m, e.index);
                 String sym = exportSymbol(e.name, t);
@@ -17020,9 +16912,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         i32 slow = objCodeStackCheck(oc, total, RAX);
         asmPush(a, RBP);
         asmMovRR(a, 8, RBP, RSP);
-        auto range1036 = saved;
-        for (Int index1037 = 0, rangeEnd1038 = length(range1036); index1037 < rangeEnd1038; ++index1037) {
-            VReg r = range1036[index1037];
+        for (Int i = 0; i < length(saved); ++i) {
+            VReg r = saved[i];
             asmPush(a, r);
         }
         if (g.size > 0) {
@@ -17032,10 +16923,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (record) {
             objCodeRecordFrame(oc);
         }
-        auto range1039 = params;
-        for (Int index1040 = 0, rangeEnd1041 = length(range1039); index1040 < rangeEnd1041; ++index1040) {
-            Int i = index1040;
-            ValType t = range1039[index1040];
+        for (Int i = 0; i < length(params); ++i) {
+            ValType t = params[i];
             GoLoc dst = g.params[i];
             if (pregs[i] != noReg && dst.reg == pregs[i]) {
             } else if (pregs[i] == noReg && dst.reg != noReg) {
@@ -17049,10 +16938,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         asmMovRR(a, 8, RAX, ctxReg);
         objCodeCallGo(oc, sym);
-        auto range1044 = results;
-        for (Int index1045 = 0, rangeEnd1046 = length(range1044); index1045 < rangeEnd1046; ++index1045) {
-            Int i = index1045;
-            ValType t = range1044[index1045];
+        for (Int i = 0; i < length(results); ++i) {
+            ValType t = results[i];
             GoLoc src = g.results[i];
             if (rregs[i] != noReg && src.reg == rregs[i]) {
                 if (t == I32) {
@@ -17104,9 +16991,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // as their callers keep no token.
     static void objCodeImportAdapters(ObjCode* oc) {
         Module* m = oc->m;
-        auto range1049 = m->imports;
-        for (Int index1050 = 0, rangeEnd1051 = length(range1049); index1050 < rangeEnd1051; ++index1050) {
-            Import imp = range1049[index1050];
+        auto imports = m->imports;
+        for (Int i = 0; i < length(imports); ++i) {
+            Import imp = imports[i];
             if (imp.kind != externFunc) {
                 continue;
             }
@@ -17265,9 +17152,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         asmPush(a, RBP);
         asmMovRR(a, 8, RBP, RSP);
         asmPushf(a);
-        auto range1062 = saved;
-        for (Int index1063 = 0, rangeEnd1064 = length(range1062); index1063 < rangeEnd1064; ++index1063) {
-            VReg r = range1062[index1063];
+        for (Int i = 0; i < length(saved); ++i) {
+            VReg r = saved[i];
             asmPush(a, r);
         }
         asmAluRI(a, aluSub, 8, RSP, convert<i64>(xmms + spill));
@@ -17431,9 +17317,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // instruction, so the addend takes that distance off.
     static void objCodeResolve(ObjCode* oc) {
         Asm* a = &oc->a;
-        auto range1077 = a->fixups;
-        for (Int index1078 = 0, rangeEnd1079 = length(range1077); index1078 < rangeEnd1079; ++index1078) {
-            RipFixup f = range1077[index1078];
+        auto fixups = a->fixups;
+        for (Int i = 0; i < length(fixups); ++i) {
+            RipFixup f = fixups[i];
             switch (f.kind) {
                 case labelModule: {
                     oc->relocs = appendValues(oc->relocs, TextReloc{f.at, -1, convert<i64>(oc->blobAt[f.label]) - convert<i64>(f.end - f.at)});
@@ -17453,19 +17339,19 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
             }
         }
-        auto range1081 = oc->calls;
-        for (Int index1082 = 0, rangeEnd1083 = length(range1081); index1082 < rangeEnd1083; ++index1082) {
-            CallFixup c = range1081[index1082];
+        auto calls = oc->calls;
+        for (Int i = 0; i < length(calls); ++i) {
+            CallFixup c = calls[i];
             asmPatch32(a, c.at, oc->funcAt[c.fn]);
         }
-        auto range1084 = oc->stubCalls;
-        for (Int index1085 = 0, rangeEnd1086 = length(range1084); index1085 < rangeEnd1086; ++index1085) {
-            CallFixup c = range1084[index1085];
+        auto stubCalls = oc->stubCalls;
+        for (Int i = 0; i < length(stubCalls); ++i) {
+            CallFixup c = stubCalls[i];
             asmPatch32(a, c.at, oc->stubAt[c.fn]);
         }
-        auto range1087 = oc->jumpCalls;
-        for (Int index1088 = 0, rangeEnd1089 = length(range1087); index1088 < rangeEnd1089; ++index1088) {
-            CallFixup c = range1087[index1088];
+        auto jumpCalls = oc->jumpCalls;
+        for (Int i = 0; i < length(jumpCalls); ++i) {
+            CallFixup c = jumpCalls[i];
             asmPatch32(a, c.at, oc->jumpAt[c.fn]);
         }
     }
@@ -17577,17 +17463,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Slice<VReg> saved = sliceOf<VReg>({RAX, RBX, RCX, RDX, RSI, RDI, R8, R9, R10, R11, R12, R13, R15});
         asmPush(a, RBP);
         asmMovRR(a, 8, RBP, RSP);
-        auto range1093 = saved;
-        for (Int index1094 = 0, rangeEnd1095 = length(range1093); index1094 < rangeEnd1095; ++index1094) {
-            VReg r = range1093[index1094];
+        for (Int i = 0; i < length(saved); ++i) {
+            VReg r = saved[i];
             asmPush(a, r);
         }
         i32 xmms = convert<i32>(8 * length(goFloatRegs));
         asmAluRI(a, aluSub, 8, RSP, convert<i64>(xmms));
-        auto range1096 = goFloatRegs;
-        for (Int index1097 = 0, rangeEnd1098 = length(range1096); index1097 < rangeEnd1098; ++index1097) {
-            Int i = index1097;
-            VReg x = range1096[index1097];
+        for (Int i = 0; i < length(goFloatRegs); ++i) {
+            VReg x = goFloatRegs[i];
             asmFstore(a, 8, x, rspAt(convert<i32>(8 * i)));
         }
         asmLoad(a, 8, 8, false, RAX, baseAt(R14, gStackHi));
@@ -17595,10 +17478,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         asmAluRM(a, aluCmp, 8, RAX, baseAt(ctxReg, offStackLimit));
         i32 overflow = asmJccRel(a, ccA);
         asmCallMem(a, objCodeGotMem(oc, symMorestack));
-        auto range1099 = goFloatRegs;
-        for (Int index1100 = 0, rangeEnd1101 = length(range1099); index1100 < rangeEnd1101; ++index1100) {
-            Int i = index1100;
-            VReg x = range1099[index1100];
+        for (Int i = 0; i < length(goFloatRegs); ++i) {
+            VReg x = goFloatRegs[i];
             asmFload(a, 8, x, rspAt(convert<i32>(8 * i)));
         }
         asmAluRI(a, aluAdd, 8, RSP, convert<i64>(xmms));
@@ -17684,10 +17565,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         asmLoad(a, 8, 8, false, memReg, baseAt(ctxReg, offMem));
         i32 goArgs = total + 8;
-        auto range1104 = params;
-        for (Int index1105 = 0, rangeEnd1106 = length(range1104); index1105 < rangeEnd1106; ++index1105) {
-            Int i = index1105;
-            ValType t = range1104[index1105];
+        for (Int i = 0; i < length(params); ++i) {
+            ValType t = params[i];
             GoLoc src = g.params[i];
             if (pregs[i] != noReg && src.reg == pregs[i]) {
                 if (t == I32) {
@@ -17710,10 +17589,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         } else {
             body();
         }
-        auto range1109 = results;
-        for (Int index1110 = 0, rangeEnd1111 = length(range1109); index1110 < rangeEnd1111; ++index1110) {
-            Int i = index1110;
-            ValType t = range1109[index1110];
+        for (Int i = 0; i < length(results); ++i) {
+            ValType t = results[i];
             GoLoc dst = g.results[i];
             if (rregs[i] != noReg && dst.reg == rregs[i]) {
             } else if (rregs[i] == noReg && dst.reg != noReg) {
@@ -17779,24 +17656,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             remaining -= take;
         }
-        auto& range1117 = f->blocks;
-        for (Int index1118 = 0, rangeEnd1119 = length(range1117); index1118 < rangeEnd1119; ++index1118) {
-            Int b = index1118;
+        for (Int b = 0, end = length(f->blocks); b < end; ++b) {
             Term* t = &f->blocks[b].term;
             if (t->kind == TermIf || t->kind == TermSwitch) {
                 t->value = resolve(t->value);
             }
-            auto range1120 = t->values;
-            for (Int index1121 = 0, rangeEnd1122 = length(range1120); index1121 < rangeEnd1122; ++index1121) {
-                Int i = index1121;
+            for (Int i = 0, end = length(t->values); i < end; ++i) {
                 t->values[i] = resolve(t->values[i]);
             }
-            auto range1123 = t->edges;
-            for (Int index1124 = 0, rangeEnd1125 = length(range1123); index1124 < rangeEnd1125; ++index1124) {
-                Int i = index1124;
-                auto range1126 = t->edges[i].args;
-                for (Int index1127 = 0, rangeEnd1128 = length(range1126); index1127 < rangeEnd1128; ++index1127) {
-                    Int j = index1127;
+            for (Int i = 0, end = length(t->edges); i < end; ++i) {
+                for (Int j = 0, end = length(t->edges[i].args); j < end; ++j) {
                     t->edges[i].args[j] = resolve(t->edges[i].args[j]);
                 }
             }
@@ -17809,9 +17678,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Function* f = o->f;
         bool changed = false;
         optimizerCountUses(o);
-        auto& range1129 = f->blocks;
-        for (Int index1130 = 0, rangeEnd1131 = length(range1129); index1130 < rangeEnd1131; ++index1130) {
-            Int b = index1130;
+        for (Int b = 0, end = length(f->blocks); b < end; ++b) {
             Block* blk = &f->blocks[b];
             if (blk->dead || b == 0 || length(blk->instrs) != 0 || blk->term.kind != TermJump || blk->term.edges[0].block == convert<i32>(b)) {
                 continue;
@@ -17820,13 +17687,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 continue;
             }
             Edge next = blk->term.edges[0];
-            auto range1132 = blk->preds;
-            for (Int index1133 = 0, rangeEnd1134 = length(range1132); index1133 < rangeEnd1134; ++index1133) {
-                i32 p = range1132[index1133];
+            auto preds = blk->preds;
+            for (Int j = 0; j < length(preds); ++j) {
+                i32 p = preds[j];
                 Term* pt = &f->blocks[p].term;
-                auto range1135 = pt->edges;
-                for (Int index1136 = 0, rangeEnd1137 = length(range1135); index1136 < rangeEnd1137; ++index1136) {
-                    Int i = index1136;
+                for (Int i = 0, end = length(pt->edges); i < end; ++i) {
                     Edge* e = &pt->edges[i];
                     if (e->block == convert<i32>(b)) {
                         Slice<i32> args = optimizerSubstitute(o, convert<i32>(b), next.args, e->args);
@@ -17841,9 +17706,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         changed = optimizerUnreachable(o) || changed;
         bool merged = false;
-        auto& range1138 = f->blocks;
-        for (Int index1139 = 0, rangeEnd1140 = length(range1138); index1139 < rangeEnd1140; ++index1139) {
-            Int b = index1139;
+        for (Int b = 0, end = length(f->blocks); b < end; ++b) {
             Block* blk = &f->blocks[b];
             if (blk->dead || b == 0 || length(blk->preds) != 1) {
                 continue;
@@ -17854,23 +17717,22 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 continue;
             }
             Edge e = pb->term.edges[0];
-            auto range1141 = blk->params;
-            for (Int index1142 = 0, rangeEnd1143 = length(range1141); index1142 < rangeEnd1143; ++index1142) {
-                Int i = index1142;
-                i32 param = range1141[index1142];
+            auto params = blk->params;
+            for (Int i = 0; i < length(params); ++i) {
+                i32 param = params[i];
                 optimizerReplace(o, param, optimizerResolve(o, e.args[i]));
             }
-            auto range1144 = blk->instrs.view();
-            for (Int index1145 = 0, rangeEnd1146 = length(range1144); index1145 < rangeEnd1146; ++index1145) {
-                i32 v = range1144[index1145];
+            auto instrs = blk->instrs.view();
+            for (Int i = 0; i < length(instrs); ++i) {
+                i32 v = instrs[i];
                 f->values[v].block = p;
             }
             pb->instrs.append(blk->instrs.view());
             pb->term = blk->term;
             *blk = Block{{}, {}, {}, {}, true};
-            auto range1147 = pb->term.edges;
-            for (Int index1148 = 0, rangeEnd1149 = length(range1147); index1148 < rangeEnd1149; ++index1148) {
-                Edge s = range1147[index1148];
+            auto edges = pb->term.edges;
+            for (Int j = 0; j < length(edges); ++j) {
+                Edge s = edges[j];
                 Block* sb = &f->blocks[s.block];
                 auto range1150 = sb->preds;
                 for (Int index1151 = 0, rangeEnd1152 = length(range1150); index1151 < rangeEnd1152; ++index1151) {
@@ -18016,19 +17878,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Function* f = o->f;
         o->uses.resize(usize(length(f->values)));
         o->uses.fill(0);
-        auto& range1167 = f->blocks;
-        for (Int index1168 = 0, rangeEnd1169 = length(range1167); index1168 < rangeEnd1169; ++index1168) {
-            Int b = index1168;
+        for (Int b = 0, end = length(f->blocks); b < end; ++b) {
             Block* blk = &f->blocks[b];
             if (blk->dead) {
                 continue;
             }
-            auto range1170 = blk->instrs.view();
-            for (Int index1171 = 0, rangeEnd1172 = length(range1170); index1171 < rangeEnd1172; ++index1171) {
-                i32 v = range1170[index1171];
-                auto range1173 = functionArgs(f, v);
-                for (Int index1174 = 0, rangeEnd1175 = length(range1173); index1174 < rangeEnd1175; ++index1174) {
-                    i32 a = range1173[index1174];
+            auto instrs = blk->instrs.view();
+            for (Int i = 0; i < length(instrs); ++i) {
+                i32 v = instrs[i];
+                auto args = functionArgs(f, v);
+                for (Int i = 0; i < length(args); ++i) {
+                    i32 a = args[i];
                     o->uses[a]++;
                 }
             }
@@ -18036,17 +17896,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             if (t->kind == TermIf || t->kind == TermSwitch) {
                 o->uses[t->value]++;
             }
-            auto range1176 = t->values;
-            for (Int index1177 = 0, rangeEnd1178 = length(range1176); index1177 < rangeEnd1178; ++index1177) {
-                i32 v = range1176[index1177];
+            auto values = t->values;
+            for (Int i = 0; i < length(values); ++i) {
+                i32 v = values[i];
                 o->uses[v]++;
             }
-            auto range1179 = t->edges;
-            for (Int index1180 = 0, rangeEnd1181 = length(range1179); index1180 < rangeEnd1181; ++index1180) {
-                Edge e = range1179[index1180];
-                auto range1182 = e.args;
-                for (Int index1183 = 0, rangeEnd1184 = length(range1182); index1183 < rangeEnd1184; ++index1183) {
-                    i32 a = range1182[index1183];
+            auto edges = t->edges;
+            for (Int i = 0; i < length(edges); ++i) {
+                Edge e = edges[i];
+                auto args = e.args;
+                for (Int i = 0; i < length(args); ++i) {
+                    i32 a = args[i];
                     o->uses[a]++;
                 }
             }
@@ -18060,9 +17920,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         while (true) {
             optimizerCountUses(o);
             bool removed = false;
-            auto& range1185 = f->blocks;
-            for (Int index1186 = 0, rangeEnd1187 = length(range1185); index1186 < rangeEnd1187; ++index1186) {
-                Int b = index1186;
+            for (Int b = 0, end = length(f->blocks); b < end; ++b) {
                 Block* blk = &f->blocks[b];
                 if (blk->dead) {
                     continue;
@@ -18073,9 +17931,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 for (; i >= 0; i--) {
                     i32 v = blk->instrs[i];
                     if (o->uses[v] == 0 && !hasEffect(f->values[v].op)) {
-                        auto range1188 = functionArgs(f, v);
-                        for (Int index1189 = 0, rangeEnd1190 = length(range1188); index1189 < rangeEnd1190; ++index1189) {
-                            i32 a = range1188[index1189];
+                        auto args = functionArgs(f, v);
+                        for (Int i = 0; i < length(args); ++i) {
+                            i32 a = args[i];
                             o->uses[a]--;
                         }
                         removed = true;
@@ -18088,9 +17946,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
                 blk->instrs.resize(count - first);
             }
-            auto& range1197 = f->blocks;
-            for (Int index1198 = 0, rangeEnd1199 = length(range1197); index1198 < rangeEnd1199; ++index1198) {
-                Int b = index1198;
+            for (Int b = 0, end = length(f->blocks); b < end; ++b) {
                 Block* blk = &f->blocks[b];
                 if (blk->dead || b == 0 || length(blk->params) == 0) {
                     continue;
@@ -18098,10 +17954,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 Slice<bool> keep = makeSlice<bool>(length(blk->params));
                 bool drop = false;
                 Vec<Edge*> in = optimizerIncoming(o, convert<i32>(b));
-                auto range1200 = blk->params;
-                for (Int index1201 = 0, rangeEnd1202 = length(range1200); index1201 < rangeEnd1202; ++index1201) {
-                    Int k = index1201;
-                    i32 p = range1200[index1201];
+                auto params = blk->params;
+                for (Int k = 0; k < length(params); ++k) {
+                    i32 p = params[k];
                     keep[k] = o->uses[p] > selfUses(in, k, p);
                     if (!keep[k]) {
                         drop = true;
@@ -18134,17 +17989,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         Map<i32, bool> seen = mapOf<i32, bool>({});
-        auto range1206 = blk->preds;
-        for (Int index1207 = 0, rangeEnd1208 = length(range1206); index1207 < rangeEnd1208; ++index1207) {
-            i32 p = range1206[index1207];
+        auto preds = blk->preds;
+        for (Int k = 0; k < length(preds); ++k) {
+            i32 p = preds[k];
             if (seen[p]) {
                 continue;
             }
             setMap(seen, p, true);
             Term* pt = &f->blocks[p].term;
-            auto range1209 = pt->edges;
-            for (Int index1210 = 0, rangeEnd1211 = length(range1209); index1210 < rangeEnd1211; ++index1210) {
-                Int i = index1210;
+            for (Int i = 0, end = length(pt->edges); i < end; ++i) {
                 Edge* e = &pt->edges[i];
                 if (e->block != b) {
                     continue;
@@ -18310,23 +18163,23 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (t->kind == TermIf || t->kind == TermSwitch) {
             setMap(own, optimizerResolve(o, t->value), own[optimizerResolve(o, t->value)] + 1);
         }
-        auto range1226 = t->values;
-        for (Int index1227 = 0, rangeEnd1228 = length(range1226); index1227 < rangeEnd1228; ++index1227) {
-            i32 v = range1226[index1227];
+        auto values = t->values;
+        for (Int i = 0; i < length(values); ++i) {
+            i32 v = values[i];
             setMap(own, optimizerResolve(o, v), own[optimizerResolve(o, v)] + 1);
         }
-        auto range1229 = t->edges;
-        for (Int index1230 = 0, rangeEnd1231 = length(range1229); index1230 < rangeEnd1231; ++index1230) {
-            Edge e = range1229[index1230];
-            auto range1232 = e.args;
-            for (Int index1233 = 0, rangeEnd1234 = length(range1232); index1233 < rangeEnd1234; ++index1233) {
-                i32 a = range1232[index1233];
+        auto edges = t->edges;
+        for (Int i = 0; i < length(edges); ++i) {
+            Edge e = edges[i];
+            auto args = e.args;
+            for (Int i = 0; i < length(args); ++i) {
+                i32 a = args[i];
                 setMap(own, optimizerResolve(o, a), own[optimizerResolve(o, a)] + 1);
             }
         }
-        auto range1235 = blk->params;
-        for (Int index1236 = 0, rangeEnd1237 = length(range1235); index1236 < rangeEnd1237; ++index1236) {
-            i32 p = range1235[index1236];
+        auto params = blk->params;
+        for (Int i = 0; i < length(params); ++i) {
+            i32 p = params[i];
             if (o->uses[p] != own[p]) {
                 return false;
             }
@@ -18358,9 +18211,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Function* f = o->f;
         FloatIntegerNarrow* n = activePool->make<FloatIntegerNarrow>(FloatIntegerNarrow{o, makeSlice<u8>(length(f->values)), mapOf<i32, i32>({})});
         bool changed = false;
-        auto& range1239 = f->values;
-        for (Int index1240 = 0, rangeEnd1241 = length(range1239); index1240 < rangeEnd1241; ++index1240) {
-            Int v = index1240;
+        for (Int v = 0, end = length(f->values); v < end; ++v) {
             Value val = f->values[v];
             if (val.op < OpFEq || val.op > OpFGe || val.block < 0 || f->blocks[val.block].dead) {
                 continue;
@@ -18383,10 +18234,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // paramIndex returns the position of value v among block b's parameters.
     static Int optimizerParamIndex(Optimizer* o, i32 b, i32 v) {
-        auto range1244 = o->f->blocks[b].params;
-        for (Int index1245 = 0, rangeEnd1246 = length(range1244); index1245 < rangeEnd1246; ++index1245) {
-            Int i = index1245;
-            i32 p = range1244[index1245];
+        auto params = o->f->blocks[b].params;
+        for (Int i = 0; i < length(params); ++i) {
+            i32 p = params[i];
             if (p == v) {
                 return i;
             }
@@ -18517,14 +18367,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
                 return seen(value, b, v);
             };
-            auto range1267 = f->blocks[b].instrs.view();
-            for (Int index1268 = 0, rangeEnd1269 = length(range1267); index1268 < rangeEnd1269; ++index1268) {
-                i32 v = range1267[index1268];
+            auto instrs = f->blocks[b].instrs.view();
+            for (Int j = 0; j < length(instrs); ++j) {
+                i32 v = instrs[j];
                 Span<i32> args = functionArgs(f, v);
-                auto range1270 = args;
-                for (Int index1271 = 0, rangeEnd1272 = length(range1270); index1271 < rangeEnd1272; ++index1271) {
-                    Int i = index1271;
-                    i32 a = range1270[index1271];
+                for (Int i = 0; i < length(args); ++i) {
+                    i32 a = args[i];
                     bool ok = paramIndex(optimizerResolve(o, a)) >= 0;
                     if (ok) {
                         args[i] = at(a);
@@ -18535,14 +18383,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             if (t->kind == TermIf || t->kind == TermSwitch) {
                 t->value = at(t->value);
             }
-            auto range1274 = t->values;
-            for (Int index1275 = 0, rangeEnd1276 = length(range1274); index1275 < rangeEnd1276; ++index1275) {
-                Int i = index1275;
+            for (Int i = 0, end = length(t->values); i < end; ++i) {
                 t->values[i] = at(t->values[i]);
             }
-            auto range1277 = t->edges;
-            for (Int index1278 = 0, rangeEnd1279 = length(range1277); index1278 < rangeEnd1279; ++index1278) {
-                Int i = index1278;
+            for (Int i = 0, end = length(t->edges); i < end; ++i) {
                 auto range1280 = t->edges[i].args;
                 for (Int index1281 = 0, rangeEnd1282 = length(range1280); index1281 < rangeEnd1282; ++index1281) {
                     Int k = index1281;
@@ -18577,9 +18421,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Int round = 0;
         for (; round < 8; round++) {
             bool changed = false;
-            auto range1283 = functionRpo(f);
-            for (Int index1284 = 0, rangeEnd1285 = length(range1283); index1284 < rangeEnd1285; ++index1284) {
-                i32 b = range1283[index1284];
+            auto rpo = functionRpo(f);
+            for (Int i = 0; i < length(rpo); ++i) {
+                i32 b = rpo[i];
                 Block* blk = &f->blocks[b];
                 Term t = blk->term;
                 if (blk->dead || t.kind != TermIf) {
@@ -18614,9 +18458,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         continue;
                     }
                     bool pure = true;
-                    auto range1289 = body->instrs.view();
-                    for (Int index1290 = 0, rangeEnd1291 = length(range1289); index1290 < rangeEnd1291; ++index1290) {
-                        i32 v = range1289[index1290];
+                    auto instrs = body->instrs.view();
+                    for (Int i = 0; i < length(instrs); ++i) {
+                        i32 v = instrs[i];
                         Op op = f->values[v].op;
                         pure = pure && !readsState(op);
                         switch (op) {
@@ -18632,9 +18476,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             }
                         }
                     }
-                    auto range1293 = f->blocks[merge.block].params;
-                    for (Int index1294 = 0, rangeEnd1295 = length(range1293); index1294 < rangeEnd1295; ++index1294) {
-                        i32 p = range1293[index1294];
+                    auto params = f->blocks[merge.block].params;
+                    for (Int i = 0; i < length(params); ++i) {
+                        i32 p = params[i];
                         ValType typ = f->values[p].typ;
                         pure = pure && (typ == I32 || typ == I64 || typ == F32 || typ == F64);
                     }
@@ -18701,16 +18545,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Function* f = o->f;
         bool changed = false;
         optimizerCountUses(o);
-        auto& range1306 = f->blocks;
-        for (Int index1307 = 0, rangeEnd1308 = length(range1306); index1307 < rangeEnd1308; ++index1307) {
-            Int b = index1307;
+        for (Int b = 0, end = length(f->blocks); b < end; ++b) {
             Block* blk = &f->blocks[b];
             if (blk->dead) {
                 continue;
             }
-            auto range1309 = blk->instrs.view();
-            for (Int index1310 = 0, rangeEnd1311 = length(range1309); index1310 < rangeEnd1311; ++index1310) {
-                i32 v = range1309[index1310];
+            auto instrs = blk->instrs.view();
+            for (Int i = 0; i < length(instrs); ++i) {
+                i32 v = instrs[i];
                 if (optimizerSimplifyValue(o, v)) {
                     changed = true;
                 }
@@ -18781,10 +18623,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return false;
         }
         Span<i32> args = functionArgs(f, v);
-        auto range1315 = args;
-        for (Int index1316 = 0, rangeEnd1317 = length(range1315); index1316 < rangeEnd1317; ++index1316) {
-            Int i = index1316;
-            i32 a = range1315[index1316];
+        for (Int i = 0; i < length(args); ++i) {
+            i32 a = args[i];
             args[i] = optimizerResolve(o, a);
         }
         ValType t = val->typ;
@@ -18848,10 +18688,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // an incoming edge with args: b's parameters become those.
     static Slice<i32> optimizerSubstitute(Optimizer* o, i32 b, Slice<i32> out, Slice<i32> in) {
         Slice<i32> res = makeSlice<i32>(length(out));
-        auto range1327 = out;
-        for (Int index1328 = 0, rangeEnd1329 = length(range1327); index1328 < rangeEnd1329; ++index1328) {
-            Int i = index1328;
-            i32 a = range1327[index1328];
+        for (Int i = 0; i < length(out); ++i) {
+            i32 a = out[i];
             a = optimizerResolve(o, a);
             Int k = optimizerParamIndex(o, b, a);
             if (k >= 0) {
@@ -18888,12 +18726,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             Map<i32, Bypass> bypasses = mapOf<i32, Bypass>({});
             TermKind kind = f->blocks[h].term.kind;
             Slice<Edge> targets = slicesClone(f->blocks[h].term.edges);
-            auto range1330 = f->blocks[h].preds;
-            for (Int index1331 = 0, rangeEnd1332 = length(range1330); index1331 < rangeEnd1332; ++index1331) {
-                i32 p = range1330[index1331];
-                auto range1333 = f->blocks[p].term.edges;
-                for (Int index1334 = 0, rangeEnd1335 = length(range1333); index1334 < rangeEnd1335; ++index1334) {
-                    Int i = index1334;
+            auto preds = f->blocks[h].preds;
+            for (Int j = 0; j < length(preds); ++j) {
+                i32 p = preds[j];
+                for (Int i = 0, end = length(f->blocks[p].term.edges); i < end; ++i) {
                     Edge e = f->blocks[p].term.edges[i];
                     if (e.block != h || length(e.args) <= k) {
                         continue;
@@ -18944,9 +18780,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static bool optimizerTrivialParams(Optimizer* o) {
         Function* f = o->f;
         bool changed = false;
-        auto& range1336 = f->blocks;
-        for (Int index1337 = 0, rangeEnd1338 = length(range1336); index1337 < rangeEnd1338; ++index1337) {
-            Int b = index1337;
+        for (Int b = 0, end = length(f->blocks); b < end; ++b) {
             Block* blk = &f->blocks[b];
             if (blk->dead || b == 0 || length(blk->params) == 0) {
                 continue;
@@ -18954,10 +18788,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             Slice<bool> keep = {};
             bool removed = false;
             Vec<Edge*> in = optimizerIncoming(o, convert<i32>(b));
-            auto range1339 = blk->params;
-            for (Int index1340 = 0, rangeEnd1341 = length(range1339); index1340 < rangeEnd1341; ++index1340) {
-                Int k = index1340;
-                i32 param = range1339[index1340];
+            auto params = blk->params;
+            for (Int k = 0; k < length(params); ++k) {
+                i32 param = params[k];
                 i32 same = -1;
                 bool trivial = true;
                 auto range1342 = in.view();
@@ -19077,9 +18910,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         while (length(work) > Int(0LL)) {
             i32 b = work[length(work) - 1];
             work = subslice(work, 0, length(work) - 1);
-            auto range1352 = f->blocks[b].term.edges;
-            for (Int index1353 = 0, rangeEnd1354 = length(range1352); index1353 < rangeEnd1354; ++index1353) {
-                Edge e = range1352[index1353];
+            auto edges = f->blocks[b].term.edges;
+            for (Int i = 0; i < length(edges); ++i) {
+                Edge e = edges[i];
                 if (!reached[e.block]) {
                     reached[e.block] = true;
                     work = appendValues(work, e.block);
@@ -19087,9 +18920,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         bool changed = false;
-        auto& range1355 = f->blocks;
-        for (Int index1356 = 0, rangeEnd1357 = length(range1355); index1356 < rangeEnd1357; ++index1356) {
-            Int b = index1356;
+        for (Int b = 0, end = length(f->blocks); b < end; ++b) {
             if (!reached[b] && !f->blocks[b].dead) {
                 f->blocks[b] = Block{{}, {}, {}, {}, true};
                 changed = true;
@@ -19417,9 +19248,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         auto range1366 = Array<Anonymous4, 2>{{Anonymous4{a, u32(1LL)}, Anonymous4{b, factor}}};
         for (Int index1367 = 0, rangeEnd1368 = length(range1366); index1367 < rangeEnd1368; ++index1367) {
             Anonymous4 source = range1366[index1367];
-            auto range1369 = source.expr.terms;
-            for (Int index1370 = 0, rangeEnd1371 = length(range1369); index1370 < rangeEnd1371; ++index1370) {
-                AddressTerm term = range1369[index1370];
+            auto terms = source.expr.terms;
+            for (Int i = 0; i < length(terms); ++i) {
+                AddressTerm term = terms[i];
                 term.mul *= source.mul;
                 if (term.mul == 0) {
                     continue;
@@ -19453,9 +19284,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         Int n = 0;
-        auto range1378 = out.terms;
-        for (Int index1379 = 0, rangeEnd1380 = length(range1378); index1379 < rangeEnd1380; ++index1379) {
-            Int j = index1379;
+        for (Int j = 0, end = length(out.terms); j < end; ++j) {
             if (out.terms[j].mul != 0) {
                 out.terms[n] = out.terms[j];
                 n++;
@@ -19488,9 +19317,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (a.factor == 0) {
             out.stride = b.stride;
         }
-        auto range1383 = Array<Array<i64, 2>, 4>{{Array<i64, 2>{{convert<i64>(a.base), convert<i64>(a.mul)}}, Array<i64, 2>{{convert<i64>(a.base2), convert<i64>(a.mul2)}}, Array<i64, 2>{{convert<i64>(b.base), convert<i64>(b.mul)}}, Array<i64, 2>{{convert<i64>(b.base2), convert<i64>(b.mul2)}}}};
-        for (Int index1384 = 0, rangeEnd1385 = length(range1383); index1384 < rangeEnd1385; ++index1384) {
-            Array<i64, 2> term = range1383[index1384];
+        auto mul2 = Array<Array<i64, 2>, 4>{{Array<i64, 2>{{convert<i64>(a.base), convert<i64>(a.mul)}}, Array<i64, 2>{{convert<i64>(a.base2), convert<i64>(a.mul2)}}, Array<i64, 2>{{convert<i64>(b.base), convert<i64>(b.mul)}}, Array<i64, 2>{{convert<i64>(b.base2), convert<i64>(b.mul2)}}}};
+        for (Int i = 0; i < length(mul2); ++i) {
+            Array<i64, 2> term = mul2[i];
             auto temporary1386 = convert<i32>(term[0]);
             auto temporary1387 = convert<u64>(term[1]);
             i32 v = temporary1386;
@@ -19596,9 +19425,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static Slice<i32> appendUnique(Slice<i32> list, i32 x) {
-        auto range1394 = list;
-        for (Int index1395 = 0, rangeEnd1396 = length(range1394); index1395 < rangeEnd1396; ++index1395) {
-            i32 y = range1394[index1395];
+        for (Int i = 0; i < length(list); ++i) {
+            i32 y = list[i];
             if (y == x) {
                 return list;
             }
@@ -19608,9 +19436,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static Slice<VReg> assigned(Slice<VReg> regs) {
         Slice<VReg> out = {};
-        auto range1397 = regs;
-        for (Int index1398 = 0, rangeEnd1399 = length(range1397); index1398 < rangeEnd1399; ++index1398) {
-            VReg r = range1397[index1398];
+        for (Int i = 0; i < length(regs); ++i) {
+            VReg r = regs[i];
             if (r != noReg) {
                 out = appendValues(out, r);
             }
@@ -19666,20 +19493,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         ObjPool temporary;
         PoolScope scope(temporary);
         Slice<Slice<CheckedEdge>> incoming = makeSlice<Slice<CheckedEdge>>(length(f->blocks));
-        auto range1400 = ci->order;
-        for (Int index1401 = 0, rangeEnd1402 = length(range1400); index1401 < rangeEnd1402; ++index1401) {
-            i32 b = range1400[index1401];
-            auto range1403 = f->blocks[b].term.edges;
-            for (Int index1404 = 0, rangeEnd1405 = length(range1403); index1404 < rangeEnd1405; ++index1404) {
-                Int j = index1404;
+        auto order = ci->order;
+        for (Int i = 0; i < length(order); ++i) {
+            i32 b = order[i];
+            for (Int j = 0, end = length(f->blocks[b].term.edges); j < end; ++j) {
                 Edge* e = &f->blocks[b].term.edges[j];
                 incoming[e->block] = appendValues(incoming[e->block], CheckedEdge{b, e});
             }
         }
         Slice<i32> tracked = makeSlice<i32>(length(f->values));
-        auto range1406 = tracked;
-        for (Int index1407 = 0, rangeEnd1408 = length(range1406); index1407 < rangeEnd1408; ++index1407) {
-            Int j = index1407;
+        for (Int j = 0, end = length(tracked); j < end; ++j) {
             tracked[j] = -1;
         }
         Slice<i32> values = {};
@@ -19702,9 +19525,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         auto range1412 = ci->order;
         for (Int index1413 = 0, rangeEnd1414 = length(range1412); index1413 < rangeEnd1414; ++index1413) {
             i32 b = range1412[index1413];
-            auto range1415 = f->blocks[b].instrs.view();
-            for (Int index1416 = 0, rangeEnd1417 = length(range1415); index1416 < rangeEnd1417; ++index1416) {
-                i32 v = range1415[index1416];
+            auto instrs = f->blocks[b].instrs.view();
+            for (Int i = 0; i < length(instrs); ++i) {
+                i32 v = instrs[i];
                 Value* val = &f->values[v];
                 if (val->op == OpLoad || val->op == OpStore) {
                     i32 addr = functionArgs(f, v)[0];
@@ -19789,9 +19612,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Int round = 0;
         for (; round < 16; round++) {
             bool changed = false;
-            auto range1436 = ci->order;
-            for (Int index1437 = 0, rangeEnd1438 = length(range1436); index1437 < rangeEnd1438; ++index1437) {
-                i32 b = range1436[index1437];
+            auto order = ci->order;
+            for (Int i = 0; i < length(order); ++i) {
+                i32 b = order[i];
                 entry(b);
                 auto range1439 = f->blocks[b].instrs.view();
                 for (Int index1440 = 0, rangeEnd1441 = length(range1439); index1440 < rangeEnd1441; ++index1440) {
@@ -20030,9 +19853,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (m->dataCount >= 0 && convert<i64>(m->dataCount) != length(m->datas)) {
             compilerError(String("data count and data section have inconsistent lengths"));
         }
-        auto range1454 = m->funcs;
-        for (Int index1455 = 0, rangeEnd1456 = length(range1454); index1455 < rangeEnd1456; ++index1455) {
-            Int i = index1455;
+        for (Int i = 0, end = length(m->funcs); i < end; ++i) {
             if (convert<i64>(m->funcs[i].typ) >= length(m->types)) {
                 compilerError(String("unknown type %d"));
             }
@@ -20040,10 +19861,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (length(m->mems) > 1) {
             compilerError(String("unsupported: %d memories"));
         }
-        auto range1457 = m->datas;
-        for (Int index1458 = 0, rangeEnd1459 = length(range1457); index1458 < rangeEnd1459; ++index1458) {
-            Int i = index1458;
-            Data d = range1457[index1458];
+        auto datas = m->datas;
+        for (Int i = 0; i < length(datas); ++i) {
+            Data d = datas[i];
             if (d.memory != 0) {
                 compilerError(String("unsupported: data segment %d of memory %d"));
             }
@@ -20084,9 +19904,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static Span<Move> dropSelfMoves(Span<Move> moves) {
         Int count = 0;
-        auto range1463 = moves;
-        for (Int index1464 = 0, rangeEnd1465 = length(range1463); index1464 < rangeEnd1465; ++index1464) {
-            Move m = range1463[index1464];
+        for (Int i = 0; i < length(moves); ++i) {
+            Move m = moves[i];
             if (m.dst != m.src) {
                 moves[count++] = m;
             }
@@ -20108,9 +19927,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         };
         Slice<u8> cie = sliceOf<u8>({u8(0LL), u8(0LL), u8(0LL), u8(0LL), u8(1LL), u8(122LL), u8(82LL), u8(0LL), u8(1LL), u8(120LL), u8(16LL), u8(1LL), u8(27LL), u8(12LL), u8(7LL), u8(8LL), u8(144LL), u8(1LL)});
         entry(cie);
-        auto range1466 = regions;
-        for (Int index1467 = 0, rangeEnd1468 = length(range1466); index1467 < rangeEnd1468; ++index1467) {
-            Region r = range1466[index1467];
+        for (Int i = 0; i < length(regions); ++i) {
+            Region r = regions[i];
             Int at = length(out);
             Slice<u8> body = littleAppendUint32({}, convert<u32>(at + 4));
             starts = appendValues(starts, convert<u32>(at + 8));
@@ -20118,10 +19936,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             body = littleAppendUint32(body, r.end - r.start);
             body = appendValues(body, u8(0LL));
             i32 loc = 0;
-            auto range1469 = r.sp;
-            for (Int index1470 = 0, rangeEnd1471 = length(range1469); index1470 < rangeEnd1471; ++index1470) {
-                Int k = index1470;
-                SpEntry e = range1469[index1470];
+            auto sp = r.sp;
+            for (Int k = 0; k < length(sp); ++k) {
+                SpEntry e = sp[k];
                 if (k == 0 && e.delta == 0) {
                     continue;
                 }
@@ -20156,36 +19973,36 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             metaWriterFlag(w, m->memory->imported);
         }
         metaWriterU(w, convert<u64>(length(m->tables)));
-        auto range1474 = m->tables;
-        for (Int index1475 = 0, rangeEnd1476 = length(range1474); index1475 < rangeEnd1476; ++index1475) {
-            TableMeta t = range1474[index1475];
+        auto tables = m->tables;
+        for (Int i = 0; i < length(tables); ++i) {
+            TableMeta t = tables[i];
             metaWriterU(w, convert<u64>(t.offset));
             metaWriterU(w, t.min);
             metaWriterU(w, t.max);
             metaWriterFlag(w, t.imported);
         }
         metaWriterU(w, convert<u64>(length(m->globals)));
-        auto range1477 = m->globals;
-        for (Int index1478 = 0, rangeEnd1479 = length(range1477); index1478 < rangeEnd1479; ++index1478) {
-            GlobalMeta g = range1477[index1478];
+        auto globals = m->globals;
+        for (Int i = 0; i < length(globals); ++i) {
+            GlobalMeta g = globals[i];
             metaWriterU(w, convert<u64>(g.offset));
             metaWriterU(w, convert<u64>(g.typ));
             metaWriterFlag(w, g.mutableValue);
             metaWriterFlag(w, g.imported);
         }
         metaWriterU(w, convert<u64>(length(m->imports)));
-        auto range1480 = m->imports;
-        for (Int index1481 = 0, rangeEnd1482 = length(range1480); index1481 < rangeEnd1482; ++index1481) {
-            ImportMeta i = range1480[index1481];
+        auto imports = m->imports;
+        for (Int j = 0; j < length(imports); ++j) {
+            ImportMeta i = imports[j];
             metaWriterU(w, convert<u64>(i.kind));
             metaWriterStr(w, i.module);
             metaWriterStr(w, i.name);
             metaWriterU(w, convert<u64>(i.index));
         }
         metaWriterU(w, convert<u64>(length(m->exports)));
-        auto range1483 = m->exports;
-        for (Int index1484 = 0, rangeEnd1485 = length(range1483); index1484 < rangeEnd1485; ++index1484) {
-            ExportMeta e = range1483[index1484];
+        auto exports = m->exports;
+        for (Int i = 0; i < length(exports); ++i) {
+            ExportMeta e = exports[i];
             metaWriterU(w, convert<u64>(e.kind));
             metaWriterStr(w, e.name);
             metaWriterU(w, convert<u64>(e.index));
@@ -20214,9 +20031,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static MemoryLoop* findMemoryLoop(Function* f, CfgInfo* ci, i32 h) {
         MemoryLoop* l = activePool->make<MemoryLoop>(MemoryLoop{f, ci, h, -1, -1, -1, {}, makeSlice<bool>(length(f->blocks)), {}, {}, -1, u64(1LL), {}, {}, {}, -1, -1, {}, mapOf<i32, LoopSpan>({}), mapOf<i32, LoopSpan>({}), {}, {}, {}, {}, {}, {}});
-        auto range1486 = f->blocks[h].preds;
-        for (Int index1487 = 0, rangeEnd1488 = length(range1486); index1487 < rangeEnd1488; ++index1487) {
-            i32 p = range1486[index1487];
+        auto preds = f->blocks[h].preds;
+        for (Int i = 0; i < length(preds); ++i) {
+            i32 p = preds[i];
             if (cfgInfoDominates(ci, h, p)) {
                 if (l->latch >= 0) {
                     return {};
@@ -20232,9 +20049,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (l->latch < 0 || l->preheader < 0) {
             return {};
         }
-        auto range1489 = f->blocks[l->preheader].term.edges;
-        for (Int index1490 = 0, rangeEnd1491 = length(range1489); index1490 < rangeEnd1491; ++index1490) {
-            Edge e = range1489[index1490];
+        auto edges = f->blocks[l->preheader].term.edges;
+        for (Int i = 0; i < length(edges); ++i) {
+            Edge e = edges[i];
             if (e.block == h) {
                 l->entry = e;
             }
@@ -20255,9 +20072,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         Int insts = 0;
         bool multipleExits = false;
-        auto range1492 = ci->order;
-        for (Int index1493 = 0, rangeEnd1494 = length(range1492); index1493 < rangeEnd1494; ++index1493) {
-            i32 b = range1492[index1493];
+        auto order = ci->order;
+        for (Int i = 0; i < length(order); ++i) {
+            i32 b = order[i];
             if (!l->members[b]) {
                 continue;
             }
@@ -20324,10 +20141,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         l->count = -1;
-        auto range1504 = f->blocks[h].params;
-        for (Int index1505 = 0, rangeEnd1506 = length(range1504); index1505 < rangeEnd1506; ++index1505) {
-            Int j = index1505;
-            i32 p = range1504[index1505];
+        auto params = f->blocks[h].params;
+        for (Int j = 0; j < length(params); ++j) {
+            i32 p = params[j];
             auto temporary1507 = next;
             auto temporary1508 = -1;
             i32 candidate = temporary1507;
@@ -20796,10 +20612,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Int slot = temporary1541;
         Slice<VReg> regs = makeSlice<VReg>(length(types));
         Slice<Int> slots = makeSlice<Int>(length(types));
-        auto range1542 = types;
-        for (Int index1543 = 0, rangeEnd1544 = length(range1542); index1543 < rangeEnd1544; ++index1543) {
-            Int i = index1543;
-            ValType t = range1542[index1543];
+        for (Int i = 0; i < length(types); ++i) {
+            ValType t = types[i];
             regs[i] = noReg;
             if (isFloat(t) && xi < length(xmms)) {
                 regs[i] = xmms[xi];
@@ -20847,18 +20661,18 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Slice<Slice<CheckedValue>> proofs = checkedValues(f, l->ci);
         l->mblk.resize(f->blocks.size());
         l->mblk.fill(-1);
-        auto range1553 = l->ci->order;
-        for (Int index1554 = 0, rangeEnd1555 = length(range1553); index1554 < rangeEnd1555; ++index1554) {
-            i32 b = range1553[index1554];
+        auto order = l->ci->order;
+        for (Int i = 0; i < length(order); ++i) {
+            i32 b = order[i];
             l->mblk[b] = convert<i32>(length(l->mf->blocks));
             l->mf->blocks.pushBack(MBlock{{}, {}, {}, l->ci->depth[b], b, {}});
         }
         auto range1556 = l->ci->order;
         for (Int index1557 = 0, rangeEnd1558 = length(range1556); index1557 < rangeEnd1558; ++index1557) {
             i32 b = range1556[index1557];
-            auto range1559 = f->blocks[b].params;
-            for (Int index1560 = 0, rangeEnd1561 = length(range1559); index1560 < rangeEnd1561; ++index1560) {
-                i32 p = range1559[index1560];
+            auto params = f->blocks[b].params;
+            for (Int i = 0; i < length(params); ++i) {
+                i32 p = params[i];
                 lowererDef(l, p);
             }
         }
@@ -20908,9 +20722,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 in.size = typeSize(val->typ);
                 lowererEmit(l, in);
             }
-            auto range1569 = f->blocks[b].instrs.view();
-            for (Int index1570 = 0, rangeEnd1571 = length(range1569); index1570 < rangeEnd1571; ++index1570) {
-                i32 v = range1569[index1570];
+            auto instrs = f->blocks[b].instrs.view();
+            for (Int i = 0; i < length(instrs); ++i) {
+                i32 v = instrs[i];
                 if (!l->deferred[v]) {
                     lowererLowerValue(l, v);
                 }
@@ -21095,9 +20909,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             l->memoryEnd = off;
             off += 8;
         }
-        auto range1577 = m->globals;
-        for (Int index1578 = 0, rangeEnd1579 = length(range1577); index1578 < rangeEnd1579; ++index1578) {
-            Global g = range1577[index1578];
+        auto globals = m->globals;
+        for (Int i = 0; i < length(globals); ++i) {
+            Global g = globals[i];
             if (g.typ == V128) {
                 off = (off + 15) & ~15;
             }
@@ -21108,8 +20922,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         off = (off + 15) & ~15;
-        auto range1580 = m->tables;
-        for (Int index1581 = 0, rangeEnd1582 = length(range1580); index1581 < rangeEnd1582; ++index1581) {
+        for (Int i = 0, end = length(m->tables); i < end; ++i) {
             l->tables = appendValues(l->tables, off);
             off += tableBytes;
         }
@@ -21133,9 +20946,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void optimize(Function* f) {
         Optimizer* o = activePool->make<Optimizer>(Optimizer{f, {}, mapOf<ConstKey, i32>({}), {}});
-        auto& range1583 = f->values;
-        for (Int index1584 = 0, rangeEnd1585 = length(range1583); index1584 < rangeEnd1585; ++index1584) {
-            Int v = index1584;
+        for (Int v = 0, end = length(f->values); v < end; ++v) {
             Value* val = &f->values[v];
             if (val->op == OpConst && val->block < 0) {
                 ConstKey key = ConstKey{val->typ, val->aux};
@@ -21448,10 +21259,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Int gi = temporary1601;
         Int xi = temporary1602;
         Slice<VReg> regs = makeSlice<VReg>(length(results));
-        auto range1603 = results;
-        for (Int index1604 = 0, rangeEnd1605 = length(range1603); index1604 < rangeEnd1605; ++index1604) {
-            Int i = index1604;
-            ValType t = range1603[index1604];
+        for (Int i = 0; i < length(results); ++i) {
+            ValType t = results[i];
             regs[i] = noReg;
             if (isFloat(t) && xi < length(resultXMMs)) {
                 regs[i] = resultXMMs[xi];
@@ -21513,9 +21322,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (length(x) != length(y)) {
             return false;
         }
-        auto range1610 = x;
-        for (Int index1611 = 0, rangeEnd1612 = length(range1610); index1611 < rangeEnd1612; ++index1611) {
-            Int i = index1611;
+        for (Int i = 0; i < length(x); ++i) {
             if (optimizerResolve(o, x[i]) != optimizerResolve(o, y[i])) {
                 return false;
             }
@@ -21549,9 +21356,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // argument on the edges in, into b.
     static i32 selfUses(Span<Edge*> in, Int k, i32 p) {
         i32 n = 0;
-        auto range1614 = in;
-        for (Int index1615 = 0, rangeEnd1616 = length(range1614); index1615 < rangeEnd1616; ++index1615) {
-            Edge* e = range1614[index1615];
+        for (Int i = 0; i < length(in); ++i) {
+            Edge* e = in[i];
             if (k < length(e->args) && e->args[k] == p) {
                 n++;
             }
@@ -21789,15 +21595,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             id = shiftLeft(id, 3) | code;
             bits += 3;
         };
-        auto range1624 = t->params;
-        for (Int index1625 = 0, rangeEnd1626 = length(range1624); index1625 < rangeEnd1626; ++index1625) {
-            ValType p = range1624[index1625];
+        auto params = t->params;
+        for (Int i = 0; i < length(params); ++i) {
+            ValType p = params[i];
             push(valTypeCode(p));
         }
         push(u64(0LL));
-        auto range1627 = t->results;
-        for (Int index1628 = 0, rangeEnd1629 = length(range1627); index1628 < rangeEnd1629; ++index1628) {
-            ValType r = range1627[index1628];
+        auto results = t->results;
+        for (Int i = 0; i < length(results); ++i) {
+            ValType r = results[i];
             push(valTypeCode(r));
         }
         if (bits <= 63) {
@@ -21833,10 +21639,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static String typesPart(Slice<ValType> ts) {
         Slice<u8> b = makeSlice<u8>(length(ts));
-        auto range1637 = ts;
-        for (Int index1638 = 0, rangeEnd1639 = length(range1637); index1638 < rangeEnd1639; ++index1638) {
-            Int i = index1638;
-            ValType t = range1637[index1638];
+        for (Int i = 0; i < length(ts); ++i) {
+            ValType t = ts[i];
             auto temporary1640 = typeLetter(t);
             u8 c = temporary1640.v0;
             bool ok = temporary1640.v1;
@@ -21905,9 +21709,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 ci = functionAnalyze(f);
             }
             bool changed = false;
-            auto range1645 = ci->order;
-            for (Int index1646 = 0, rangeEnd1647 = length(range1645); index1646 < rangeEnd1647; ++index1646) {
-                i32 h = range1645[index1646];
+            auto order = ci->order;
+            for (Int i = 0; i < length(order); ++i) {
+                i32 h = order[i];
                 if (!ci->header[h] || done[h]) {
                     continue;
                 }
@@ -21928,9 +21732,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
                 i32 fast = memoryLoopVersion(loop);
                 if (fast >= 0) {
-                    auto range1648 = loop->copies;
-                    for (Int index1649 = 0, rangeEnd1650 = length(range1648); index1649 < rangeEnd1650; ++index1649) {
-                        i32 h = range1648[index1649];
+                    auto copies = loop->copies;
+                    for (Int i = 0; i < length(copies); ++i) {
+                        i32 h = copies[i];
                         setMap(done, h, true);
                     }
                     changed = true;
@@ -21982,9 +21786,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         sym(u32(0LL), u8(3LL), u16(1LL), u64(0LL), u64(0LL));
         sym(u32(0LL), u8(3LL), u16(3LL), u64(0LL), u64(0LL));
         Int count = 3;
-        auto range1651 = oc->regions;
-        for (Int index1652 = 0, rangeEnd1653 = length(range1651); index1652 < rangeEnd1653; ++index1652) {
-            Region r = range1651[index1652];
+        auto regions = oc->regions;
+        for (Int i = 0; i < length(regions); ++i) {
+            Region r = regions[i];
             if (!oc->globals[r.name]) {
                 sym(str(r.name), u8(2LL), u16(1LL), convert<u64>(r.start), convert<u64>(r.end - r.start));
                 count++;
@@ -22000,9 +21804,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         Int externBase = count;
-        auto range1657 = oc->externs;
-        for (Int index1658 = 0, rangeEnd1659 = length(range1657); index1658 < rangeEnd1659; ++index1658) {
-            String name = range1657[index1658];
+        auto externs = oc->externs;
+        for (Int i = 0; i < length(externs); ++i) {
+            String name = externs[i];
             sym(str(name), u8(16LL), u16(0LL), u64(0LL), u64(0LL));
         }
         auto rela = [&](Slice<u8> out, u64 at, Int symbol, u32 typ, i64 addend) mutable -> Slice<u8> {
@@ -22011,28 +21815,26 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return littleAppendUint64(out, convert<u64>(addend));
         };
         Slice<u8> relaText = {};
-        auto range1660 = oc->relocs;
-        for (Int index1661 = 0, rangeEnd1662 = length(range1660); index1661 < rangeEnd1662; ++index1661) {
-            TextReloc r = range1660[index1661];
+        auto relocs = oc->relocs;
+        for (Int i = 0; i < length(relocs); ++i) {
+            TextReloc r = relocs[i];
             if (r.sym < 0) {
                 relaText = rela(relaText, convert<u64>(r.at), 2, rX86_64_PC32, r.addend);
             } else {
                 relaText = rela(relaText, convert<u64>(r.at), externBase + convert<i64>(r.sym), rX86_64_GOTPCREL, r.addend);
             }
         }
-        auto range1663 = oc->addresses;
-        for (Int index1664 = 0, rangeEnd1665 = length(range1663); index1664 < rangeEnd1665; ++index1664) {
-            TextAddress r = range1663[index1664];
+        auto addresses = oc->addresses;
+        for (Int i = 0; i < length(addresses); ++i) {
+            TextAddress r = addresses[i];
             relaText = rela(relaText, convert<u64>(r.at), 1, rX86_64_64, convert<i64>(r.target));
         }
         auto temporary1666 = ehFrame(oc->regions);
         Slice<u8> eh = temporary1666.v0;
         Slice<u32> starts = temporary1666.v1;
         Slice<u8> relaEh = {};
-        auto range1667 = starts;
-        for (Int index1668 = 0, rangeEnd1669 = length(range1667); index1668 < rangeEnd1669; ++index1668) {
-            Int k = index1668;
-            u32 at = range1667[index1668];
+        for (Int k = 0; k < length(starts); ++k) {
+            u32 at = starts[k];
             relaEh = rela(relaEh, convert<u64>(at), 1, rX86_64_PC32, convert<i64>(oc->regions[k].start));
         }
         Slice<u8> noteBody = littleAppendUint32({}, 7);
@@ -22141,9 +21943,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static Slice<VReg> xmmRange(Int n) {
         Slice<VReg> out = makeSlice<VReg>(n);
-        auto range1673 = out;
-        for (Int index1674 = 0, rangeEnd1675 = length(range1673); index1674 < rangeEnd1675; ++index1674) {
-            Int i = index1674;
+        for (Int i = 0; i < length(out); ++i) {
             out[i] = XMM0 + convert<VReg>(i);
         }
         return out;
