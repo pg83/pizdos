@@ -3514,6 +3514,13 @@ namespace {
         i32 to{};
     };
 
+    // Coalescing needs ranges, not allocation state or use positions.
+    struct CopyInterval {
+        InlineVec<Lrange, 1> ranges;
+    };
+
+    static_assert(sizeof(CopyInterval) == (sizeof(void*) == 8 ? 24 : 20));
+
     struct IntervalChildren {
         InlineVec<Interval*, 1>* entries = nullptr;
 
@@ -4153,6 +4160,7 @@ namespace {
         Vec<i32> copyIndex{};
         Vec<VReg> copyRegs{};
         Vec<Interval*> intervals{};
+        Vec<CopyInterval*> copyIntervals;
         Array<Interval*, 32> fixed{};
         IntervalQueue unhandled{};
         Vec<Interval*> active{};
@@ -5604,7 +5612,8 @@ namespace {
 
     static void allocatorAllocateBlocked(Allocator* a, Interval* cur);
 
-    static void allocatorBuildIntervals(Allocator* a, bool copiesOnly = false);
+    template <bool copiesOnly = false>
+    static void allocatorBuildIntervals(Allocator* a);
 
     static Slice<VReg> allocatorCalleeSavedUsed(Allocator* a);
 
@@ -5934,7 +5943,8 @@ namespace {
 
     static void funcEmitterTruncF(FuncEmitter* e, MInst* in);
 
-    static void intervalAddRange(Interval* it, i32 from, i32 to);
+    template <typename T>
+    static void intervalAddRange(T* it, i32 from, i32 to);
 
     static i32 intervalCovered(Interval* it, i32 p);
 
@@ -5944,13 +5954,16 @@ namespace {
 
     static void intervalRecordUse(Interval* it, i32 p);
 
-    static bool intervalCutAt(Interval* it, i32 p);
+    template <typename T>
+    static bool intervalCutAt(T* it, i32 p);
 
     static i32 intervalEnd(Interval* it);
 
     static bool intervalEndsBefore(Interval* it, i32 p);
 
     static void intervalFinish(Interval* it);
+
+    static void intervalFinish(CopyInterval* it);
 
     static i32 intervalIntersection(Interval* it, Interval* o);
 
@@ -9557,17 +9570,36 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // The coalescing pass only needs ranges of virtual copy operands. Liveness
     // is independent for each register, so projecting its sets gives the same
     // ranges without building physical intervals, uses or allocation hints.
-    static void allocatorBuildIntervals(Allocator* a, bool copiesOnly) {
+    template <bool copiesOnly>
+    static void allocatorBuildIntervals(Allocator* a) {
         MFunc* mf = a->mf;
-        a->intervals.resize(usize(mf->nregs));
-        a->intervals.fill(nullptr);
+        auto& entries = [&]() -> auto& {
+            if constexpr (copiesOnly) {
+                return a->copyIntervals;
+            } else {
+                return a->intervals;
+            }
+        }();
+        entries.resize(usize(mf->nregs));
+        entries.fill(nullptr);
+        auto interval = [&](VReg r) {
+            if constexpr (copiesOnly) {
+                auto& entry = a->copyIntervals[usize(allocatorVindex(a, r))];
+                if (!entry) {
+                    entry = activePool->make<CopyInterval>();
+                }
+                return entry;
+            } else {
+                return allocatorInterval(a, r);
+            }
+        };
         const auto copyIndex = a->copyIndex.view();
         const auto copyRegs = a->copyRegs.view();
         auto accepts = [&](VReg r) {
             if (r == noReg) {
                 return false;
             }
-            if (copiesOnly) {
+            if constexpr (copiesOnly) {
                 return !vRegIsPhys(r) && copyIndex[allocatorVindex(a, r)] >= 0;
             }
             return !vRegIsPhys(r) || allocatable(r);
@@ -9578,16 +9610,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             const i32 to = a->blockTo[b];
             bitsetEach(a->liveOut[b], [&](Int x) {
                 const VReg r = copiesOnly ? copyRegs[x] : firstVirtual + VReg(x);
-                intervalAddRange(allocatorInterval(a, r), from, to);
+                intervalAddRange(interval(r), from, to);
             });
             auto instructions = mf->blocks[b].insts.view();
             for (Int j = length(instructions) - 1; j >= 0; --j) {
                 MInst* in = &instructions[j];
                 const i32 p = from + 2 + 2 * j;
-                if (!copiesOnly) {
+                if constexpr (!copiesOnly) {
                     auto clobbers = mInstClobberSet(in, mf->registerClasses);
                     for (Int k = 0; k < length(clobbers); ++k) {
-                        intervalAddRange(allocatorInterval(a, clobbers[k]), p + 1, p + 2);
+                        intervalAddRange(interval(clobbers[k]), p + 1, p + 2);
                     }
                 }
                 const bool needReg = in->op != mParMove;
@@ -9595,10 +9627,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     if ((!(role & roleDef) && role != roleTemp) || !accepts(*r)) {
                         return;
                     }
-                    Interval* it = allocatorInterval(a, *r);
+                    auto* it = interval(*r);
                     if (role == roleTemp) {
                         intervalAddRange(it, p, p + 2);
-                        if (!copiesOnly) {
+                        if constexpr (!copiesOnly) {
                             intervalRecordUse(it, p + 1);
                             intervalRecordUse(it, p);
                         }
@@ -9606,7 +9638,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         if (!intervalCutAt(it, p + 1)) {
                             intervalAddRange(it, p + 1, p + 2);
                         }
-                        if (!copiesOnly) {
+                        if constexpr (!copiesOnly) {
                             if (needReg || vRegIsPhys(*r)) {
                                 intervalRecordUse(it, p + 1);
                             }
@@ -9617,15 +9649,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     if (!(role & roleUse) || role == roleTemp || !accepts(*r)) {
                         return;
                     }
-                    Interval* it = allocatorInterval(a, *r);
+                    auto* it = interval(*r);
                     intervalAddRange(it, from, p + 1);
-                    if (!copiesOnly) {
+                    if constexpr (!copiesOnly) {
                         if (needReg || vRegIsPhys(*r)) {
                             intervalRecordUse(it, p);
                         }
                     }
                 });
-                if (!copiesOnly) {
+                if constexpr (!copiesOnly) {
                     if (in->op == mMov || in->op == mFMov) {
                         allocatorHint(a, in->dst, in->src);
                     }
@@ -9636,12 +9668,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
             }
         }
-        a->intervals.visit([](Interval* it) {
+        entries.visit([](auto* it) {
             if (it) {
                 intervalFinish(it);
             }
         });
-        if (!copiesOnly) {
+        if constexpr (!copiesOnly) {
             for (Int r = 0; r < 32; ++r) {
                 if (a->fixed[r]) {
                     intervalFinish(a->fixed[r]);
@@ -9785,8 +9817,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             if (x == y) {
                 return;
             }
-            Interval* left = a->intervals[usize(x)];
-            Interval* right = a->intervals[usize(y)];
+            CopyInterval* left = a->copyIntervals[usize(x)];
+            CopyInterval* right = a->copyIntervals[usize(y)];
             if (!left || !right || !left->ranges.size() || !right->ranges.size() || overlap(left->ranges.view(), right->ranges.view())) {
                 return;
             }
@@ -9794,8 +9826,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             // Only root ranges are read from here. The whole allocator is
             // discarded after a join, so merged buffers can be reused now.
             mergeRanges(left->ranges, right->ranges, scratch);
-            left->end = maximum(left->end, right->end);
-            right->end = 0;
             joined = true;
         };
         // Copies were stably sorted by their block's loop depth. Bucketing
@@ -9972,18 +10002,29 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return noReg;
     }
 
+    static __attribute__((noinline)) Interval* newInterval(VReg vreg, VReg reg, u8 classValue = 0, VReg hint = 0) {
+        Interval* it = activePool->make<Interval>();
+        it->vreg = vreg;
+        it->classValue = classValue;
+        it->reg = reg;
+        it->hint = hint;
+        return it;
+    }
+
     static Interval* allocatorInterval(Allocator* a, VReg r) {
         if (vRegIsPhys(r)) {
-            if (isNil((a)->fixed[r])) {
-                (a)->fixed[r] = activePool->make<Interval>(Interval{.vreg = r, .reg = r});
+            auto& entry = a->fixed[r];
+            if (!entry) {
+                entry = newInterval(r, r);
             }
-            return (a)->fixed[r];
+            return entry;
         }
-        Int x = allocatorVindex(a, r);
-        if (isNil((a)->intervals[x])) {
-            (a)->intervals[x] = activePool->make<Interval>(Interval{.vreg = r, .classValue = a->mf->classValue[x], .reg = noReg, .hint = noReg});
+        const Int x = allocatorVindex(a, r);
+        auto& entry = a->intervals[x];
+        if (!entry) {
+            entry = newInterval(r, noReg, a->mf->classValue[x], noReg);
         }
-        return (a)->intervals[x];
+        return entry;
     }
 
     // linearize orders blocks in reverse postorder of the machine CFG and
@@ -13887,7 +13928,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // addRange adds [from, to) during the backward walk, which keeps the ranges
     // in decreasing order: they arrive in decreasing order and merge with the
     // last one when they touch. finish puts them in order.
-    static void intervalAddRange(Interval* it, i32 from, i32 to) {
+    template <typename T>
+    static void intervalAddRange(T* it, i32 from, i32 to) {
         {
             Int n = length((it)->ranges);
             if ((n > Int(0LL))) {
@@ -13946,7 +13988,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // cutAt shortens the earliest range, which covers a definition at p, to
     // start there; it reports false when no range covers p.
-    static bool intervalCutAt(Interval* it, i32 p) {
+    template <typename T>
+    static bool intervalCutAt(T* it, i32 p) {
         Int n = length((it)->ranges);
         if ((((n > Int(0LL)) && (((it)->ranges[(n - Int(1LL))]).from <= p)) && (((it)->ranges[(n - Int(1LL))]).to > p))) {
             ((it)->ranges[(n - Int(1LL))]).from = p;
@@ -13980,8 +14023,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
     }
 
-    static void intervalFinish(Interval* it) {
-        Span<Lrange> r = (it)->ranges.view();
+    static void intervalFinishRanges(InlineVec<Lrange, 1>& ranges) {
+        Span<Lrange> r = ranges.view();
         {
             auto temporary730 = Int(0LL);
             auto temporary731 = (length(r) - Int(1LL));
@@ -13999,6 +14042,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 r[j] = temporary735;
             }
         }
+    }
+
+    static void intervalFinish(CopyInterval* it) {
+        intervalFinishRanges(it->ranges);
+    }
+
+    static void intervalFinish(Interval* it) {
+        intervalFinishRanges(it->ranges);
+        const auto r = it->ranges.view();
         it->end = length(r) ? r[length(r) - 1].to : 0;
         const usize count = it->uses.size();
         for (usize i = 0; i < count / 2; ++i) {
@@ -14064,7 +14116,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // split cuts the interval at p: the returned child covers p and later.
     static Interval* intervalSplit(Interval* it, i32 p) {
-        Interval* child = activePool->make<Interval>(Interval{.vreg = it->vreg, .classValue = it->classValue, .reg = noReg, .hint = it->hint});
+        Interval* child = newInterval(it->vreg, noReg, it->classValue, it->hint);
         Int k = Int(0LL);
         {
             for (; ((k < length((it)->ranges)) && (((it)->ranges[k]).to <= p));) {
@@ -20032,7 +20084,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         allocatorLinearize(a);
         if (allocatorSelectCopies(a)) {
             allocatorLiveness(a, true);
-            allocatorBuildIntervals(a, true);
+            allocatorBuildIntervals<true>(a);
             allocatorCoalesce(a);
             // Coalescing only rewrites operands and replaces copies with
             // no-ops; block order and instruction positions stay valid.
@@ -23632,7 +23684,7 @@ namespace {
             allocatorLinearize(&allocation);
             require(allocatorSelectCopies(&allocation), "selecting virtual register copies");
             allocatorLiveness(&allocation, true);
-            allocatorBuildIntervals(&allocation, true);
+            allocatorBuildIntervals<true>(&allocation);
             require(allocatorCoalesce(&allocation), "coalescing virtual register copies");
             require(function.nregs == 2 && length(function.classValue) == 2, "coalescing compacts virtual register IDs");
             require(function.classValue[0] == classGPR && function.classValue[1] == classXMM, "coalescing preserves register classes");
@@ -23687,10 +23739,10 @@ namespace {
             allocatorLinearize(&projected);
             require(allocatorSelectCopies(&projected) && projected.copyRegs.size() == 4, "selecting copies with gaps in register IDs");
             allocatorLiveness(&projected, true);
-            allocatorBuildIntervals(&projected, true);
+            allocatorBuildIntervals<true>(&projected);
             for (Int x = 0; x < function.nregs; ++x) {
                 if (projected.copyIndex[usize(x)] < 0) {
-                    require(!projected.intervals[usize(x)], "unselected registers have no projected intervals");
+                    require(!projected.copyIntervals[usize(x)], "unselected registers have no projected intervals");
                     continue;
                 }
                 const Int selected = projected.copyIndex[usize(x)];
@@ -23700,16 +23752,15 @@ namespace {
                     require(bitsetHas(full.liveOut[block], x) == bitsetHas(projected.liveOut[block], selected), "projected live-out equals full analysis");
                 }
                 Interval* expected = full.intervals[usize(x)];
-                Interval* actual = projected.intervals[usize(x)];
+                CopyInterval* actual = projected.copyIntervals[usize(x)];
                 require(bool(expected) == bool(actual), "projected reachable intervals");
                 if (!expected) {
                     continue;
                 }
-                require(expected->ranges.size() == actual->ranges.size() && intervalEnd(expected) == intervalEnd(actual), "projected interval bounds");
+                require(expected->ranges.size() == actual->ranges.size(), "projected interval bounds");
                 for (usize i = 0; i < expected->ranges.size(); ++i) {
                     require(expected->ranges[i].from == actual->ranges[i].from && expected->ranges[i].to == actual->ranges[i].to, "projected interval equals full analysis");
                 }
-                require(!actual->uses.size() && actual->hint == noReg, "coalescing does not build uses or hints");
             }
             for (Int r = 0; r < 32; ++r) {
                 require(!projected.fixed[r], "coalescing does not build physical intervals");
