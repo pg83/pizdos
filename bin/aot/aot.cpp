@@ -5626,7 +5626,9 @@ namespace {
 
     static i32 layoutElemDropped(Layout* l, Module* m, Int seg);
 
-    static Slice<i32> mFuncHotOrder(MFunc* mf, Slice<i32> order);
+    static Span<i32> mFuncHotOrder(MFunc* mf, Span<i32> order);
+
+    static i32 mFuncSuccAt(MFunc* mf, Slice<i32> succs, Int i);
 
     static VReg mFuncNewReg(MFunc* mf, u8 classValue);
 
@@ -7283,6 +7285,18 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return l->dropped + convert<i32>(length(m->datas) + seg);
     }
 
+    // succAt is the i-th successor a depth-first walk takes. Reverse
+    // postorder places the last one right after its block, so of two
+    // successors the one in the deeper loop is taken last: a loop's body
+    // follows its header, and exits leave the loop's code.
+    static i32 mFuncSuccAt(MFunc* mf, Slice<i32> succs, Int i) {
+        const Int n = length(succs);
+        if (n == 2 && mf->blocks[succs[0]].depth < mf->blocks[succs[1]].depth) {
+            return succs[i];
+        }
+        return succs[n - 1 - i];
+    }
+
     // Build hot reverse postorder without visiting fallback edges: cold paths
     // must not affect the placement of hot successors. A strict function keeps
     // the allocator's exact order.
@@ -7306,7 +7320,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             VisitMir346* top = &stack[length(stack) - 1];
             Slice<i32> succs = mf->blocks[top->block].succs;
             if (top->edge < length(succs)) {
-                i32 s = succs[length(succs) - 1 - top->edge];
+                i32 s = mFuncSuccAt(mf, succs, top->edge);
                 top->edge++;
                 if (!seen[s] && !mf->blocks[s].cold) {
                     seen[s] = true;
@@ -9781,7 +9795,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             auto* top = &stack[stack.size() - 1];
             auto succs = mf->blocks[top->b].succs;
             if (top->i < length(succs)) {
-                const i32 successor = succs[length(succs) - 1 - top->i++];
+                const i32 successor = mFuncSuccAt(mf, succs, top->i++);
                 if (!visited[usize(successor)]) {
                     visited[usize(successor)] = 1;
                     stack.pushBack({successor, 0});
@@ -13386,17 +13400,23 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             if (progress) {
                 continue;
             }
+            // A swap performs one move of a cycle and renames the sources of
+            // the others; the move completing a cycle of two is done with it.
             Move m = pending[0];
             funcEmitterSwap(e, m.dst, m.src);
-            pending = subslice(pending, 1, length(pending));
-            for (Int k = 0, end = length(pending); k < end; ++k) {
-                auto switch714 = pending[k].src;
-                if (switch714 == m.dst) {
-                    pending[k].src = m.src;
-                } else if (switch714 == m.src) {
-                    pending[k].src = m.dst;
+            Slice<Move> rest = makeSlice<Move>(0, length(pending) - 1);
+            for (Int k = 1, end = length(pending); k < end; ++k) {
+                Move o = pending[k];
+                if (o.src == m.dst) {
+                    o.src = m.src;
+                } else if (o.src == m.src) {
+                    o.src = m.dst;
+                }
+                if (o.src != o.dst) {
+                    rest = appendValues(rest, o);
                 }
             }
+            pending = rest;
         }
     }
 
