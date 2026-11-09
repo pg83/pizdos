@@ -187,7 +187,7 @@ func (k *Kernel) table(*ImportMeta) uintptr {
 
 // functionTable lists the kernel's functions by import name.
 func (k *Kernel) functionTable() map[string]any {
-	t := map[string]any{"__kernel_start": k.kernelStart}
+	t := map[string]any{"__kernel_start": libc__kernel_start}
 
 	for _, part := range []map[string]any{k.fileFunctions(), k.pathFunctions(), k.heapFunctions(), k.stringFunctions(),
 		k.timeFunctions(), k.regexFunctions(), k.signalFunctions(), k.procFunctions(), k.jumpFunctions(), k.forkFunctions(),
@@ -483,7 +483,7 @@ func (p *Process) exitWith(status int) {
 	panic(&procExit{status})
 }
 
-func (k *Kernel) kernelStart(ctx uintptr, errnoAt, environAt, argcAt, argvAt, tznameAt, timezoneAt, daylightAt, herrnoAt uint32) {
+func libc__kernel_start(ctx uintptr, errnoAt, environAt, argcAt, argvAt, tznameAt, timezoneAt, daylightAt, herrnoAt uint32) {
 	p := proc(ctx)
 	p.errnoAt, p.environAt = errnoAt, environAt
 	p.tzAt, p.herrnoAt = [3]uint32{tznameAt, timezoneAt, daylightAt}, herrnoAt

@@ -145,121 +145,135 @@ func (p *Process) forkpty(amaster, name, termp, winp uint32) uint32 {
 
 func (k *Kernel) ptyFunctions() map[string]any {
 	return map[string]any{
-		"posix_openpt": func(ctx uintptr, flags uint32) uint32 {
-			p := proc(ctx)
-			fd, err := p.openat2("/dev/ptmx", int(flags&^syscall.O_CLOEXEC), 0)
-
-			if err != nil {
-				return p.result(0, err)
-			}
-
-			return p.result(p.install(newFile(fd, true), 0, flags&syscall.O_CLOEXEC != 0))
-		},
-		// grantpt has nothing to do on Linux's devpts.
-		"grantpt": func(ctx uintptr, fd uint32) uint32 {
-			p := proc(ctx)
-			f, err := p.fd(fd)
-
-			if err == nil {
-				_, err = ptyNumber(f.fd)
-			}
-
-			if err == syscall.ENOTTY {
-				err = syscall.EINVAL
-			}
-
-			return p.result(0, err)
-		},
-		"unlockpt": func(ctx uintptr, fd uint32) uint32 {
-			p := proc(ctx)
-			f, err := p.fd(fd)
-
-			if err == nil {
-				err = unlockPty(f.fd)
-			}
-
-			return p.result(0, err)
-		},
-		"ptsname": func(ctx uintptr, fd uint32) uint32 {
-			p := proc(ctx)
-			f, err := p.fd(fd)
-
-			if err != nil {
-				p.setErrno(errnoOf(err))
-
-				return 0
-			}
-
-			n, err := ptyNumber(f.fd)
-
-			if err != nil {
-				p.setErrno(errnoOf(err))
-
-				return 0
-			}
-
-			return p.constant(ptsName(n))
-		},
-		// ptsname_r returns an error number.
-		"ptsname_r": func(ctx uintptr, fd, buf, size uint32) uint32 {
-			p := proc(ctx)
-			f, err := p.fd(fd)
-
-			if err != nil {
-				return uint32(syscall.EBADF)
-			}
-
-			n, err := ptyNumber(f.fd)
-
-			if err != nil {
-				return uint32(errnoOf(err))
-			}
-
-			name := ptsName(n)
-
-			if uint32(len(name)) >= size {
-				return uint32(syscall.ERANGE)
-			}
-
-			p.putString(buf, name)
-
-			return 0
-		},
-		"openpty": func(ctx uintptr, amaster, aslave, name, termp, winp uint32) uint32 {
-			p := proc(ctx)
-			master, slave, n, err := p.openPty(termp, winp)
-
-			if err != nil {
-				return p.result(0, err)
-			}
-
-			m, err := p.install(newFile(master, true), 0, false)
-
-			if err != nil {
-				syscall.Close(slave)
-
-				return p.result(0, err)
-			}
-
-			s, err := p.install(newFile(slave, true), 0, false)
-
-			if err != nil {
-				p.closeFd(m)
-
-				return p.result(0, err)
-			}
-
-			p.put32(amaster, uint32(m))
-			p.put32(aslave, uint32(s))
-
-			if name != 0 {
-				p.putString(name, ptsName(n))
-			}
-
-			return p.result(0, nil)
-		},
-		"forkpty": func(ctx uintptr, amaster, name, termp, winp uint32) uint32 {
-			return proc(ctx).forkpty(amaster, name, termp, winp)
-		},
+		"posix_openpt": libcPosix_openpt,
+		"grantpt":      libcGrantpt,
+		"unlockpt":     libcUnlockpt,
+		"ptsname":      libcPtsname,
+		"ptsname_r":    libcPtsname_r,
+		"openpty":      libcOpenpty,
+		"forkpty":      libcForkpty,
 	}
+}
+
+func libcPosix_openpt(ctx uintptr, flags uint32) uint32 {
+	p := proc(ctx)
+	fd, err := p.openat2("/dev/ptmx", int(flags&^syscall.O_CLOEXEC), 0)
+
+	if err != nil {
+		return p.result(0, err)
+	}
+
+	return p.result(p.install(newFile(fd, true), 0, flags&syscall.O_CLOEXEC != 0))
+}
+
+// grantpt has nothing to do on Linux's devpts.
+func libcGrantpt(ctx uintptr, fd uint32) uint32 {
+	p := proc(ctx)
+	f, err := p.fd(fd)
+
+	if err == nil {
+		_, err = ptyNumber(f.fd)
+	}
+
+	if err == syscall.ENOTTY {
+		err = syscall.EINVAL
+	}
+
+	return p.result(0, err)
+}
+
+func libcUnlockpt(ctx uintptr, fd uint32) uint32 {
+	p := proc(ctx)
+	f, err := p.fd(fd)
+
+	if err == nil {
+		err = unlockPty(f.fd)
+	}
+
+	return p.result(0, err)
+}
+
+func libcPtsname(ctx uintptr, fd uint32) uint32 {
+	p := proc(ctx)
+	f, err := p.fd(fd)
+
+	if err != nil {
+		p.setErrno(errnoOf(err))
+
+		return 0
+	}
+
+	n, err := ptyNumber(f.fd)
+
+	if err != nil {
+		p.setErrno(errnoOf(err))
+
+		return 0
+	}
+
+	return p.constant(ptsName(n))
+}
+
+// ptsname_r returns an error number.
+func libcPtsname_r(ctx uintptr, fd, buf, size uint32) uint32 {
+	p := proc(ctx)
+	f, err := p.fd(fd)
+
+	if err != nil {
+		return uint32(syscall.EBADF)
+	}
+
+	n, err := ptyNumber(f.fd)
+
+	if err != nil {
+		return uint32(errnoOf(err))
+	}
+
+	name := ptsName(n)
+
+	if uint32(len(name)) >= size {
+		return uint32(syscall.ERANGE)
+	}
+
+	p.putString(buf, name)
+
+	return 0
+}
+
+func libcOpenpty(ctx uintptr, amaster, aslave, name, termp, winp uint32) uint32 {
+	p := proc(ctx)
+	master, slave, n, err := p.openPty(termp, winp)
+
+	if err != nil {
+		return p.result(0, err)
+	}
+
+	m, err := p.install(newFile(master, true), 0, false)
+
+	if err != nil {
+		syscall.Close(slave)
+
+		return p.result(0, err)
+	}
+
+	s, err := p.install(newFile(slave, true), 0, false)
+
+	if err != nil {
+		p.closeFd(m)
+
+		return p.result(0, err)
+	}
+
+	p.put32(amaster, uint32(m))
+	p.put32(aslave, uint32(s))
+
+	if name != 0 {
+		p.putString(name, ptsName(n))
+	}
+
+	return p.result(0, nil)
+}
+
+func libcForkpty(ctx uintptr, amaster, name, termp, winp uint32) uint32 {
+	return proc(ctx).forkpty(amaster, name, termp, winp)
 }

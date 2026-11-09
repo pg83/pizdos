@@ -391,545 +391,667 @@ func (p *Process) statvfs(fd int, at uint32) error {
 
 func (k *Kernel) pathFunctions() map[string]any {
 	return map[string]any{
-		"open": func(ctx uintptr, path, flags, va uint32) uint32 {
-			p := proc(ctx)
-
-			return p.result(p.open(p.str(path), flags, va))
-		},
-		"openat": func(ctx uintptr, dirfd, path, flags, va uint32) uint32 {
-			p := proc(ctx)
-			full, err := p.atPath(int32(dirfd), p.str(path))
-
-			if err != nil {
-				return p.result(0, err)
-			}
-
-			return p.result(p.open(full, flags, va))
-		},
-		"stat": func(ctx uintptr, path, at uint32) uint32 {
-			return proc(ctx).stat(path, at, true)
-		},
-		"lstat": func(ctx uintptr, path, at uint32) uint32 {
-			return proc(ctx).stat(path, at, false)
-		},
-		"fstatat": func(ctx uintptr, dirfd, path, at, flags uint32) uint32 {
-			p := proc(ctx)
-			var st syscall.Stat_t
-			err := p.onAt(int32(dirfd), p.str(path), flags, func(fd int) error {
-				return syscall.Fstat(fd, &st)
-			})
-
-			if err == nil {
-				p.putStat(at, &st)
-			}
-
-			return p.result(0, err)
-		},
-		"access": func(ctx uintptr, path, mode uint32) uint32 {
-			p := proc(ctx)
-
-			return p.result(0, p.onPath(p.str(path), true, func(fd int) error {
-				return access(fd, mode, 0)
-			}))
-		},
-		"faccessat": func(ctx uintptr, dirfd, path, mode, flags uint32) uint32 {
-			p := proc(ctx)
-
-			return p.result(0, p.onAt(int32(dirfd), p.str(path), flags, func(fd int) error {
-				return access(fd, mode, flags)
-			}))
-		},
-		"truncate": func(ctx uintptr, path uint32, size uint64) uint32 {
-			p := proc(ctx)
-
-			return p.result(0, p.onPath(p.str(path), true, func(fd int) error {
-				return syscall.Truncate(procFd(fd), int64(size))
-			}))
-		},
-		"statvfs": func(ctx uintptr, path, at uint32) uint32 {
-			p := proc(ctx)
-
-			return p.result(0, p.onPath(p.str(path), true, func(fd int) error {
-				return p.statvfs(fd, at)
-			}))
-		},
-		"fstatvfs": func(ctx uintptr, fd, at uint32) uint32 {
-			p := proc(ctx)
-			f, err := p.fd(fd)
-
-			if err == nil {
-				err = p.statvfs(f.fd, at)
-			}
-
-			return p.result(0, err)
-		},
-		"fchdir": func(ctx uintptr, fd uint32) uint32 {
-			p := proc(ctx)
-			f, err := p.fd(fd)
-
-			if err != nil {
-				return p.result(0, err)
-			}
-
-			host, err := p.k.hostPath(f.fd)
-
-			if err != nil {
-				return p.result(0, err)
-			}
-
-			return p.result(0, p.chdir(p.k.guestPath(host)))
-		},
-		// chroot needs privilege, which no process has: they all share the
-		// kernel's root.
-		"chroot": func(ctx uintptr, path uint32) uint32 {
-			p := proc(ctx)
-
-			return p.result(0, p.onPath(p.str(path), true, func(int) error {
-				return syscall.EPERM
-			}))
-		},
-		"chdir": func(ctx uintptr, path uint32) uint32 {
-			p := proc(ctx)
-
-			return p.result(0, p.chdir(p.str(path)))
-		},
-		"getcwd": func(ctx uintptr, buf, size uint32) uint32 {
-			p := proc(ctx)
-
-			if buf == 0 {
-				at := p.newString(p.cwd)
-
-				if at == 0 {
-					return p.pointer(0, syscall.ENOMEM)
-				}
-
-				return p.pointer(at, nil)
-			}
-
-			if uint32(len(p.cwd)) >= size {
-				return p.pointer(0, syscall.ERANGE)
-			}
-
-			p.putString(buf, p.cwd)
-
-			return p.pointer(buf, nil)
-		},
-		"mkdir": func(ctx uintptr, path, mode uint32) uint32 {
-			p := proc(ctx)
-
-			return p.result(0, p.mkdir(p.str(path), mode))
-		},
-		"mkdirat": func(ctx uintptr, dirfd, path, mode uint32) uint32 {
-			p := proc(ctx)
-			full, err := p.atPath(int32(dirfd), p.str(path))
-
-			if err == nil {
-				err = p.mkdir(full, mode)
-			}
-
-			return p.result(0, err)
-		},
-		"rmdir": func(ctx uintptr, path uint32) uint32 {
-			p := proc(ctx)
-
-			return p.result(0, p.unlink(p.str(path), atRemovedir))
-		},
-		"unlink": func(ctx uintptr, path uint32) uint32 {
-			p := proc(ctx)
-
-			return p.result(0, p.unlink(p.str(path), 0))
-		},
-		"unlinkat": func(ctx uintptr, dirfd, path, flags uint32) uint32 {
-			p := proc(ctx)
-
-			if flags&^atRemovedir != 0 {
-				return p.result(0, syscall.EINVAL)
-			}
-
-			full, err := p.atPath(int32(dirfd), p.str(path))
-
-			if err == nil {
-				err = p.unlink(full, int(flags))
-			}
-
-			return p.result(0, err)
-		},
-		// remove unlinks a file or empties a directory, whichever it is.
-		"remove": func(ctx uintptr, path uint32) uint32 {
-			p := proc(ctx)
-			take := func(dirfd int, name string) error {
-				err := unlinkat(dirfd, name, 0)
-
-				if err == syscall.EISDIR || err == syscall.EPERM {
-					return unlinkat(dirfd, name, atRemovedir)
-				}
-
-				return err
-			}
-
-			return p.result(0, p.onName(p.str(path), syscall.EBUSY, take))
-		},
-		"rename": func(ctx uintptr, old, new uint32) uint32 {
-			p := proc(ctx)
-
-			return p.result(0, p.rename(p.str(old), p.str(new)))
-		},
-		"renameat": func(ctx uintptr, olddir, old, newdir, new uint32) uint32 {
-			p := proc(ctx)
-			from, err := p.atPath(int32(olddir), p.str(old))
-
-			if err != nil {
-				return p.result(0, err)
-			}
-
-			to, err := p.atPath(int32(newdir), p.str(new))
-
-			if err != nil {
-				return p.result(0, err)
-			}
-
-			return p.result(0, p.rename(from, to))
-		},
-		"link": func(ctx uintptr, old, new uint32) uint32 {
-			p := proc(ctx)
-
-			return p.result(0, p.link(p.str(old), p.str(new), false))
-		},
-		"linkat": func(ctx uintptr, olddir, old, newdir, new, flags uint32) uint32 {
-			p := proc(ctx)
-
-			if flags&^atSymlinkFollow != 0 {
-				return p.result(0, syscall.EINVAL)
-			}
-
-			from, err := p.atPath(int32(olddir), p.str(old))
-
-			if err != nil {
-				return p.result(0, err)
-			}
-
-			to, err := p.atPath(int32(newdir), p.str(new))
-
-			if err != nil {
-				return p.result(0, err)
-			}
-
-			return p.result(0, p.link(from, to, flags&atSymlinkFollow != 0))
-		},
-		"symlink": func(ctx uintptr, target, path uint32) uint32 {
-			p := proc(ctx)
-
-			return p.result(0, p.symlink(p.str(target), p.str(path)))
-		},
-		"symlinkat": func(ctx uintptr, target, dirfd, path uint32) uint32 {
-			p := proc(ctx)
-			full, err := p.atPath(int32(dirfd), p.str(path))
-
-			if err == nil {
-				err = p.symlink(p.str(target), full)
-			}
-
-			return p.result(0, err)
-		},
-		"readlink": func(ctx uintptr, path, buf, size uint32) uint32 {
-			p := proc(ctx)
-			out := p.span(buf, size)
-			n := 0
-			err := p.onPath(p.str(path), false, func(fd int) error {
-				var e error
-				n, e = readlinkFd(fd, out)
-
-				return e
-			})
-
-			return p.result(n, err)
-		},
-		"readlinkat": func(ctx uintptr, dirfd, path, buf, size uint32) uint32 {
-			p := proc(ctx)
-			out := p.span(buf, size)
-			n := 0
-			err := p.onAt(int32(dirfd), p.str(path), atSymlinkNofollow|atEmptyPath, func(fd int) error {
-				var e error
-				n, e = readlinkFd(fd, out)
-
-				return e
-			})
-
-			return p.result(n, err)
-		},
-		"canonicalize_file_name": func(ctx uintptr, path uint32) uint32 {
-			p := proc(ctx)
-			guest, err := p.realpath(p.str(path))
-
-			if err != nil {
-				return p.pointer(0, err)
-			}
-
-			at := p.newString(guest)
-
-			if at == 0 {
-				return p.pointer(0, syscall.ENOMEM)
-			}
-
-			return p.pointer(at, nil)
-		},
-		"get_current_dir_name": func(ctx uintptr) uint32 {
-			p := proc(ctx)
-			at := p.newString(p.cwd)
-
-			if at == 0 {
-				return p.pointer(0, syscall.ENOMEM)
-			}
-
-			return p.pointer(at, nil)
-		},
-		"creat": func(ctx uintptr, path, mode uint32) uint32 {
-			p := proc(ctx)
-			fd, err := p.openat2(p.str(path), syscall.O_WRONLY|syscall.O_CREAT|syscall.O_TRUNC, mode&0o7777&^p.umask)
-
-			if err != nil {
-				return p.result(0, err)
-			}
-
-			return p.result(p.install(newFile(fd, true), 0, false))
-		},
-		"eaccess": func(ctx uintptr, path, mode uint32) uint32 {
-			p := proc(ctx)
-
-			return p.result(0, p.onPath(p.str(path), true, func(fd int) error {
-				return access(fd, mode, atEaccess)
-			}))
-		},
-		"euidaccess": func(ctx uintptr, path, mode uint32) uint32 {
-			p := proc(ctx)
-
-			return p.result(0, p.onPath(p.str(path), true, func(fd int) error {
-				return access(fd, mode, atEaccess)
-			}))
-		},
-		"statfs": func(ctx uintptr, path, at uint32) uint32 {
-			p := proc(ctx)
-
-			return p.result(0, p.onPath(p.str(path), true, func(fd int) error {
-				return p.putStatfs(fd, at)
-			}))
-		},
-		"fstatfs": func(ctx uintptr, fd, at uint32) uint32 {
-			p := proc(ctx)
-			f, err := p.fd(fd)
-
-			if err == nil {
-				err = p.putStatfs(f.fd, at)
-			}
-
-			return p.result(0, err)
-		},
-		// Process accounting needs privilege.
-		"acct": func(ctx uintptr, path uint32) uint32 {
-			return proc(ctx).result(0, syscall.EPERM)
-		},
-		"realpath": func(ctx uintptr, path, resolved uint32) uint32 {
-			p := proc(ctx)
-			guest, err := p.realpath(p.str(path))
-
-			if err != nil {
-				return p.pointer(0, err)
-			}
-
-			if resolved == 0 {
-				resolved = p.newString(guest)
-
-				if resolved == 0 {
-					return p.pointer(0, syscall.ENOMEM)
-				}
-
-				return p.pointer(resolved, nil)
-			}
-
-			if len(guest) >= 4096 {
-				return p.pointer(0, syscall.ENAMETOOLONG)
-			}
-
-			p.putString(resolved, guest)
-
-			return p.pointer(resolved, nil)
-		},
-		"chmod": func(ctx uintptr, path, mode uint32) uint32 {
-			p := proc(ctx)
-
-			return p.result(0, p.onPath(p.str(path), true, func(fd int) error {
-				return atCall(sysFchmodat2, fd, "", uintptr(mode&0o7777), atEmptyPath)
-			}))
-		},
-		"fchmodat": func(ctx uintptr, dirfd, path, mode, flags uint32) uint32 {
-			p := proc(ctx)
-
-			return p.result(0, p.onAt(int32(dirfd), p.str(path), flags, func(fd int) error {
-				return atCall(sysFchmodat2, fd, "", uintptr(mode&0o7777), atEmptyPath)
-			}))
-		},
-		"chown": func(ctx uintptr, path, uid, gid uint32) uint32 {
-			return proc(ctx).chown(path, uid, gid, true)
-		},
-		"lchown": func(ctx uintptr, path, uid, gid uint32) uint32 {
-			return proc(ctx).chown(path, uid, gid, false)
-		},
-		"fchownat": func(ctx uintptr, dirfd, path, uid, gid, flags uint32) uint32 {
-			p := proc(ctx)
-
-			return p.result(0, p.onAt(int32(dirfd), p.str(path), flags, func(fd int) error {
-				return syscall.Fchownat(fd, "", int(int32(uid)), int(int32(gid)), atEmptyPath)
-			}))
-		},
-		"mknod": func(ctx uintptr, path, mode uint32, dev uint64) uint32 {
-			p := proc(ctx)
-
-			return p.result(0, p.mknod(p.str(path), mode, dev))
-		},
-		"mknodat": func(ctx uintptr, dirfd, path, mode uint32, dev uint64) uint32 {
-			p := proc(ctx)
-			full, err := p.atPath(int32(dirfd), p.str(path))
-
-			if err == nil {
-				err = p.mknod(full, mode, dev)
-			}
-
-			return p.result(0, err)
-		},
-		"mkfifo": func(ctx uintptr, path, mode uint32) uint32 {
-			p := proc(ctx)
-
-			return p.result(0, p.mknod(p.str(path), sIfifo|mode&0o7777, 0))
-		},
-		"mkfifoat": func(ctx uintptr, dirfd, path, mode uint32) uint32 {
-			p := proc(ctx)
-			full, err := p.atPath(int32(dirfd), p.str(path))
-
-			if err == nil {
-				err = p.mknod(full, sIfifo|mode&0o7777, 0)
-			}
-
-			return p.result(0, err)
-		},
-		"utimes": func(ctx uintptr, path, times uint32) uint32 {
-			p := proc(ctx)
-
-			return p.result(0, p.utimens(p.str(path), p.timevals(times), 0))
-		},
-		"lutimes": func(ctx uintptr, path, times uint32) uint32 {
-			p := proc(ctx)
-
-			return p.result(0, p.utimens(p.str(path), p.timevals(times), atSymlinkNofollow))
-		},
-		"utime": func(ctx uintptr, path, times uint32) uint32 {
-			p := proc(ctx)
-			var ts []syscall.Timespec
-
-			if times != 0 {
-				ts = []syscall.Timespec{{Sec: int64(p.u64(times))}, {Sec: int64(p.u64(times + 8))}}
-			}
-
-			return p.result(0, p.utimens(p.str(path), ts, 0))
-		},
-		"utimensat": func(ctx uintptr, dirfd, path, times, flags uint32) uint32 {
-			p := proc(ctx)
-			full, err := p.atPath(int32(dirfd), p.str(path))
-
-			if err == nil {
-				err = p.utimens(full, p.timespecs(times), int(flags))
-			}
-
-			return p.result(0, err)
-		},
-		"opendir":   k.opendir,
-		"fdopendir": k.fdopendir,
-		"readdir":   k.readdir,
-		"rewinddir": k.rewinddir,
-		"closedir":  k.closedir,
-		"dirfd": func(ctx uintptr, dir uint32) uint32 {
-			return proc(ctx).u32(dir + dirFd)
-		},
-		// readdir_r returns an error number.
-		"readdir_r": func(ctx uintptr, dir, entry, result uint32) uint32 {
-			p := proc(ctx)
-			e, err := p.readdir(dir)
-			p.put32(result, 0)
-
-			if err != nil {
-				return uint32(errnoOf(err))
-			}
-
-			if e != 0 {
-				n := 19 + uint32(len(p.cstr(e+19))) + 1
-				copy(p.span(entry, n), p.span(e, n))
-				p.put32(result, entry)
-			}
-
-			return 0
-		},
-		"telldir": func(ctx uintptr, dir uint32) uint32 {
-			return proc(ctx).u32(dir + dirIndex)
-		},
-		"seekdir": func(ctx uintptr, dir, at uint32) {
-			p := proc(ctx)
-			p.rewinddir(dir)
-
-			for p.u32(dir+dirIndex) < at {
-				if e, _ := p.readdir(dir); e == 0 {
-					return
-				}
-			}
-		},
-		"alphasort": func(ctx uintptr, a, b uint32) uint32 {
-			return proc(ctx).direntCompare(a, b, bytes.Compare)
-		},
-		"versionsort": func(ctx uintptr, a, b uint32) uint32 {
-			return proc(ctx).direntCompare(a, b, strverscmp)
-		},
-		"mkstemp": func(ctx uintptr, template uint32) uint32 {
-			return proc(ctx).mkstemp(template, 0, 0)
-		},
-		"mkostemp": func(ctx uintptr, template, flags uint32) uint32 {
-			return proc(ctx).mkstemp(template, 0, flags)
-		},
-		"mkstemps": func(ctx uintptr, template, suffix uint32) uint32 {
-			return proc(ctx).mkstemp(template, suffix, 0)
-		},
-		"mkdtemp": func(ctx uintptr, template uint32) uint32 {
-			p := proc(ctx)
-			err := p.temporary(template, 0, func(path string) error {
-				return p.onName(path, syscall.EEXIST, func(dirfd int, name string) error {
-					return syscall.Mkdirat(dirfd, name, 0o700)
-				})
-			})
-
-			return p.pointer(template, err)
-		},
-		"mktemp": func(ctx uintptr, template uint32) uint32 {
-			p := proc(ctx)
-			err := p.temporary(template, 0, func(path string) error {
-				err := p.onPath(path, false, func(int) error {
-					return nil
-				})
-
-				if err == syscall.ENOENT {
-					return nil
-				}
-
-				if err == nil {
-					return syscall.EEXIST
-				}
-
-				return err
-			})
-
-			if err != nil {
-				p.span(template, 1)[0] = 0
-			}
-
-			return p.pointer(template, nil)
-		},
+		"open":                   libcOpen,
+		"openat":                 libcOpenat,
+		"stat":                   libcStat,
+		"lstat":                  libcLstat,
+		"fstatat":                libcFstatat,
+		"access":                 libcAccess,
+		"faccessat":              libcFaccessat,
+		"truncate":               libcTruncate,
+		"statvfs":                libcStatvfs,
+		"fstatvfs":               libcFstatvfs,
+		"fchdir":                 libcFchdir,
+		"chroot":                 libcChroot,
+		"chdir":                  libcChdir,
+		"getcwd":                 libcGetcwd,
+		"mkdir":                  libcMkdir,
+		"mkdirat":                libcMkdirat,
+		"rmdir":                  libcRmdir,
+		"unlink":                 libcUnlink,
+		"unlinkat":               libcUnlinkat,
+		"remove":                 libcRemove,
+		"rename":                 libcRename,
+		"renameat":               libcRenameat,
+		"link":                   libcLink,
+		"linkat":                 libcLinkat,
+		"symlink":                libcSymlink,
+		"symlinkat":              libcSymlinkat,
+		"readlink":               libcReadlink,
+		"readlinkat":             libcReadlinkat,
+		"canonicalize_file_name": libcCanonicalize_file_name,
+		"get_current_dir_name":   libcGet_current_dir_name,
+		"creat":                  libcCreat,
+		"eaccess":                libcEaccess,
+		"euidaccess":             libcEuidaccess,
+		"statfs":                 libcStatfs,
+		"fstatfs":                libcFstatfs,
+		"acct":                   libcAcct,
+		"realpath":               libcRealpath,
+		"chmod":                  libcChmod,
+		"fchmodat":               libcFchmodat,
+		"chown":                  libcChown,
+		"lchown":                 libcLchown,
+		"fchownat":               libcFchownat,
+		"mknod":                  libcMknod,
+		"mknodat":                libcMknodat,
+		"mkfifo":                 libcMkfifo,
+		"mkfifoat":               libcMkfifoat,
+		"utimes":                 libcUtimes,
+		"lutimes":                libcLutimes,
+		"utime":                  libcUtime,
+		"utimensat":              libcUtimensat,
+		"opendir":                libcOpendir,
+		"fdopendir":              libcFdopendir,
+		"readdir":                libcReaddir,
+		"rewinddir":              libcRewinddir,
+		"closedir":               libcClosedir,
+		"dirfd":                  libcDirfd,
+		"readdir_r":              libcReaddir_r,
+		"telldir":                libcTelldir,
+		"seekdir":                libcSeekdir,
+		"alphasort":              libcAlphasort,
+		"versionsort":            libcVersionsort,
+		"mkstemp":                libcMkstemp,
+		"mkostemp":               libcMkostemp,
+		"mkstemps":               libcMkstemps,
+		"mkdtemp":                libcMkdtemp,
+		"mktemp":                 libcMktemp,
 	}
+}
+
+func libcOpen(ctx uintptr, path, flags, va uint32) uint32 {
+	p := proc(ctx)
+
+	return p.result(p.open(p.str(path), flags, va))
+}
+
+func libcOpenat(ctx uintptr, dirfd, path, flags, va uint32) uint32 {
+	p := proc(ctx)
+	full, err := p.atPath(int32(dirfd), p.str(path))
+
+	if err != nil {
+		return p.result(0, err)
+	}
+
+	return p.result(p.open(full, flags, va))
+}
+
+func libcStat(ctx uintptr, path, at uint32) uint32 {
+	return proc(ctx).stat(path, at, true)
+}
+
+func libcLstat(ctx uintptr, path, at uint32) uint32 {
+	return proc(ctx).stat(path, at, false)
+}
+
+func libcFstatat(ctx uintptr, dirfd, path, at, flags uint32) uint32 {
+	p := proc(ctx)
+	var st syscall.Stat_t
+	err := p.onAt(int32(dirfd), p.str(path), flags, func(fd int) error {
+		return syscall.Fstat(fd, &st)
+	})
+
+	if err == nil {
+		p.putStat(at, &st)
+	}
+
+	return p.result(0, err)
+}
+
+func libcAccess(ctx uintptr, path, mode uint32) uint32 {
+	p := proc(ctx)
+
+	return p.result(0, p.onPath(p.str(path), true, func(fd int) error {
+		return access(fd, mode, 0)
+	}))
+}
+
+func libcFaccessat(ctx uintptr, dirfd, path, mode, flags uint32) uint32 {
+	p := proc(ctx)
+
+	return p.result(0, p.onAt(int32(dirfd), p.str(path), flags, func(fd int) error {
+		return access(fd, mode, flags)
+	}))
+}
+
+func libcTruncate(ctx uintptr, path uint32, size uint64) uint32 {
+	p := proc(ctx)
+
+	return p.result(0, p.onPath(p.str(path), true, func(fd int) error {
+		return syscall.Truncate(procFd(fd), int64(size))
+	}))
+}
+
+func libcStatvfs(ctx uintptr, path, at uint32) uint32 {
+	p := proc(ctx)
+
+	return p.result(0, p.onPath(p.str(path), true, func(fd int) error {
+		return p.statvfs(fd, at)
+	}))
+}
+
+func libcFstatvfs(ctx uintptr, fd, at uint32) uint32 {
+	p := proc(ctx)
+	f, err := p.fd(fd)
+
+	if err == nil {
+		err = p.statvfs(f.fd, at)
+	}
+
+	return p.result(0, err)
+}
+
+func libcFchdir(ctx uintptr, fd uint32) uint32 {
+	p := proc(ctx)
+	f, err := p.fd(fd)
+
+	if err != nil {
+		return p.result(0, err)
+	}
+
+	host, err := p.k.hostPath(f.fd)
+
+	if err != nil {
+		return p.result(0, err)
+	}
+
+	return p.result(0, p.chdir(p.k.guestPath(host)))
+}
+
+// chroot needs privilege, which no process has: they all share the
+// kernel's root.
+func libcChroot(ctx uintptr, path uint32) uint32 {
+	p := proc(ctx)
+
+	return p.result(0, p.onPath(p.str(path), true, func(int) error {
+		return syscall.EPERM
+	}))
+}
+
+func libcChdir(ctx uintptr, path uint32) uint32 {
+	p := proc(ctx)
+
+	return p.result(0, p.chdir(p.str(path)))
+}
+
+func libcGetcwd(ctx uintptr, buf, size uint32) uint32 {
+	p := proc(ctx)
+
+	if buf == 0 {
+		at := p.newString(p.cwd)
+
+		if at == 0 {
+			return p.pointer(0, syscall.ENOMEM)
+		}
+
+		return p.pointer(at, nil)
+	}
+
+	if uint32(len(p.cwd)) >= size {
+		return p.pointer(0, syscall.ERANGE)
+	}
+
+	p.putString(buf, p.cwd)
+
+	return p.pointer(buf, nil)
+}
+
+func libcMkdir(ctx uintptr, path, mode uint32) uint32 {
+	p := proc(ctx)
+
+	return p.result(0, p.mkdir(p.str(path), mode))
+}
+
+func libcMkdirat(ctx uintptr, dirfd, path, mode uint32) uint32 {
+	p := proc(ctx)
+	full, err := p.atPath(int32(dirfd), p.str(path))
+
+	if err == nil {
+		err = p.mkdir(full, mode)
+	}
+
+	return p.result(0, err)
+}
+
+func libcRmdir(ctx uintptr, path uint32) uint32 {
+	p := proc(ctx)
+
+	return p.result(0, p.unlink(p.str(path), atRemovedir))
+}
+
+func libcUnlink(ctx uintptr, path uint32) uint32 {
+	p := proc(ctx)
+
+	return p.result(0, p.unlink(p.str(path), 0))
+}
+
+func libcUnlinkat(ctx uintptr, dirfd, path, flags uint32) uint32 {
+	p := proc(ctx)
+
+	if flags&^atRemovedir != 0 {
+		return p.result(0, syscall.EINVAL)
+	}
+
+	full, err := p.atPath(int32(dirfd), p.str(path))
+
+	if err == nil {
+		err = p.unlink(full, int(flags))
+	}
+
+	return p.result(0, err)
+}
+
+// remove unlinks a file or empties a directory, whichever it is.
+func libcRemove(ctx uintptr, path uint32) uint32 {
+	p := proc(ctx)
+	take := func(dirfd int, name string) error {
+		err := unlinkat(dirfd, name, 0)
+
+		if err == syscall.EISDIR || err == syscall.EPERM {
+			return unlinkat(dirfd, name, atRemovedir)
+		}
+
+		return err
+	}
+
+	return p.result(0, p.onName(p.str(path), syscall.EBUSY, take))
+}
+
+func libcRename(ctx uintptr, old, new uint32) uint32 {
+	p := proc(ctx)
+
+	return p.result(0, p.rename(p.str(old), p.str(new)))
+}
+
+func libcRenameat(ctx uintptr, olddir, old, newdir, new uint32) uint32 {
+	p := proc(ctx)
+	from, err := p.atPath(int32(olddir), p.str(old))
+
+	if err != nil {
+		return p.result(0, err)
+	}
+
+	to, err := p.atPath(int32(newdir), p.str(new))
+
+	if err != nil {
+		return p.result(0, err)
+	}
+
+	return p.result(0, p.rename(from, to))
+}
+
+func libcLink(ctx uintptr, old, new uint32) uint32 {
+	p := proc(ctx)
+
+	return p.result(0, p.link(p.str(old), p.str(new), false))
+}
+
+func libcLinkat(ctx uintptr, olddir, old, newdir, new, flags uint32) uint32 {
+	p := proc(ctx)
+
+	if flags&^atSymlinkFollow != 0 {
+		return p.result(0, syscall.EINVAL)
+	}
+
+	from, err := p.atPath(int32(olddir), p.str(old))
+
+	if err != nil {
+		return p.result(0, err)
+	}
+
+	to, err := p.atPath(int32(newdir), p.str(new))
+
+	if err != nil {
+		return p.result(0, err)
+	}
+
+	return p.result(0, p.link(from, to, flags&atSymlinkFollow != 0))
+}
+
+func libcSymlink(ctx uintptr, target, path uint32) uint32 {
+	p := proc(ctx)
+
+	return p.result(0, p.symlink(p.str(target), p.str(path)))
+}
+
+func libcSymlinkat(ctx uintptr, target, dirfd, path uint32) uint32 {
+	p := proc(ctx)
+	full, err := p.atPath(int32(dirfd), p.str(path))
+
+	if err == nil {
+		err = p.symlink(p.str(target), full)
+	}
+
+	return p.result(0, err)
+}
+
+func libcReadlink(ctx uintptr, path, buf, size uint32) uint32 {
+	p := proc(ctx)
+	out := p.span(buf, size)
+	n := 0
+	err := p.onPath(p.str(path), false, func(fd int) error {
+		var e error
+		n, e = readlinkFd(fd, out)
+
+		return e
+	})
+
+	return p.result(n, err)
+}
+
+func libcReadlinkat(ctx uintptr, dirfd, path, buf, size uint32) uint32 {
+	p := proc(ctx)
+	out := p.span(buf, size)
+	n := 0
+	err := p.onAt(int32(dirfd), p.str(path), atSymlinkNofollow|atEmptyPath, func(fd int) error {
+		var e error
+		n, e = readlinkFd(fd, out)
+
+		return e
+	})
+
+	return p.result(n, err)
+}
+
+func libcCanonicalize_file_name(ctx uintptr, path uint32) uint32 {
+	p := proc(ctx)
+	guest, err := p.realpath(p.str(path))
+
+	if err != nil {
+		return p.pointer(0, err)
+	}
+
+	at := p.newString(guest)
+
+	if at == 0 {
+		return p.pointer(0, syscall.ENOMEM)
+	}
+
+	return p.pointer(at, nil)
+}
+
+func libcGet_current_dir_name(ctx uintptr) uint32 {
+	p := proc(ctx)
+	at := p.newString(p.cwd)
+
+	if at == 0 {
+		return p.pointer(0, syscall.ENOMEM)
+	}
+
+	return p.pointer(at, nil)
+}
+
+func libcCreat(ctx uintptr, path, mode uint32) uint32 {
+	p := proc(ctx)
+	fd, err := p.openat2(p.str(path), syscall.O_WRONLY|syscall.O_CREAT|syscall.O_TRUNC, mode&0o7777&^p.umask)
+
+	if err != nil {
+		return p.result(0, err)
+	}
+
+	return p.result(p.install(newFile(fd, true), 0, false))
+}
+
+func libcEaccess(ctx uintptr, path, mode uint32) uint32 {
+	p := proc(ctx)
+
+	return p.result(0, p.onPath(p.str(path), true, func(fd int) error {
+		return access(fd, mode, atEaccess)
+	}))
+}
+
+func libcEuidaccess(ctx uintptr, path, mode uint32) uint32 {
+	p := proc(ctx)
+
+	return p.result(0, p.onPath(p.str(path), true, func(fd int) error {
+		return access(fd, mode, atEaccess)
+	}))
+}
+
+func libcStatfs(ctx uintptr, path, at uint32) uint32 {
+	p := proc(ctx)
+
+	return p.result(0, p.onPath(p.str(path), true, func(fd int) error {
+		return p.putStatfs(fd, at)
+	}))
+}
+
+func libcFstatfs(ctx uintptr, fd, at uint32) uint32 {
+	p := proc(ctx)
+	f, err := p.fd(fd)
+
+	if err == nil {
+		err = p.putStatfs(f.fd, at)
+	}
+
+	return p.result(0, err)
+}
+
+// Process accounting needs privilege.
+func libcAcct(ctx uintptr, path uint32) uint32 {
+	return proc(ctx).result(0, syscall.EPERM)
+}
+
+func libcRealpath(ctx uintptr, path, resolved uint32) uint32 {
+	p := proc(ctx)
+	guest, err := p.realpath(p.str(path))
+
+	if err != nil {
+		return p.pointer(0, err)
+	}
+
+	if resolved == 0 {
+		resolved = p.newString(guest)
+
+		if resolved == 0 {
+			return p.pointer(0, syscall.ENOMEM)
+		}
+
+		return p.pointer(resolved, nil)
+	}
+
+	if len(guest) >= 4096 {
+		return p.pointer(0, syscall.ENAMETOOLONG)
+	}
+
+	p.putString(resolved, guest)
+
+	return p.pointer(resolved, nil)
+}
+
+func libcChmod(ctx uintptr, path, mode uint32) uint32 {
+	p := proc(ctx)
+
+	return p.result(0, p.onPath(p.str(path), true, func(fd int) error {
+		return atCall(sysFchmodat2, fd, "", uintptr(mode&0o7777), atEmptyPath)
+	}))
+}
+
+func libcFchmodat(ctx uintptr, dirfd, path, mode, flags uint32) uint32 {
+	p := proc(ctx)
+
+	return p.result(0, p.onAt(int32(dirfd), p.str(path), flags, func(fd int) error {
+		return atCall(sysFchmodat2, fd, "", uintptr(mode&0o7777), atEmptyPath)
+	}))
+}
+
+func libcChown(ctx uintptr, path, uid, gid uint32) uint32 {
+	return proc(ctx).chown(path, uid, gid, true)
+}
+
+func libcLchown(ctx uintptr, path, uid, gid uint32) uint32 {
+	return proc(ctx).chown(path, uid, gid, false)
+}
+
+func libcFchownat(ctx uintptr, dirfd, path, uid, gid, flags uint32) uint32 {
+	p := proc(ctx)
+
+	return p.result(0, p.onAt(int32(dirfd), p.str(path), flags, func(fd int) error {
+		return syscall.Fchownat(fd, "", int(int32(uid)), int(int32(gid)), atEmptyPath)
+	}))
+}
+
+func libcMknod(ctx uintptr, path, mode uint32, dev uint64) uint32 {
+	p := proc(ctx)
+
+	return p.result(0, p.mknod(p.str(path), mode, dev))
+}
+
+func libcMknodat(ctx uintptr, dirfd, path, mode uint32, dev uint64) uint32 {
+	p := proc(ctx)
+	full, err := p.atPath(int32(dirfd), p.str(path))
+
+	if err == nil {
+		err = p.mknod(full, mode, dev)
+	}
+
+	return p.result(0, err)
+}
+
+func libcMkfifo(ctx uintptr, path, mode uint32) uint32 {
+	p := proc(ctx)
+
+	return p.result(0, p.mknod(p.str(path), sIfifo|mode&0o7777, 0))
+}
+
+func libcMkfifoat(ctx uintptr, dirfd, path, mode uint32) uint32 {
+	p := proc(ctx)
+	full, err := p.atPath(int32(dirfd), p.str(path))
+
+	if err == nil {
+		err = p.mknod(full, sIfifo|mode&0o7777, 0)
+	}
+
+	return p.result(0, err)
+}
+
+func libcUtimes(ctx uintptr, path, times uint32) uint32 {
+	p := proc(ctx)
+
+	return p.result(0, p.utimens(p.str(path), p.timevals(times), 0))
+}
+
+func libcLutimes(ctx uintptr, path, times uint32) uint32 {
+	p := proc(ctx)
+
+	return p.result(0, p.utimens(p.str(path), p.timevals(times), atSymlinkNofollow))
+}
+
+func libcUtime(ctx uintptr, path, times uint32) uint32 {
+	p := proc(ctx)
+	var ts []syscall.Timespec
+
+	if times != 0 {
+		ts = []syscall.Timespec{{Sec: int64(p.u64(times))}, {Sec: int64(p.u64(times + 8))}}
+	}
+
+	return p.result(0, p.utimens(p.str(path), ts, 0))
+}
+
+func libcUtimensat(ctx uintptr, dirfd, path, times, flags uint32) uint32 {
+	p := proc(ctx)
+	full, err := p.atPath(int32(dirfd), p.str(path))
+
+	if err == nil {
+		err = p.utimens(full, p.timespecs(times), int(flags))
+	}
+
+	return p.result(0, err)
+}
+
+func libcDirfd(ctx uintptr, dir uint32) uint32 {
+	return proc(ctx).u32(dir + dirFd)
+}
+
+// readdir_r returns an error number.
+func libcReaddir_r(ctx uintptr, dir, entry, result uint32) uint32 {
+	p := proc(ctx)
+	e, err := p.readdir(dir)
+	p.put32(result, 0)
+
+	if err != nil {
+		return uint32(errnoOf(err))
+	}
+
+	if e != 0 {
+		n := 19 + uint32(len(p.cstr(e+19))) + 1
+		copy(p.span(entry, n), p.span(e, n))
+		p.put32(result, entry)
+	}
+
+	return 0
+}
+
+func libcTelldir(ctx uintptr, dir uint32) uint32 {
+	return proc(ctx).u32(dir + dirIndex)
+}
+
+func libcSeekdir(ctx uintptr, dir, at uint32) {
+	p := proc(ctx)
+	p.rewinddir(dir)
+
+	for p.u32(dir+dirIndex) < at {
+		if e, _ := p.readdir(dir); e == 0 {
+			return
+		}
+	}
+}
+
+func libcAlphasort(ctx uintptr, a, b uint32) uint32 {
+	return proc(ctx).direntCompare(a, b, bytes.Compare)
+}
+
+func libcVersionsort(ctx uintptr, a, b uint32) uint32 {
+	return proc(ctx).direntCompare(a, b, strverscmp)
+}
+
+func libcMkstemp(ctx uintptr, template uint32) uint32 {
+	return proc(ctx).mkstemp(template, 0, 0)
+}
+
+func libcMkostemp(ctx uintptr, template, flags uint32) uint32 {
+	return proc(ctx).mkstemp(template, 0, flags)
+}
+
+func libcMkstemps(ctx uintptr, template, suffix uint32) uint32 {
+	return proc(ctx).mkstemp(template, suffix, 0)
+}
+
+func libcMkdtemp(ctx uintptr, template uint32) uint32 {
+	p := proc(ctx)
+	err := p.temporary(template, 0, func(path string) error {
+		return p.onName(path, syscall.EEXIST, func(dirfd int, name string) error {
+			return syscall.Mkdirat(dirfd, name, 0o700)
+		})
+	})
+
+	return p.pointer(template, err)
+}
+
+func libcMktemp(ctx uintptr, template uint32) uint32 {
+	p := proc(ctx)
+	err := p.temporary(template, 0, func(path string) error {
+		err := p.onPath(path, false, func(int) error {
+			return nil
+		})
+
+		if err == syscall.ENOENT {
+			return nil
+		}
+
+		if err == nil {
+			return syscall.EEXIST
+		}
+
+		return err
+	})
+
+	if err != nil {
+		p.span(template, 1)[0] = 0
+	}
+
+	return p.pointer(template, nil)
 }
 
 // timevals reads a guest struct timeval[2] as timespecs, or nil for a
@@ -1121,7 +1243,7 @@ const (
 	dirBufLen = 4096
 )
 
-func (k *Kernel) opendir(ctx uintptr, path uint32) uint32 {
+func libcOpendir(ctx uintptr, path uint32) uint32 {
 	p := proc(ctx)
 	host, err := p.openat2(p.str(path), syscall.O_RDONLY|syscall.O_DIRECTORY, 0)
 
@@ -1162,7 +1284,7 @@ func (p *Process) newDir(fd int) uint32 {
 
 // fdopendir makes a DIR of a directory's descriptor, which becomes
 // close-on-exec, as musl's.
-func (k *Kernel) fdopendir(ctx uintptr, fd uint32) uint32 {
+func libcFdopendir(ctx uintptr, fd uint32) uint32 {
 	p := proc(ctx)
 	f, err := p.fd(fd)
 
@@ -1191,7 +1313,7 @@ func (k *Kernel) fdopendir(ctx uintptr, fd uint32) uint32 {
 	return p.pointer(dir, nil)
 }
 
-func (k *Kernel) rewinddir(ctx uintptr, dir uint32) {
+func libcRewinddir(ctx uintptr, dir uint32) {
 	proc(ctx).rewinddir(dir)
 }
 
@@ -1212,7 +1334,7 @@ func (p *Process) direntCompare(a, b uint32, compare func(x, y []byte) int) uint
 	return uint32(int32(compare(x, y)))
 }
 
-func (k *Kernel) readdir(ctx uintptr, dir uint32) uint32 {
+func libcReaddir(ctx uintptr, dir uint32) uint32 {
 	p := proc(ctx)
 	entry, err := p.readdir(dir)
 
@@ -1247,7 +1369,7 @@ func (p *Process) readdir(dir uint32) (uint32, error) {
 	return entry, nil
 }
 
-func (k *Kernel) closedir(ctx uintptr, dir uint32) uint32 {
+func libcClosedir(ctx uintptr, dir uint32) uint32 {
 	p := proc(ctx)
 	fd := p.u32(dir + dirFd)
 	p.free(dir)

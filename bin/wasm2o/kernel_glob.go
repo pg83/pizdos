@@ -322,18 +322,22 @@ func (p *Process) globFree(pathv, offs, count uint32) {
 
 func (k *Kernel) globFunctions() map[string]any {
 	return map[string]any{
-		"glob": func(ctx uintptr, pattern, flags, errfunc, out uint32) uint32 {
-			return proc(ctx).glob(pattern, flags, errfunc, out)
-		},
-		"globfree": func(ctx uintptr, out uint32) {
-			p := proc(ctx)
-
-			if pathv := p.u32(out + 4); pathv != 0 {
-				p.globFree(pathv, p.u32(out+8), p.u32(out))
-			}
-
-			p.put32(out, 0)
-			p.put32(out+4, 0)
-		},
+		"glob":     libcGlob,
+		"globfree": libcGlobfree,
 	}
+}
+
+func libcGlob(ctx uintptr, pattern, flags, errfunc, out uint32) uint32 {
+	return proc(ctx).glob(pattern, flags, errfunc, out)
+}
+
+func libcGlobfree(ctx uintptr, out uint32) {
+	p := proc(ctx)
+
+	if pathv := p.u32(out + 4); pathv != 0 {
+		p.globFree(pathv, p.u32(out+8), p.u32(out))
+	}
+
+	p.put32(out, 0)
+	p.put32(out+4, 0)
 }

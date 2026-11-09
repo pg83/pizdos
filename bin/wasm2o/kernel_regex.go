@@ -401,94 +401,102 @@ func validClass(name string) bool {
 
 func (k *Kernel) regexFunctions() map[string]any {
 	return map[string]any{
-		"regcomp": func(ctx uintptr, preg, pattern, flags uint32) uint32 {
-			p := proc(ctx)
-			pat := bytes.Clone(p.cstr(pattern))
-			src, nsub, code := translateRegex(pat, flags, false, false)
-
-			if code != 0 {
-				return code
-			}
-
-			re, err := regexp.Compile(src)
-
-			if err != nil {
-				return regBadpat
-			}
-
-			re.Longest()
-			p.nextRegex++
-			r := &posixRegex{pattern: pat, flags: flags, nsub: nsub}
-			r.variants[0] = re
-			p.regexes[p.nextRegex] = r
-			p.put32(preg, uint32(nsub))
-			p.put32(preg+4, p.nextRegex)
-
-			return 0
-		},
-		"regexec": func(ctx uintptr, preg, s, nmatch, pmatch, eflags uint32) uint32 {
-			p := proc(ctx)
-			r, ok := p.regexes[p.u32(preg+4)]
-
-			if !ok {
-				return regBadpat
-			}
-
-			var subject []byte
-			base := uint32(0)
-
-			if eflags&regStartend != 0 {
-				so, eo := p.u32(pmatch), p.u32(pmatch+4)
-
-				if eo < so {
-					return regBadpat
-				}
-
-				subject, base = p.span(s+so, eo-so), so
-			} else {
-				subject = p.cstr(s)
-			}
-
-			m := r.variant(eflags).FindSubmatchIndex(subject)
-
-			if m == nil {
-				return regNomatch
-			}
-
-			if r.flags&regNosub == 0 {
-				out := p.span(pmatch, 8*nmatch)
-
-				for i := range int(nmatch) {
-					so, eo := int32(-1), int32(-1)
-
-					if 2*i < len(m) && m[2*i] >= 0 {
-						so, eo = int32(m[2*i])+int32(base), int32(m[2*i+1])+int32(base)
-					}
-
-					binary.LittleEndian.PutUint32(out[8*i:], uint32(so))
-					binary.LittleEndian.PutUint32(out[8*i+4:], uint32(eo))
-				}
-			}
-
-			return 0
-		},
-		"regfree": func(ctx uintptr, preg uint32) {
-			p := proc(ctx)
-			delete(p.regexes, p.u32(preg+4))
-		},
-		"regerror": func(ctx uintptr, code, preg, buf, size uint32) uint32 {
-			p := proc(ctx)
-			msg, ok := regMessages[code]
-
-			if !ok {
-				msg = "Unknown error"
-			}
-
-			if size > 0 {
-				p.putString(buf, truncate(msg, int(size)-1))
-			}
-
-			return uint32(len(msg) + 1)
-		},
+		"regcomp":  libcRegcomp,
+		"regexec":  libcRegexec,
+		"regfree":  libcRegfree,
+		"regerror": libcRegerror,
 	}
+}
+
+func libcRegcomp(ctx uintptr, preg, pattern, flags uint32) uint32 {
+	p := proc(ctx)
+	pat := bytes.Clone(p.cstr(pattern))
+	src, nsub, code := translateRegex(pat, flags, false, false)
+
+	if code != 0 {
+		return code
+	}
+
+	re, err := regexp.Compile(src)
+
+	if err != nil {
+		return regBadpat
+	}
+
+	re.Longest()
+	p.nextRegex++
+	r := &posixRegex{pattern: pat, flags: flags, nsub: nsub}
+	r.variants[0] = re
+	p.regexes[p.nextRegex] = r
+	p.put32(preg, uint32(nsub))
+	p.put32(preg+4, p.nextRegex)
+
+	return 0
+}
+
+func libcRegexec(ctx uintptr, preg, s, nmatch, pmatch, eflags uint32) uint32 {
+	p := proc(ctx)
+	r, ok := p.regexes[p.u32(preg+4)]
+
+	if !ok {
+		return regBadpat
+	}
+
+	var subject []byte
+	base := uint32(0)
+
+	if eflags&regStartend != 0 {
+		so, eo := p.u32(pmatch), p.u32(pmatch+4)
+
+		if eo < so {
+			return regBadpat
+		}
+
+		subject, base = p.span(s+so, eo-so), so
+	} else {
+		subject = p.cstr(s)
+	}
+
+	m := r.variant(eflags).FindSubmatchIndex(subject)
+
+	if m == nil {
+		return regNomatch
+	}
+
+	if r.flags&regNosub == 0 {
+		out := p.span(pmatch, 8*nmatch)
+
+		for i := range int(nmatch) {
+			so, eo := int32(-1), int32(-1)
+
+			if 2*i < len(m) && m[2*i] >= 0 {
+				so, eo = int32(m[2*i])+int32(base), int32(m[2*i+1])+int32(base)
+			}
+
+			binary.LittleEndian.PutUint32(out[8*i:], uint32(so))
+			binary.LittleEndian.PutUint32(out[8*i+4:], uint32(eo))
+		}
+	}
+
+	return 0
+}
+
+func libcRegfree(ctx uintptr, preg uint32) {
+	p := proc(ctx)
+	delete(p.regexes, p.u32(preg+4))
+}
+
+func libcRegerror(ctx uintptr, code, preg, buf, size uint32) uint32 {
+	p := proc(ctx)
+	msg, ok := regMessages[code]
+
+	if !ok {
+		msg = "Unknown error"
+	}
+
+	if size > 0 {
+		p.putString(buf, truncate(msg, int(size)-1))
+	}
+
+	return uint32(len(msg) + 1)
 }

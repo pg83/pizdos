@@ -456,33 +456,47 @@ func (p *Process) waitEvent(ready func() bool) error {
 
 func (k *Kernel) forkFunctions() map[string]any {
 	return map[string]any{
-		"vfork": func(ctx uintptr) uint32 {
-			return proc(ctx).startVfork()
-		},
-		"fork": func(ctx uintptr) uint32 {
-			p := proc(ctx)
-			pid, err := p.fork(nil)
-
-			return p.result(int(pid), err)
-		},
-		"waitpid": func(ctx uintptr, pid, status, options uint32) uint32 {
-			p := proc(ctx)
-
-			return p.result(p.waitpid(int32(pid), status, options))
-		},
-		"wait": func(ctx uintptr, status uint32) uint32 {
-			p := proc(ctx)
-
-			return p.result(p.waitpid(-1, status, 0))
-		},
-		"wait3": func(ctx uintptr, status, options, usage uint32) uint32 {
-			return proc(ctx).wait4(-1, status, options, usage)
-		},
-		"wait4": func(ctx uintptr, pid, status, options, usage uint32) uint32 {
-			return proc(ctx).wait4(int32(pid), status, options, usage)
-		},
-		"waitid": func(ctx uintptr, idtype, id, info, options uint32) uint32 {
-			return proc(ctx).waitid(idtype, id, info, options)
-		},
+		"vfork":   libcVfork,
+		"fork":    libcFork,
+		"waitpid": libcWaitpid,
+		"wait":    libcWait,
+		"wait3":   libcWait3,
+		"wait4":   libcWait4,
+		"waitid":  libcWaitid,
 	}
+}
+
+func libcVfork(ctx uintptr) uint32 {
+	return proc(ctx).startVfork()
+}
+
+func libcFork(ctx uintptr) uint32 {
+	p := proc(ctx)
+	pid, err := p.fork(nil)
+
+	return p.result(int(pid), err)
+}
+
+func libcWaitpid(ctx uintptr, pid, status, options uint32) uint32 {
+	p := proc(ctx)
+
+	return p.result(p.waitpid(int32(pid), status, options))
+}
+
+func libcWait(ctx uintptr, status uint32) uint32 {
+	p := proc(ctx)
+
+	return p.result(p.waitpid(-1, status, 0))
+}
+
+func libcWait3(ctx uintptr, status, options, usage uint32) uint32 {
+	return proc(ctx).wait4(-1, status, options, usage)
+}
+
+func libcWait4(ctx uintptr, pid, status, options, usage uint32) uint32 {
+	return proc(ctx).wait4(int32(pid), status, options, usage)
+}
+
+func libcWaitid(ctx uintptr, idtype, id, info, options uint32) uint32 {
+	return proc(ctx).waitid(idtype, id, info, options)
 }

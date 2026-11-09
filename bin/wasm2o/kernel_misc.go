@@ -381,172 +381,218 @@ func (p *Process) shells() []string {
 
 func (k *Kernel) miscFunctions() map[string]any {
 	return map[string]any{
-		"random": func(ctx uintptr) uint32 {
-			return proc(ctx).random()
-		},
-		"srandom": func(ctx uintptr, seed uint32) {
-			p := proc(ctx)
-			p.srandom(p.randomState(), seed)
-		},
-		// initstate makes a state of size bytes the one in use and returns
-		// the one before.
-		"initstate": func(ctx uintptr, seed, state, size uint32) uint32 {
-			p := proc(ctx)
-
-			if size < 8 {
-				return 0
-			}
-
-			old := p.randomState()
-			n := uint32(63)
-
-			switch {
-			case size < 32:
-				n = 0
-			case size < 64:
-				n = 7
-			case size < 128:
-				n = 15
-			case size < 256:
-				n = 31
-			}
-
-			p.span(state, 4*(n+1))
-			p.put32(state, n<<16)
-			p.srandom(state, seed)
-			p.put32(p.staticAt(staticRandom), state)
-
-			return old
-		},
-		"setstate": func(ctx uintptr, state uint32) uint32 {
-			p := proc(ctx)
-			old := p.randomState()
-			p.span(state, 4*(p.u32(state)>>16+1))
-			p.put32(p.staticAt(staticRandom), state)
-
-			return old
-		},
-		"rand_r": func(ctx uintptr, seed uint32) uint32 {
-			p := proc(ctx)
-			s := p.u32(seed)*1103515245 + 12345
-			p.put32(seed, s)
-
-			return temper(s) / 2
-		},
-		// No program is set-user-ID: secure_getenv is getenv.
-		"secure_getenv": func(ctx uintptr, name uint32) uint32 {
-			p := proc(ctx)
-			_, value, _ := p.lookupEnv(p.cstr(name))
-
-			return value
-		},
-		"getsubopt": func(ctx uintptr, opt, keys, val uint32) uint32 {
-			return proc(ctx).getsubopt(opt, keys, val)
-		},
-		"daemon": func(ctx uintptr, nochdir, noclose uint32) uint32 {
-			return proc(ctx).daemon(nochdir, noclose)
-		},
-		"prctl": func(ctx uintptr, option, va uint32) uint32 {
-			return proc(ctx).prctl(option, va)
-		},
-		"getpass": func(ctx uintptr, prompt uint32) uint32 {
-			return proc(ctx).getpass(prompt)
-		},
-		// Hanging up the terminal needs privilege.
-		"vhangup": func(ctx uintptr) uint32 {
-			return proc(ctx).result(0, syscall.EPERM)
-		},
-		"getusershell": func(ctx uintptr) uint32 {
-			p := proc(ctx)
-			shell := nextEntry(p, staticShellIndex, p.shells())
-
-			if shell == nil {
-				return 0
-			}
-
-			block := p.staticResult(staticShell, uint32(len(*shell)+1))
-
-			if block != 0 {
-				p.putString(block, *shell)
-			}
-
-			return block
-		},
-		"setusershell": func(ctx uintptr) {
-			p := proc(ctx)
-			p.put32(p.staticAt(staticShellIndex), 0)
-		},
-		"endusershell": func(ctx uintptr) {
-			p := proc(ctx)
-			p.put32(p.staticAt(staticShellIndex), 0)
-		},
-		// The host's names, which no process may set; the host id is
-		// musl's, 0.
-		"gethostname": func(ctx uintptr, name, n uint32) uint32 {
-			p := proc(ctx)
-			var u syscall.Utsname
-
-			if err := syscall.Uname(&u); err != nil {
-				return p.result(0, err)
-			}
-
-			host := utsField(u.Nodename[:])
-
-			if n > 0 {
-				p.putString(name, truncate(host, int(n-1)))
-			}
-
-			return p.result(0, nil)
-		},
-		"getdomainname": func(ctx uintptr, name, n uint32) uint32 {
-			p := proc(ctx)
-			var u syscall.Utsname
-
-			if err := syscall.Uname(&u); err != nil {
-				return p.result(0, err)
-			}
-
-			domain := utsField(u.Domainname[:])
-
-			if uint32(len(domain)) >= n {
-				return p.result(0, syscall.EINVAL)
-			}
-
-			p.putString(name, domain)
-
-			return p.result(0, nil)
-		},
-		"sethostname": func(ctx uintptr, name, n uint32) uint32 {
-			return proc(ctx).result(0, syscall.EPERM)
-		},
-		"setdomainname": func(ctx uintptr, name, n uint32) uint32 {
-			return proc(ctx).result(0, syscall.EPERM)
-		},
-		"gethostid": func(ctx uintptr) uint32 {
-			return 0
-		},
-		"sethostid": func(ctx uintptr, id uint32) uint32 {
-			return proc(ctx).result(0, syscall.EPERM)
-		},
-		"psignal": func(ctx uintptr, sig, s uint32) {
-			p := proc(ctx)
-			p.complain(s, signalMessage(int(sig)))
-		},
-		"psiginfo": func(ctx uintptr, info, s uint32) {
-			p := proc(ctx)
-			p.complain(s, signalMessage(int(p.u32(info))))
-		},
-		"__assert_fail": func(ctx uintptr, expr, file, line, function uint32) {
-			p := proc(ctx)
-			msg := fmt.Sprintf("Assertion failed: %s (%s: %s: %d)\n", p.str(expr), p.str(file), p.str(function), int32(line))
-
-			if f, err := p.fd(2); err == nil {
-				p.writeFile(f, []byte(msg))
-			}
-
-			p.abort()
-		},
+		"random":        libcRandom,
+		"srandom":       libcSrandom,
+		"initstate":     libcInitstate,
+		"setstate":      libcSetstate,
+		"rand_r":        libcRand_r,
+		"secure_getenv": libcSecure_getenv,
+		"getsubopt":     libcGetsubopt,
+		"daemon":        libcDaemon,
+		"prctl":         libcPrctl,
+		"getpass":       libcGetpass,
+		"vhangup":       libcVhangup,
+		"getusershell":  libcGetusershell,
+		"setusershell":  libcSetusershell,
+		"endusershell":  libcEndusershell,
+		"gethostname":   libcGethostname,
+		"getdomainname": libcGetdomainname,
+		"sethostname":   libcSethostname,
+		"setdomainname": libcSetdomainname,
+		"gethostid":     libcGethostid,
+		"sethostid":     libcSethostid,
+		"psignal":       libcPsignal,
+		"psiginfo":      libcPsiginfo,
+		"__assert_fail": libc__assert_fail,
 	}
+}
+
+func libcRandom(ctx uintptr) uint32 {
+	return proc(ctx).random()
+}
+
+func libcSrandom(ctx uintptr, seed uint32) {
+	p := proc(ctx)
+	p.srandom(p.randomState(), seed)
+}
+
+// initstate makes a state of size bytes the one in use and returns
+// the one before.
+func libcInitstate(ctx uintptr, seed, state, size uint32) uint32 {
+	p := proc(ctx)
+
+	if size < 8 {
+		return 0
+	}
+
+	old := p.randomState()
+	n := uint32(63)
+
+	switch {
+	case size < 32:
+		n = 0
+	case size < 64:
+		n = 7
+	case size < 128:
+		n = 15
+	case size < 256:
+		n = 31
+	}
+
+	p.span(state, 4*(n+1))
+	p.put32(state, n<<16)
+	p.srandom(state, seed)
+	p.put32(p.staticAt(staticRandom), state)
+
+	return old
+}
+
+func libcSetstate(ctx uintptr, state uint32) uint32 {
+	p := proc(ctx)
+	old := p.randomState()
+	p.span(state, 4*(p.u32(state)>>16+1))
+	p.put32(p.staticAt(staticRandom), state)
+
+	return old
+}
+
+func libcRand_r(ctx uintptr, seed uint32) uint32 {
+	p := proc(ctx)
+	s := p.u32(seed)*1103515245 + 12345
+	p.put32(seed, s)
+
+	return temper(s) / 2
+}
+
+// No program is set-user-ID: secure_getenv is getenv.
+func libcSecure_getenv(ctx uintptr, name uint32) uint32 {
+	p := proc(ctx)
+	_, value, _ := p.lookupEnv(p.cstr(name))
+
+	return value
+}
+
+func libcGetsubopt(ctx uintptr, opt, keys, val uint32) uint32 {
+	return proc(ctx).getsubopt(opt, keys, val)
+}
+
+func libcDaemon(ctx uintptr, nochdir, noclose uint32) uint32 {
+	return proc(ctx).daemon(nochdir, noclose)
+}
+
+func libcPrctl(ctx uintptr, option, va uint32) uint32 {
+	return proc(ctx).prctl(option, va)
+}
+
+func libcGetpass(ctx uintptr, prompt uint32) uint32 {
+	return proc(ctx).getpass(prompt)
+}
+
+// Hanging up the terminal needs privilege.
+func libcVhangup(ctx uintptr) uint32 {
+	return proc(ctx).result(0, syscall.EPERM)
+}
+
+func libcGetusershell(ctx uintptr) uint32 {
+	p := proc(ctx)
+	shell := nextEntry(p, staticShellIndex, p.shells())
+
+	if shell == nil {
+		return 0
+	}
+
+	block := p.staticResult(staticShell, uint32(len(*shell)+1))
+
+	if block != 0 {
+		p.putString(block, *shell)
+	}
+
+	return block
+}
+
+func libcSetusershell(ctx uintptr) {
+	p := proc(ctx)
+	p.put32(p.staticAt(staticShellIndex), 0)
+}
+
+func libcEndusershell(ctx uintptr) {
+	p := proc(ctx)
+	p.put32(p.staticAt(staticShellIndex), 0)
+}
+
+// The host's names, which no process may set; the host id is
+// musl's, 0.
+func libcGethostname(ctx uintptr, name, n uint32) uint32 {
+	p := proc(ctx)
+	var u syscall.Utsname
+
+	if err := syscall.Uname(&u); err != nil {
+		return p.result(0, err)
+	}
+
+	host := utsField(u.Nodename[:])
+
+	if n > 0 {
+		p.putString(name, truncate(host, int(n-1)))
+	}
+
+	return p.result(0, nil)
+}
+
+func libcGetdomainname(ctx uintptr, name, n uint32) uint32 {
+	p := proc(ctx)
+	var u syscall.Utsname
+
+	if err := syscall.Uname(&u); err != nil {
+		return p.result(0, err)
+	}
+
+	domain := utsField(u.Domainname[:])
+
+	if uint32(len(domain)) >= n {
+		return p.result(0, syscall.EINVAL)
+	}
+
+	p.putString(name, domain)
+
+	return p.result(0, nil)
+}
+
+func libcSethostname(ctx uintptr, name, n uint32) uint32 {
+	return proc(ctx).result(0, syscall.EPERM)
+}
+
+func libcSetdomainname(ctx uintptr, name, n uint32) uint32 {
+	return proc(ctx).result(0, syscall.EPERM)
+}
+
+func libcGethostid(ctx uintptr) uint32 {
+	return 0
+}
+
+func libcSethostid(ctx uintptr, id uint32) uint32 {
+	return proc(ctx).result(0, syscall.EPERM)
+}
+
+func libcPsignal(ctx uintptr, sig, s uint32) {
+	p := proc(ctx)
+	p.complain(s, signalMessage(int(sig)))
+}
+
+func libcPsiginfo(ctx uintptr, info, s uint32) {
+	p := proc(ctx)
+	p.complain(s, signalMessage(int(p.u32(info))))
+}
+
+func libc__assert_fail(ctx uintptr, expr, file, line, function uint32) {
+	p := proc(ctx)
+	msg := fmt.Sprintf("Assertion failed: %s (%s: %s: %d)\n", p.str(expr), p.str(file), p.str(function), int32(line))
+
+	if f, err := p.fd(2); err == nil {
+		p.writeFile(f, []byte(msg))
+	}
+
+	p.abort()
 }
 
 // complain writes a message to standard error after a prefix, perror's

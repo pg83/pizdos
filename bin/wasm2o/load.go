@@ -56,7 +56,7 @@ type Instance struct {
 	block  []byte
 	memory *LinearMemory
 	tables [][]uintptr
-	// host is what the embedder attaches: the kernel's process.
+	// host is what the embedder attaches: the kernel's process, the WASI.
 	host any
 }
 

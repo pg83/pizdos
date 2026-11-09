@@ -284,16 +284,10 @@ func iswClass(class int, c uint32) bool {
 	return false
 }
 
-// ctypeClass is a class of the C locale's ctype functions: only ASCII is
-// in one.
-func ctypeClass(class string) func(uintptr, uint32) uint32 {
-	return func(ctx uintptr, c uint32) uint32 {
-		if c < 0x80 && inClass(class, byte(c)) {
-			return 1
-		}
-
-		return 0
-	}
+// ctype tells a class of the C locale's ctype functions: only ASCII is in
+// one.
+func ctype(class string, c uint32) uint32 {
+	return bit(c < 0x80 && inClass(class, byte(c)))
 }
 
 func bit(b bool) uint32 {
@@ -305,75 +299,195 @@ func bit(b bool) uint32 {
 }
 
 func (k *Kernel) localeFunctions() map[string]any {
-	t := map[string]any{
-		"setlocale": func(ctx uintptr, cat, name uint32) uint32 {
-			return proc(ctx).setlocale(cat, name)
-		},
-		"localeconv": func(ctx uintptr) uint32 {
-			return proc(ctx).localeconv()
-		},
-		"nl_langinfo": func(ctx uintptr, item uint32) uint32 {
-			p := proc(ctx)
-
-			return p.constant(p.langinfo(item))
-		},
-		"isascii": func(ctx uintptr, c uint32) uint32 {
-			return bit(c < 0x80)
-		},
-		"toascii": func(ctx uintptr, c uint32) uint32 {
-			return c & 0x7f
-		},
-		"towlower": func(ctx uintptr, c uint32) uint32 {
-			return towlower(c)
-		},
-		"towupper": func(ctx uintptr, c uint32) uint32 {
-			return towupper(c)
-		},
-		"wctype": func(ctx uintptr, name uint32) uint32 {
-			s := proc(ctx).str(name)
-
-			for i, n := range wcClassNames {
-				if n == s {
-					return uint32(i + 1)
-				}
-			}
-
-			return 0
-		},
-		"iswctype": func(ctx uintptr, c, class uint32) uint32 {
-			return bit(iswClass(int(class), c))
-		},
-		"wctrans": func(ctx uintptr, name uint32) uint32 {
-			switch proc(ctx).str(name) {
-			case "toupper":
-				return 1
-			case "tolower":
-				return 2
-			}
-
-			return 0
-		},
-		"towctrans": func(ctx uintptr, c, trans uint32) uint32 {
-			switch trans {
-			case 1:
-				return towupper(c)
-			case 2:
-				return towlower(c)
-			}
-
-			return c
-		},
+	return map[string]any{
+		"setlocale":   libcSetlocale,
+		"localeconv":  libcLocaleconv,
+		"nl_langinfo": libcNl_langinfo,
+		"isascii":     libcIsascii,
+		"toascii":     libcToascii,
+		"towlower":    libcTowlower,
+		"towupper":    libcTowupper,
+		"wctype":      libcWctype,
+		"iswctype":    libcIswctype,
+		"wctrans":     libcWctrans,
+		"towctrans":   libcTowctrans,
+		"isalnum":     libcIsalnum,
+		"isalpha":     libcIsalpha,
+		"isblank":     libcIsblank,
+		"iscntrl":     libcIscntrl,
+		"isgraph":     libcIsgraph,
+		"islower":     libcIslower,
+		"isprint":     libcIsprint,
+		"ispunct":     libcIspunct,
+		"isupper":     libcIsupper,
+		"isxdigit":    libcIsxdigit,
+		"iswalnum":    libcIswalnum,
+		"iswalpha":    libcIswalpha,
+		"iswblank":    libcIswblank,
+		"iswcntrl":    libcIswcntrl,
+		"iswdigit":    libcIswdigit,
+		"iswgraph":    libcIswgraph,
+		"iswlower":    libcIswlower,
+		"iswprint":    libcIswprint,
+		"iswpunct":    libcIswpunct,
+		"iswspace":    libcIswspace,
+		"iswupper":    libcIswupper,
+		"iswxdigit":   libcIswxdigit,
 	}
+}
 
-	for _, class := range []string{"alnum", "alpha", "blank", "cntrl", "graph", "lower", "print", "punct", "upper", "xdigit"} {
-		t["is"+class] = ctypeClass(class)
-	}
+func libcSetlocale(ctx uintptr, cat, name uint32) uint32 {
+	return proc(ctx).setlocale(cat, name)
+}
 
-	for i, name := range wcClassNames {
-		t["isw"+name] = func(ctx uintptr, c uint32) uint32 {
-			return bit(iswClass(i+1, c))
+func libcLocaleconv(ctx uintptr) uint32 {
+	return proc(ctx).localeconv()
+}
+
+func libcNl_langinfo(ctx uintptr, item uint32) uint32 {
+	p := proc(ctx)
+
+	return p.constant(p.langinfo(item))
+}
+
+func libcIsascii(ctx uintptr, c uint32) uint32 {
+	return bit(c < 0x80)
+}
+
+func libcToascii(ctx uintptr, c uint32) uint32 {
+	return c & 0x7f
+}
+
+func libcTowlower(ctx uintptr, c uint32) uint32 {
+	return towlower(c)
+}
+
+func libcTowupper(ctx uintptr, c uint32) uint32 {
+	return towupper(c)
+}
+
+func libcWctype(ctx uintptr, name uint32) uint32 {
+	s := proc(ctx).str(name)
+
+	for i, n := range wcClassNames {
+		if n == s {
+			return uint32(i + 1)
 		}
 	}
 
-	return t
+	return 0
+}
+
+func libcIswctype(ctx uintptr, c, class uint32) uint32 {
+	return bit(iswClass(int(class), c))
+}
+
+func libcWctrans(ctx uintptr, name uint32) uint32 {
+	switch proc(ctx).str(name) {
+	case "toupper":
+		return 1
+	case "tolower":
+		return 2
+	}
+
+	return 0
+}
+
+func libcTowctrans(ctx uintptr, c, trans uint32) uint32 {
+	switch trans {
+	case 1:
+		return towupper(c)
+	case 2:
+		return towlower(c)
+	}
+
+	return c
+}
+
+func libcIsalnum(ctx uintptr, c uint32) uint32 {
+	return ctype("alnum", c)
+}
+
+func libcIsalpha(ctx uintptr, c uint32) uint32 {
+	return ctype("alpha", c)
+}
+
+func libcIsblank(ctx uintptr, c uint32) uint32 {
+	return ctype("blank", c)
+}
+
+func libcIscntrl(ctx uintptr, c uint32) uint32 {
+	return ctype("cntrl", c)
+}
+
+func libcIsgraph(ctx uintptr, c uint32) uint32 {
+	return ctype("graph", c)
+}
+
+func libcIslower(ctx uintptr, c uint32) uint32 {
+	return ctype("lower", c)
+}
+
+func libcIsprint(ctx uintptr, c uint32) uint32 {
+	return ctype("print", c)
+}
+
+func libcIspunct(ctx uintptr, c uint32) uint32 {
+	return ctype("punct", c)
+}
+
+func libcIsupper(ctx uintptr, c uint32) uint32 {
+	return ctype("upper", c)
+}
+
+func libcIsxdigit(ctx uintptr, c uint32) uint32 {
+	return ctype("xdigit", c)
+}
+
+func libcIswalnum(ctx uintptr, c uint32) uint32 {
+	return bit(iswClass(wcAlnum, c))
+}
+
+func libcIswalpha(ctx uintptr, c uint32) uint32 {
+	return bit(iswClass(wcAlpha, c))
+}
+
+func libcIswblank(ctx uintptr, c uint32) uint32 {
+	return bit(iswClass(wcBlank, c))
+}
+
+func libcIswcntrl(ctx uintptr, c uint32) uint32 {
+	return bit(iswClass(wcCntrl, c))
+}
+
+func libcIswdigit(ctx uintptr, c uint32) uint32 {
+	return bit(iswClass(wcDigit, c))
+}
+
+func libcIswgraph(ctx uintptr, c uint32) uint32 {
+	return bit(iswClass(wcGraph, c))
+}
+
+func libcIswlower(ctx uintptr, c uint32) uint32 {
+	return bit(iswClass(wcLower, c))
+}
+
+func libcIswprint(ctx uintptr, c uint32) uint32 {
+	return bit(iswClass(wcPrint, c))
+}
+
+func libcIswpunct(ctx uintptr, c uint32) uint32 {
+	return bit(iswClass(wcPunct, c))
+}
+
+func libcIswspace(ctx uintptr, c uint32) uint32 {
+	return bit(iswClass(wcSpace, c))
+}
+
+func libcIswupper(ctx uintptr, c uint32) uint32 {
+	return bit(iswClass(wcUpper, c))
+}
+
+func libcIswxdigit(ctx uintptr, c uint32) uint32 {
+	return bit(iswClass(wcXdigit, c))
 }

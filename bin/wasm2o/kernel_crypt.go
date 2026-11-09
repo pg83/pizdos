@@ -361,36 +361,38 @@ func descrypt(key, setting string) (string, bool) {
 
 func (k *Kernel) cryptFunctions() map[string]any {
 	return map[string]any{
-		"crypt": func(ctx uintptr, key, setting uint32) uint32 {
-			p := proc(ctx)
-			pw, s := p.str(key), p.str(setting)
-			var out string
-			ok := false
-
-			switch {
-			case strings.HasPrefix(s, "$1$"):
-				out, ok = md5crypt(pw, s)
-			case strings.HasPrefix(s, "$5$"):
-				out, ok = shacrypt(pw, s, 32)
-			case strings.HasPrefix(s, "$6$"):
-				out, ok = shacrypt(pw, s, 64)
-			case !strings.HasPrefix(s, "$") && !strings.HasPrefix(s, "_"):
-				out, ok = descrypt(pw, s)
-			}
-
-			if !ok {
-				p.setErrno(syscall.EINVAL)
-
-				return 0
-			}
-
-			block := p.staticResult(staticCrypt, uint32(len(out))+1)
-
-			if block != 0 {
-				p.putString(block, out)
-			}
-
-			return block
-		},
+		"crypt": libcCrypt,
 	}
+}
+
+func libcCrypt(ctx uintptr, key, setting uint32) uint32 {
+	p := proc(ctx)
+	pw, s := p.str(key), p.str(setting)
+	var out string
+	ok := false
+
+	switch {
+	case strings.HasPrefix(s, "$1$"):
+		out, ok = md5crypt(pw, s)
+	case strings.HasPrefix(s, "$5$"):
+		out, ok = shacrypt(pw, s, 32)
+	case strings.HasPrefix(s, "$6$"):
+		out, ok = shacrypt(pw, s, 64)
+	case !strings.HasPrefix(s, "$") && !strings.HasPrefix(s, "_"):
+		out, ok = descrypt(pw, s)
+	}
+
+	if !ok {
+		p.setErrno(syscall.EINVAL)
+
+		return 0
+	}
+
+	block := p.staticResult(staticCrypt, uint32(len(out))+1)
+
+	if block != 0 {
+		p.putString(block, out)
+	}
+
+	return block
 }

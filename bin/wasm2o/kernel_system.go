@@ -204,218 +204,265 @@ func (p *Process) limitOf(q *Process, res, set, old uint32) error {
 
 func (k *Kernel) systemFunctions() map[string]any {
 	return map[string]any{
-		"openlog": func(ctx uintptr, ident, option, facility uint32) {
-			p := proc(ctx)
-			name := ""
-
-			if ident != 0 {
-				name = truncate(p.str(ident), logIdentSize-1)
-			}
-
-			p.putString(p.staticAt(staticLogIdent), name)
-			p.put32(p.staticAt(staticLogOption), option)
-		},
-		"closelog": func(ctx uintptr) {},
-		// setlogmask returns the levels it let through; 0 changes nothing.
-		"setlogmask": func(ctx uintptr, mask uint32) uint32 {
-			p := proc(ctx)
-			at := p.staticAt(staticLogMask)
-			old := ^p.u32(at) & 0xff
-
-			if mask != 0 {
-				p.put32(at, ^mask&0xff)
-			}
-
-			return old
-		},
-		"__kernel_syslog": func(ctx uintptr, priority, message uint32) {
-			proc(ctx).syslog(priority, message)
-		},
-		"sysinfo": func(ctx uintptr, at uint32) uint32 {
-			p := proc(ctx)
-
-			return p.result(0, p.sysinfo(at))
-		},
-		"get_nprocs": func(ctx uintptr) uint32 {
-			return uint32(runtime.NumCPU())
-		},
-		"get_nprocs_conf": func(ctx uintptr) uint32 {
-			return uint32(runtime.NumCPU())
-		},
-		"get_phys_pages": func(ctx uintptr) uint32 {
-			return uint32(pages(false))
-		},
-		"get_avphys_pages": func(ctx uintptr) uint32 {
-			return uint32(pages(true))
-		},
-		"getloadavg": func(ctx uintptr, at, n uint32) uint32 {
-			p := proc(ctx)
-
-			switch {
-			case n == 0:
-				return 0
-			case int32(n) < 0:
-				return math.MaxUint32
-			}
-
-			var si syscall.Sysinfo_t
-
-			if syscall.Sysinfo(&si) != nil {
-				return math.MaxUint32
-			}
-
-			n = min(n, 3)
-
-			for i := range n {
-				p.put64(at+8*i, math.Float64bits(float64(si.Loads[i])/65536))
-			}
-
-			return n
-		},
-		// getrusage of the process, or its thread, is wasm2o's: its
-		// children's are in it.
-		"getrusage": func(ctx uintptr, who, at uint32) uint32 {
-			p := proc(ctx)
-
-			switch int32(who) {
-			case 0, 1:
-				var ru syscall.Rusage
-
-				if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
-					return p.result(0, err)
-				}
-
-				p.putRusage(at, &ru)
-			case -1:
-				p.putRusage(at, nil)
-			default:
-				return p.result(0, syscall.EINVAL)
-			}
-
-			return p.result(0, nil)
-		},
-		"getrlimit": func(ctx uintptr, res, at uint32) uint32 {
-			p := proc(ctx)
-
-			return p.result(0, p.limitOf(p, res, 0, at))
-		},
-		"setrlimit": func(ctx uintptr, res, at uint32) uint32 {
-			p := proc(ctx)
-
-			return p.result(0, p.limitOf(p, res, at, 0))
-		},
-		"prlimit": func(ctx uintptr, pid, res, set, old uint32) uint32 {
-			p := proc(ctx)
-			q, err := p.process(int32(pid))
-
-			if err == nil {
-				err = p.limitOf(q, res, set, old)
-			}
-
-			return p.result(0, err)
-		},
-		"getdtablesize": func(ctx uintptr) uint32 {
-			p := proc(ctx)
-			k.mu.Lock()
-			defer k.mu.Unlock()
-
-			return uint32(min(p.limits[rlimitNofile].cur, math.MaxInt32))
-		},
-		// confstr knows _CS_PATH.
-		"confstr": func(ctx uintptr, name, buf, n uint32) uint32 {
-			p := proc(ctx)
-
-			if name != 0 {
-				p.setErrno(syscall.EINVAL)
-
-				return 0
-			}
-
-			s := "/bin:/usr/bin"
-
-			if n > 0 {
-				p.putString(buf, s[:min(int(n-1), len(s))])
-			}
-
-			return uint32(len(s) + 1)
-		},
-		"pathconf": func(ctx uintptr, path, name uint32) uint32 {
-			p := proc(ctx)
-
-			if err := p.onPath(p.str(path), true, func(int) error { return nil }); err != nil {
-				return p.result(0, err)
-			}
-
-			return p.pathconf(name)
-		},
-		"fpathconf": func(ctx uintptr, fd, name uint32) uint32 {
-			p := proc(ctx)
-
-			if _, err := p.fd(fd); err != nil {
-				return p.result(0, err)
-			}
-
-			return p.pathconf(name)
-		},
-		// The login name is LOGNAME's, as musl's.
-		"getlogin": func(ctx uintptr) uint32 {
-			_, value, _ := proc(ctx).lookupEnv([]byte("LOGNAME"))
-
-			return value
-		},
-		"getlogin_r": func(ctx uintptr, buf, n uint32) uint32 {
-			p := proc(ctx)
-			name, ok := p.getenv("LOGNAME")
-
-			switch {
-			case !ok:
-				return uint32(syscall.ENXIO)
-			case uint32(len(name)) >= n:
-				return uint32(syscall.ERANGE)
-			}
-
-			p.putString(buf, name)
-
-			return 0
-		},
-		"ctermid": func(ctx uintptr, s uint32) uint32 {
-			p := proc(ctx)
-
-			if s == 0 {
-				return p.constant("/dev/tty")
-			}
-
-			p.putString(s, "/dev/tty")
-
-			return s
-		},
-		"ttyname": func(ctx uintptr, fd uint32) uint32 {
-			p := proc(ctx)
-			name, e := p.terminalName(fd)
-
-			if e != 0 {
-				p.setErrno(e)
-
-				return 0
-			}
-
-			return p.constant(name)
-		},
-		// ttyname_r returns an error number.
-		"ttyname_r": func(ctx uintptr, fd, buf, n uint32) uint32 {
-			p := proc(ctx)
-			name, e := p.terminalName(fd)
-
-			switch {
-			case e != 0:
-				return uint32(e)
-			case uint32(len(name)) >= n:
-				return uint32(syscall.ERANGE)
-			}
-
-			p.putString(buf, name)
-
-			return 0
-		},
+		"openlog":          libcOpenlog,
+		"closelog":         libcCloselog,
+		"setlogmask":       libcSetlogmask,
+		"__kernel_syslog":  libc__kernel_syslog,
+		"sysinfo":          libcSysinfo,
+		"get_nprocs":       libcGet_nprocs,
+		"get_nprocs_conf":  libcGet_nprocs_conf,
+		"get_phys_pages":   libcGet_phys_pages,
+		"get_avphys_pages": libcGet_avphys_pages,
+		"getloadavg":       libcGetloadavg,
+		"getrusage":        libcGetrusage,
+		"getrlimit":        libcGetrlimit,
+		"setrlimit":        libcSetrlimit,
+		"prlimit":          libcPrlimit,
+		"getdtablesize":    libcGetdtablesize,
+		"confstr":          libcConfstr,
+		"pathconf":         libcPathconf,
+		"fpathconf":        libcFpathconf,
+		"getlogin":         libcGetlogin,
+		"getlogin_r":       libcGetlogin_r,
+		"ctermid":          libcCtermid,
+		"ttyname":          libcTtyname,
+		"ttyname_r":        libcTtyname_r,
 	}
+}
+
+func libcOpenlog(ctx uintptr, ident, option, facility uint32) {
+	p := proc(ctx)
+	name := ""
+
+	if ident != 0 {
+		name = truncate(p.str(ident), logIdentSize-1)
+	}
+
+	p.putString(p.staticAt(staticLogIdent), name)
+	p.put32(p.staticAt(staticLogOption), option)
+}
+
+func libcCloselog(ctx uintptr) {
+}
+
+// setlogmask returns the levels it let through; 0 changes nothing.
+func libcSetlogmask(ctx uintptr, mask uint32) uint32 {
+	p := proc(ctx)
+	at := p.staticAt(staticLogMask)
+	old := ^p.u32(at) & 0xff
+
+	if mask != 0 {
+		p.put32(at, ^mask&0xff)
+	}
+
+	return old
+}
+
+func libc__kernel_syslog(ctx uintptr, priority, message uint32) {
+	proc(ctx).syslog(priority, message)
+}
+
+func libcSysinfo(ctx uintptr, at uint32) uint32 {
+	p := proc(ctx)
+
+	return p.result(0, p.sysinfo(at))
+}
+
+func libcGet_nprocs(ctx uintptr) uint32 {
+	return uint32(runtime.NumCPU())
+}
+
+func libcGet_nprocs_conf(ctx uintptr) uint32 {
+	return uint32(runtime.NumCPU())
+}
+
+func libcGet_phys_pages(ctx uintptr) uint32 {
+	return uint32(pages(false))
+}
+
+func libcGet_avphys_pages(ctx uintptr) uint32 {
+	return uint32(pages(true))
+}
+
+func libcGetloadavg(ctx uintptr, at, n uint32) uint32 {
+	p := proc(ctx)
+
+	switch {
+	case n == 0:
+		return 0
+	case int32(n) < 0:
+		return math.MaxUint32
+	}
+
+	var si syscall.Sysinfo_t
+
+	if syscall.Sysinfo(&si) != nil {
+		return math.MaxUint32
+	}
+
+	n = min(n, 3)
+
+	for i := range n {
+		p.put64(at+8*i, math.Float64bits(float64(si.Loads[i])/65536))
+	}
+
+	return n
+}
+
+// getrusage of the process, or its thread, is wasm2o's: its
+// children's are in it.
+func libcGetrusage(ctx uintptr, who, at uint32) uint32 {
+	p := proc(ctx)
+
+	switch int32(who) {
+	case 0, 1:
+		var ru syscall.Rusage
+
+		if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
+			return p.result(0, err)
+		}
+
+		p.putRusage(at, &ru)
+	case -1:
+		p.putRusage(at, nil)
+	default:
+		return p.result(0, syscall.EINVAL)
+	}
+
+	return p.result(0, nil)
+}
+
+func libcGetrlimit(ctx uintptr, res, at uint32) uint32 {
+	p := proc(ctx)
+
+	return p.result(0, p.limitOf(p, res, 0, at))
+}
+
+func libcSetrlimit(ctx uintptr, res, at uint32) uint32 {
+	p := proc(ctx)
+
+	return p.result(0, p.limitOf(p, res, at, 0))
+}
+
+func libcPrlimit(ctx uintptr, pid, res, set, old uint32) uint32 {
+	p := proc(ctx)
+	q, err := p.process(int32(pid))
+
+	if err == nil {
+		err = p.limitOf(q, res, set, old)
+	}
+
+	return p.result(0, err)
+}
+
+func libcGetdtablesize(ctx uintptr) uint32 {
+	p := proc(ctx)
+	p.k.mu.Lock()
+	defer p.k.mu.Unlock()
+
+	return uint32(min(p.limits[rlimitNofile].cur, math.MaxInt32))
+}
+
+// confstr knows _CS_PATH.
+func libcConfstr(ctx uintptr, name, buf, n uint32) uint32 {
+	p := proc(ctx)
+
+	if name != 0 {
+		p.setErrno(syscall.EINVAL)
+
+		return 0
+	}
+
+	s := "/bin:/usr/bin"
+
+	if n > 0 {
+		p.putString(buf, s[:min(int(n-1), len(s))])
+	}
+
+	return uint32(len(s) + 1)
+}
+
+func libcPathconf(ctx uintptr, path, name uint32) uint32 {
+	p := proc(ctx)
+
+	if err := p.onPath(p.str(path), true, func(int) error { return nil }); err != nil {
+		return p.result(0, err)
+	}
+
+	return p.pathconf(name)
+}
+
+func libcFpathconf(ctx uintptr, fd, name uint32) uint32 {
+	p := proc(ctx)
+
+	if _, err := p.fd(fd); err != nil {
+		return p.result(0, err)
+	}
+
+	return p.pathconf(name)
+}
+
+// The login name is LOGNAME's, as musl's.
+func libcGetlogin(ctx uintptr) uint32 {
+	_, value, _ := proc(ctx).lookupEnv([]byte("LOGNAME"))
+
+	return value
+}
+
+func libcGetlogin_r(ctx uintptr, buf, n uint32) uint32 {
+	p := proc(ctx)
+	name, ok := p.getenv("LOGNAME")
+
+	switch {
+	case !ok:
+		return uint32(syscall.ENXIO)
+	case uint32(len(name)) >= n:
+		return uint32(syscall.ERANGE)
+	}
+
+	p.putString(buf, name)
+
+	return 0
+}
+
+func libcCtermid(ctx uintptr, s uint32) uint32 {
+	p := proc(ctx)
+
+	if s == 0 {
+		return p.constant("/dev/tty")
+	}
+
+	p.putString(s, "/dev/tty")
+
+	return s
+}
+
+func libcTtyname(ctx uintptr, fd uint32) uint32 {
+	p := proc(ctx)
+	name, e := p.terminalName(fd)
+
+	if e != 0 {
+		p.setErrno(e)
+
+		return 0
+	}
+
+	return p.constant(name)
+}
+
+// ttyname_r returns an error number.
+func libcTtyname_r(ctx uintptr, fd, buf, n uint32) uint32 {
+	p := proc(ctx)
+	name, e := p.terminalName(fd)
+
+	switch {
+	case e != 0:
+		return uint32(e)
+	case uint32(len(name)) >= n:
+		return uint32(syscall.ERANGE)
+	}
+
+	p.putString(buf, name)
+
+	return 0
 }

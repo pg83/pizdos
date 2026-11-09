@@ -98,17 +98,37 @@ func (w *WASI) function(imp *ImportMeta) any {
 	}
 
 	functions := map[string]any{
-		"args_get": w.argsGet, "args_sizes_get": w.argsSizesGet, "environ_get": w.environGet,
-		"environ_sizes_get": w.environSizesGet, "clock_time_get": w.clockTimeGet, "clock_res_get": w.clockResGet,
-		"fd_write": w.fdWrite, "fd_read": w.fdRead, "fd_pwrite": w.fdPwrite, "fd_pread": w.fdPread,
-		"fd_close": w.fdClose, "fd_seek": w.fdSeek, "fd_sync": w.fdSync, "fd_fdstat_get": w.fdFdstatGet,
-		"fd_fdstat_set_flags": w.fdFdstatSetFlags, "fd_filestat_get": w.fdFilestatGet,
-		"fd_filestat_set_size": w.fdFilestatSetSize, "fd_prestat_get": w.fdPrestatGet,
-		"fd_prestat_dir_name": w.fdPrestatDirName, "fd_readdir": w.fdReaddir,
-		"path_filestat_get": w.pathFilestatGet, "path_open": w.pathOpen,
-		"path_create_directory": w.pathCreateDirectory, "path_remove_directory": w.pathRemoveDirectory,
-		"path_unlink_file": w.pathUnlinkFile, "path_rename": w.pathRename, "path_readlink": w.pathReadlink,
-		"poll_oneoff": w.pollOneoff, "random_get": w.randomGet, "sched_yield": w.schedYield, "proc_exit": w.procExit,
+		"args_get":              wasiArgsGet,
+		"args_sizes_get":        wasiArgsSizesGet,
+		"environ_get":           wasiEnvironGet,
+		"environ_sizes_get":     wasiEnvironSizesGet,
+		"clock_time_get":        wasiClockTimeGet,
+		"clock_res_get":         wasiClockResGet,
+		"fd_write":              wasiFdWrite,
+		"fd_read":               wasiFdRead,
+		"fd_pwrite":             wasiFdPwrite,
+		"fd_pread":              wasiFdPread,
+		"fd_close":              wasiFdClose,
+		"fd_seek":               wasiFdSeek,
+		"fd_sync":               wasiFdSync,
+		"fd_fdstat_get":         wasiFdFdstatGet,
+		"fd_fdstat_set_flags":   wasiFdFdstatSetFlags,
+		"fd_filestat_get":       wasiFdFilestatGet,
+		"fd_filestat_set_size":  wasiFdFilestatSetSize,
+		"fd_prestat_get":        wasiFdPrestatGet,
+		"fd_prestat_dir_name":   wasiFdPrestatDirName,
+		"fd_readdir":            wasiFdReaddir,
+		"path_filestat_get":     wasiPathFilestatGet,
+		"path_open":             wasiPathOpen,
+		"path_create_directory": wasiPathCreateDirectory,
+		"path_remove_directory": wasiPathRemoveDirectory,
+		"path_unlink_file":      wasiPathUnlinkFile,
+		"path_rename":           wasiPathRename,
+		"path_readlink":         wasiPathReadlink,
+		"poll_oneoff":           wasiPollOneoff,
+		"random_get":            wasiRandomGet,
+		"sched_yield":           wasiSchedYield,
+		"proc_exit":             wasiProcExit,
 	}
 
 	return functions[imp.name]
@@ -124,6 +144,11 @@ func (w *WASI) memory(*ImportMeta) *LinearMemory {
 
 func (w *WASI) table(*ImportMeta) uintptr {
 	return 0
+}
+
+// wasiAt is the WASI of the instance whose import Go runs.
+func wasiAt(ctx uintptr) *WASI {
+	return instanceAt(ctx).host.(*WASI)
 }
 
 func guest(ctx uintptr) []byte {
@@ -195,19 +220,23 @@ func stringsGet(m []byte, list []string, ptrs, buf uint32) uint32 {
 	return wasiOK
 }
 
-func (w *WASI) argsGet(ctx uintptr, argv, buf uint32) uint32 {
+func wasiArgsGet(ctx uintptr, argv, buf uint32) uint32 {
+	w := wasiAt(ctx)
 	return stringsGet(guest(ctx), w.args, argv, buf)
 }
 
-func (w *WASI) argsSizesGet(ctx uintptr, count, size uint32) uint32 {
+func wasiArgsSizesGet(ctx uintptr, count, size uint32) uint32 {
+	w := wasiAt(ctx)
 	return stringsSizes(guest(ctx), w.args, count, size)
 }
 
-func (w *WASI) environGet(ctx uintptr, env, buf uint32) uint32 {
+func wasiEnvironGet(ctx uintptr, env, buf uint32) uint32 {
+	w := wasiAt(ctx)
 	return stringsGet(guest(ctx), w.env, env, buf)
 }
 
-func (w *WASI) environSizesGet(ctx uintptr, count, size uint32) uint32 {
+func wasiEnvironSizesGet(ctx uintptr, count, size uint32) uint32 {
+	w := wasiAt(ctx)
 	return stringsSizes(guest(ctx), w.env, count, size)
 }
 
@@ -233,7 +262,7 @@ func clock(id uint32, res bool) (uint64, uint32) {
 	return uint64(ts.Sec)*1e9 + uint64(ts.Nsec), wasiOK
 }
 
-func (w *WASI) clockTimeGet(ctx uintptr, id uint32, precision uint64, at uint32) uint32 {
+func wasiClockTimeGet(ctx uintptr, id uint32, precision uint64, at uint32) uint32 {
 	t, e := clock(id, false)
 
 	if e == wasiOK && !put64(guest(ctx), at, t) {
@@ -243,7 +272,7 @@ func (w *WASI) clockTimeGet(ctx uintptr, id uint32, precision uint64, at uint32)
 	return e
 }
 
-func (w *WASI) clockResGet(ctx uintptr, id uint32, at uint32) uint32 {
+func wasiClockResGet(ctx uintptr, id uint32, at uint32) uint32 {
 	t, e := clock(id, true)
 
 	if e == wasiOK && !put64(guest(ctx), at, t) {
@@ -324,23 +353,28 @@ func (w *WASI) vectored(ctx uintptr, call uintptr, fd, iovs, count uint32, offse
 	return wasiOK
 }
 
-func (w *WASI) fdWrite(ctx uintptr, fd, iovs, count, written uint32) uint32 {
+func wasiFdWrite(ctx uintptr, fd, iovs, count, written uint32) uint32 {
+	w := wasiAt(ctx)
 	return w.vectored(ctx, syscall.SYS_WRITEV, fd, iovs, count, 0, false, written)
 }
 
-func (w *WASI) fdRead(ctx uintptr, fd, iovs, count, read uint32) uint32 {
+func wasiFdRead(ctx uintptr, fd, iovs, count, read uint32) uint32 {
+	w := wasiAt(ctx)
 	return w.vectored(ctx, syscall.SYS_READV, fd, iovs, count, 0, false, read)
 }
 
-func (w *WASI) fdPwrite(ctx uintptr, fd, iovs, count uint32, offset uint64, written uint32) uint32 {
+func wasiFdPwrite(ctx uintptr, fd, iovs, count uint32, offset uint64, written uint32) uint32 {
+	w := wasiAt(ctx)
 	return w.vectored(ctx, syscall.SYS_PWRITEV, fd, iovs, count, offset, true, written)
 }
 
-func (w *WASI) fdPread(ctx uintptr, fd, iovs, count uint32, offset uint64, read uint32) uint32 {
+func wasiFdPread(ctx uintptr, fd, iovs, count uint32, offset uint64, read uint32) uint32 {
+	w := wasiAt(ctx)
 	return w.vectored(ctx, syscall.SYS_PREADV, fd, iovs, count, offset, true, read)
 }
 
-func (w *WASI) fdClose(ctx uintptr, fd uint32) uint32 {
+func wasiFdClose(ctx uintptr, fd uint32) uint32 {
+	w := wasiAt(ctx)
 	host, ok := w.fd(fd)
 
 	if !ok {
@@ -356,7 +390,8 @@ func (w *WASI) fdClose(ctx uintptr, fd uint32) uint32 {
 	return wasiErrno(syscall.Close(host))
 }
 
-func (w *WASI) fdSeek(ctx uintptr, fd uint32, offset uint64, whence uint32, result uint32) uint32 {
+func wasiFdSeek(ctx uintptr, fd uint32, offset uint64, whence uint32, result uint32) uint32 {
+	w := wasiAt(ctx)
 	host, ok := w.fd(fd)
 
 	if !ok {
@@ -380,7 +415,8 @@ func (w *WASI) fdSeek(ctx uintptr, fd uint32, offset uint64, whence uint32, resu
 	return wasiOK
 }
 
-func (w *WASI) fdSync(ctx uintptr, fd uint32) uint32 {
+func wasiFdSync(ctx uintptr, fd uint32) uint32 {
+	w := wasiAt(ctx)
 	host, ok := w.fd(fd)
 
 	if !ok {
@@ -419,7 +455,8 @@ func fcntl(fd int, cmd, arg int) (int, error) {
 	return int(r), nil
 }
 
-func (w *WASI) fdFdstatGet(ctx uintptr, fd, at uint32) uint32 {
+func wasiFdFdstatGet(ctx uintptr, fd, at uint32) uint32 {
+	w := wasiAt(ctx)
 	host, ok := w.fd(fd)
 
 	if !ok {
@@ -463,7 +500,8 @@ func (w *WASI) fdFdstatGet(ctx uintptr, fd, at uint32) uint32 {
 	return wasiOK
 }
 
-func (w *WASI) fdFdstatSetFlags(ctx uintptr, fd, flags uint32) uint32 {
+func wasiFdFdstatSetFlags(ctx uintptr, fd, flags uint32) uint32 {
+	w := wasiAt(ctx)
 	host, ok := w.fd(fd)
 
 	if !ok {
@@ -507,7 +545,8 @@ func filestat(b []byte, st *syscall.Stat_t) {
 	binary.LittleEndian.PutUint64(b[56:], nanos(st.Ctim))
 }
 
-func (w *WASI) fdFilestatGet(ctx uintptr, fd, at uint32) uint32 {
+func wasiFdFilestatGet(ctx uintptr, fd, at uint32) uint32 {
+	w := wasiAt(ctx)
 	host, ok := w.fd(fd)
 
 	if !ok {
@@ -531,7 +570,8 @@ func (w *WASI) fdFilestatGet(ctx uintptr, fd, at uint32) uint32 {
 	return wasiOK
 }
 
-func (w *WASI) fdFilestatSetSize(ctx uintptr, fd uint32, size uint64) uint32 {
+func wasiFdFilestatSetSize(ctx uintptr, fd uint32, size uint64) uint32 {
+	w := wasiAt(ctx)
 	host, ok := w.fd(fd)
 
 	if !ok {
@@ -541,7 +581,7 @@ func (w *WASI) fdFilestatSetSize(ctx uintptr, fd uint32, size uint64) uint32 {
 	return wasiErrno(syscall.Ftruncate(host, int64(size)))
 }
 
-func (w *WASI) fdPrestatGet(ctx uintptr, fd, at uint32) uint32 {
+func wasiFdPrestatGet(ctx uintptr, fd, at uint32) uint32 {
 	if fd != wasiRoot {
 		return wasiEbadf
 	}
@@ -555,7 +595,7 @@ func (w *WASI) fdPrestatGet(ctx uintptr, fd, at uint32) uint32 {
 	return wasiOK
 }
 
-func (w *WASI) fdPrestatDirName(ctx uintptr, fd, path, n uint32) uint32 {
+func wasiFdPrestatDirName(ctx uintptr, fd, path, n uint32) uint32 {
 	if fd != wasiRoot {
 		return wasiEbadf
 	}
@@ -594,7 +634,8 @@ func direntType(t byte) byte {
 
 // fdReaddir reads the directory from its start and writes the entries from
 // cookie on, each a 24-byte header and the name, until the buffer is full.
-func (w *WASI) fdReaddir(ctx uintptr, fd, buf, n uint32, cookie uint64, used uint32) uint32 {
+func wasiFdReaddir(ctx uintptr, fd, buf, n uint32, cookie uint64, used uint32) uint32 {
+	w := wasiAt(ctx)
 	host, ok := w.fd(fd)
 
 	if !ok {
@@ -677,7 +718,8 @@ func guestPath(m []byte, path, n uint32) (string, uint32) {
 	return string(b), wasiOK
 }
 
-func (w *WASI) pathFilestatGet(ctx uintptr, fd, flags, path, n, at uint32) uint32 {
+func wasiPathFilestatGet(ctx uintptr, fd, flags, path, n, at uint32) uint32 {
+	w := wasiAt(ctx)
 	host, ok := w.fd(fd)
 
 	if !ok {
@@ -714,7 +756,8 @@ func (w *WASI) pathFilestatGet(ctx uintptr, fd, flags, path, n, at uint32) uint3
 	return wasiOK
 }
 
-func (w *WASI) pathOpen(ctx uintptr, fd, dirflags, path, n, oflags uint32, rights, inheriting uint64, fdflags, opened uint32) uint32 {
+func wasiPathOpen(ctx uintptr, fd, dirflags, path, n, oflags uint32, rights, inheriting uint64, fdflags, opened uint32) uint32 {
+	w := wasiAt(ctx)
 	host, ok := w.fd(fd)
 
 	if !ok {
@@ -781,7 +824,8 @@ func (w *WASI) pathOpen(ctx uintptr, fd, dirflags, path, n, oflags uint32, right
 	return wasiOK
 }
 
-func (w *WASI) pathCreateDirectory(ctx uintptr, fd, path, n uint32) uint32 {
+func wasiPathCreateDirectory(ctx uintptr, fd, path, n uint32) uint32 {
+	w := wasiAt(ctx)
 	host, ok := w.fd(fd)
 
 	if !ok {
@@ -817,7 +861,8 @@ func unlinkat(dirfd int, path string, flags int) error {
 	return nil
 }
 
-func (w *WASI) pathRemoveDirectory(ctx uintptr, fd, path, n uint32) uint32 {
+func wasiPathRemoveDirectory(ctx uintptr, fd, path, n uint32) uint32 {
+	w := wasiAt(ctx)
 	host, ok := w.fd(fd)
 
 	if !ok {
@@ -833,7 +878,8 @@ func (w *WASI) pathRemoveDirectory(ctx uintptr, fd, path, n uint32) uint32 {
 	return wasiErrno(unlinkat(host, p, 0x200))
 }
 
-func (w *WASI) pathUnlinkFile(ctx uintptr, fd, path, n uint32) uint32 {
+func wasiPathUnlinkFile(ctx uintptr, fd, path, n uint32) uint32 {
+	w := wasiAt(ctx)
 	host, ok := w.fd(fd)
 
 	if !ok {
@@ -849,7 +895,8 @@ func (w *WASI) pathUnlinkFile(ctx uintptr, fd, path, n uint32) uint32 {
 	return wasiErrno(unlinkat(host, p, 0))
 }
 
-func (w *WASI) pathRename(ctx uintptr, fd, path, n, fd2, path2, n2 uint32) uint32 {
+func wasiPathRename(ctx uintptr, fd, path, n, fd2, path2, n2 uint32) uint32 {
+	w := wasiAt(ctx)
 	host, ok := w.fd(fd)
 	host2, ok2 := w.fd(fd2)
 
@@ -873,7 +920,8 @@ func (w *WASI) pathRename(ctx uintptr, fd, path, n, fd2, path2, n2 uint32) uint3
 	return wasiErrno(syscall.Renameat(host, p, host2, q))
 }
 
-func (w *WASI) pathReadlink(ctx uintptr, fd, path, n, buf, size, used uint32) uint32 {
+func wasiPathReadlink(ctx uintptr, fd, path, n, buf, size, used uint32) uint32 {
+	w := wasiAt(ctx)
 	host, ok := w.fd(fd)
 
 	if !ok {
@@ -913,7 +961,7 @@ func (w *WASI) pathReadlink(ctx uintptr, fd, path, n, buf, size, used uint32) ui
 
 // pollOneoff sleeps until the earliest clock subscription; descriptor
 // subscriptions are reported ready at once.
-func (w *WASI) pollOneoff(ctx uintptr, in, out, count, events uint32) uint32 {
+func wasiPollOneoff(ctx uintptr, in, out, count, events uint32) uint32 {
 	if count == 0 {
 		return wasiEinval
 	}
@@ -975,7 +1023,7 @@ func (w *WASI) pollOneoff(ctx uintptr, in, out, count, events uint32) uint32 {
 	return wasiOK
 }
 
-func (w *WASI) randomGet(ctx uintptr, buf, n uint32) uint32 {
+func wasiRandomGet(ctx uintptr, buf, n uint32) uint32 {
 	b := span(guest(ctx), buf, uint64(n))
 
 	if b == nil {
@@ -989,12 +1037,12 @@ func (w *WASI) randomGet(ctx uintptr, buf, n uint32) uint32 {
 	return wasiOK
 }
 
-func (w *WASI) schedYield(ctx uintptr) uint32 {
+func wasiSchedYield(ctx uintptr) uint32 {
 	runtime.Gosched()
 
 	return wasiOK
 }
 
-func (w *WASI) procExit(ctx uintptr, code uint32) {
+func wasiProcExit(ctx uintptr, code uint32) {
 	panic(&wasiExit{code})
 }

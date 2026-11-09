@@ -247,8 +247,31 @@ func growGo(n int) int {
 // A recursion 100000 frames deep calls Go at its bottom, which collects,
 // grows its own stack and parks: every native frame is walked and copied,
 // and the sum still comes out.
+// deepHost counts the calls of deepBottom.
+type deepHost struct {
+	calls int
+}
+
+// deepBottom collects, grows Go's stack and waits on another goroutine,
+// under the frames of the code that called it.
+func deepBottom(ctx uintptr, x uint32) uint32 {
+	instanceAt(ctx).host.(*deepHost).calls++
+	runtime.GC()
+	growGo(2000)
+	done := make(chan uint32)
+
+	go func() {
+		time.Sleep(time.Millisecond)
+		done <- 2 * x
+	}()
+
+	runtime.GC()
+
+	return <-done
+}
+
 func TestDeepNativeFrames(t *testing.T) {
-	calls := 0
+	host := &deepHost{}
 	m := &testModule{
 		imports: []testImport{{"env", "bottom", i32, i32}},
 		funcs: []testFunc{{
@@ -257,21 +280,8 @@ func TestDeepNativeFrames(t *testing.T) {
 				get(0), i32c(1), []byte{opI32Sub}, call(1), i32c(1), []byte{opI32Add, 0x0b}),
 		}},
 	}
-	i := load(t, m, testImports{"env.bottom": func(ctx uintptr, x uint32) uint32 {
-		calls++
-		runtime.GC()
-		growGo(2000)
-		done := make(chan uint32)
-
-		go func() {
-			time.Sleep(time.Millisecond)
-			done <- 2 * x
-		}()
-
-		runtime.GC()
-
-		return <-done
-	}})
+	i := load(t, m, testImports{"env.bottom": deepBottom})
+	i.host = host
 	rec := func(n uint32) uint32 {
 		f, _ := i.export("rec")
 
@@ -284,8 +294,8 @@ func TestDeepNativeFrames(t *testing.T) {
 		}
 	}
 
-	if calls != 3 {
-		t.Fatalf("bottom called %d times", calls)
+	if host.calls != 3 {
+		t.Fatalf("bottom called %d times", host.calls)
 	}
 
 	runtime.KeepAlive(i)
@@ -535,10 +545,11 @@ func put(i int) []byte {
 // jumpTest is a module whose imports are setjmp, longjmp, bottom and
 // callback, functions 0 to 3, with jumps keyed by the buffer address.
 type jumpTest struct {
-	t      *testing.T
-	jumps  map[uint32]*Jump
-	failed int
-	i      *Instance
+	t                *testing.T
+	jumps            map[uint32]*Jump
+	failed           int
+	i                *Instance
+	bottom, callback func()
 }
 
 var jumpImports = []testImport{
@@ -548,27 +559,39 @@ var jumpImports = []testImport{
 	{"env", "callback", nil, nil},
 }
 
+func jumpSetjmp(ctx uintptr, buf uint32) uint32 {
+	jt := instanceAt(ctx).host.(*jumpTest)
+	j := new(Jump)
+
+	if !instanceAt(ctx).setjmp(j) {
+		jt.t.Error("setjmp without a jump frame")
+	}
+
+	jt.jumps[buf] = j
+
+	return 0
+}
+
+func jumpLongjmp(ctx uintptr, buf, val uint32) {
+	jt := instanceAt(ctx).host.(*jumpTest)
+	instanceAt(ctx).longjmp(jt.jumps[buf], val)
+	jt.failed++
+}
+
+func jumpBottom(ctx uintptr) {
+	instanceAt(ctx).host.(*jumpTest).bottom()
+}
+
+func jumpCallback(ctx uintptr) {
+	instanceAt(ctx).host.(*jumpTest).callback()
+}
+
 func loadJumps(t *testing.T, funcs []testFunc, bottom, callback func()) *jumpTest {
-	jt := &jumpTest{t: t, jumps: map[uint32]*Jump{}}
+	jt := &jumpTest{t: t, jumps: map[uint32]*Jump{}, bottom: bottom, callback: callback}
 	jt.i = load(t, &testModule{imports: jumpImports, funcs: funcs}, testImports{
-		"env.setjmp": func(ctx uintptr, buf uint32) uint32 {
-			j := new(Jump)
-
-			if !instanceAt(ctx).setjmp(j) {
-				t.Error("setjmp without a jump frame")
-			}
-
-			jt.jumps[buf] = j
-
-			return 0
-		},
-		"env.longjmp": func(ctx uintptr, buf, val uint32) {
-			instanceAt(ctx).longjmp(jt.jumps[buf], val)
-			jt.failed++
-		},
-		"env.bottom":   func(uintptr) { bottom() },
-		"env.callback": func(uintptr) { callback() },
+		"env.setjmp": jumpSetjmp, "env.longjmp": jumpLongjmp, "env.bottom": jumpBottom, "env.callback": jumpCallback,
 	})
+	jt.i.host = jt
 
 	return jt
 }
@@ -746,6 +769,54 @@ func TestStaleJump(t *testing.T) {
 
 const opReturn = 0x0f
 
+// forkHost is what forkTest's imports keep, in the parent and the child.
+type forkHost struct {
+	t       *testing.T
+	imports testImports
+	jumps   map[uint32]*Jump
+	done    chan uint64
+}
+
+func forkSetjmp(ctx uintptr, buf uint32) uint32 {
+	i := instanceAt(ctx)
+	j := new(Jump)
+	i.setjmp(j)
+	i.host.(*forkHost).jumps[buf] = j
+
+	return 0
+}
+
+func forkLongjmp(ctx uintptr, buf, val uint32) {
+	i := instanceAt(ctx)
+	h := i.host.(*forkHost)
+	i.longjmp(h.jumps[buf], val)
+	h.t.Error("the jump failed")
+}
+
+func forkFork(ctx uintptr) uint32 {
+	i := instanceAt(ctx)
+	h := i.host.(*forkHost)
+	j := new(Jump)
+	i.setjmp(j)
+	f, ok := i.frames(j, "main")
+
+	if !ok {
+		h.t.Error("no frames to fork")
+
+		return 0
+	}
+
+	c := i.clone(h.imports, 64<<20, 0, i.memory.pages*pageSize)
+	c.host = h
+
+	go func() {
+		h.done <- c.resume(f)
+		c.release()
+	}()
+
+	return 77
+}
+
 // forkTest runs main(n, depth) of a module whose imports are setjmp,
 // longjmp and fork: main keeps six values across setjmp and goes depth
 // frames down to fork, the child stores 42 at 0 and longjmps to main's
@@ -772,45 +843,14 @@ func forkTest(t *testing.T, imports testImports, done chan uint64) *Instance {
 			[]byte{opElse}, get(0), i32c(7), []byte{opI32Add}, put(1), get(0), i32c(11), []byte{opI32Add}, put(2), get(0), i32c(13), []byte{opI32Add}, put(3),
 			get(0), i32c(1), []byte{opI32Sub}, call(4), get(1), []byte{opI32Add}, get(2), []byte{opI32Add}, get(3), []byte{opI32Add}, []byte{0x0b}),
 	}
-	jumps := map[uint32]*Jump{}
-	imports["env.setjmp"] = func(ctx uintptr, buf uint32) uint32 {
-		j := new(Jump)
-		instanceAt(ctx).setjmp(j)
-		jumps[buf] = j
-
-		return 0
-	}
-	imports["env.longjmp"] = func(ctx uintptr, buf, val uint32) {
-		instanceAt(ctx).longjmp(jumps[buf], val)
-		t.Error("the jump failed")
-	}
-	imports["env.fork"] = func(ctx uintptr) uint32 {
-		i := instanceAt(ctx)
-		j := new(Jump)
-		i.setjmp(j)
-		f, ok := i.frames(j, "main")
-
-		if !ok {
-			t.Error("no frames to fork")
-
-			return 0
-		}
-
-		c := i.clone(imports, 64<<20, 0, i.memory.pages*pageSize)
-		c.host = c
-
-		go func() {
-			done <- c.resume(f)
-			c.release()
-		}()
-
-		return 77
-	}
-
-	return load(t, &testModule{
+	imports["env.setjmp"], imports["env.longjmp"], imports["env.fork"] = forkSetjmp, forkLongjmp, forkFork
+	i := load(t, &testModule{
 		imports: []testImport{{"env", "setjmp", i32, i32}, {"env", "longjmp", []ValType{I32, I32}, nil}, {"env", "fork", nil, i32}},
 		funcs:   []testFunc{main, down}, memMin: 1, memMax: 1,
 	}, imports)
+	i.host = &forkHost{t: t, imports: imports, jumps: map[uint32]*Jump{}, done: done}
+
+	return i
 }
 
 // fork from 10000 frames down: the child's frames are copies, its memory
@@ -967,6 +1007,7 @@ func TestInterrupt(t *testing.T) {
 type returnHost struct {
 	i     *Instance
 	calls int
+	ticks uint32
 }
 
 func (h *returnHost) interrupt() {
@@ -976,12 +1017,23 @@ func (h *returnHost) interrupt() {
 	atomic.StoreUint32((*uint32)(unsafe.Pointer(&h.i.block[offInterrupt])), 0)
 }
 
+// returnTick asks for an interruption on every 7th call.
+func returnTick(ctx uintptr) uint32 {
+	h := instanceAt(ctx).host.(*returnHost)
+	h.ticks++
+
+	if h.ticks%7 == 0 {
+		atomic.StoreUint32((*uint32)(unsafe.Pointer(&instanceAt(ctx).block[offInterrupt])), 1)
+	}
+
+	return h.ticks
+}
+
 // Every 7th call of an import asks for an interruption, which runs on the
 // way out of the import, its result kept.
 func TestInterruptOnReturn(t *testing.T) {
 	const opBrIfLoop = 0x0d
 	host := &returnHost{}
-	ticks := uint32(0)
 	m := &testModule{
 		imports: []testImport{{"env", "tick", nil, i32}},
 		funcs: []testFunc{{
@@ -990,15 +1042,7 @@ func TestInterruptOnReturn(t *testing.T) {
 				get(0), i32c(1), []byte{opI32Sub, opLocalTee, 0, opBrIfLoop, 0, 0x0b}, get(1)),
 		}},
 	}
-	i := load(t, m, testImports{"env.tick": func(ctx uintptr) uint32 {
-		ticks++
-
-		if ticks%7 == 0 {
-			atomic.StoreUint32((*uint32)(unsafe.Pointer(&instanceAt(ctx).block[offInterrupt])), 1)
-		}
-
-		return ticks
-	}})
+	i := load(t, m, testImports{"env.tick": returnTick})
 	host.i = i
 	i.host = host
 	count, _ := i.export("count")

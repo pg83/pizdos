@@ -282,111 +282,152 @@ func nextEntry[E any](p *Process, slot uint32, entries []E) *E {
 	return &entries[i]
 }
 
+func byName(p *Process, name uint32) func(*passwdEntry) bool {
+	s := p.str(name)
+
+	return func(e *passwdEntry) bool { return e.name == s }
+}
+
+func byUid(uid uint32) func(*passwdEntry) bool {
+	return func(e *passwdEntry) bool { return e.uid == uid }
+}
+
+func groupName(p *Process, name uint32) func(*groupEntry) bool {
+	s := p.str(name)
+
+	return func(e *groupEntry) bool { return e.name == s }
+}
+
+func byGid(gid uint32) func(*groupEntry) bool {
+	return func(e *groupEntry) bool { return e.gid == gid }
+}
+
+// rewind starts the entries of a static slot again.
+func rewind(ctx uintptr, slot uint32) {
+	p := proc(ctx)
+	p.put32(p.staticAt(slot), 0)
+}
+
 func (k *Kernel) userFunctions() map[string]any {
-	byName := func(p *Process, name uint32) func(*passwdEntry) bool {
-		s := p.str(name)
+	return map[string]any{
+		"getpwnam":     libcGetpwnam,
+		"getpwuid":     libcGetpwuid,
+		"getpwnam_r":   libcGetpwnam_r,
+		"getpwuid_r":   libcGetpwuid_r,
+		"getpwent":     libcGetpwent,
+		"setpwent":     libcSetpwent,
+		"endpwent":     libcEndpwent,
+		"getgrnam":     libcGetgrnam,
+		"getgrgid":     libcGetgrgid,
+		"getgrnam_r":   libcGetgrnam_r,
+		"getgrgid_r":   libcGetgrgid_r,
+		"getgrent":     libcGetgrent,
+		"setgrent":     libcSetgrent,
+		"endgrent":     libcEndgrent,
+		"getgrouplist": libcGetgrouplist,
+	}
+}
 
-		return func(e *passwdEntry) bool { return e.name == s }
-	}
-	byUid := func(uid uint32) func(*passwdEntry) bool {
-		return func(e *passwdEntry) bool { return e.uid == uid }
-	}
-	groupName := func(p *Process, name uint32) func(*groupEntry) bool {
-		s := p.str(name)
+func libcGetpwnam(ctx uintptr, name uint32) uint32 {
+	p := proc(ctx)
 
-		return func(e *groupEntry) bool { return e.name == s }
-	}
-	byGid := func(gid uint32) func(*groupEntry) bool {
-		return func(e *groupEntry) bool { return e.gid == gid }
-	}
-	rewind := func(slot uint32) func(uintptr) {
-		return func(ctx uintptr) {
-			p := proc(ctx)
-			p.put32(p.staticAt(slot), 0)
+	return p.staticPasswd(p.passwdBy(byName(p, name)))
+}
+
+func libcGetpwuid(ctx uintptr, uid uint32) uint32 {
+	p := proc(ctx)
+
+	return p.staticPasswd(p.passwdBy(byUid(uid)))
+}
+
+func libcGetpwnam_r(ctx uintptr, name, pwd, buf, size, result uint32) uint32 {
+	p := proc(ctx)
+
+	return p.passwdResult(p.passwdBy(byName(p, name)), pwd, buf, size, result)
+}
+
+func libcGetpwuid_r(ctx uintptr, uid, pwd, buf, size, result uint32) uint32 {
+	p := proc(ctx)
+
+	return p.passwdResult(p.passwdBy(byUid(uid)), pwd, buf, size, result)
+}
+
+func libcGetpwent(ctx uintptr) uint32 {
+	p := proc(ctx)
+
+	return p.staticPasswd(nextEntry(p, staticPwent, p.passwdEntries()))
+}
+
+func libcSetpwent(ctx uintptr) {
+	rewind(ctx, staticPwent)
+}
+
+func libcEndpwent(ctx uintptr) {
+	rewind(ctx, staticPwent)
+}
+
+func libcGetgrnam(ctx uintptr, name uint32) uint32 {
+	p := proc(ctx)
+
+	return p.staticGroup(p.groupBy(groupName(p, name)))
+}
+
+func libcGetgrgid(ctx uintptr, gid uint32) uint32 {
+	p := proc(ctx)
+
+	return p.staticGroup(p.groupBy(byGid(gid)))
+}
+
+func libcGetgrnam_r(ctx uintptr, name, grp, buf, size, result uint32) uint32 {
+	p := proc(ctx)
+
+	return p.groupResult(p.groupBy(groupName(p, name)), grp, buf, size, result)
+}
+
+func libcGetgrgid_r(ctx uintptr, gid, grp, buf, size, result uint32) uint32 {
+	p := proc(ctx)
+
+	return p.groupResult(p.groupBy(byGid(gid)), grp, buf, size, result)
+}
+
+func libcGetgrent(ctx uintptr) uint32 {
+	p := proc(ctx)
+
+	return p.staticGroup(nextEntry(p, staticGrent, p.groupEntries()))
+}
+
+func libcSetgrent(ctx uintptr) {
+	rewind(ctx, staticGrent)
+}
+
+func libcEndgrent(ctx uintptr) {
+	rewind(ctx, staticGrent)
+}
+
+// getgrouplist lists group and the groups that name user a member;
+// when they do not fit it returns -1 and how many there are.
+func libcGetgrouplist(ctx uintptr, user, group, groups, count uint32) uint32 {
+	p := proc(ctx)
+	name := p.str(user)
+	list := []uint32{group}
+
+	for _, e := range p.groupEntries() {
+		if slices.Contains(e.members, name) && !slices.Contains(list, e.gid) {
+			list = append(list, e.gid)
 		}
 	}
 
-	return map[string]any{
-		"getpwnam": func(ctx uintptr, name uint32) uint32 {
-			p := proc(ctx)
+	room := min(int(int32(p.u32(count))), len(list))
 
-			return p.staticPasswd(p.passwdBy(byName(p, name)))
-		},
-		"getpwuid": func(ctx uintptr, uid uint32) uint32 {
-			p := proc(ctx)
-
-			return p.staticPasswd(p.passwdBy(byUid(uid)))
-		},
-		"getpwnam_r": func(ctx uintptr, name, pwd, buf, size, result uint32) uint32 {
-			p := proc(ctx)
-
-			return p.passwdResult(p.passwdBy(byName(p, name)), pwd, buf, size, result)
-		},
-		"getpwuid_r": func(ctx uintptr, uid, pwd, buf, size, result uint32) uint32 {
-			p := proc(ctx)
-
-			return p.passwdResult(p.passwdBy(byUid(uid)), pwd, buf, size, result)
-		},
-		"getpwent": func(ctx uintptr) uint32 {
-			p := proc(ctx)
-
-			return p.staticPasswd(nextEntry(p, staticPwent, p.passwdEntries()))
-		},
-		"setpwent": rewind(staticPwent),
-		"endpwent": rewind(staticPwent),
-		"getgrnam": func(ctx uintptr, name uint32) uint32 {
-			p := proc(ctx)
-
-			return p.staticGroup(p.groupBy(groupName(p, name)))
-		},
-		"getgrgid": func(ctx uintptr, gid uint32) uint32 {
-			p := proc(ctx)
-
-			return p.staticGroup(p.groupBy(byGid(gid)))
-		},
-		"getgrnam_r": func(ctx uintptr, name, grp, buf, size, result uint32) uint32 {
-			p := proc(ctx)
-
-			return p.groupResult(p.groupBy(groupName(p, name)), grp, buf, size, result)
-		},
-		"getgrgid_r": func(ctx uintptr, gid, grp, buf, size, result uint32) uint32 {
-			p := proc(ctx)
-
-			return p.groupResult(p.groupBy(byGid(gid)), grp, buf, size, result)
-		},
-		"getgrent": func(ctx uintptr) uint32 {
-			p := proc(ctx)
-
-			return p.staticGroup(nextEntry(p, staticGrent, p.groupEntries()))
-		},
-		"setgrent": rewind(staticGrent),
-		"endgrent": rewind(staticGrent),
-		// getgrouplist lists group and the groups that name user a member;
-		// when they do not fit it returns -1 and how many there are.
-		"getgrouplist": func(ctx uintptr, user, group, groups, count uint32) uint32 {
-			p := proc(ctx)
-			name := p.str(user)
-			list := []uint32{group}
-
-			for _, e := range p.groupEntries() {
-				if slices.Contains(e.members, name) && !slices.Contains(list, e.gid) {
-					list = append(list, e.gid)
-				}
-			}
-
-			room := min(int(int32(p.u32(count))), len(list))
-
-			for i := range max(room, 0) {
-				p.put32(groups+4*uint32(i), list[i])
-			}
-
-			p.put32(count, uint32(len(list)))
-
-			if room < len(list) {
-				return ^uint32(0)
-			}
-
-			return uint32(len(list))
-		},
+	for i := range max(room, 0) {
+		p.put32(groups+4*uint32(i), list[i])
 	}
+
+	p.put32(count, uint32(len(list)))
+
+	if room < len(list) {
+		return ^uint32(0)
+	}
+
+	return uint32(len(list))
 }

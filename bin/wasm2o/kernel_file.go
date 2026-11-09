@@ -498,402 +498,484 @@ func (p *Process) withMask(mask uint32, wait func() (int, error)) (int, error) {
 
 func (k *Kernel) fileFunctions() map[string]any {
 	return map[string]any{
-		"read": func(ctx uintptr, fd, buf, n uint32) uint32 {
-			p := proc(ctx)
-			f, err := p.fd(fd)
-
-			if err != nil {
-				return p.result(0, err)
-			}
-
-			r, err := p.readFile(f, p.span(buf, n))
-
-			return p.result(r, err)
-		},
-		"write": func(ctx uintptr, fd, buf, n uint32) uint32 {
-			p := proc(ctx)
-			f, err := p.fd(fd)
-
-			if err != nil {
-				return p.result(0, err)
-			}
-
-			r, err := p.writeFile(f, p.span(buf, n))
-
-			return p.result(r, err)
-		},
-		"readv": func(ctx uintptr, fd, iovs, count uint32) uint32 {
-			return proc(ctx).vectored(fd, iovs, count, pollIn, syscall.SYS_READV, 0)
-		},
-		"writev": func(ctx uintptr, fd, iovs, count uint32) uint32 {
-			return proc(ctx).vectored(fd, iovs, count, pollOut, syscall.SYS_WRITEV, 0)
-		},
-		"preadv": func(ctx uintptr, fd, iovs, count uint32, off uint64) uint32 {
-			return proc(ctx).vectored(fd, iovs, count, pollIn, syscall.SYS_PREADV, off)
-		},
-		"pwritev": func(ctx uintptr, fd, iovs, count uint32, off uint64) uint32 {
-			return proc(ctx).vectored(fd, iovs, count, pollOut, syscall.SYS_PWRITEV, off)
-		},
-		"pread": func(ctx uintptr, fd, buf, n uint32, off uint64) uint32 {
-			p := proc(ctx)
-			f, err := p.fd(fd)
-
-			if err != nil {
-				return p.result(0, err)
-			}
-
-			r, err := p.transfer(f, pollIn, func() (int, error) {
-				return syscall.Pread(f.fd, p.span(buf, n), int64(off))
-			})
-
-			return p.result(r, err)
-		},
-		"pwrite": func(ctx uintptr, fd, buf, n uint32, off uint64) uint32 {
-			p := proc(ctx)
-			f, err := p.fd(fd)
-
-			if err != nil {
-				return p.result(0, err)
-			}
-
-			r, err := p.transfer(f, pollOut, func() (int, error) {
-				return syscall.Pwrite(f.fd, p.span(buf, n), int64(off))
-			})
-
-			return p.result(r, err)
-		},
-		"fdatasync": func(ctx uintptr, fd uint32) uint32 {
-			p := proc(ctx)
-			f, err := p.fd(fd)
-
-			if err == nil {
-				err = syscall.Fdatasync(f.fd)
-			}
-
-			return p.result(0, err)
-		},
-		"sync": func(ctx uintptr) {
-			syscall.Sync()
-		},
-		"syncfs": func(ctx uintptr, fd uint32) uint32 {
-			p := proc(ctx)
-			f, err := p.fd(fd)
-
-			if err == nil {
-				if _, _, e := syscall.Syscall(sysSyncfs, uintptr(f.fd), 0, 0); e != 0 {
-					err = e
-				}
-			}
-
-			return p.result(0, err)
-		},
-		"flock": func(ctx uintptr, fd, op uint32) uint32 {
-			p := proc(ctx)
-			f, err := p.fd(fd)
-
-			if err != nil {
-				return p.result(0, err)
-			}
-
-			return p.result(0, p.waitLock(op&syscall.LOCK_NB == 0, func() error {
-				return syscall.Flock(f.fd, int(op|syscall.LOCK_NB))
-			}))
-		},
-		// lockf locks from the file's offset, as fcntl's write locks.
-		"lockf": func(ctx uintptr, fd, cmd uint32, n uint64) uint32 {
-			p := proc(ctx)
-			f, err := p.fd(fd)
-
-			if err != nil {
-				return p.result(0, err)
-			}
-
-			lk := syscall.Flock_t{Type: fWrlck, Whence: 1, Len: int64(n)}
-
-			switch cmd {
-			case 0:
-				lk.Type = fUnlck
-				err = fcntlLock(f.fd, fOfdSetlk, &lk)
-			case 1, 2:
-				err = p.waitLock(cmd == 1, func() error {
-					return fcntlLock(f.fd, fOfdSetlk, &lk)
-				})
-			case 3:
-				lk.Type = fRdlck
-
-				if err = fcntlLock(f.fd, fOfdGetlk, &lk); err == nil && lk.Type != fUnlck {
-					err = syscall.EACCES
-				}
-			default:
-				err = syscall.EINVAL
-			}
-
-			return p.result(0, err)
-		},
-		// posix_fadvise and posix_fallocate return an error number.
-		"posix_fadvise": func(ctx uintptr, fd uint32, off, n uint64, advice uint32) uint32 {
-			p := proc(ctx)
-			f, err := p.fd(fd)
-
-			if err != nil {
-				return uint32(syscall.EBADF)
-			}
-
-			_, _, e := syscall.Syscall6(syscall.SYS_FADVISE64, uintptr(f.fd), uintptr(off), uintptr(n), uintptr(advice), 0, 0)
-
-			return uint32(e)
-		},
-		"posix_fallocate": func(ctx uintptr, fd uint32, off, n uint64) uint32 {
-			p := proc(ctx)
-			f, err := p.fd(fd)
-
-			if err != nil {
-				return uint32(syscall.EBADF)
-			}
-
-			for {
-				err = syscall.Fallocate(f.fd, 0, int64(off), int64(n))
-
-				if err != syscall.EINTR {
-					break
-				}
-			}
-
-			if err != nil {
-				return uint32(errnoOf(err))
-			}
-
-			return 0
-		},
-		// select writes back the time left, as Linux's.
-		"select": func(ctx uintptr, n, r, w, e, tv uint32) uint32 {
-			p := proc(ctx)
-			timeout := -1
-			var d time.Duration
-
-			if tv != 0 {
-				var err error
-
-				if d, err = p.timeval(tv); err != nil {
-					return p.result(0, err)
-				}
-
-				timeout = waitMs(d)
-			}
-
-			start := time.Now()
-			count, err := p.selectFds(n, [3]fdSet{{r}, {w}, {e}}, timeout)
-
-			if tv != 0 && err != syscall.EINVAL {
-				p.putTimeval(tv, max(d-time.Since(start), 0))
-			}
-
-			return p.result(count, err)
-		},
-		"pselect": func(ctx uintptr, n, r, w, e, ts, mask uint32) uint32 {
-			p := proc(ctx)
-			timeout := -1
-
-			if ts != 0 {
-				d, err := p.timespec(ts)
-
-				if err != nil {
-					return p.result(0, err)
-				}
-
-				timeout = waitMs(d)
-			}
-
-			return p.result(p.withMask(mask, func() (int, error) {
-				return p.selectFds(n, [3]fdSet{{r}, {w}, {e}}, timeout)
-			}))
-		},
-		"lseek": func(ctx uintptr, fd uint32, off uint64, whence uint32) uint64 {
-			p := proc(ctx)
-			f, err := p.fd(fd)
-
-			if err != nil {
-				return p.result64(0, err)
-			}
-
-			return p.result64(syscall.Seek(f.fd, int64(off), int(whence)))
-		},
-		"close": func(ctx uintptr, fd uint32) uint32 {
-			p := proc(ctx)
-
-			if !p.closeFd(int(fd)) {
-				return p.result(0, syscall.EBADF)
-			}
-
-			return p.result(0, nil)
-		},
-		"dup": func(ctx uintptr, fd uint32) uint32 {
-			p := proc(ctx)
-			f, err := p.fd(fd)
-
-			if err != nil {
-				return p.result(0, err)
-			}
-
-			return p.result(p.install(f.ref(), 0, false))
-		},
-		"dup2": func(ctx uintptr, old, new uint32) uint32 {
-			p := proc(ctx)
-
-			if _, err := p.fd(old); err == nil && old == new {
-				return p.result(int(new), nil)
-			}
-
-			return p.result(p.dupTo(old, new, false))
-		},
-		"dup3": func(ctx uintptr, old, new, flags uint32) uint32 {
-			p := proc(ctx)
-
-			if old == new || flags&^syscall.O_CLOEXEC != 0 {
-				return p.result(0, syscall.EINVAL)
-			}
-
-			return p.result(p.dupTo(old, new, flags&syscall.O_CLOEXEC != 0))
-		},
-		"pipe": func(ctx uintptr, fds uint32) uint32 {
-			return proc(ctx).pipe(fds, 0)
-		},
-		"pipe2": func(ctx uintptr, fds, flags uint32) uint32 {
-			return proc(ctx).pipe(fds, flags)
-		},
-		"fcntl":     k.fcntl,
-		"ioctl":     k.ioctl,
-		"isatty":    k.isatty,
-		"tcgetattr": k.tcgetattr,
-		"tcsetattr": k.tcsetattr,
-		"cfmakeraw": k.cfmakeraw,
-		"tcdrain": func(ctx uintptr, fd uint32) uint32 {
-			return proc(ctx).termiosIoctl(fd, tcsbrk, 1)
-		},
-		"tcsendbreak": func(ctx uintptr, fd, duration uint32) uint32 {
-			return proc(ctx).termiosIoctl(fd, tcsbrk, 0)
-		},
-		"tcflow": func(ctx uintptr, fd, action uint32) uint32 {
-			return proc(ctx).termiosIoctl(fd, tcxonc, uintptr(action))
-		},
-		"tcflush": func(ctx uintptr, fd, queue uint32) uint32 {
-			return proc(ctx).termiosIoctl(fd, tcflsh, uintptr(queue))
-		},
-		// tcgetsid is the caller's session: the kernel keeps no session of
-		// a terminal.
-		"tcgetsid": func(ctx uintptr, fd uint32) uint32 {
-			p := proc(ctx)
-
-			if k.isatty(ctx, fd) == 0 {
-				return p.result(0, p.errno())
-			}
-
-			k.mu.Lock()
-			defer k.mu.Unlock()
-
-			return p.result(int(p.sid), nil)
-		},
-		"cfgetospeed": func(ctx uintptr, at uint32) uint32 {
-			return proc(ctx).u32(at+8) & cbaud
-		},
-		"cfgetispeed": func(ctx uintptr, at uint32) uint32 {
-			return proc(ctx).u32(at+8) & cbaud
-		},
-		"cfsetospeed": func(ctx uintptr, at, speed uint32) uint32 {
-			return proc(ctx).cfsetspeed(at, speed)
-		},
-		"cfsetspeed": func(ctx uintptr, at, speed uint32) uint32 {
-			return proc(ctx).cfsetspeed(at, speed)
-		},
-		// cfsetispeed's 0 is the output speed, as POSIX has it.
-		"cfsetispeed": func(ctx uintptr, at, speed uint32) uint32 {
-			if speed == 0 {
-				return 0
-			}
-
-			return proc(ctx).cfsetspeed(at, speed)
-		},
-		"poll":  k.poll,
-		"ppoll": k.ppoll,
-		"fsync": func(ctx uintptr, fd uint32) uint32 {
-			p := proc(ctx)
-			f, err := p.fd(fd)
-
-			if err == nil {
-				err = syscall.Fsync(f.fd)
-			}
-
-			return p.result(0, err)
-		},
-		"ftruncate": func(ctx uintptr, fd uint32, size uint64) uint32 {
-			p := proc(ctx)
-			f, err := p.fd(fd)
-
-			if err == nil {
-				err = syscall.Ftruncate(f.fd, int64(size))
-			}
-
-			return p.result(0, err)
-		},
-		"fstat": func(ctx uintptr, fd, at uint32) uint32 {
-			p := proc(ctx)
-			f, err := p.fd(fd)
-
-			if err != nil {
-				return p.result(0, err)
-			}
-
-			var st syscall.Stat_t
-
-			if err := syscall.Fstat(f.fd, &st); err != nil {
-				return p.result(0, err)
-			}
-
-			p.putStat(at, &st)
-
-			return p.result(0, nil)
-		},
-		"fchmod": func(ctx uintptr, fd, mode uint32) uint32 {
-			p := proc(ctx)
-			f, err := p.fd(fd)
-
-			if err == nil {
-				err = syscall.Fchmod(f.fd, mode&0o7777)
-			}
-
-			return p.result(0, err)
-		},
-		"fchown": func(ctx uintptr, fd, uid, gid uint32) uint32 {
-			p := proc(ctx)
-			f, err := p.fd(fd)
-
-			if err == nil {
-				err = syscall.Fchown(f.fd, int(int32(uid)), int(int32(gid)))
-			}
-
-			return p.result(0, err)
-		},
-		"futimes": func(ctx uintptr, fd, times uint32) uint32 {
-			p := proc(ctx)
-			f, err := p.fd(fd)
-
-			if err == nil {
-				err = utimensat(f.fd, nil, p.timevals(times), 0)
-			}
-
-			return p.result(0, err)
-		},
-		"futimens": func(ctx uintptr, fd, times uint32) uint32 {
-			p := proc(ctx)
-			f, err := p.fd(fd)
-
-			if err == nil {
-				err = utimensat(f.fd, nil, p.timespecs(times), 0)
-			}
-
-			return p.result(0, err)
-		},
+		"read":            libcRead,
+		"write":           libcWrite,
+		"readv":           libcReadv,
+		"writev":          libcWritev,
+		"preadv":          libcPreadv,
+		"pwritev":         libcPwritev,
+		"pread":           libcPread,
+		"pwrite":          libcPwrite,
+		"fdatasync":       libcFdatasync,
+		"sync":            libcSync,
+		"syncfs":          libcSyncfs,
+		"flock":           libcFlock,
+		"lockf":           libcLockf,
+		"posix_fadvise":   libcPosix_fadvise,
+		"posix_fallocate": libcPosix_fallocate,
+		"select":          libcSelect,
+		"pselect":         libcPselect,
+		"lseek":           libcLseek,
+		"close":           libcClose,
+		"dup":             libcDup,
+		"dup2":            libcDup2,
+		"dup3":            libcDup3,
+		"pipe":            libcPipe,
+		"pipe2":           libcPipe2,
+		"fcntl":           libcFcntl,
+		"ioctl":           libcIoctl,
+		"isatty":          libcIsatty,
+		"tcgetattr":       libcTcgetattr,
+		"tcsetattr":       libcTcsetattr,
+		"cfmakeraw":       libcCfmakeraw,
+		"tcdrain":         libcTcdrain,
+		"tcsendbreak":     libcTcsendbreak,
+		"tcflow":          libcTcflow,
+		"tcflush":         libcTcflush,
+		"tcgetsid":        libcTcgetsid,
+		"cfgetospeed":     libcCfgetospeed,
+		"cfgetispeed":     libcCfgetispeed,
+		"cfsetospeed":     libcCfsetospeed,
+		"cfsetspeed":      libcCfsetspeed,
+		"cfsetispeed":     libcCfsetispeed,
+		"poll":            libcPoll,
+		"ppoll":           libcPpoll,
+		"fsync":           libcFsync,
+		"ftruncate":       libcFtruncate,
+		"fstat":           libcFstat,
+		"fchmod":          libcFchmod,
+		"fchown":          libcFchown,
+		"futimes":         libcFutimes,
+		"futimens":        libcFutimens,
 	}
+}
+
+func libcRead(ctx uintptr, fd, buf, n uint32) uint32 {
+	p := proc(ctx)
+	f, err := p.fd(fd)
+
+	if err != nil {
+		return p.result(0, err)
+	}
+
+	r, err := p.readFile(f, p.span(buf, n))
+
+	return p.result(r, err)
+}
+
+func libcWrite(ctx uintptr, fd, buf, n uint32) uint32 {
+	p := proc(ctx)
+	f, err := p.fd(fd)
+
+	if err != nil {
+		return p.result(0, err)
+	}
+
+	r, err := p.writeFile(f, p.span(buf, n))
+
+	return p.result(r, err)
+}
+
+func libcReadv(ctx uintptr, fd, iovs, count uint32) uint32 {
+	return proc(ctx).vectored(fd, iovs, count, pollIn, syscall.SYS_READV, 0)
+}
+
+func libcWritev(ctx uintptr, fd, iovs, count uint32) uint32 {
+	return proc(ctx).vectored(fd, iovs, count, pollOut, syscall.SYS_WRITEV, 0)
+}
+
+func libcPreadv(ctx uintptr, fd, iovs, count uint32, off uint64) uint32 {
+	return proc(ctx).vectored(fd, iovs, count, pollIn, syscall.SYS_PREADV, off)
+}
+
+func libcPwritev(ctx uintptr, fd, iovs, count uint32, off uint64) uint32 {
+	return proc(ctx).vectored(fd, iovs, count, pollOut, syscall.SYS_PWRITEV, off)
+}
+
+func libcPread(ctx uintptr, fd, buf, n uint32, off uint64) uint32 {
+	p := proc(ctx)
+	f, err := p.fd(fd)
+
+	if err != nil {
+		return p.result(0, err)
+	}
+
+	r, err := p.transfer(f, pollIn, func() (int, error) {
+		return syscall.Pread(f.fd, p.span(buf, n), int64(off))
+	})
+
+	return p.result(r, err)
+}
+
+func libcPwrite(ctx uintptr, fd, buf, n uint32, off uint64) uint32 {
+	p := proc(ctx)
+	f, err := p.fd(fd)
+
+	if err != nil {
+		return p.result(0, err)
+	}
+
+	r, err := p.transfer(f, pollOut, func() (int, error) {
+		return syscall.Pwrite(f.fd, p.span(buf, n), int64(off))
+	})
+
+	return p.result(r, err)
+}
+
+func libcFdatasync(ctx uintptr, fd uint32) uint32 {
+	p := proc(ctx)
+	f, err := p.fd(fd)
+
+	if err == nil {
+		err = syscall.Fdatasync(f.fd)
+	}
+
+	return p.result(0, err)
+}
+
+func libcSync(ctx uintptr) {
+	syscall.Sync()
+}
+
+func libcSyncfs(ctx uintptr, fd uint32) uint32 {
+	p := proc(ctx)
+	f, err := p.fd(fd)
+
+	if err == nil {
+		if _, _, e := syscall.Syscall(sysSyncfs, uintptr(f.fd), 0, 0); e != 0 {
+			err = e
+		}
+	}
+
+	return p.result(0, err)
+}
+
+func libcFlock(ctx uintptr, fd, op uint32) uint32 {
+	p := proc(ctx)
+	f, err := p.fd(fd)
+
+	if err != nil {
+		return p.result(0, err)
+	}
+
+	return p.result(0, p.waitLock(op&syscall.LOCK_NB == 0, func() error {
+		return syscall.Flock(f.fd, int(op|syscall.LOCK_NB))
+	}))
+}
+
+// lockf locks from the file's offset, as fcntl's write locks.
+func libcLockf(ctx uintptr, fd, cmd uint32, n uint64) uint32 {
+	p := proc(ctx)
+	f, err := p.fd(fd)
+
+	if err != nil {
+		return p.result(0, err)
+	}
+
+	lk := syscall.Flock_t{Type: fWrlck, Whence: 1, Len: int64(n)}
+
+	switch cmd {
+	case 0:
+		lk.Type = fUnlck
+		err = fcntlLock(f.fd, fOfdSetlk, &lk)
+	case 1, 2:
+		err = p.waitLock(cmd == 1, func() error {
+			return fcntlLock(f.fd, fOfdSetlk, &lk)
+		})
+	case 3:
+		lk.Type = fRdlck
+
+		if err = fcntlLock(f.fd, fOfdGetlk, &lk); err == nil && lk.Type != fUnlck {
+			err = syscall.EACCES
+		}
+	default:
+		err = syscall.EINVAL
+	}
+
+	return p.result(0, err)
+}
+
+// posix_fadvise and posix_fallocate return an error number.
+func libcPosix_fadvise(ctx uintptr, fd uint32, off, n uint64, advice uint32) uint32 {
+	p := proc(ctx)
+	f, err := p.fd(fd)
+
+	if err != nil {
+		return uint32(syscall.EBADF)
+	}
+
+	_, _, e := syscall.Syscall6(syscall.SYS_FADVISE64, uintptr(f.fd), uintptr(off), uintptr(n), uintptr(advice), 0, 0)
+
+	return uint32(e)
+}
+
+func libcPosix_fallocate(ctx uintptr, fd uint32, off, n uint64) uint32 {
+	p := proc(ctx)
+	f, err := p.fd(fd)
+
+	if err != nil {
+		return uint32(syscall.EBADF)
+	}
+
+	for {
+		err = syscall.Fallocate(f.fd, 0, int64(off), int64(n))
+
+		if err != syscall.EINTR {
+			break
+		}
+	}
+
+	if err != nil {
+		return uint32(errnoOf(err))
+	}
+
+	return 0
+}
+
+// select writes back the time left, as Linux's.
+func libcSelect(ctx uintptr, n, r, w, e, tv uint32) uint32 {
+	p := proc(ctx)
+	timeout := -1
+	var d time.Duration
+
+	if tv != 0 {
+		var err error
+
+		if d, err = p.timeval(tv); err != nil {
+			return p.result(0, err)
+		}
+
+		timeout = waitMs(d)
+	}
+
+	start := time.Now()
+	count, err := p.selectFds(n, [3]fdSet{{r}, {w}, {e}}, timeout)
+
+	if tv != 0 && err != syscall.EINVAL {
+		p.putTimeval(tv, max(d-time.Since(start), 0))
+	}
+
+	return p.result(count, err)
+}
+
+func libcPselect(ctx uintptr, n, r, w, e, ts, mask uint32) uint32 {
+	p := proc(ctx)
+	timeout := -1
+
+	if ts != 0 {
+		d, err := p.timespec(ts)
+
+		if err != nil {
+			return p.result(0, err)
+		}
+
+		timeout = waitMs(d)
+	}
+
+	return p.result(p.withMask(mask, func() (int, error) {
+		return p.selectFds(n, [3]fdSet{{r}, {w}, {e}}, timeout)
+	}))
+}
+
+func libcLseek(ctx uintptr, fd uint32, off uint64, whence uint32) uint64 {
+	p := proc(ctx)
+	f, err := p.fd(fd)
+
+	if err != nil {
+		return p.result64(0, err)
+	}
+
+	return p.result64(syscall.Seek(f.fd, int64(off), int(whence)))
+}
+
+func libcClose(ctx uintptr, fd uint32) uint32 {
+	p := proc(ctx)
+
+	if !p.closeFd(int(fd)) {
+		return p.result(0, syscall.EBADF)
+	}
+
+	return p.result(0, nil)
+}
+
+func libcDup(ctx uintptr, fd uint32) uint32 {
+	p := proc(ctx)
+	f, err := p.fd(fd)
+
+	if err != nil {
+		return p.result(0, err)
+	}
+
+	return p.result(p.install(f.ref(), 0, false))
+}
+
+func libcDup2(ctx uintptr, old, new uint32) uint32 {
+	p := proc(ctx)
+
+	if _, err := p.fd(old); err == nil && old == new {
+		return p.result(int(new), nil)
+	}
+
+	return p.result(p.dupTo(old, new, false))
+}
+
+func libcDup3(ctx uintptr, old, new, flags uint32) uint32 {
+	p := proc(ctx)
+
+	if old == new || flags&^syscall.O_CLOEXEC != 0 {
+		return p.result(0, syscall.EINVAL)
+	}
+
+	return p.result(p.dupTo(old, new, flags&syscall.O_CLOEXEC != 0))
+}
+
+func libcPipe(ctx uintptr, fds uint32) uint32 {
+	return proc(ctx).pipe(fds, 0)
+}
+
+func libcPipe2(ctx uintptr, fds, flags uint32) uint32 {
+	return proc(ctx).pipe(fds, flags)
+}
+
+func libcTcdrain(ctx uintptr, fd uint32) uint32 {
+	return proc(ctx).termiosIoctl(fd, tcsbrk, 1)
+}
+
+func libcTcsendbreak(ctx uintptr, fd, duration uint32) uint32 {
+	return proc(ctx).termiosIoctl(fd, tcsbrk, 0)
+}
+
+func libcTcflow(ctx uintptr, fd, action uint32) uint32 {
+	return proc(ctx).termiosIoctl(fd, tcxonc, uintptr(action))
+}
+
+func libcTcflush(ctx uintptr, fd, queue uint32) uint32 {
+	return proc(ctx).termiosIoctl(fd, tcflsh, uintptr(queue))
+}
+
+// tcgetsid is the caller's session: the kernel keeps no session of
+// a terminal.
+func libcTcgetsid(ctx uintptr, fd uint32) uint32 {
+	p := proc(ctx)
+
+	if libcIsatty(ctx, fd) == 0 {
+		return p.result(0, p.errno())
+	}
+
+	p.k.mu.Lock()
+	defer p.k.mu.Unlock()
+
+	return p.result(int(p.sid), nil)
+}
+
+func libcCfgetospeed(ctx uintptr, at uint32) uint32 {
+	return proc(ctx).u32(at+8) & cbaud
+}
+
+func libcCfgetispeed(ctx uintptr, at uint32) uint32 {
+	return proc(ctx).u32(at+8) & cbaud
+}
+
+func libcCfsetospeed(ctx uintptr, at, speed uint32) uint32 {
+	return proc(ctx).cfsetspeed(at, speed)
+}
+
+func libcCfsetspeed(ctx uintptr, at, speed uint32) uint32 {
+	return proc(ctx).cfsetspeed(at, speed)
+}
+
+// cfsetispeed's 0 is the output speed, as POSIX has it.
+func libcCfsetispeed(ctx uintptr, at, speed uint32) uint32 {
+	if speed == 0 {
+		return 0
+	}
+
+	return proc(ctx).cfsetspeed(at, speed)
+}
+
+func libcFsync(ctx uintptr, fd uint32) uint32 {
+	p := proc(ctx)
+	f, err := p.fd(fd)
+
+	if err == nil {
+		err = syscall.Fsync(f.fd)
+	}
+
+	return p.result(0, err)
+}
+
+func libcFtruncate(ctx uintptr, fd uint32, size uint64) uint32 {
+	p := proc(ctx)
+	f, err := p.fd(fd)
+
+	if err == nil {
+		err = syscall.Ftruncate(f.fd, int64(size))
+	}
+
+	return p.result(0, err)
+}
+
+func libcFstat(ctx uintptr, fd, at uint32) uint32 {
+	p := proc(ctx)
+	f, err := p.fd(fd)
+
+	if err != nil {
+		return p.result(0, err)
+	}
+
+	var st syscall.Stat_t
+
+	if err := syscall.Fstat(f.fd, &st); err != nil {
+		return p.result(0, err)
+	}
+
+	p.putStat(at, &st)
+
+	return p.result(0, nil)
+}
+
+func libcFchmod(ctx uintptr, fd, mode uint32) uint32 {
+	p := proc(ctx)
+	f, err := p.fd(fd)
+
+	if err == nil {
+		err = syscall.Fchmod(f.fd, mode&0o7777)
+	}
+
+	return p.result(0, err)
+}
+
+func libcFchown(ctx uintptr, fd, uid, gid uint32) uint32 {
+	p := proc(ctx)
+	f, err := p.fd(fd)
+
+	if err == nil {
+		err = syscall.Fchown(f.fd, int(int32(uid)), int(int32(gid)))
+	}
+
+	return p.result(0, err)
+}
+
+func libcFutimes(ctx uintptr, fd, times uint32) uint32 {
+	p := proc(ctx)
+	f, err := p.fd(fd)
+
+	if err == nil {
+		err = utimensat(f.fd, nil, p.timevals(times), 0)
+	}
+
+	return p.result(0, err)
+}
+
+func libcFutimens(ctx uintptr, fd, times uint32) uint32 {
+	p := proc(ctx)
+	f, err := p.fd(fd)
+
+	if err == nil {
+		err = utimensat(f.fd, nil, p.timespecs(times), 0)
+	}
+
+	return p.result(0, err)
 }
 
 // dupTo makes new refer to old's file, closing what new referred to.
@@ -971,7 +1053,7 @@ const (
 	fDupfdCloexec = 1030
 )
 
-func (k *Kernel) fcntl(ctx uintptr, fd, cmd, va uint32) uint32 {
+func libcFcntl(ctx uintptr, fd, cmd, va uint32) uint32 {
 	p := proc(ctx)
 	f, err := p.fd(fd)
 
@@ -1087,7 +1169,7 @@ func ioctlPtr(fd int, req uintptr, arg unsafe.Pointer) error {
 	return nil
 }
 
-func (k *Kernel) ioctl(ctx uintptr, fd, req, va uint32) uint32 {
+func libcIoctl(ctx uintptr, fd, req, va uint32) uint32 {
 	p := proc(ctx)
 	f, err := p.fd(fd)
 
@@ -1124,11 +1206,11 @@ func (k *Kernel) ioctl(ctx uintptr, fd, req, va uint32) uint32 {
 
 		return p.result(0, nil)
 	case tcgets:
-		return k.tcgetattr(ctx, fd, p.varArg(va, 0))
+		return libcTcgetattr(ctx, fd, p.varArg(va, 0))
 	case tcsets, tcsets + 1, tcsets + 2:
-		return k.tcsetattr(ctx, fd, req-tcsets, p.varArg(va, 0))
+		return libcTcsetattr(ctx, fd, req-tcsets, p.varArg(va, 0))
 	case tiocgpgrp:
-		r := k.tcgetpgrp(ctx, fd)
+		r := libcTcgetpgrp(ctx, fd)
 
 		if int32(r) >= 0 {
 			p.put32(p.varArg(va, 0), r)
@@ -1137,7 +1219,7 @@ func (k *Kernel) ioctl(ctx uintptr, fd, req, va uint32) uint32 {
 
 		return r
 	case tiocspgrp:
-		return k.tcsetpgrp(ctx, fd, p.u32(p.varArg(va, 0)))
+		return libcTcsetpgrp(ctx, fd, p.u32(p.varArg(va, 0)))
 	case fionbio:
 		f.nonblock.Store(p.u32(p.varArg(va, 0)) != 0)
 
@@ -1159,7 +1241,7 @@ type hostTermios struct {
 	cc                         [19]byte
 }
 
-func (k *Kernel) isatty(ctx uintptr, fd uint32) uint32 {
+func libcIsatty(ctx uintptr, fd uint32) uint32 {
 	p := proc(ctx)
 	f, err := p.fd(fd)
 
@@ -1180,7 +1262,7 @@ func (k *Kernel) isatty(ctx uintptr, fd uint32) uint32 {
 	return 1
 }
 
-func (k *Kernel) tcgetattr(ctx uintptr, fd, at uint32) uint32 {
+func libcTcgetattr(ctx uintptr, fd, at uint32) uint32 {
 	p := proc(ctx)
 	f, err := p.fd(fd)
 
@@ -1210,7 +1292,7 @@ func (k *Kernel) tcgetattr(ctx uintptr, fd, at uint32) uint32 {
 	return p.result(0, nil)
 }
 
-func (k *Kernel) tcsetattr(ctx uintptr, fd, action, at uint32) uint32 {
+func libcTcsetattr(ctx uintptr, fd, action, at uint32) uint32 {
 	p := proc(ctx)
 	f, err := p.fd(fd)
 
@@ -1261,7 +1343,7 @@ func (p *Process) cfsetspeed(at, speed uint32) uint32 {
 
 // cfmakeraw puts the guest's struct termios in raw mode, the flags of
 // termios.h: no line editing, no signals, eight bit words.
-func (k *Kernel) cfmakeraw(ctx uintptr, at uint32) {
+func libcCfmakeraw(ctx uintptr, at uint32) {
 	p := proc(ctx)
 	b := p.span(at, 60)
 	le := binary.LittleEndian
@@ -1294,13 +1376,13 @@ func poll(fds []pollFd, timeout int) (int, error) {
 	return int(r), nil
 }
 
-func (k *Kernel) poll(ctx uintptr, at, n, timeout uint32) uint32 {
+func libcPoll(ctx uintptr, at, n, timeout uint32) uint32 {
 	p := proc(ctx)
 
 	return p.result(p.poll(at, n, int(int32(timeout))))
 }
 
-func (k *Kernel) ppoll(ctx uintptr, at, n, ts, mask uint32) uint32 {
+func libcPpoll(ctx uintptr, at, n, ts, mask uint32) uint32 {
 	p := proc(ctx)
 	timeout := -1
 

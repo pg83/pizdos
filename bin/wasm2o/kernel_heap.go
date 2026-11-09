@@ -427,269 +427,313 @@ func (p *Process) mappingOf(addr uint32) (uint32, mapping, bool) {
 
 func (k *Kernel) heapFunctions() map[string]any {
 	return map[string]any{
-		"malloc": func(ctx uintptr, n uint32) uint32 {
-			p := proc(ctx)
-			at := p.malloc(n)
-
-			if at == 0 {
-				p.setErrno(syscall.ENOMEM)
-			}
-
-			return at
-		},
-		"free": func(ctx uintptr, ptr uint32) {
-			proc(ctx).free(ptr)
-		},
-		"calloc": func(ctx uintptr, n, size uint32) uint32 {
-			p := proc(ctx)
-			total := uint64(n) * uint64(size)
-
-			if total > math.MaxUint32 {
-				p.setErrno(syscall.ENOMEM)
-
-				return 0
-			}
-
-			at := p.malloc(uint32(total))
-
-			if at == 0 {
-				p.setErrno(syscall.ENOMEM)
-
-				return 0
-			}
-
-			clear(p.span(at, uint32(total)))
-
-			return at
-		},
-		"realloc": func(ctx uintptr, ptr, n uint32) uint32 {
-			p := proc(ctx)
-			at := p.realloc(ptr, n)
-
-			if at == 0 && n != 0 {
-				p.setErrno(syscall.ENOMEM)
-			}
-
-			return at
-		},
-		"mallopt": func(ctx uintptr, param, value uint32) uint32 {
-			return 1
-		},
-		"getpagesize": func(ctx uintptr) uint32 {
-			return 4096
-		},
-		// mmap maps from the heap: anonymous memory zeroed, a file read in
-		// as a private copy. The process keeps the length of each mapping
-		// for munmap.
-		"mmap": func(ctx uintptr, addr, n, prot, flags, fd uint32, off uint64) uint32 {
-			p := proc(ctx)
-			const failed = math.MaxUint32
-
-			if n == 0 {
-				p.setErrno(syscall.EINVAL)
-
-				return failed
-			}
-
-			at := p.malloc(n)
-
-			if at == 0 {
-				p.setErrno(syscall.ENOMEM)
-
-				return failed
-			}
-
-			b := p.span(at, n)
-			clear(b)
-			m := mapping{length: n}
-
-			if flags&mapAnonymous == 0 {
-				f, err := p.fd(fd)
-
-				if err == nil {
-					_, err = syscall.Pread(f.fd, b, int64(off))
-				}
-
-				if err != nil {
-					p.free(at)
-					p.setErrno(errnoOf(err))
-
-					return failed
-				}
-
-				m.file, m.offset = f.ref(), int64(off)
-
-				if flags&mapShared != 0 && prot&protWrite != 0 {
-					m.read = bytes.Clone(b)
-				}
-			}
-
-			p.mappings[at] = m
-
-			return at
-		},
-		// munmap frees a mapping it covers whole; of part of one it frees
-		// nothing, and the rest of the mapping stays.
-		"munmap": func(ctx uintptr, addr, n uint32) uint32 {
-			p := proc(ctx)
-
-			if n == 0 {
-				return p.result(0, syscall.EINVAL)
-			}
-
-			if m, ok := p.mappings[addr]; ok && pageRound(n) >= pageRound(m.length) {
-				p.unmap(addr)
-			}
-
-			return p.result(0, nil)
-		},
-		"msync": func(ctx uintptr, addr, n, flags uint32) uint32 {
-			p := proc(ctx)
-			at, m, ok := p.mappingOf(addr)
-
-			if !ok {
-				return p.result(0, syscall.ENOMEM)
-			}
-
-			n = min(n, m.length-(addr-at))
-
-			return p.result(0, p.writeBack(at, m, addr-at, n))
-		},
-		// madvise's MADV_DONTNEED reads a private mapping of a file again,
-		// leaves a shared one and zeroes other memory, as Linux's; other
-		// advice changes nothing.
-		"madvise": func(ctx uintptr, addr, n, advice uint32) uint32 {
-			p := proc(ctx)
-			b := p.span(addr, n)
-
-			if advice != madvDontneed {
-				return p.result(0, nil)
-			}
-
-			at, m, ok := p.mappingOf(addr)
-
-			switch {
-			case !ok || m.file == nil:
-				clear(b)
-			case m.read == nil:
-				in := b[:min(n, m.length-(addr-at))]
-				clear(in)
-				syscall.Pread(m.file.fd, in, m.offset+int64(addr-at))
-			}
-
-			return p.result(0, nil)
-		},
-		// Memory has no protection nor pages to lock.
-		"mprotect": func(ctx uintptr, addr, n, prot uint32) uint32 {
-			p := proc(ctx)
-			p.span(addr, n)
-
-			return p.result(0, nil)
-		},
-		"mlock": func(ctx uintptr, addr, n uint32) uint32 {
-			return proc(ctx).result(0, nil)
-		},
-		"munlock": func(ctx uintptr, addr, n uint32) uint32 {
-			return proc(ctx).result(0, nil)
-		},
-		"mlockall": func(ctx uintptr, flags uint32) uint32 {
-			return proc(ctx).result(0, nil)
-		},
-		"munlockall": func(ctx uintptr) uint32 {
-			return proc(ctx).result(0, nil)
-		},
-		"memalign": func(ctx uintptr, align, n uint32) uint32 {
-			p := proc(ctx)
-
-			if !alignment(align, false) {
-				p.setErrno(syscall.EINVAL)
-
-				return 0
-			}
-
-			at := p.memalign(align, n)
-
-			if at == 0 {
-				p.setErrno(syscall.ENOMEM)
-			}
-
-			return at
-		},
-		"aligned_alloc": func(ctx uintptr, align, n uint32) uint32 {
-			p := proc(ctx)
-
-			if !alignment(align, false) {
-				p.setErrno(syscall.EINVAL)
-
-				return 0
-			}
-
-			at := p.memalign(align, n)
-
-			if at == 0 {
-				p.setErrno(syscall.ENOMEM)
-			}
-
-			return at
-		},
-		"valloc": func(ctx uintptr, n uint32) uint32 {
-			p := proc(ctx)
-			at := p.memalign(4096, n)
-
-			if at == 0 {
-				p.setErrno(syscall.ENOMEM)
-			}
-
-			return at
-		},
-		// posix_memalign returns an error number.
-		"posix_memalign": func(ctx uintptr, out, align, n uint32) uint32 {
-			p := proc(ctx)
-
-			if !alignment(align, true) {
-				return uint32(syscall.EINVAL)
-			}
-
-			at := p.memalign(align, n)
-
-			if at == 0 {
-				return uint32(syscall.ENOMEM)
-			}
-
-			p.put32(out, at)
-
-			return 0
-		},
-		"malloc_usable_size": func(ctx uintptr, ptr uint32) uint32 {
-			p := proc(ctx)
-
-			if ptr == 0 {
-				return 0
-			}
-
-			return p.block(ptr, "malloc_usable_size") - blockHeader
-		},
-		// The heap gives no memory back.
-		"malloc_trim": func(ctx uintptr, pad uint32) uint32 {
-			return 0
-		},
-		"reallocarray": func(ctx uintptr, ptr, n, size uint32) uint32 {
-			p := proc(ctx)
-			total := uint64(n) * uint64(size)
-
-			if total > math.MaxUint32 {
-				p.setErrno(syscall.ENOMEM)
-
-				return 0
-			}
-
-			at := p.realloc(ptr, uint32(total))
-
-			if at == 0 && total != 0 {
-				p.setErrno(syscall.ENOMEM)
-			}
-
-			return at
-		},
+		"malloc":             libcMalloc,
+		"free":               libcFree,
+		"calloc":             libcCalloc,
+		"realloc":            libcRealloc,
+		"mallopt":            libcMallopt,
+		"getpagesize":        libcGetpagesize,
+		"mmap":               libcMmap,
+		"munmap":             libcMunmap,
+		"msync":              libcMsync,
+		"madvise":            libcMadvise,
+		"mprotect":           libcMprotect,
+		"mlock":              libcMlock,
+		"munlock":            libcMunlock,
+		"mlockall":           libcMlockall,
+		"munlockall":         libcMunlockall,
+		"memalign":           libcMemalign,
+		"aligned_alloc":      libcAligned_alloc,
+		"valloc":             libcValloc,
+		"posix_memalign":     libcPosix_memalign,
+		"malloc_usable_size": libcMalloc_usable_size,
+		"malloc_trim":        libcMalloc_trim,
+		"reallocarray":       libcReallocarray,
 	}
+}
+
+func libcMalloc(ctx uintptr, n uint32) uint32 {
+	p := proc(ctx)
+	at := p.malloc(n)
+
+	if at == 0 {
+		p.setErrno(syscall.ENOMEM)
+	}
+
+	return at
+}
+
+func libcFree(ctx uintptr, ptr uint32) {
+	proc(ctx).free(ptr)
+}
+
+func libcCalloc(ctx uintptr, n, size uint32) uint32 {
+	p := proc(ctx)
+	total := uint64(n) * uint64(size)
+
+	if total > math.MaxUint32 {
+		p.setErrno(syscall.ENOMEM)
+
+		return 0
+	}
+
+	at := p.malloc(uint32(total))
+
+	if at == 0 {
+		p.setErrno(syscall.ENOMEM)
+
+		return 0
+	}
+
+	clear(p.span(at, uint32(total)))
+
+	return at
+}
+
+func libcRealloc(ctx uintptr, ptr, n uint32) uint32 {
+	p := proc(ctx)
+	at := p.realloc(ptr, n)
+
+	if at == 0 && n != 0 {
+		p.setErrno(syscall.ENOMEM)
+	}
+
+	return at
+}
+
+func libcMallopt(ctx uintptr, param, value uint32) uint32 {
+	return 1
+}
+
+func libcGetpagesize(ctx uintptr) uint32 {
+	return 4096
+}
+
+// mmap maps from the heap: anonymous memory zeroed, a file read in
+// as a private copy. The process keeps the length of each mapping
+// for munmap.
+func libcMmap(ctx uintptr, addr, n, prot, flags, fd uint32, off uint64) uint32 {
+	p := proc(ctx)
+	const failed = math.MaxUint32
+
+	if n == 0 {
+		p.setErrno(syscall.EINVAL)
+
+		return failed
+	}
+
+	at := p.malloc(n)
+
+	if at == 0 {
+		p.setErrno(syscall.ENOMEM)
+
+		return failed
+	}
+
+	b := p.span(at, n)
+	clear(b)
+	m := mapping{length: n}
+
+	if flags&mapAnonymous == 0 {
+		f, err := p.fd(fd)
+
+		if err == nil {
+			_, err = syscall.Pread(f.fd, b, int64(off))
+		}
+
+		if err != nil {
+			p.free(at)
+			p.setErrno(errnoOf(err))
+
+			return failed
+		}
+
+		m.file, m.offset = f.ref(), int64(off)
+
+		if flags&mapShared != 0 && prot&protWrite != 0 {
+			m.read = bytes.Clone(b)
+		}
+	}
+
+	p.mappings[at] = m
+
+	return at
+}
+
+// munmap frees a mapping it covers whole; of part of one it frees
+// nothing, and the rest of the mapping stays.
+func libcMunmap(ctx uintptr, addr, n uint32) uint32 {
+	p := proc(ctx)
+
+	if n == 0 {
+		return p.result(0, syscall.EINVAL)
+	}
+
+	if m, ok := p.mappings[addr]; ok && pageRound(n) >= pageRound(m.length) {
+		p.unmap(addr)
+	}
+
+	return p.result(0, nil)
+}
+
+func libcMsync(ctx uintptr, addr, n, flags uint32) uint32 {
+	p := proc(ctx)
+	at, m, ok := p.mappingOf(addr)
+
+	if !ok {
+		return p.result(0, syscall.ENOMEM)
+	}
+
+	n = min(n, m.length-(addr-at))
+
+	return p.result(0, p.writeBack(at, m, addr-at, n))
+}
+
+// madvise's MADV_DONTNEED reads a private mapping of a file again,
+// leaves a shared one and zeroes other memory, as Linux's; other
+// advice changes nothing.
+func libcMadvise(ctx uintptr, addr, n, advice uint32) uint32 {
+	p := proc(ctx)
+	b := p.span(addr, n)
+
+	if advice != madvDontneed {
+		return p.result(0, nil)
+	}
+
+	at, m, ok := p.mappingOf(addr)
+
+	switch {
+	case !ok || m.file == nil:
+		clear(b)
+	case m.read == nil:
+		in := b[:min(n, m.length-(addr-at))]
+		clear(in)
+		syscall.Pread(m.file.fd, in, m.offset+int64(addr-at))
+	}
+
+	return p.result(0, nil)
+}
+
+// Memory has no protection nor pages to lock.
+func libcMprotect(ctx uintptr, addr, n, prot uint32) uint32 {
+	p := proc(ctx)
+	p.span(addr, n)
+
+	return p.result(0, nil)
+}
+
+func libcMlock(ctx uintptr, addr, n uint32) uint32 {
+	return proc(ctx).result(0, nil)
+}
+
+func libcMunlock(ctx uintptr, addr, n uint32) uint32 {
+	return proc(ctx).result(0, nil)
+}
+
+func libcMlockall(ctx uintptr, flags uint32) uint32 {
+	return proc(ctx).result(0, nil)
+}
+
+func libcMunlockall(ctx uintptr) uint32 {
+	return proc(ctx).result(0, nil)
+}
+
+func libcMemalign(ctx uintptr, align, n uint32) uint32 {
+	p := proc(ctx)
+
+	if !alignment(align, false) {
+		p.setErrno(syscall.EINVAL)
+
+		return 0
+	}
+
+	at := p.memalign(align, n)
+
+	if at == 0 {
+		p.setErrno(syscall.ENOMEM)
+	}
+
+	return at
+}
+
+func libcAligned_alloc(ctx uintptr, align, n uint32) uint32 {
+	p := proc(ctx)
+
+	if !alignment(align, false) {
+		p.setErrno(syscall.EINVAL)
+
+		return 0
+	}
+
+	at := p.memalign(align, n)
+
+	if at == 0 {
+		p.setErrno(syscall.ENOMEM)
+	}
+
+	return at
+}
+
+func libcValloc(ctx uintptr, n uint32) uint32 {
+	p := proc(ctx)
+	at := p.memalign(4096, n)
+
+	if at == 0 {
+		p.setErrno(syscall.ENOMEM)
+	}
+
+	return at
+}
+
+// posix_memalign returns an error number.
+func libcPosix_memalign(ctx uintptr, out, align, n uint32) uint32 {
+	p := proc(ctx)
+
+	if !alignment(align, true) {
+		return uint32(syscall.EINVAL)
+	}
+
+	at := p.memalign(align, n)
+
+	if at == 0 {
+		return uint32(syscall.ENOMEM)
+	}
+
+	p.put32(out, at)
+
+	return 0
+}
+
+func libcMalloc_usable_size(ctx uintptr, ptr uint32) uint32 {
+	p := proc(ctx)
+
+	if ptr == 0 {
+		return 0
+	}
+
+	return p.block(ptr, "malloc_usable_size") - blockHeader
+}
+
+// The heap gives no memory back.
+func libcMalloc_trim(ctx uintptr, pad uint32) uint32 {
+	return 0
+}
+
+func libcReallocarray(ctx uintptr, ptr, n, size uint32) uint32 {
+	p := proc(ctx)
+	total := uint64(n) * uint64(size)
+
+	if total > math.MaxUint32 {
+		p.setErrno(syscall.ENOMEM)
+
+		return 0
+	}
+
+	at := p.realloc(ptr, uint32(total))
+
+	if at == 0 && total != 0 {
+		p.setErrno(syscall.ENOMEM)
+	}
+
+	return at
 }

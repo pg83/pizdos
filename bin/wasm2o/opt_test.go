@@ -56,6 +56,11 @@ func TestCheckedAddresses(t *testing.T) {
 	}
 }
 
+// changeMemory stores 11 at 0 under the code that called it.
+func changeMemory(ctx uintptr) {
+	binary.LittleEndian.PutUint32(instanceAt(ctx).memory.bytes(), 11)
+}
+
 func TestExpressionsAcrossCall(t *testing.T) {
 	m := &testModule{
 		memMin: 1, memMax: 1,
@@ -65,9 +70,7 @@ func TestExpressionsAcrossCall(t *testing.T) {
 			code: cat(get(0), []byte{opI32Load, 2, 0}, call(0), get(0), []byte{opI32Load, 2, 0, opI32Add}),
 		}},
 	}
-	i := load(t, m, testImports{"env.change": func(ctx uintptr) {
-		binary.LittleEndian.PutUint32(instanceAt(ctx).memory.bytes(), 11)
-	}})
+	i := load(t, m, testImports{"env.change": changeMemory})
 	binary.LittleEndian.PutUint32(i.memory.bytes(), 7)
 	f, _ := i.export("sum")
 

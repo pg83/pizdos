@@ -83,21 +83,25 @@ func (p *Process) longjmp(buf, val uint32) {
 }
 
 func (k *Kernel) jumpFunctions() map[string]any {
-	setjmp := func(ctx uintptr, buf uint32) uint32 {
-		return proc(ctx).setjmp(buf, false)
+	t := map[string]any{
+		"setjmp":    libcSetjmp,
+		"sigsetjmp": libcSigsetjmp,
+		"longjmp":   libcLongjmp,
 	}
-	longjmp := func(ctx uintptr, buf, val uint32) {
-		proc(ctx).longjmp(buf, val)
-	}
+	t["_setjmp"] = t["setjmp"]
+	t["_longjmp"], t["siglongjmp"] = t["longjmp"], t["longjmp"]
 
-	return map[string]any{
-		"setjmp":  setjmp,
-		"_setjmp": setjmp,
-		"sigsetjmp": func(ctx uintptr, buf, saveMask uint32) uint32 {
-			return proc(ctx).setjmp(buf, saveMask != 0)
-		},
-		"longjmp":    longjmp,
-		"_longjmp":   longjmp,
-		"siglongjmp": longjmp,
-	}
+	return t
+}
+
+func libcSetjmp(ctx uintptr, buf uint32) uint32 {
+	return proc(ctx).setjmp(buf, false)
+}
+
+func libcSigsetjmp(ctx uintptr, buf, saveMask uint32) uint32 {
+	return proc(ctx).setjmp(buf, saveMask != 0)
+}
+
+func libcLongjmp(ctx uintptr, buf, val uint32) {
+	proc(ctx).longjmp(buf, val)
 }
