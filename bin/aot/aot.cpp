@@ -6835,10 +6835,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             case OpMul:
             case OpShl: {
-                auto temporary5 = args[0];
-                auto temporary6 = f->values[args[1]];
-                i32 a = temporary5;
-                Value k = temporary6;
+                i32 a = args[0];
+                Value k = f->values[args[1]];
                 if (val.op == OpMul && k.op != OpConst) {
                     auto temporary7 = args[1];
                     auto temporary8 = f->values[args[0]];
@@ -6964,13 +6962,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return;
         }
         Span<i32> args = functionArgs(f, cond);
-        auto temporary23 = args[0];
-        auto temporary24 = args[1];
-        i32 v = temporary23;
-        i32 c = temporary24;
-        auto temporary25 = floatConstant(f, c);
-        double k = temporary25.v0;
-        bool ok = temporary25.v1;
+        i32 v = args[0];
+        i32 c = args[1];
+        auto [k, ok] = floatConstant(f, c);
         if (!ok) {
             auto temporary26 = floatConstant(f, v);
             k = temporary26.v0;
@@ -6998,10 +6992,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (!ok || mathIsNaN(k)) {
             return;
         }
-        auto temporary28 = mathNextafter(k, mathInf(-1));
-        auto temporary29 = mathNextafter(k, mathInf(1));
-        double prev = temporary28;
-        double next = temporary29;
+        double prev = mathNextafter(k, mathInf(-1));
+        double next = mathNextafter(k, mathInf(1));
         if (f->values[v].typ == F32) {
             prev = convert<double>(mathNextafter32(convert<float>(k), convert<float>(mathInf(-1))));
             next = convert<double>(mathNextafter32(convert<float>(k), convert<float>(mathInf(1))));
@@ -7073,9 +7065,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Value* val = &r->f->values[v];
         FloatRange out = unknownFloatRange();
         {
-            auto temporary35 = floatConstant(r->f, v);
-            double k = temporary35.v0;
-            bool ok = temporary35.v1;
+            auto [k, ok] = floatConstant(r->f, v);
             if (ok) {
                 out = FloatRange{k, k, mathIsNaN(k)};
             } else if (depth < 32) {
@@ -7085,10 +7075,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     case OpFSub:
                     case OpFMul:
                     case OpFDiv: {
-                        auto temporary37 = floatRangesOf(r, args[0], depth + 1);
-                        auto temporary38 = floatRangesOf(r, args[1], depth + 1);
-                        FloatRange a = temporary37;
-                        FloatRange b = temporary38;
+                        FloatRange a = floatRangesOf(r, args[0], depth + 1);
+                        FloatRange b = floatRangesOf(r, args[1], depth + 1);
                         bool finiteB = !b.nan && !mathIsInf(b.lo, 0) && !mathIsInf(b.hi, 0);
                         if (finiteB && (val->op == OpFAdd || val->op == OpFSub || (b.lo == b.hi && b.lo > double(0.0)))) {
                             out.nan = a.nan;
@@ -7136,10 +7124,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         break;
                     }
                     case OpSelect: {
-                        auto temporary48 = floatRangesOf(r, args[1], depth + 1);
-                        auto temporary49 = floatRangesOf(r, args[2], depth + 1);
-                        FloatRange a = temporary48;
-                        FloatRange b = temporary49;
+                        FloatRange a = floatRangesOf(r, args[1], depth + 1);
+                        FloatRange b = floatRangesOf(r, args[2], depth + 1);
                         out = FloatRange{minimum(a.lo, b.lo), maximum(a.hi, b.hi), a.nan || b.nan};
                         break;
                     }
@@ -7246,10 +7232,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             post = appendValues(post, top->b);
             stack = subslice(stack, 0, length(stack) - 1);
         }
-        auto temporary68 = 0;
-        auto temporary69 = length(post) - 1;
-        Int i = temporary68;
-        Int j = temporary69;
+        Int i = 0;
+        Int j = length(post) - 1;
         for (; i < j; [&]() {
             auto temporary70 = i + 1;
             auto temporary71 = j - 1;
@@ -7886,10 +7870,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
                 case OpShl:
                 case OpMul: {
-                    auto temporary196 = args[0];
-                    auto temporary197 = f->values[args[1]];
-                    i32 a = temporary196;
-                    Value k = temporary197;
+                    i32 a = args[0];
+                    Value k = f->values[args[1]];
                     if (val.op == OpMul && k.op != OpConst) {
                         auto temporary198 = args[1];
                         auto temporary199 = f->values[args[0]];
@@ -8081,10 +8063,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             return true;
         };
-        auto temporary235 = functionArgs(f, loads[0])[0];
-        auto temporary236 = functionArgs(f, stores[0])[0];
-        i32 source = temporary235;
-        i32 dest = temporary236;
+        i32 source = functionArgs(f, loads[0])[0];
+        i32 dest = functionArgs(f, stores[0])[0];
         if (!can(source, 0) || !can(dest, 0)) {
             return -1;
         }
@@ -8180,10 +8160,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return mapped;
         };
         Map<i32, i32> initial = mapOf<i32, i32>({});
-        auto temporary249 = evaluate(source, false, initial);
-        auto temporary250 = evaluate(dest, false, initial);
-        i32 src = temporary249;
-        i32 dst = temporary250;
+        i32 src = evaluate(source, false, initial);
+        i32 dst = evaluate(dest, false, initial);
         {
             i64 off = f->values[loads[0]].aux;
             if (off != 0) {
@@ -8282,9 +8260,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (!l->members[val->block]) {
             return cfgInfoDominates(l->ci, val->block, l->header);
         }
-        auto temporary275 = lookupMap(l->invariantCache, v);
-        bool known = temporary275.v0;
-        bool ok = temporary275.v1;
+        auto [known, ok] = lookupMap(l->invariantCache, v);
         if (ok) {
             return known;
         }
@@ -8347,10 +8323,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 Span<i32> args = functionArgs(l->f, v);
                 switch (val->op) {
                     case OpAdd: {
-                        auto temporary282 = memoryLoopSpan(l, args[0], depth + 1);
-                        auto temporary283 = memoryLoopSpan(l, args[1], depth + 1);
-                        LoopSpan a = temporary282;
-                        LoopSpan b = temporary283;
+                        LoopSpan a = memoryLoopSpan(l, args[0], depth + 1);
+                        LoopSpan b = memoryLoopSpan(l, args[1], depth + 1);
                         out = addLoopSpans(a, b);
                         if (out.valid) {
                             setMap(l->noWrap, v, true);
@@ -9073,10 +9047,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             case OpMul:
             case OpShrU:
             case OpShl: {
-                auto temporary363 = unsignedRangesOf(r, args[0], depth + 1);
-                auto temporary364 = unsignedRangesOf(r, args[1], depth + 1);
-                UnsignedRange a = temporary363;
-                UnsignedRange b = temporary364;
+                UnsignedRange a = unsignedRangesOf(r, args[0], depth + 1);
+                UnsignedRange b = unsignedRangesOf(r, args[1], depth + 1);
                 switch (val->op) {
                     case OpAnd: {
                         out.hi = minimum(a.hi, b.hi);
@@ -9120,10 +9092,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 break;
             }
             case OpSelect: {
-                auto temporary366 = unsignedRangesOf(r, args[1], depth + 1);
-                auto temporary367 = unsignedRangesOf(r, args[2], depth + 1);
-                UnsignedRange a = temporary366;
-                UnsignedRange b = temporary367;
+                UnsignedRange a = unsignedRangesOf(r, args[1], depth + 1);
+                UnsignedRange b = unsignedRangesOf(r, args[2], depth + 1);
                 out = UnsignedRange{minimum(a.lo, b.lo), maximum(a.hi, b.hi)};
                 break;
             }
@@ -9976,10 +9946,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             Int i = 0;
             for (; i < length(it->children); i++) {
-                auto temporary481 = i ? it->children[i - 1] : it;
-                auto temporary482 = it->children[i];
-                Interval* prev = temporary481;
-                Interval* c = temporary482;
+                Interval* prev = i ? it->children[i - 1] : it;
+                Interval* c = it->children[i];
                 i32 p = intervalStart(c);
                 if (intervalEnd(prev) != p) {
                     continue;
@@ -9988,10 +9956,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 if (a->blockFrom[b] == p) {
                     continue;
                 }
-                auto temporary483 = allocatorLoc(a, prev);
-                auto temporary484 = allocatorLoc(a, c);
-                VReg src = temporary483;
-                VReg dst = temporary484;
+                VReg src = allocatorLoc(a, prev);
+                VReg dst = allocatorLoc(a, c);
                 i32 key = 2 * p;
                 if ((p & 1) != 0) {
                     if (!isSlot(dst)) {
@@ -10378,10 +10344,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 freeUntil[it->reg] = x;
             }
         }
-        auto temporary565 = intervalStart(cur);
-        auto temporary566 = intervalEnd(cur);
-        i32 start = temporary565;
-        i32 end = temporary566;
+        i32 start = intervalStart(cur);
+        i32 end = intervalEnd(cur);
         auto range567 = allocatorCandidates(a, cur->classValue);
         for (Int index568 = 0, rangeEnd569 = length(range567); index568 < rangeEnd569; ++index568) {
             VReg r = range567[index568];
@@ -10554,10 +10518,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void asmExt(Asm* a, u8 width, u8 dsize, bool signedValue, VReg dst, VReg src) {
-        auto temporary574 = convert<i64>(dst);
-        auto temporary575 = convert<i64>(src);
-        Int d = temporary574;
-        Int s = temporary575;
+        Int d = convert<i64>(dst);
+        Int s = convert<i64>(src);
         if (width == 4 && signedValue) {
             asmOpRR(a, true, Span<const u8>({u8(99LL)}), d, s, false);
         } else if (width == 4) {
@@ -11075,12 +11037,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // vex emits a VEX prefix: pp selects 66/F3/F2, mmmmm the opcode map,
     // vvvv the extra source register.
     static void asmVex(Asm* a, Int r, Int x, Int b, u8 mmmmm, bool w, Int vvvv, bool l, u8 pp) {
-        auto temporary593 = 1;
-        auto temporary594 = 1;
-        auto temporary595 = 1;
-        u8 R = temporary593;
-        u8 X = temporary594;
-        u8 B = temporary595;
+        u8 R = 1;
+        u8 X = 1;
+        u8 B = 1;
         if (r >= 0 && hi(r) == 1) {
             R = 0;
         }
@@ -12823,10 +12782,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (e->profile != 0) {
             asmAluMI(a, aluAdd, 8, baseAt(ctxReg, e->profile + 24), 1);
         }
-        auto temporary691 = in->src;
-        auto temporary692 = in->imm;
-        VReg src = temporary691;
-        i64 end = temporary692;
+        VReg src = in->src;
+        i64 end = in->imm;
         if (e->oc->m->memoryTail) {
             // The accessible tail reaches boundSlack past the logical size, so
             // a base within the logical size covers the access; a base past it
@@ -12851,14 +12808,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void funcEmitterCvtU64F(FuncEmitter* e, MInst* in) {
         Asm* a = e->a;
-        auto temporary693 = in->dst;
-        auto temporary694 = in->src;
-        VReg d = temporary693;
-        VReg s = temporary694;
-        auto temporary695 = mInstTemps(in)[0];
-        auto temporary696 = mInstTemps(in)[1];
-        VReg t1 = temporary695;
-        VReg t2 = temporary696;
+        VReg d = in->dst;
+        VReg s = in->src;
+        VReg t1 = mInstTemps(in)[0];
+        VReg t2 = mInstTemps(in)[1];
         asmTest(a, 8, s, s);
         i32 big = asmJcc8(a, ccS);
         asmCvtIF(a, 8, in->dsize, d, s);
@@ -13244,14 +13197,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void funcEmitterMinMax(FuncEmitter* e, MInst* in) {
         Asm* a = e->a;
-        auto temporary699 = in->size;
-        auto temporary700 = in->dst;
-        auto temporary701 = in->src;
-        auto temporary702 = in->src2;
-        u8 size = temporary699;
-        VReg d = temporary700;
-        VReg x = temporary701;
-        VReg y = temporary702;
+        u8 size = in->size;
+        VReg d = in->dst;
+        VReg x = in->src;
+        VReg y = in->src2;
         asmFcmp(a, size, x, y);
         i32 nan = asmJcc8(a, ccP);
         i32 normal = asmJcc8(a, ccNE);
@@ -13361,10 +13310,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             y = temporary717;
         }
         if (isSlot(x)) {
-            auto temporary720 = funcEmitterSlotMem(e, slotOf(x));
-            auto temporary721 = funcEmitterSlotMem(e, slotOf(y));
-            Amem mx = temporary720;
-            Amem my = temporary721;
+            Amem mx = funcEmitterSlotMem(e, slotOf(x));
+            Amem my = funcEmitterSlotMem(e, slotOf(y));
             asmPushMem(a, mx);
             my.disp += 8;
             asmPushMem(a, my);
@@ -13427,14 +13374,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void funcEmitterTruncF(FuncEmitter* e, MInst* in) {
         Asm* a = e->a;
-        auto temporary722 = in->size;
-        auto temporary723 = in->dsize;
-        u8 isize = temporary722;
-        u8 fsize = temporary723;
-        auto temporary724 = in->dst;
-        auto temporary725 = in->src;
-        VReg dst = temporary724;
-        VReg src = temporary725;
+        u8 isize = in->size;
+        u8 fsize = in->dsize;
+        VReg dst = in->dst;
+        VReg src = in->src;
         bool unsignedValue = u8(in->aux & truncUnsigned) != 0;
         bool sat = u8(in->aux & truncSat) != 0;
         auto temporary726 = truncBounds(isize, fsize);
@@ -13501,10 +13444,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             });
             return;
         }
-        auto temporary728 = mInstTemps(in)[0];
-        auto temporary729 = mInstTemps(in)[1];
-        VReg tx = temporary728;
-        VReg tg = temporary729;
+        VReg tx = mInstTemps(in)[0];
+        VReg tg = mInstTemps(in)[1];
         asmFcmpM(a, fsize, src, objCodeFloatConst(e->oc, high, fsize));
         i32 big = asmJcc8(a, ccAE);
         asmCvtFI(a, 8, fsize, dst, src);
@@ -13636,10 +13577,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void intervalFinishRanges(InlineVec<Lrange, 1>& ranges) {
         Span<Lrange> r = ranges.view();
-        auto temporary730 = 0;
-        auto temporary731 = length(r) - 1;
-        Int i = temporary730;
-        Int j = temporary731;
+        Int i = 0;
+        Int j = length(r) - 1;
         for (; i < j; [&]() {
             auto temporary732 = i + 1;
             auto temporary733 = j - 1;
@@ -13675,15 +13614,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (it->cursor > length(it->ranges)) {
             it->cursor = length(it->ranges);
         }
-        auto temporary736 = it->cursor;
-        auto temporary737 = o->cursor;
-        Int i = temporary736;
-        Int j = temporary737;
+        Int i = it->cursor;
+        Int j = o->cursor;
         while (i < length(it->ranges) && j < length(o->ranges)) {
-            auto temporary738 = it->ranges[i];
-            auto temporary739 = o->ranges[j];
-            Lrange a = temporary738;
-            Lrange b = temporary739;
+            Lrange a = it->ranges[i];
+            Lrange b = o->ranges[j];
             if (a.to <= b.from) {
                 i++;
                 continue;
@@ -14060,10 +13995,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             lowererEmit(l, in);
             return {ccE, 0};
         }
-        auto temporary747 = args[0];
-        auto temporary748 = args[1];
-        i32 a = temporary747;
-        i32 b = temporary748;
+        i32 a = args[0];
+        i32 b = args[1];
         u8 size = typeSize(f->values[a].typ);
         if (val->op >= OpFEq) {
             Op op = val->op;
@@ -14172,15 +14105,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void lowererCopysign(Lowerer* l, i32 v, i32 a, i32 b, u8 size) {
-        auto temporary755 = 0;
-        auto temporary756 = 1;
-        i32 sign = temporary755;
-        i32 abs = temporary756;
+        i32 sign = 0;
+        i32 abs = 1;
         if (size == 8) {
-            auto temporary757 = constF64Sign;
-            auto temporary758 = constF64Abs;
-            sign = temporary757;
-            abs = temporary758;
+            sign = constF64Sign;
+            abs = constF64Abs;
         }
         VReg t1 = mFuncNewReg(l->mf, classXMM);
         MInst in = inst(mFAluMem);
@@ -14593,10 +14522,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void lowererEntry(Lowerer* l) {
         Function* f = l->f;
         Slice<i32> params = f->blocks[l->ci->order[0]].params;
-        auto temporary781 = 0;
-        auto temporary782 = 0;
-        Int gi = temporary781;
-        Int xi = temporary782;
+        Int gi = 0;
+        Int xi = 0;
         Int stack = 0;
         MInst pm = inst(mParMove);
         for (Int i = 0; i < length(params); ++i) {
@@ -15179,10 +15106,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 break;
             }
             case OpCopyForward: {
-                auto temporary828 = mFuncNewReg(l->mf, classGPR);
-                auto temporary829 = mFuncNewReg(l->mf, classGPR);
-                VReg dst = temporary828;
-                VReg src = temporary829;
+                VReg dst = mFuncNewReg(l->mf, classGPR);
+                VReg src = mFuncNewReg(l->mf, classGPR);
                 lowererMemAddr(l, dst, lowererUse(l, args[0]));
                 lowererMemAddr(l, src, lowererUse(l, args[1]));
                 MInst pm = inst(mParMove);
@@ -15337,12 +15262,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void lowererMemCopy(Lowerer* l, Span<const i32> args) {
-        auto temporary836 = lowererUse(l, args[0]);
-        auto temporary837 = lowererUse(l, args[1]);
-        auto temporary838 = lowererUse(l, args[2]);
-        VReg d = temporary836;
-        VReg s = temporary837;
-        VReg n = temporary838;
+        VReg d = lowererUse(l, args[0]);
+        VReg s = lowererUse(l, args[1]);
+        VReg n = lowererUse(l, args[2]);
         lowererCheckRange(l, d, n, memAt(ctxReg, l->lay->memoryEnd), 8, trapMemoryOOB);
         lowererCheckRange(l, s, n, memAt(ctxReg, l->lay->memoryEnd), 8, trapMemoryOOB);
         VReg dst = mFuncNewReg(l->mf, classGPR);
@@ -15353,12 +15275,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void lowererMemFill(Lowerer* l, Span<const i32> args) {
-        auto temporary839 = lowererUse(l, args[0]);
-        auto temporary840 = lowererUse(l, args[1]);
-        auto temporary841 = lowererUse(l, args[2]);
-        VReg d = temporary839;
-        VReg val = temporary840;
-        VReg n = temporary841;
+        VReg d = lowererUse(l, args[0]);
+        VReg val = lowererUse(l, args[1]);
+        VReg n = lowererUse(l, args[2]);
         lowererCheckRange(l, d, n, memAt(ctxReg, l->lay->memoryEnd), 8, trapMemoryOOB);
         VReg dst = mFuncNewReg(l->mf, classGPR);
         lowererMemAddr(l, dst, d);
@@ -15366,12 +15285,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void lowererMemInit(Lowerer* l, Int seg, Span<const i32> args) {
-        auto temporary842 = lowererUse(l, args[0]);
-        auto temporary843 = lowererUse(l, args[1]);
-        auto temporary844 = lowererUse(l, args[2]);
-        VReg d = temporary842;
-        VReg s = temporary843;
-        VReg n = temporary844;
+        VReg d = lowererUse(l, args[0]);
+        VReg s = lowererUse(l, args[1]);
+        VReg n = lowererUse(l, args[2]);
         VReg lengthValue = lowererConstReg(l, convert<i64>(length(l->m->datas[seg].bytes)), 8);
         VReg zero = lowererConstReg(l, 0, 4);
         VReg flag = mFuncNewReg(l->mf, classGPR);
@@ -15549,12 +15465,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // stack slots.
     static Tuple2<Slice<VReg>, Int> lowererPlaceRegs(Lowerer* l, Slice<VReg> regs, Slice<ValType> types) {
         Slice<VReg> uses = {};
-        auto temporary875 = 0;
-        auto temporary876 = 0;
-        auto temporary877 = 0;
-        Int gi = temporary875;
-        Int xi = temporary876;
-        Int stack = temporary877;
+        Int gi = 0;
+        Int xi = 0;
+        Int stack = 0;
         MInst pm = inst(mParMove);
         for (Int i = 0; i < length(regs); ++i) {
             VReg r = regs[i];
@@ -15628,12 +15541,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void lowererSelectValue(Lowerer* l, i32 v, Span<const i32> args) {
         Function* f = l->f;
-        auto temporary881 = args[0];
-        auto temporary882 = args[1];
-        auto temporary883 = args[2];
-        i32 cond = temporary881;
-        i32 x = temporary882;
-        i32 y = temporary883;
+        i32 cond = args[0];
+        i32 x = args[1];
+        i32 y = args[2];
         ValType t = f->values[v].typ;
         u8 size = typeSize(t);
         if (isFloat(t)) {
@@ -16310,10 +16220,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         Int j = index944;
                         TailRangeGroup* group = range943[index944];
                         Int end = region.end;
-                        auto temporary946 = continuation;
-                        auto temporary947 = continuation;
-                        i32 nextFast = temporary946;
-                        i32 nextCold = temporary947;
+                        i32 nextFast = continuation;
+                        i32 nextCold = continuation;
                         if (j + 1 < length(region.groups)) {
                             end = region.groups[j + 1]->start;
                             auto temporary948 = guards[j + 1];
@@ -18220,10 +18128,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             if (!floatIntegerNarrowCan(n, args[0], 0) || !floatIntegerNarrowCan(n, args[1], 0)) {
                 continue;
             }
-            auto temporary1242 = floatIntegerNarrowInteger(n, args[0]);
-            auto temporary1243 = floatIntegerNarrowInteger(n, args[1]);
-            i32 a = temporary1242;
-            i32 b = temporary1243;
+            i32 a = floatIntegerNarrowInteger(n, args[0]);
+            i32 b = floatIntegerNarrowInteger(n, args[1]);
             Array<Op, 6> ops = Array<Op, 6>{{OpEq, OpNe, OpLtU, OpGtU, OpLeU, OpGeU}};
             f->values[v].op = ops[Op(val.op - OpFEq)];
             optimizerSetArgs(o, convert<i32>(v), Span<const i32>({a, b}));
@@ -18446,10 +18352,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
                 Int side = 0;
                 for (; side < 2; side++) {
-                    auto temporary1287 = t.edges[side];
-                    auto temporary1288 = t.edges[1 - side];
-                    Edge arm = temporary1287;
-                    Edge merge = temporary1288;
+                    Edge arm = t.edges[side];
+                    Edge merge = t.edges[1 - side];
                     Block* body = &f->blocks[arm.block];
                     if (arm.block == b || body->dead || length(body->params) != 0 || length(body->preds) != 1 || body->preds[0] != b || body->term.kind != TermJump || body->term.edges[0].block != merge.block) {
                         continue;
@@ -18485,10 +18389,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     if (!pure) {
                         continue;
                     }
-                    auto temporary1296 = body->term.edges[0].args;
-                    auto temporary1297 = merge.args;
-                    Slice<i32> yes = temporary1296;
-                    Slice<i32> no = temporary1297;
+                    Slice<i32> yes = body->term.edges[0].args;
+                    Slice<i32> no = merge.args;
                     if (side == 1) {
                         auto temporary1298 = no;
                         auto temporary1299 = yes;
@@ -18629,10 +18531,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         ValType t = val->typ;
         if (val->nargs == 2 && isIntOp(val->op) && val->op != OpEqz && !isFloat(f->values[args[0]].typ)) {
-            auto temporary1320 = args[0];
-            auto temporary1321 = args[1];
-            i32 a = temporary1320;
-            i32 b = temporary1321;
+            i32 a = args[0];
+            i32 b = args[1];
             ValType at = f->values[a].typ;
             if (optimizerIsConst(o, a) && optimizerIsConst(o, b)) {
                 auto temporary1322 = foldInt(val->op, at, convert<u64>(optimizerConstOf(o, a)), convert<u64>(optimizerConstOf(o, b)));
@@ -18662,12 +18562,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             return optimizerUnaryIdentity(o, v, val->op, a);
         } else if (val->op == OpSelect) {
-            auto temporary1324 = args[0];
-            auto temporary1325 = args[1];
-            auto temporary1326 = args[2];
-            i32 c = temporary1324;
-            i32 x = temporary1325;
-            i32 y = temporary1326;
+            i32 c = args[0];
+            i32 x = args[1];
+            i32 y = args[2];
             if (x == y) {
                 optimizerReplace(o, v, x);
                 return true;
@@ -18841,10 +18738,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 bool ok = temporary1346.v1;
                 if (ok && o->uses[a] == 1 && src->block == f->values[v].block) {
                     Span<i32> sa = functionArgs(f, a);
-                    auto temporary1347 = sa[0];
-                    auto temporary1348 = sa[1];
-                    i32 x = temporary1347;
-                    i32 y = temporary1348;
+                    i32 x = sa[0];
+                    i32 y = sa[1];
                     f->values[v].op = invert;
                     optimizerSetArgs(o, v, Span<const i32>({x, y}));
                     return true;
@@ -19320,10 +19215,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         auto mul2 = Array<Array<i64, 2>, 4>{{Array<i64, 2>{{convert<i64>(a.base), convert<i64>(a.mul)}}, Array<i64, 2>{{convert<i64>(a.base2), convert<i64>(a.mul2)}}, Array<i64, 2>{{convert<i64>(b.base), convert<i64>(b.mul)}}, Array<i64, 2>{{convert<i64>(b.base2), convert<i64>(b.mul2)}}}};
         for (Int i = 0; i < length(mul2); ++i) {
             Array<i64, 2> term = mul2[i];
-            auto temporary1386 = convert<i32>(term[0]);
-            auto temporary1387 = convert<u64>(term[1]);
-            i32 v = temporary1386;
-            u64 mul = temporary1387;
+            i32 v = convert<i32>(term[0]);
+            u64 mul = convert<u64>(term[1]);
             if (mul == 0) {
                 continue;
             }
@@ -20144,10 +20037,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         auto params = f->blocks[h].params;
         for (Int j = 0; j < length(params); ++j) {
             i32 p = params[j];
-            auto temporary1507 = next;
-            auto temporary1508 = -1;
-            i32 candidate = temporary1507;
-            i32 bias = temporary1508;
+            i32 candidate = next;
+            i32 bias = -1;
             if (unsignedStop >= 0 && back.args[j] != next && f->values[next].op == OpAdd) {
                 Span<i32> a = functionArgs(f, next);
                 Int k = 0;
@@ -20169,10 +20060,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 l->start = l->entry.args[j];
             } else if (l->limit < 0 && step < 0 && step >= -65536) {
                 u64 n = convert<u64>(-step);
-                auto temporary1511 = 0;
-                auto temporary1512 = 0;
-                u64 stop = temporary1511;
-                u64 mask = temporary1512;
+                u64 stop = 0;
+                u64 mask = 0;
                 if (unsignedStop >= 0 && convert<u64>(unsignedStop) + 1 >= n) {
                     stop = convert<u64>(unsignedStop);
                 } else if (zeroTest && (n & (n - 1)) == 0) {
@@ -20542,10 +20431,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (val->typ != I32 || (val->op != OpAdd && val->op != OpSub)) {
             return i64(0LL);
         }
-        auto temporary1534 = args[0];
-        auto temporary1535 = args[1];
-        i32 a = temporary1534;
-        i32 b = temporary1535;
+        i32 a = args[0];
+        i32 b = args[1];
         if (val->op == OpAdd && b == phi) {
             auto temporary1536 = b;
             auto temporary1537 = a;
@@ -20604,12 +20491,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // internalLocs gives the internal convention's places of values: a
     // register, or noReg and the index of a stack slot, counted from first.
     static Tuple3<Slice<VReg>, Slice<Int>, Int> internalLocs(Slice<ValType> types, Slice<VReg> gprs, Slice<VReg> xmms, Int first) {
-        auto temporary1539 = 0;
-        auto temporary1540 = 0;
-        auto temporary1541 = first;
-        Int gi = temporary1539;
-        Int xi = temporary1540;
-        Int slot = temporary1541;
+        Int gi = 0;
+        Int xi = 0;
+        Int slot = first;
         Slice<VReg> regs = makeSlice<VReg>(length(types));
         Slice<Int> slots = makeSlice<Int>(length(types));
         for (Int i = 0; i < length(types); ++i) {
@@ -21014,10 +20898,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // overlap tells whether two sorted lists of ranges share a position.
     static bool overlap(Span<Lrange> x, Span<Lrange> y) {
-        auto temporary1588 = 0;
-        auto temporary1589 = 0;
-        Int i = temporary1588;
-        Int j = temporary1589;
+        Int i = 0;
+        Int j = 0;
         while (i < length(x) && j < length(y)) {
             if (x[i].to <= y[j].from) {
                 i++;
@@ -21089,10 +20971,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static Int partitionEqual_func(Data data, Int a, Int b, Int pivot) {
         Int newpivot{};
         data.Swap(a, pivot);
-        auto temporary1592 = a + 1;
-        auto temporary1593 = b - 1;
-        Int i = temporary1592;
-        Int j = temporary1593;
+        Int i = a + 1;
+        Int j = b - 1;
         while (true) {
             while (i <= j && !data.Less(a, i)) {
                 i++;
@@ -21119,10 +20999,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Int newpivot{};
         bool alreadyPartitioned{};
         data.Swap(a, pivot);
-        auto temporary1594 = a + 1;
-        auto temporary1595 = b - 1;
-        Int i = temporary1594;
-        Int j = temporary1595;
+        Int i = a + 1;
+        Int j = b - 1;
         while (i <= j && data.Less(i, a)) {
             i++;
         }
@@ -21201,10 +21079,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             Int mid = temporary1597.v0;
             bool alreadyPartitioned = temporary1597.v1;
             wasPartitioned = alreadyPartitioned;
-            auto temporary1598 = mid - a;
-            auto temporary1599 = b - mid;
-            Int leftLen = temporary1598;
-            Int rightLen = temporary1599;
+            Int leftLen = mid - a;
+            Int rightLen = b - mid;
             Int balanceThreshold = lengthValue / 8;
             if (leftLen < rightLen) {
                 wasBalanced = leftLen >= balanceThreshold;
@@ -21254,10 +21130,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // does not fit gets noReg and the next stack result slot, which follows the
     // stack arguments in the caller's outgoing area.
     static Slice<VReg> resultRegs(Slice<ValType> results) {
-        auto temporary1601 = 0;
-        auto temporary1602 = 0;
-        Int gi = temporary1601;
-        Int xi = temporary1602;
+        Int gi = 0;
+        Int xi = 0;
         Slice<VReg> regs = makeSlice<VReg>(length(results));
         for (Int i = 0; i < length(results); ++i) {
             ValType t = results[i];
@@ -21397,10 +21271,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     template <typename Data>
     static void stable_func(Data data, Int n) {
         Int blockSize = 20;
-        auto temporary1617 = 0;
-        auto temporary1618 = blockSize;
-        Int a = temporary1617;
-        Int b = temporary1618;
+        Int a = 0;
+        Int b = blockSize;
         while (b <= n) {
             insertionSort_func(data, a, b);
             a = b;
