@@ -120,8 +120,10 @@ busybox_abi = command(
 # exports compile(), reading fd 0 and writing fd 1; the command adds _start.
 AOT_FLAGS = ["-x", "c++", "-std=c++20", "-O2", "-fno-exceptions", "-fno-rtti", "-fno-builtin", "-fwrapv", "-ffp-contract=off", "-Wno-parentheses-equality"]
 # Compiler debug names otherwise get duplicated in ELF symbols and Go's
-# runtime metadata when wasm2o embeds the compiled reactor.
-AOT_WASM_FLAGS = [*AOT_FLAGS, "--target=wasm32-unknown-unknown", "-ffreestanding", "-nostdlib", "-nostdinc", "-nostdinc++", "-mbulk-memory", "-Wl,--strip-all", "-Wl,--no-entry", "-Wl,--export-memory", "-Wl,-z,stack-size=4194304"]
+# runtime metadata when wasm2o embeds the compiled reactor. The multivalue
+# ABI passes and returns small structs, the compiler's slices and views
+# among them, as values instead of through the shadow stack.
+AOT_WASM_FLAGS = [*AOT_FLAGS, "--target=wasm32-unknown-unknown", "-ffreestanding", "-nostdlib", "-nostdinc", "-nostdinc++", "-mbulk-memory", "-Xclang", "-target-abi", "-Xclang", "experimental-mv", "-Wl,--strip-all", "-Wl,--no-entry", "-Wl,--export-memory", "-Wl,-z,stack-size=4194304"]
 
 aot = command(
     name="aot",
