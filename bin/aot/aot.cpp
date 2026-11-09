@@ -4502,6 +4502,8 @@ namespace {
         PageVec<i32> pool{};
         ObjPool blockPool;
         NodeVec<Block> blocks;
+        // Only Wasm loops make cycles; the frontend notes whether it saw one.
+        bool hasLoops = false;
 
         Function();
     };
@@ -11321,6 +11323,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     Control c = Control{ctrlBlock, params, results, length(fe->stack), {}, -1, {}, {}, {}};
                     if (op == 3) {
                         c.kind = ctrlLoop;
+                        fe->f->hasLoops = true;
                         i32 header = frontendNewBlock(fe);
                         c.target = header;
                         Slice<i32> vals = makeSlice<i32>(length(params));
@@ -21568,6 +21571,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void versionMemoryLoops(Function* f) {
         if (length(f->module->mems) == 0) {
+            return;
+        }
+        // No pass before this one adds a cycle. Without loops there is nothing
+        // to version, and the analysis would only have refreshed preds.
+        if (!f->hasLoops) {
+            functionComputePreds(f);
             return;
         }
         LoopBodyUses bodyUses(f);
