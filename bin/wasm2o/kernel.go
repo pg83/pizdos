@@ -186,21 +186,6 @@ func (k *Kernel) table(*ImportMeta) uintptr {
 }
 
 // functionTable lists the kernel's functions by import name.
-func (k *Kernel) functionTable() map[string]any {
-	t := map[string]any{"__kernel_start": libc__kernel_start}
-
-	for _, part := range []map[string]any{k.fileFunctions(), k.pathFunctions(), k.heapFunctions(), k.stringFunctions(),
-		k.timeFunctions(), k.regexFunctions(), k.signalFunctions(), k.procFunctions(), k.jumpFunctions(), k.forkFunctions(),
-		k.localeFunctions(), k.wideFunctions(), k.identityFunctions(), k.systemFunctions(), k.userFunctions(),
-		k.ptyFunctions(), k.globFunctions(), k.miscFunctions(), k.socketFunctions(), k.netdbFunctions(),
-		k.cryptFunctions()} {
-		for name, f := range part {
-			t[name] = f
-		}
-	}
-
-	return t
-}
 
 func importsKernel(obj *Object) bool {
 	for _, imp := range obj.meta.imports {
@@ -483,8 +468,7 @@ func (p *Process) exitWith(status int) {
 	panic(&procExit{status})
 }
 
-func libc__kernel_start(ctx uintptr, errnoAt, environAt, argcAt, argvAt, tznameAt, timezoneAt, daylightAt, herrnoAt uint32) {
-	p := proc(ctx)
+func (p *Process) libc__kernel_start(errnoAt, environAt, argcAt, argvAt, tznameAt, timezoneAt, daylightAt, herrnoAt uint32) {
 	p.errnoAt, p.environAt = errnoAt, environAt
 	p.tzAt, p.herrnoAt = [3]uint32{tznameAt, timezoneAt, daylightAt}, herrnoAt
 	argv := p.stringArray(p.image.argv)

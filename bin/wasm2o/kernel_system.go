@@ -202,36 +202,7 @@ func (p *Process) limitOf(q *Process, res, set, old uint32) error {
 	return nil
 }
 
-func (k *Kernel) systemFunctions() map[string]any {
-	return map[string]any{
-		"openlog":          libcOpenlog,
-		"closelog":         libcCloselog,
-		"setlogmask":       libcSetlogmask,
-		"__kernel_syslog":  libc__kernel_syslog,
-		"sysinfo":          libcSysinfo,
-		"get_nprocs":       libcGet_nprocs,
-		"get_nprocs_conf":  libcGet_nprocs_conf,
-		"get_phys_pages":   libcGet_phys_pages,
-		"get_avphys_pages": libcGet_avphys_pages,
-		"getloadavg":       libcGetloadavg,
-		"getrusage":        libcGetrusage,
-		"getrlimit":        libcGetrlimit,
-		"setrlimit":        libcSetrlimit,
-		"prlimit":          libcPrlimit,
-		"getdtablesize":    libcGetdtablesize,
-		"confstr":          libcConfstr,
-		"pathconf":         libcPathconf,
-		"fpathconf":        libcFpathconf,
-		"getlogin":         libcGetlogin,
-		"getlogin_r":       libcGetlogin_r,
-		"ctermid":          libcCtermid,
-		"ttyname":          libcTtyname,
-		"ttyname_r":        libcTtyname_r,
-	}
-}
-
-func libcOpenlog(ctx uintptr, ident, option, facility uint32) {
-	p := proc(ctx)
+func (p *Process) libcOpenlog(ident, option, facility uint32) {
 	name := ""
 
 	if ident != 0 {
@@ -242,12 +213,11 @@ func libcOpenlog(ctx uintptr, ident, option, facility uint32) {
 	p.put32(p.staticAt(staticLogOption), option)
 }
 
-func libcCloselog(ctx uintptr) {
+func (p *Process) libcCloselog() {
 }
 
 // setlogmask returns the levels it let through; 0 changes nothing.
-func libcSetlogmask(ctx uintptr, mask uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcSetlogmask(mask uint32) uint32 {
 	at := p.staticAt(staticLogMask)
 	old := ^p.u32(at) & 0xff
 
@@ -258,35 +228,27 @@ func libcSetlogmask(ctx uintptr, mask uint32) uint32 {
 	return old
 }
 
-func libc__kernel_syslog(ctx uintptr, priority, message uint32) {
-	proc(ctx).syslog(priority, message)
-}
-
-func libcSysinfo(ctx uintptr, at uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcSysinfo(at uint32) uint32 {
 	return p.result(0, p.sysinfo(at))
 }
 
-func libcGet_nprocs(ctx uintptr) uint32 {
+func (p *Process) libcGet_nprocs() uint32 {
 	return uint32(runtime.NumCPU())
 }
 
-func libcGet_nprocs_conf(ctx uintptr) uint32 {
+func (p *Process) libcGet_nprocs_conf() uint32 {
 	return uint32(runtime.NumCPU())
 }
 
-func libcGet_phys_pages(ctx uintptr) uint32 {
+func (p *Process) libcGet_phys_pages() uint32 {
 	return uint32(pages(false))
 }
 
-func libcGet_avphys_pages(ctx uintptr) uint32 {
+func (p *Process) libcGet_avphys_pages() uint32 {
 	return uint32(pages(true))
 }
 
-func libcGetloadavg(ctx uintptr, at, n uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcGetloadavg(at, n uint32) uint32 {
 	switch {
 	case n == 0:
 		return 0
@@ -311,9 +273,7 @@ func libcGetloadavg(ctx uintptr, at, n uint32) uint32 {
 
 // getrusage of the process, or its thread, is wasm2o's: its
 // children's are in it.
-func libcGetrusage(ctx uintptr, who, at uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcGetrusage(who, at uint32) uint32 {
 	switch int32(who) {
 	case 0, 1:
 		var ru syscall.Rusage
@@ -332,20 +292,15 @@ func libcGetrusage(ctx uintptr, who, at uint32) uint32 {
 	return p.result(0, nil)
 }
 
-func libcGetrlimit(ctx uintptr, res, at uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcGetrlimit(res, at uint32) uint32 {
 	return p.result(0, p.limitOf(p, res, 0, at))
 }
 
-func libcSetrlimit(ctx uintptr, res, at uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcSetrlimit(res, at uint32) uint32 {
 	return p.result(0, p.limitOf(p, res, at, 0))
 }
 
-func libcPrlimit(ctx uintptr, pid, res, set, old uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcPrlimit(pid, res, set, old uint32) uint32 {
 	q, err := p.process(int32(pid))
 
 	if err == nil {
@@ -355,8 +310,7 @@ func libcPrlimit(ctx uintptr, pid, res, set, old uint32) uint32 {
 	return p.result(0, err)
 }
 
-func libcGetdtablesize(ctx uintptr) uint32 {
-	p := proc(ctx)
+func (p *Process) libcGetdtablesize() uint32 {
 	p.k.mu.Lock()
 	defer p.k.mu.Unlock()
 
@@ -364,9 +318,7 @@ func libcGetdtablesize(ctx uintptr) uint32 {
 }
 
 // confstr knows _CS_PATH.
-func libcConfstr(ctx uintptr, name, buf, n uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcConfstr(name, buf, n uint32) uint32 {
 	if name != 0 {
 		p.setErrno(syscall.EINVAL)
 
@@ -382,9 +334,7 @@ func libcConfstr(ctx uintptr, name, buf, n uint32) uint32 {
 	return uint32(len(s) + 1)
 }
 
-func libcPathconf(ctx uintptr, path, name uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcPathconf(path, name uint32) uint32 {
 	if err := p.onPath(p.str(path), true, func(int) error { return nil }); err != nil {
 		return p.result(0, err)
 	}
@@ -392,9 +342,7 @@ func libcPathconf(ctx uintptr, path, name uint32) uint32 {
 	return p.pathconf(name)
 }
 
-func libcFpathconf(ctx uintptr, fd, name uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcFpathconf(fd, name uint32) uint32 {
 	if _, err := p.fd(fd); err != nil {
 		return p.result(0, err)
 	}
@@ -403,14 +351,13 @@ func libcFpathconf(ctx uintptr, fd, name uint32) uint32 {
 }
 
 // The login name is LOGNAME's, as musl's.
-func libcGetlogin(ctx uintptr) uint32 {
-	_, value, _ := proc(ctx).lookupEnv([]byte("LOGNAME"))
+func (p *Process) libcGetlogin() uint32 {
+	_, value, _ := p.lookupEnv([]byte("LOGNAME"))
 
 	return value
 }
 
-func libcGetlogin_r(ctx uintptr, buf, n uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcGetlogin_r(buf, n uint32) uint32 {
 	name, ok := p.getenv("LOGNAME")
 
 	switch {
@@ -425,9 +372,7 @@ func libcGetlogin_r(ctx uintptr, buf, n uint32) uint32 {
 	return 0
 }
 
-func libcCtermid(ctx uintptr, s uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcCtermid(s uint32) uint32 {
 	if s == 0 {
 		return p.constant("/dev/tty")
 	}
@@ -437,8 +382,7 @@ func libcCtermid(ctx uintptr, s uint32) uint32 {
 	return s
 }
 
-func libcTtyname(ctx uintptr, fd uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcTtyname(fd uint32) uint32 {
 	name, e := p.terminalName(fd)
 
 	if e != 0 {
@@ -451,8 +395,7 @@ func libcTtyname(ctx uintptr, fd uint32) uint32 {
 }
 
 // ttyname_r returns an error number.
-func libcTtyname_r(ctx uintptr, fd, buf, n uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcTtyname_r(fd, buf, n uint32) uint32 {
 	name, e := p.terminalName(fd)
 
 	switch {
@@ -465,4 +408,8 @@ func libcTtyname_r(ctx uintptr, fd, buf, n uint32) uint32 {
 	p.putString(buf, name)
 
 	return 0
+}
+
+func (p *Process) libc__kernel_syslog(priority, message uint32) {
+	p.syslog(priority, message)
 }

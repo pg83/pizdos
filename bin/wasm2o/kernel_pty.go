@@ -143,20 +143,7 @@ func (p *Process) forkpty(amaster, name, termp, winp uint32) uint32 {
 	return p.result(int(pid), nil)
 }
 
-func (k *Kernel) ptyFunctions() map[string]any {
-	return map[string]any{
-		"posix_openpt": libcPosix_openpt,
-		"grantpt":      libcGrantpt,
-		"unlockpt":     libcUnlockpt,
-		"ptsname":      libcPtsname,
-		"ptsname_r":    libcPtsname_r,
-		"openpty":      libcOpenpty,
-		"forkpty":      libcForkpty,
-	}
-}
-
-func libcPosix_openpt(ctx uintptr, flags uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcPosix_openpt(flags uint32) uint32 {
 	fd, err := p.openat2("/dev/ptmx", int(flags&^syscall.O_CLOEXEC), 0)
 
 	if err != nil {
@@ -167,8 +154,7 @@ func libcPosix_openpt(ctx uintptr, flags uint32) uint32 {
 }
 
 // grantpt has nothing to do on Linux's devpts.
-func libcGrantpt(ctx uintptr, fd uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcGrantpt(fd uint32) uint32 {
 	f, err := p.fd(fd)
 
 	if err == nil {
@@ -182,8 +168,7 @@ func libcGrantpt(ctx uintptr, fd uint32) uint32 {
 	return p.result(0, err)
 }
 
-func libcUnlockpt(ctx uintptr, fd uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcUnlockpt(fd uint32) uint32 {
 	f, err := p.fd(fd)
 
 	if err == nil {
@@ -193,8 +178,7 @@ func libcUnlockpt(ctx uintptr, fd uint32) uint32 {
 	return p.result(0, err)
 }
 
-func libcPtsname(ctx uintptr, fd uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcPtsname(fd uint32) uint32 {
 	f, err := p.fd(fd)
 
 	if err != nil {
@@ -215,8 +199,7 @@ func libcPtsname(ctx uintptr, fd uint32) uint32 {
 }
 
 // ptsname_r returns an error number.
-func libcPtsname_r(ctx uintptr, fd, buf, size uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcPtsname_r(fd, buf, size uint32) uint32 {
 	f, err := p.fd(fd)
 
 	if err != nil {
@@ -240,8 +223,7 @@ func libcPtsname_r(ctx uintptr, fd, buf, size uint32) uint32 {
 	return 0
 }
 
-func libcOpenpty(ctx uintptr, amaster, aslave, name, termp, winp uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcOpenpty(amaster, aslave, name, termp, winp uint32) uint32 {
 	master, slave, n, err := p.openPty(termp, winp)
 
 	if err != nil {
@@ -274,6 +256,6 @@ func libcOpenpty(ctx uintptr, amaster, aslave, name, termp, winp uint32) uint32 
 	return p.result(0, nil)
 }
 
-func libcForkpty(ctx uintptr, amaster, name, termp, winp uint32) uint32 {
-	return proc(ctx).forkpty(amaster, name, termp, winp)
+func (p *Process) libcForkpty(amaster, name, termp, winp uint32) uint32 {
+	return p.forkpty(amaster, name, termp, winp)
 }

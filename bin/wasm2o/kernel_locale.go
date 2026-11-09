@@ -298,76 +298,28 @@ func bit(b bool) uint32 {
 	return 0
 }
 
-func (k *Kernel) localeFunctions() map[string]any {
-	return map[string]any{
-		"setlocale":   libcSetlocale,
-		"localeconv":  libcLocaleconv,
-		"nl_langinfo": libcNl_langinfo,
-		"isascii":     libcIsascii,
-		"toascii":     libcToascii,
-		"towlower":    libcTowlower,
-		"towupper":    libcTowupper,
-		"wctype":      libcWctype,
-		"iswctype":    libcIswctype,
-		"wctrans":     libcWctrans,
-		"towctrans":   libcTowctrans,
-		"isalnum":     libcIsalnum,
-		"isalpha":     libcIsalpha,
-		"isblank":     libcIsblank,
-		"iscntrl":     libcIscntrl,
-		"isgraph":     libcIsgraph,
-		"islower":     libcIslower,
-		"isprint":     libcIsprint,
-		"ispunct":     libcIspunct,
-		"isupper":     libcIsupper,
-		"isxdigit":    libcIsxdigit,
-		"iswalnum":    libcIswalnum,
-		"iswalpha":    libcIswalpha,
-		"iswblank":    libcIswblank,
-		"iswcntrl":    libcIswcntrl,
-		"iswdigit":    libcIswdigit,
-		"iswgraph":    libcIswgraph,
-		"iswlower":    libcIswlower,
-		"iswprint":    libcIswprint,
-		"iswpunct":    libcIswpunct,
-		"iswspace":    libcIswspace,
-		"iswupper":    libcIswupper,
-		"iswxdigit":   libcIswxdigit,
-	}
-}
-
-func libcSetlocale(ctx uintptr, cat, name uint32) uint32 {
-	return proc(ctx).setlocale(cat, name)
-}
-
-func libcLocaleconv(ctx uintptr) uint32 {
-	return proc(ctx).localeconv()
-}
-
-func libcNl_langinfo(ctx uintptr, item uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcNl_langinfo(item uint32) uint32 {
 	return p.constant(p.langinfo(item))
 }
 
-func libcIsascii(ctx uintptr, c uint32) uint32 {
+func (p *Process) libcIsascii(c uint32) uint32 {
 	return bit(c < 0x80)
 }
 
-func libcToascii(ctx uintptr, c uint32) uint32 {
+func (p *Process) libcToascii(c uint32) uint32 {
 	return c & 0x7f
 }
 
-func libcTowlower(ctx uintptr, c uint32) uint32 {
+func (p *Process) libcTowlower(c uint32) uint32 {
 	return towlower(c)
 }
 
-func libcTowupper(ctx uintptr, c uint32) uint32 {
+func (p *Process) libcTowupper(c uint32) uint32 {
 	return towupper(c)
 }
 
-func libcWctype(ctx uintptr, name uint32) uint32 {
-	s := proc(ctx).str(name)
+func (p *Process) libcWctype(name uint32) uint32 {
+	s := p.str(name)
 
 	for i, n := range wcClassNames {
 		if n == s {
@@ -378,12 +330,12 @@ func libcWctype(ctx uintptr, name uint32) uint32 {
 	return 0
 }
 
-func libcIswctype(ctx uintptr, c, class uint32) uint32 {
+func (p *Process) libcIswctype(c, class uint32) uint32 {
 	return bit(iswClass(int(class), c))
 }
 
-func libcWctrans(ctx uintptr, name uint32) uint32 {
-	switch proc(ctx).str(name) {
+func (p *Process) libcWctrans(name uint32) uint32 {
+	switch p.str(name) {
 	case "toupper":
 		return 1
 	case "tolower":
@@ -393,7 +345,7 @@ func libcWctrans(ctx uintptr, name uint32) uint32 {
 	return 0
 }
 
-func libcTowctrans(ctx uintptr, c, trans uint32) uint32 {
+func (p *Process) libcTowctrans(c, trans uint32) uint32 {
 	switch trans {
 	case 1:
 		return towupper(c)
@@ -404,90 +356,98 @@ func libcTowctrans(ctx uintptr, c, trans uint32) uint32 {
 	return c
 }
 
-func libcIsalnum(ctx uintptr, c uint32) uint32 {
+func (p *Process) libcIsalnum(c uint32) uint32 {
 	return ctype("alnum", c)
 }
 
-func libcIsalpha(ctx uintptr, c uint32) uint32 {
+func (p *Process) libcIsalpha(c uint32) uint32 {
 	return ctype("alpha", c)
 }
 
-func libcIsblank(ctx uintptr, c uint32) uint32 {
+func (p *Process) libcIsblank(c uint32) uint32 {
 	return ctype("blank", c)
 }
 
-func libcIscntrl(ctx uintptr, c uint32) uint32 {
+func (p *Process) libcIscntrl(c uint32) uint32 {
 	return ctype("cntrl", c)
 }
 
-func libcIsgraph(ctx uintptr, c uint32) uint32 {
+func (p *Process) libcIsgraph(c uint32) uint32 {
 	return ctype("graph", c)
 }
 
-func libcIslower(ctx uintptr, c uint32) uint32 {
+func (p *Process) libcIslower(c uint32) uint32 {
 	return ctype("lower", c)
 }
 
-func libcIsprint(ctx uintptr, c uint32) uint32 {
+func (p *Process) libcIsprint(c uint32) uint32 {
 	return ctype("print", c)
 }
 
-func libcIspunct(ctx uintptr, c uint32) uint32 {
+func (p *Process) libcIspunct(c uint32) uint32 {
 	return ctype("punct", c)
 }
 
-func libcIsupper(ctx uintptr, c uint32) uint32 {
+func (p *Process) libcIsupper(c uint32) uint32 {
 	return ctype("upper", c)
 }
 
-func libcIsxdigit(ctx uintptr, c uint32) uint32 {
+func (p *Process) libcIsxdigit(c uint32) uint32 {
 	return ctype("xdigit", c)
 }
 
-func libcIswalnum(ctx uintptr, c uint32) uint32 {
+func (p *Process) libcIswalnum(c uint32) uint32 {
 	return bit(iswClass(wcAlnum, c))
 }
 
-func libcIswalpha(ctx uintptr, c uint32) uint32 {
+func (p *Process) libcIswalpha(c uint32) uint32 {
 	return bit(iswClass(wcAlpha, c))
 }
 
-func libcIswblank(ctx uintptr, c uint32) uint32 {
+func (p *Process) libcIswblank(c uint32) uint32 {
 	return bit(iswClass(wcBlank, c))
 }
 
-func libcIswcntrl(ctx uintptr, c uint32) uint32 {
+func (p *Process) libcIswcntrl(c uint32) uint32 {
 	return bit(iswClass(wcCntrl, c))
 }
 
-func libcIswdigit(ctx uintptr, c uint32) uint32 {
+func (p *Process) libcIswdigit(c uint32) uint32 {
 	return bit(iswClass(wcDigit, c))
 }
 
-func libcIswgraph(ctx uintptr, c uint32) uint32 {
+func (p *Process) libcIswgraph(c uint32) uint32 {
 	return bit(iswClass(wcGraph, c))
 }
 
-func libcIswlower(ctx uintptr, c uint32) uint32 {
+func (p *Process) libcIswlower(c uint32) uint32 {
 	return bit(iswClass(wcLower, c))
 }
 
-func libcIswprint(ctx uintptr, c uint32) uint32 {
+func (p *Process) libcIswprint(c uint32) uint32 {
 	return bit(iswClass(wcPrint, c))
 }
 
-func libcIswpunct(ctx uintptr, c uint32) uint32 {
+func (p *Process) libcIswpunct(c uint32) uint32 {
 	return bit(iswClass(wcPunct, c))
 }
 
-func libcIswspace(ctx uintptr, c uint32) uint32 {
+func (p *Process) libcIswspace(c uint32) uint32 {
 	return bit(iswClass(wcSpace, c))
 }
 
-func libcIswupper(ctx uintptr, c uint32) uint32 {
+func (p *Process) libcIswupper(c uint32) uint32 {
 	return bit(iswClass(wcUpper, c))
 }
 
-func libcIswxdigit(ctx uintptr, c uint32) uint32 {
+func (p *Process) libcIswxdigit(c uint32) uint32 {
 	return bit(iswClass(wcXdigit, c))
+}
+
+func (p *Process) libcSetlocale(cat, name uint32) uint32 {
+	return p.setlocale(cat, name)
+}
+
+func (p *Process) libcLocaleconv() uint32 {
+	return p.localeconv()
 }

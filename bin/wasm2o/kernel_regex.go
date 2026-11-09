@@ -399,17 +399,7 @@ func validClass(name string) bool {
 	return false
 }
 
-func (k *Kernel) regexFunctions() map[string]any {
-	return map[string]any{
-		"regcomp":  libcRegcomp,
-		"regexec":  libcRegexec,
-		"regfree":  libcRegfree,
-		"regerror": libcRegerror,
-	}
-}
-
-func libcRegcomp(ctx uintptr, preg, pattern, flags uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcRegcomp(preg, pattern, flags uint32) uint32 {
 	pat := bytes.Clone(p.cstr(pattern))
 	src, nsub, code := translateRegex(pat, flags, false, false)
 
@@ -434,8 +424,7 @@ func libcRegcomp(ctx uintptr, preg, pattern, flags uint32) uint32 {
 	return 0
 }
 
-func libcRegexec(ctx uintptr, preg, s, nmatch, pmatch, eflags uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcRegexec(preg, s, nmatch, pmatch, eflags uint32) uint32 {
 	r, ok := p.regexes[p.u32(preg+4)]
 
 	if !ok {
@@ -481,13 +470,11 @@ func libcRegexec(ctx uintptr, preg, s, nmatch, pmatch, eflags uint32) uint32 {
 	return 0
 }
 
-func libcRegfree(ctx uintptr, preg uint32) {
-	p := proc(ctx)
+func (p *Process) libcRegfree(preg uint32) {
 	delete(p.regexes, p.u32(preg+4))
 }
 
-func libcRegerror(ctx uintptr, code, preg, buf, size uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcRegerror(code, preg, buf, size uint32) uint32 {
 	msg, ok := regMessages[code]
 
 	if !ok {

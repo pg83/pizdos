@@ -389,85 +389,11 @@ func (p *Process) statvfs(fd int, at uint32) error {
 	return nil
 }
 
-func (k *Kernel) pathFunctions() map[string]any {
-	return map[string]any{
-		"open":                   libcOpen,
-		"openat":                 libcOpenat,
-		"stat":                   libcStat,
-		"lstat":                  libcLstat,
-		"fstatat":                libcFstatat,
-		"access":                 libcAccess,
-		"faccessat":              libcFaccessat,
-		"truncate":               libcTruncate,
-		"statvfs":                libcStatvfs,
-		"fstatvfs":               libcFstatvfs,
-		"fchdir":                 libcFchdir,
-		"chroot":                 libcChroot,
-		"chdir":                  libcChdir,
-		"getcwd":                 libcGetcwd,
-		"mkdir":                  libcMkdir,
-		"mkdirat":                libcMkdirat,
-		"rmdir":                  libcRmdir,
-		"unlink":                 libcUnlink,
-		"unlinkat":               libcUnlinkat,
-		"remove":                 libcRemove,
-		"rename":                 libcRename,
-		"renameat":               libcRenameat,
-		"link":                   libcLink,
-		"linkat":                 libcLinkat,
-		"symlink":                libcSymlink,
-		"symlinkat":              libcSymlinkat,
-		"readlink":               libcReadlink,
-		"readlinkat":             libcReadlinkat,
-		"canonicalize_file_name": libcCanonicalize_file_name,
-		"get_current_dir_name":   libcGet_current_dir_name,
-		"creat":                  libcCreat,
-		"eaccess":                libcEaccess,
-		"euidaccess":             libcEuidaccess,
-		"statfs":                 libcStatfs,
-		"fstatfs":                libcFstatfs,
-		"acct":                   libcAcct,
-		"realpath":               libcRealpath,
-		"chmod":                  libcChmod,
-		"fchmodat":               libcFchmodat,
-		"chown":                  libcChown,
-		"lchown":                 libcLchown,
-		"fchownat":               libcFchownat,
-		"mknod":                  libcMknod,
-		"mknodat":                libcMknodat,
-		"mkfifo":                 libcMkfifo,
-		"mkfifoat":               libcMkfifoat,
-		"utimes":                 libcUtimes,
-		"lutimes":                libcLutimes,
-		"utime":                  libcUtime,
-		"utimensat":              libcUtimensat,
-		"opendir":                libcOpendir,
-		"fdopendir":              libcFdopendir,
-		"readdir":                libcReaddir,
-		"rewinddir":              libcRewinddir,
-		"closedir":               libcClosedir,
-		"dirfd":                  libcDirfd,
-		"readdir_r":              libcReaddir_r,
-		"telldir":                libcTelldir,
-		"seekdir":                libcSeekdir,
-		"alphasort":              libcAlphasort,
-		"versionsort":            libcVersionsort,
-		"mkstemp":                libcMkstemp,
-		"mkostemp":               libcMkostemp,
-		"mkstemps":               libcMkstemps,
-		"mkdtemp":                libcMkdtemp,
-		"mktemp":                 libcMktemp,
-	}
-}
-
-func libcOpen(ctx uintptr, path, flags, va uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcOpen(path, flags, va uint32) uint32 {
 	return p.result(p.open(p.str(path), flags, va))
 }
 
-func libcOpenat(ctx uintptr, dirfd, path, flags, va uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcOpenat(dirfd, path, flags, va uint32) uint32 {
 	full, err := p.atPath(int32(dirfd), p.str(path))
 
 	if err != nil {
@@ -477,16 +403,7 @@ func libcOpenat(ctx uintptr, dirfd, path, flags, va uint32) uint32 {
 	return p.result(p.open(full, flags, va))
 }
 
-func libcStat(ctx uintptr, path, at uint32) uint32 {
-	return proc(ctx).stat(path, at, true)
-}
-
-func libcLstat(ctx uintptr, path, at uint32) uint32 {
-	return proc(ctx).stat(path, at, false)
-}
-
-func libcFstatat(ctx uintptr, dirfd, path, at, flags uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcFstatat(dirfd, path, at, flags uint32) uint32 {
 	var st syscall.Stat_t
 	err := p.onAt(int32(dirfd), p.str(path), flags, func(fd int) error {
 		return syscall.Fstat(fd, &st)
@@ -499,40 +416,31 @@ func libcFstatat(ctx uintptr, dirfd, path, at, flags uint32) uint32 {
 	return p.result(0, err)
 }
 
-func libcAccess(ctx uintptr, path, mode uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcAccess(path, mode uint32) uint32 {
 	return p.result(0, p.onPath(p.str(path), true, func(fd int) error {
 		return access(fd, mode, 0)
 	}))
 }
 
-func libcFaccessat(ctx uintptr, dirfd, path, mode, flags uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcFaccessat(dirfd, path, mode, flags uint32) uint32 {
 	return p.result(0, p.onAt(int32(dirfd), p.str(path), flags, func(fd int) error {
 		return access(fd, mode, flags)
 	}))
 }
 
-func libcTruncate(ctx uintptr, path uint32, size uint64) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcTruncate(path uint32, size uint64) uint32 {
 	return p.result(0, p.onPath(p.str(path), true, func(fd int) error {
 		return syscall.Truncate(procFd(fd), int64(size))
 	}))
 }
 
-func libcStatvfs(ctx uintptr, path, at uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcStatvfs(path, at uint32) uint32 {
 	return p.result(0, p.onPath(p.str(path), true, func(fd int) error {
 		return p.statvfs(fd, at)
 	}))
 }
 
-func libcFstatvfs(ctx uintptr, fd, at uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcFstatvfs(fd, at uint32) uint32 {
 	f, err := p.fd(fd)
 
 	if err == nil {
@@ -542,8 +450,7 @@ func libcFstatvfs(ctx uintptr, fd, at uint32) uint32 {
 	return p.result(0, err)
 }
 
-func libcFchdir(ctx uintptr, fd uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcFchdir(fd uint32) uint32 {
 	f, err := p.fd(fd)
 
 	if err != nil {
@@ -561,23 +468,17 @@ func libcFchdir(ctx uintptr, fd uint32) uint32 {
 
 // chroot needs privilege, which no process has: they all share the
 // kernel's root.
-func libcChroot(ctx uintptr, path uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcChroot(path uint32) uint32 {
 	return p.result(0, p.onPath(p.str(path), true, func(int) error {
 		return syscall.EPERM
 	}))
 }
 
-func libcChdir(ctx uintptr, path uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcChdir(path uint32) uint32 {
 	return p.result(0, p.chdir(p.str(path)))
 }
 
-func libcGetcwd(ctx uintptr, buf, size uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcGetcwd(buf, size uint32) uint32 {
 	if buf == 0 {
 		at := p.newString(p.cwd)
 
@@ -597,14 +498,11 @@ func libcGetcwd(ctx uintptr, buf, size uint32) uint32 {
 	return p.pointer(buf, nil)
 }
 
-func libcMkdir(ctx uintptr, path, mode uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcMkdir(path, mode uint32) uint32 {
 	return p.result(0, p.mkdir(p.str(path), mode))
 }
 
-func libcMkdirat(ctx uintptr, dirfd, path, mode uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcMkdirat(dirfd, path, mode uint32) uint32 {
 	full, err := p.atPath(int32(dirfd), p.str(path))
 
 	if err == nil {
@@ -614,21 +512,15 @@ func libcMkdirat(ctx uintptr, dirfd, path, mode uint32) uint32 {
 	return p.result(0, err)
 }
 
-func libcRmdir(ctx uintptr, path uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcRmdir(path uint32) uint32 {
 	return p.result(0, p.unlink(p.str(path), atRemovedir))
 }
 
-func libcUnlink(ctx uintptr, path uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcUnlink(path uint32) uint32 {
 	return p.result(0, p.unlink(p.str(path), 0))
 }
 
-func libcUnlinkat(ctx uintptr, dirfd, path, flags uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcUnlinkat(dirfd, path, flags uint32) uint32 {
 	if flags&^atRemovedir != 0 {
 		return p.result(0, syscall.EINVAL)
 	}
@@ -643,8 +535,7 @@ func libcUnlinkat(ctx uintptr, dirfd, path, flags uint32) uint32 {
 }
 
 // remove unlinks a file or empties a directory, whichever it is.
-func libcRemove(ctx uintptr, path uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcRemove(path uint32) uint32 {
 	take := func(dirfd int, name string) error {
 		err := unlinkat(dirfd, name, 0)
 
@@ -658,14 +549,11 @@ func libcRemove(ctx uintptr, path uint32) uint32 {
 	return p.result(0, p.onName(p.str(path), syscall.EBUSY, take))
 }
 
-func libcRename(ctx uintptr, old, new uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcRename(old, new uint32) uint32 {
 	return p.result(0, p.rename(p.str(old), p.str(new)))
 }
 
-func libcRenameat(ctx uintptr, olddir, old, newdir, new uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcRenameat(olddir, old, newdir, new uint32) uint32 {
 	from, err := p.atPath(int32(olddir), p.str(old))
 
 	if err != nil {
@@ -681,15 +569,11 @@ func libcRenameat(ctx uintptr, olddir, old, newdir, new uint32) uint32 {
 	return p.result(0, p.rename(from, to))
 }
 
-func libcLink(ctx uintptr, old, new uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcLink(old, new uint32) uint32 {
 	return p.result(0, p.link(p.str(old), p.str(new), false))
 }
 
-func libcLinkat(ctx uintptr, olddir, old, newdir, new, flags uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcLinkat(olddir, old, newdir, new, flags uint32) uint32 {
 	if flags&^atSymlinkFollow != 0 {
 		return p.result(0, syscall.EINVAL)
 	}
@@ -709,14 +593,11 @@ func libcLinkat(ctx uintptr, olddir, old, newdir, new, flags uint32) uint32 {
 	return p.result(0, p.link(from, to, flags&atSymlinkFollow != 0))
 }
 
-func libcSymlink(ctx uintptr, target, path uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcSymlink(target, path uint32) uint32 {
 	return p.result(0, p.symlink(p.str(target), p.str(path)))
 }
 
-func libcSymlinkat(ctx uintptr, target, dirfd, path uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcSymlinkat(target, dirfd, path uint32) uint32 {
 	full, err := p.atPath(int32(dirfd), p.str(path))
 
 	if err == nil {
@@ -726,8 +607,7 @@ func libcSymlinkat(ctx uintptr, target, dirfd, path uint32) uint32 {
 	return p.result(0, err)
 }
 
-func libcReadlink(ctx uintptr, path, buf, size uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcReadlink(path, buf, size uint32) uint32 {
 	out := p.span(buf, size)
 	n := 0
 	err := p.onPath(p.str(path), false, func(fd int) error {
@@ -740,8 +620,7 @@ func libcReadlink(ctx uintptr, path, buf, size uint32) uint32 {
 	return p.result(n, err)
 }
 
-func libcReadlinkat(ctx uintptr, dirfd, path, buf, size uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcReadlinkat(dirfd, path, buf, size uint32) uint32 {
 	out := p.span(buf, size)
 	n := 0
 	err := p.onAt(int32(dirfd), p.str(path), atSymlinkNofollow|atEmptyPath, func(fd int) error {
@@ -754,8 +633,7 @@ func libcReadlinkat(ctx uintptr, dirfd, path, buf, size uint32) uint32 {
 	return p.result(n, err)
 }
 
-func libcCanonicalize_file_name(ctx uintptr, path uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcCanonicalize_file_name(path uint32) uint32 {
 	guest, err := p.realpath(p.str(path))
 
 	if err != nil {
@@ -771,8 +649,7 @@ func libcCanonicalize_file_name(ctx uintptr, path uint32) uint32 {
 	return p.pointer(at, nil)
 }
 
-func libcGet_current_dir_name(ctx uintptr) uint32 {
-	p := proc(ctx)
+func (p *Process) libcGet_current_dir_name() uint32 {
 	at := p.newString(p.cwd)
 
 	if at == 0 {
@@ -782,8 +659,7 @@ func libcGet_current_dir_name(ctx uintptr) uint32 {
 	return p.pointer(at, nil)
 }
 
-func libcCreat(ctx uintptr, path, mode uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcCreat(path, mode uint32) uint32 {
 	fd, err := p.openat2(p.str(path), syscall.O_WRONLY|syscall.O_CREAT|syscall.O_TRUNC, mode&0o7777&^p.umask)
 
 	if err != nil {
@@ -793,32 +669,25 @@ func libcCreat(ctx uintptr, path, mode uint32) uint32 {
 	return p.result(p.install(newFile(fd, true), 0, false))
 }
 
-func libcEaccess(ctx uintptr, path, mode uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcEaccess(path, mode uint32) uint32 {
 	return p.result(0, p.onPath(p.str(path), true, func(fd int) error {
 		return access(fd, mode, atEaccess)
 	}))
 }
 
-func libcEuidaccess(ctx uintptr, path, mode uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcEuidaccess(path, mode uint32) uint32 {
 	return p.result(0, p.onPath(p.str(path), true, func(fd int) error {
 		return access(fd, mode, atEaccess)
 	}))
 }
 
-func libcStatfs(ctx uintptr, path, at uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcStatfs(path, at uint32) uint32 {
 	return p.result(0, p.onPath(p.str(path), true, func(fd int) error {
 		return p.putStatfs(fd, at)
 	}))
 }
 
-func libcFstatfs(ctx uintptr, fd, at uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcFstatfs(fd, at uint32) uint32 {
 	f, err := p.fd(fd)
 
 	if err == nil {
@@ -828,13 +697,7 @@ func libcFstatfs(ctx uintptr, fd, at uint32) uint32 {
 	return p.result(0, err)
 }
 
-// Process accounting needs privilege.
-func libcAcct(ctx uintptr, path uint32) uint32 {
-	return proc(ctx).result(0, syscall.EPERM)
-}
-
-func libcRealpath(ctx uintptr, path, resolved uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcRealpath(path, resolved uint32) uint32 {
 	guest, err := p.realpath(p.str(path))
 
 	if err != nil {
@@ -860,46 +723,29 @@ func libcRealpath(ctx uintptr, path, resolved uint32) uint32 {
 	return p.pointer(resolved, nil)
 }
 
-func libcChmod(ctx uintptr, path, mode uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcChmod(path, mode uint32) uint32 {
 	return p.result(0, p.onPath(p.str(path), true, func(fd int) error {
 		return atCall(sysFchmodat2, fd, "", uintptr(mode&0o7777), atEmptyPath)
 	}))
 }
 
-func libcFchmodat(ctx uintptr, dirfd, path, mode, flags uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcFchmodat(dirfd, path, mode, flags uint32) uint32 {
 	return p.result(0, p.onAt(int32(dirfd), p.str(path), flags, func(fd int) error {
 		return atCall(sysFchmodat2, fd, "", uintptr(mode&0o7777), atEmptyPath)
 	}))
 }
 
-func libcChown(ctx uintptr, path, uid, gid uint32) uint32 {
-	return proc(ctx).chown(path, uid, gid, true)
-}
-
-func libcLchown(ctx uintptr, path, uid, gid uint32) uint32 {
-	return proc(ctx).chown(path, uid, gid, false)
-}
-
-func libcFchownat(ctx uintptr, dirfd, path, uid, gid, flags uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcFchownat(dirfd, path, uid, gid, flags uint32) uint32 {
 	return p.result(0, p.onAt(int32(dirfd), p.str(path), flags, func(fd int) error {
 		return syscall.Fchownat(fd, "", int(int32(uid)), int(int32(gid)), atEmptyPath)
 	}))
 }
 
-func libcMknod(ctx uintptr, path, mode uint32, dev uint64) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcMknod(path, mode uint32, dev uint64) uint32 {
 	return p.result(0, p.mknod(p.str(path), mode, dev))
 }
 
-func libcMknodat(ctx uintptr, dirfd, path, mode uint32, dev uint64) uint32 {
-	p := proc(ctx)
+func (p *Process) libcMknodat(dirfd, path, mode uint32, dev uint64) uint32 {
 	full, err := p.atPath(int32(dirfd), p.str(path))
 
 	if err == nil {
@@ -909,14 +755,11 @@ func libcMknodat(ctx uintptr, dirfd, path, mode uint32, dev uint64) uint32 {
 	return p.result(0, err)
 }
 
-func libcMkfifo(ctx uintptr, path, mode uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcMkfifo(path, mode uint32) uint32 {
 	return p.result(0, p.mknod(p.str(path), sIfifo|mode&0o7777, 0))
 }
 
-func libcMkfifoat(ctx uintptr, dirfd, path, mode uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcMkfifoat(dirfd, path, mode uint32) uint32 {
 	full, err := p.atPath(int32(dirfd), p.str(path))
 
 	if err == nil {
@@ -926,20 +769,15 @@ func libcMkfifoat(ctx uintptr, dirfd, path, mode uint32) uint32 {
 	return p.result(0, err)
 }
 
-func libcUtimes(ctx uintptr, path, times uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcUtimes(path, times uint32) uint32 {
 	return p.result(0, p.utimens(p.str(path), p.timevals(times), 0))
 }
 
-func libcLutimes(ctx uintptr, path, times uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcLutimes(path, times uint32) uint32 {
 	return p.result(0, p.utimens(p.str(path), p.timevals(times), atSymlinkNofollow))
 }
 
-func libcUtime(ctx uintptr, path, times uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcUtime(path, times uint32) uint32 {
 	var ts []syscall.Timespec
 
 	if times != 0 {
@@ -949,8 +787,7 @@ func libcUtime(ctx uintptr, path, times uint32) uint32 {
 	return p.result(0, p.utimens(p.str(path), ts, 0))
 }
 
-func libcUtimensat(ctx uintptr, dirfd, path, times, flags uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcUtimensat(dirfd, path, times, flags uint32) uint32 {
 	full, err := p.atPath(int32(dirfd), p.str(path))
 
 	if err == nil {
@@ -960,13 +797,8 @@ func libcUtimensat(ctx uintptr, dirfd, path, times, flags uint32) uint32 {
 	return p.result(0, err)
 }
 
-func libcDirfd(ctx uintptr, dir uint32) uint32 {
-	return proc(ctx).u32(dir + dirFd)
-}
-
 // readdir_r returns an error number.
-func libcReaddir_r(ctx uintptr, dir, entry, result uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcReaddir_r(dir, entry, result uint32) uint32 {
 	e, err := p.readdir(dir)
 	p.put32(result, 0)
 
@@ -983,12 +815,7 @@ func libcReaddir_r(ctx uintptr, dir, entry, result uint32) uint32 {
 	return 0
 }
 
-func libcTelldir(ctx uintptr, dir uint32) uint32 {
-	return proc(ctx).u32(dir + dirIndex)
-}
-
-func libcSeekdir(ctx uintptr, dir, at uint32) {
-	p := proc(ctx)
+func (p *Process) libcSeekdir(dir, at uint32) {
 	p.rewinddir(dir)
 
 	for p.u32(dir+dirIndex) < at {
@@ -998,28 +825,7 @@ func libcSeekdir(ctx uintptr, dir, at uint32) {
 	}
 }
 
-func libcAlphasort(ctx uintptr, a, b uint32) uint32 {
-	return proc(ctx).direntCompare(a, b, bytes.Compare)
-}
-
-func libcVersionsort(ctx uintptr, a, b uint32) uint32 {
-	return proc(ctx).direntCompare(a, b, strverscmp)
-}
-
-func libcMkstemp(ctx uintptr, template uint32) uint32 {
-	return proc(ctx).mkstemp(template, 0, 0)
-}
-
-func libcMkostemp(ctx uintptr, template, flags uint32) uint32 {
-	return proc(ctx).mkstemp(template, 0, flags)
-}
-
-func libcMkstemps(ctx uintptr, template, suffix uint32) uint32 {
-	return proc(ctx).mkstemp(template, suffix, 0)
-}
-
-func libcMkdtemp(ctx uintptr, template uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcMkdtemp(template uint32) uint32 {
 	err := p.temporary(template, 0, func(path string) error {
 		return p.onName(path, syscall.EEXIST, func(dirfd int, name string) error {
 			return syscall.Mkdirat(dirfd, name, 0o700)
@@ -1029,8 +835,7 @@ func libcMkdtemp(ctx uintptr, template uint32) uint32 {
 	return p.pointer(template, err)
 }
 
-func libcMktemp(ctx uintptr, template uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcMktemp(template uint32) uint32 {
 	err := p.temporary(template, 0, func(path string) error {
 		err := p.onPath(path, false, func(int) error {
 			return nil
@@ -1243,8 +1048,7 @@ const (
 	dirBufLen = 4096
 )
 
-func libcOpendir(ctx uintptr, path uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcOpendir(path uint32) uint32 {
 	host, err := p.openat2(p.str(path), syscall.O_RDONLY|syscall.O_DIRECTORY, 0)
 
 	if err != nil {
@@ -1284,8 +1088,7 @@ func (p *Process) newDir(fd int) uint32 {
 
 // fdopendir makes a DIR of a directory's descriptor, which becomes
 // close-on-exec, as musl's.
-func libcFdopendir(ctx uintptr, fd uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcFdopendir(fd uint32) uint32 {
 	f, err := p.fd(fd)
 
 	if err != nil {
@@ -1313,10 +1116,6 @@ func libcFdopendir(ctx uintptr, fd uint32) uint32 {
 	return p.pointer(dir, nil)
 }
 
-func libcRewinddir(ctx uintptr, dir uint32) {
-	proc(ctx).rewinddir(dir)
-}
-
 func (p *Process) rewinddir(dir uint32) {
 	if f, err := p.fd(p.u32(dir + dirFd)); err == nil {
 		syscall.Seek(f.fd, 0, 0)
@@ -1334,8 +1133,7 @@ func (p *Process) direntCompare(a, b uint32, compare func(x, y []byte) int) uint
 	return uint32(int32(compare(x, y)))
 }
 
-func libcReaddir(ctx uintptr, dir uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcReaddir(dir uint32) uint32 {
 	entry, err := p.readdir(dir)
 
 	return p.pointer(entry, err)
@@ -1369,8 +1167,7 @@ func (p *Process) readdir(dir uint32) (uint32, error) {
 	return entry, nil
 }
 
-func libcClosedir(ctx uintptr, dir uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcClosedir(dir uint32) uint32 {
 	fd := p.u32(dir + dirFd)
 	p.free(dir)
 
@@ -1379,4 +1176,57 @@ func libcClosedir(ctx uintptr, dir uint32) uint32 {
 	}
 
 	return p.result(0, nil)
+}
+
+func (p *Process) libcStat(path, at uint32) uint32 {
+	return p.stat(path, at, true)
+}
+
+func (p *Process) libcLstat(path, at uint32) uint32 {
+	return p.stat(path, at, false)
+}
+
+// Process accounting needs privilege.
+func (p *Process) libcAcct(path uint32) uint32 {
+	return p.result(0, syscall.EPERM)
+}
+
+func (p *Process) libcChown(path, uid, gid uint32) uint32 {
+	return p.chown(path, uid, gid, true)
+}
+
+func (p *Process) libcLchown(path, uid, gid uint32) uint32 {
+	return p.chown(path, uid, gid, false)
+}
+
+func (p *Process) libcDirfd(dir uint32) uint32 {
+	return p.u32(dir + dirFd)
+}
+
+func (p *Process) libcTelldir(dir uint32) uint32 {
+	return p.u32(dir + dirIndex)
+}
+
+func (p *Process) libcAlphasort(a, b uint32) uint32 {
+	return p.direntCompare(a, b, bytes.Compare)
+}
+
+func (p *Process) libcVersionsort(a, b uint32) uint32 {
+	return p.direntCompare(a, b, strverscmp)
+}
+
+func (p *Process) libcMkstemp(template uint32) uint32 {
+	return p.mkstemp(template, 0, 0)
+}
+
+func (p *Process) libcMkostemp(template, flags uint32) uint32 {
+	return p.mkstemp(template, 0, flags)
+}
+
+func (p *Process) libcMkstemps(template, suffix uint32) uint32 {
+	return p.mkstemp(template, suffix, 0)
+}
+
+func (p *Process) libcRewinddir(dir uint32) {
+	p.rewinddir(dir)
 }

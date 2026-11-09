@@ -856,52 +856,11 @@ func inetAton(s string) ([4]byte, bool) {
 	return out, true
 }
 
-func (k *Kernel) netdbFunctions() map[string]any {
-	return map[string]any{
-		"getaddrinfo":      libcGetaddrinfo,
-		"freeaddrinfo":     libcFreeaddrinfo,
-		"gai_strerror":     libcGai_strerror,
-		"getnameinfo":      libcGetnameinfo,
-		"gethostbyname":    libcGethostbyname,
-		"gethostbyname2":   libcGethostbyname2,
-		"gethostbyaddr":    libcGethostbyaddr,
-		"gethostent":       libcGethostent,
-		"sethostent":       libcSethostent,
-		"endhostent":       libcEndhostent,
-		"getservbyname":    libcGetservbyname,
-		"getservbyport":    libcGetservbyport,
-		"getprotobyname":   libcGetprotobyname,
-		"getprotobynumber": libcGetprotobynumber,
-		"getnetbyname":     libcGetnetbyname,
-		"getnetbyaddr":     libcGetnetbyaddr,
-		"hstrerror":        libcHstrerror,
-		"herror":           libcHerror,
-		"inet_aton":        libcInet_aton,
-		"inet_addr":        libcInet_addr,
-		"inet_network":     libcInet_network,
-		"inet_ntoa":        libcInet_ntoa,
-		"inet_pton":        libcInet_pton,
-		"inet_ntop":        libcInet_ntop,
-		"inet_makeaddr":    libcInet_makeaddr,
-		"inet_lnaof":       libcInet_lnaof,
-		"inet_netof":       libcInet_netof,
-		"if_nametoindex":   libcIf_nametoindex,
-		"if_indextoname":   libcIf_indextoname,
-		"if_nameindex":     libcIf_nameindex,
-		"if_freenameindex": libcIf_freenameindex,
-	}
+func (p *Process) libcGetaddrinfo(node, service, hints, res uint32) uint32 {
+	return uint32(int32(p.getaddrinfo(node, service, hints, res)))
 }
 
-func libcGetaddrinfo(ctx uintptr, node, service, hints, res uint32) uint32 {
-	return uint32(int32(proc(ctx).getaddrinfo(node, service, hints, res)))
-}
-
-func libcFreeaddrinfo(ctx uintptr, res uint32) {
-	proc(ctx).freeaddrinfo(res)
-}
-
-func libcGai_strerror(ctx uintptr, code uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcGai_strerror(code uint32) uint32 {
 	msg := "Unknown error"
 
 	if c := -int(int32(code)); c >= 1 && c <= len(gaiMessages) {
@@ -911,19 +870,15 @@ func libcGai_strerror(ctx uintptr, code uint32) uint32 {
 	return p.constant(msg)
 }
 
-func libcGetnameinfo(ctx uintptr, sa, salen, host, hostlen, serv, servlen, flags uint32) uint32 {
-	return uint32(int32(proc(ctx).getnameinfo(sa, salen, host, hostlen, serv, servlen, flags)))
+func (p *Process) libcGetnameinfo(sa, salen, host, hostlen, serv, servlen, flags uint32) uint32 {
+	return uint32(int32(p.getnameinfo(sa, salen, host, hostlen, serv, servlen, flags)))
 }
 
-func libcGethostbyname(ctx uintptr, name uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcGethostbyname(name uint32) uint32 {
 	return p.gethostbyname(p.str(name), afInet)
 }
 
-func libcGethostbyname2(ctx uintptr, name, family uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcGethostbyname2(name, family uint32) uint32 {
 	if family != afInet && family != afInet6 {
 		p.setHerrno(noRecovery)
 
@@ -933,8 +888,7 @@ func libcGethostbyname2(ctx uintptr, name, family uint32) uint32 {
 	return p.gethostbyname(p.str(name), int(family))
 }
 
-func libcGethostbyaddr(ctx uintptr, addr, n, family uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcGethostbyaddr(addr, n, family uint32) uint32 {
 	var a netip.Addr
 
 	switch {
@@ -959,8 +913,7 @@ func libcGethostbyaddr(ctx uintptr, addr, n, family uint32) uint32 {
 	return p.hostent(name, int(family), []netip.Addr{a})
 }
 
-func libcGethostent(ctx uintptr) uint32 {
-	p := proc(ctx)
+func (p *Process) libcGethostent() uint32 {
 	e := nextEntry(p, staticHostIndex, p.hostEntries())
 
 	if e == nil {
@@ -976,18 +929,15 @@ func libcGethostent(ctx uintptr) uint32 {
 	return p.hostent(e.names[0], family, []netip.Addr{e.addr})
 }
 
-func libcSethostent(ctx uintptr, stay uint32) {
-	p := proc(ctx)
+func (p *Process) libcSethostent(stay uint32) {
 	p.put32(p.staticAt(staticHostIndex), 0)
 }
 
-func libcEndhostent(ctx uintptr) {
-	p := proc(ctx)
+func (p *Process) libcEndhostent() {
 	p.put32(p.staticAt(staticHostIndex), 0)
 }
 
-func libcGetservbyname(ctx uintptr, name, proto uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcGetservbyname(name, proto uint32) uint32 {
 	want := ""
 
 	if proto != 0 {
@@ -1005,8 +955,7 @@ func libcGetservbyname(ctx uintptr, name, proto uint32) uint32 {
 	return p.servent(serviceEntry{p.str(name), port, s.proto})
 }
 
-func libcGetservbyport(ctx uintptr, port, proto uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcGetservbyport(port, proto uint32) uint32 {
 	want := ""
 
 	if proto != 0 {
@@ -1024,8 +973,7 @@ func libcGetservbyport(ctx uintptr, port, proto uint32) uint32 {
 	return p.servent(s)
 }
 
-func libcGetprotobyname(ctx uintptr, name uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcGetprotobyname(name uint32) uint32 {
 	s := p.str(name)
 
 	for _, e := range protocols {
@@ -1037,9 +985,7 @@ func libcGetprotobyname(ctx uintptr, name uint32) uint32 {
 	return 0
 }
 
-func libcGetprotobynumber(ctx uintptr, number uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcGetprotobynumber(number uint32) uint32 {
 	for _, e := range protocols {
 		if e.number == int(int32(number)) {
 			return p.protoent(e.number, e.name)
@@ -1050,16 +996,15 @@ func libcGetprotobynumber(ctx uintptr, number uint32) uint32 {
 }
 
 // There is no networks database, as musl has none.
-func libcGetnetbyname(ctx uintptr, name uint32) uint32 {
+func (p *Process) libcGetnetbyname(name uint32) uint32 {
 	return 0
 }
 
-func libcGetnetbyaddr(ctx uintptr, net, family uint32) uint32 {
+func (p *Process) libcGetnetbyaddr(net, family uint32) uint32 {
 	return 0
 }
 
-func libcHstrerror(ctx uintptr, code uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcHstrerror(code uint32) uint32 {
 	msg := "Unknown error"
 
 	if c := int(int32(code)); c >= 1 && c <= len(hostMessages) {
@@ -1069,8 +1014,7 @@ func libcHstrerror(ctx uintptr, code uint32) uint32 {
 	return p.constant(msg)
 }
 
-func libcHerror(ctx uintptr, s uint32) {
-	p := proc(ctx)
+func (p *Process) libcHerror(s uint32) {
 	msg := "Unknown error"
 
 	if p.herrnoAt != 0 {
@@ -1082,8 +1026,7 @@ func libcHerror(ctx uintptr, s uint32) {
 	p.complain(s, msg)
 }
 
-func libcInet_aton(ctx uintptr, s, at uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcInet_aton(s, at uint32) uint32 {
 	a, ok := inetAton(p.str(s))
 
 	if ok {
@@ -1093,8 +1036,8 @@ func libcInet_aton(ctx uintptr, s, at uint32) uint32 {
 	return bit(ok)
 }
 
-func libcInet_addr(ctx uintptr, s uint32) uint32 {
-	a, ok := inetAton(proc(ctx).str(s))
+func (p *Process) libcInet_addr(s uint32) uint32 {
+	a, ok := inetAton(p.str(s))
 
 	if !ok {
 		return 0xffffffff
@@ -1103,8 +1046,8 @@ func libcInet_addr(ctx uintptr, s uint32) uint32 {
 	return binary.LittleEndian.Uint32(a[:])
 }
 
-func libcInet_network(ctx uintptr, s uint32) uint32 {
-	a, ok := inetAton(proc(ctx).str(s))
+func (p *Process) libcInet_network(s uint32) uint32 {
+	a, ok := inetAton(p.str(s))
 
 	if !ok {
 		return 0xffffffff
@@ -1113,8 +1056,7 @@ func libcInet_network(ctx uintptr, s uint32) uint32 {
 	return binary.BigEndian.Uint32(a[:])
 }
 
-func libcInet_ntoa(ctx uintptr, in uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcInet_ntoa(in uint32) uint32 {
 	var b [4]byte
 	binary.LittleEndian.PutUint32(b[:], in)
 	at := p.staticAt(staticNtoa)
@@ -1123,8 +1065,7 @@ func libcInet_ntoa(ctx uintptr, in uint32) uint32 {
 	return at
 }
 
-func libcInet_pton(ctx uintptr, family, s, dst uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcInet_pton(family, s, dst uint32) uint32 {
 	text := p.str(s)
 
 	switch family {
@@ -1155,8 +1096,7 @@ func libcInet_pton(ctx uintptr, family, s, dst uint32) uint32 {
 	return 1
 }
 
-func libcInet_ntop(ctx uintptr, family, src, dst, size uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcInet_ntop(family, src, dst, size uint32) uint32 {
 	var text string
 
 	switch family {
@@ -1181,7 +1121,7 @@ func libcInet_ntop(ctx uintptr, family, src, dst, size uint32) uint32 {
 	return dst
 }
 
-func libcInet_makeaddr(ctx uintptr, n, h uint32) uint32 {
+func (p *Process) libcInet_makeaddr(n, h uint32) uint32 {
 	switch {
 	case n < 256:
 		h |= n << 24
@@ -1194,7 +1134,7 @@ func libcInet_makeaddr(ctx uintptr, n, h uint32) uint32 {
 	return h
 }
 
-func libcInet_lnaof(ctx uintptr, in uint32) uint32 {
+func (p *Process) libcInet_lnaof(in uint32) uint32 {
 	switch {
 	case in>>24 < 128:
 		return in & 0xffffff
@@ -1205,7 +1145,7 @@ func libcInet_lnaof(ctx uintptr, in uint32) uint32 {
 	return in & 0xff
 }
 
-func libcInet_netof(ctx uintptr, in uint32) uint32 {
+func (p *Process) libcInet_netof(in uint32) uint32 {
 	switch {
 	case in>>24 < 128:
 		return in >> 24
@@ -1216,8 +1156,7 @@ func libcInet_netof(ctx uintptr, in uint32) uint32 {
 	return in >> 8
 }
 
-func libcIf_nametoindex(ctx uintptr, name uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcIf_nametoindex(name uint32) uint32 {
 	ifc, err := net.InterfaceByName(p.str(name))
 
 	if err != nil {
@@ -1229,8 +1168,7 @@ func libcIf_nametoindex(ctx uintptr, name uint32) uint32 {
 	return uint32(ifc.Index)
 }
 
-func libcIf_indextoname(ctx uintptr, index, buf uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcIf_indextoname(index, buf uint32) uint32 {
 	ifc, err := net.InterfaceByIndex(int(index))
 
 	if err != nil {
@@ -1246,8 +1184,7 @@ func libcIf_indextoname(ctx uintptr, index, buf uint32) uint32 {
 
 // if_nameindex's array and names are one block, which
 // if_freenameindex frees.
-func libcIf_nameindex(ctx uintptr) uint32 {
-	p := proc(ctx)
+func (p *Process) libcIf_nameindex() uint32 {
 	list, err := net.Interfaces()
 
 	if err != nil {
@@ -1285,6 +1222,10 @@ func libcIf_nameindex(ctx uintptr) uint32 {
 	return block
 }
 
-func libcIf_freenameindex(ctx uintptr, block uint32) {
-	proc(ctx).free(block)
+func (p *Process) libcFreeaddrinfo(res uint32) {
+	p.freeaddrinfo(res)
+}
+
+func (p *Process) libcIf_freenameindex(block uint32) {
+	p.free(block)
 }

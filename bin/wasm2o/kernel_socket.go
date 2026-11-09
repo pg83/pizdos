@@ -540,33 +540,7 @@ func (p *Process) setsockopt(f *File, level, name, at, n uint32) error {
 	return err
 }
 
-func (k *Kernel) socketFunctions() map[string]any {
-	return map[string]any{
-		"socket":      libcSocket,
-		"socketpair":  libcSocketpair,
-		"bind":        libcBind,
-		"connect":     libcConnect,
-		"listen":      libcListen,
-		"accept":      libcAccept,
-		"accept4":     libcAccept4,
-		"getsockname": libcGetsockname,
-		"getpeername": libcGetpeername,
-		"getsockopt":  libcGetsockopt,
-		"setsockopt":  libcSetsockopt,
-		"send":        libcSend,
-		"sendto":      libcSendto,
-		"recv":        libcRecv,
-		"recvfrom":    libcRecvfrom,
-		"sendmsg":     libcSendmsg,
-		"recvmsg":     libcRecvmsg,
-		"shutdown":    libcShutdown,
-		"sockatmark":  libcSockatmark,
-	}
-}
-
-func libcSocket(ctx uintptr, domain, kind, protocol uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcSocket(domain, kind, protocol uint32) uint32 {
 	switch domain {
 	case afUnix, afInet, afInet6:
 	default:
@@ -582,9 +556,7 @@ func libcSocket(ctx uintptr, domain, kind, protocol uint32) uint32 {
 	return p.result(p.installSocket(host, kind))
 }
 
-func libcSocketpair(ctx uintptr, domain, kind, protocol, at uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcSocketpair(domain, kind, protocol, at uint32) uint32 {
 	if domain != afUnix {
 		return p.result(0, syscall.EOPNOTSUPP)
 	}
@@ -617,8 +589,7 @@ func libcSocketpair(ctx uintptr, domain, kind, protocol, at uint32) uint32 {
 	return p.result(0, nil)
 }
 
-func libcBind(ctx uintptr, fd, addr, n uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcBind(fd, addr, n uint32) uint32 {
 	f, err := p.socketFile(fd)
 
 	if err != nil {
@@ -639,8 +610,7 @@ func libcBind(ctx uintptr, fd, addr, n uint32) uint32 {
 	return p.result(0, err)
 }
 
-func libcConnect(ctx uintptr, fd, addr, n uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcConnect(fd, addr, n uint32) uint32 {
 	f, err := p.socketFile(fd)
 
 	if err == nil {
@@ -650,8 +620,7 @@ func libcConnect(ctx uintptr, fd, addr, n uint32) uint32 {
 	return p.result(0, err)
 }
 
-func libcListen(ctx uintptr, fd, backlog uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcListen(fd, backlog uint32) uint32 {
 	f, err := p.socketFile(fd)
 
 	if err == nil {
@@ -661,16 +630,15 @@ func libcListen(ctx uintptr, fd, backlog uint32) uint32 {
 	return p.result(0, err)
 }
 
-func libcAccept(ctx uintptr, fd, addr, lenAt uint32) uint32 {
-	return socketAccept(ctx, fd, addr, lenAt, 0)
+func (p *Process) libcAccept(fd, addr, lenAt uint32) uint32 {
+	return p.socketAccept(fd, addr, lenAt, 0)
 }
 
-func libcAccept4(ctx uintptr, fd, addr, lenAt, flags uint32) uint32 {
-	return socketAccept(ctx, fd, addr, lenAt, flags)
+func (p *Process) libcAccept4(fd, addr, lenAt, flags uint32) uint32 {
+	return p.socketAccept(fd, addr, lenAt, flags)
 }
 
-func libcGetsockname(ctx uintptr, fd, addr, lenAt uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcGetsockname(fd, addr, lenAt uint32) uint32 {
 	f, err := p.socketFile(fd)
 
 	if err != nil {
@@ -695,8 +663,7 @@ func libcGetsockname(ctx uintptr, fd, addr, lenAt uint32) uint32 {
 	return p.result(0, nil)
 }
 
-func libcGetpeername(ctx uintptr, fd, addr, lenAt uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcGetpeername(fd, addr, lenAt uint32) uint32 {
 	f, err := p.socketFile(fd)
 
 	if err != nil {
@@ -715,8 +682,7 @@ func libcGetpeername(ctx uintptr, fd, addr, lenAt uint32) uint32 {
 	return p.result(0, nil)
 }
 
-func libcGetsockopt(ctx uintptr, fd, level, name, at, lenAt uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcGetsockopt(fd, level, name, at, lenAt uint32) uint32 {
 	f, err := p.socketFile(fd)
 
 	if err == nil {
@@ -726,8 +692,7 @@ func libcGetsockopt(ctx uintptr, fd, level, name, at, lenAt uint32) uint32 {
 	return p.result(0, err)
 }
 
-func libcSetsockopt(ctx uintptr, fd, level, name, at, n uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcSetsockopt(fd, level, name, at, n uint32) uint32 {
 	f, err := p.socketFile(fd)
 
 	if err == nil {
@@ -737,24 +702,23 @@ func libcSetsockopt(ctx uintptr, fd, level, name, at, n uint32) uint32 {
 	return p.result(0, err)
 }
 
-func libcSend(ctx uintptr, fd, buf, n, flags uint32) uint32 {
-	return socketSend(ctx, fd, buf, n, flags, 0, 0)
+func (p *Process) libcSend(fd, buf, n, flags uint32) uint32 {
+	return p.socketSend(fd, buf, n, flags, 0, 0)
 }
 
-func libcSendto(ctx uintptr, fd, buf, n, flags, addr, alen uint32) uint32 {
-	return socketSend(ctx, fd, buf, n, flags, addr, alen)
+func (p *Process) libcSendto(fd, buf, n, flags, addr, alen uint32) uint32 {
+	return p.socketSend(fd, buf, n, flags, addr, alen)
 }
 
-func libcRecv(ctx uintptr, fd, buf, n, flags uint32) uint32 {
-	return socketRecv(ctx, fd, buf, n, flags, 0, 0)
+func (p *Process) libcRecv(fd, buf, n, flags uint32) uint32 {
+	return p.socketRecv(fd, buf, n, flags, 0, 0)
 }
 
-func libcRecvfrom(ctx uintptr, fd, buf, n, flags, addr, lenAt uint32) uint32 {
-	return socketRecv(ctx, fd, buf, n, flags, addr, lenAt)
+func (p *Process) libcRecvfrom(fd, buf, n, flags, addr, lenAt uint32) uint32 {
+	return p.socketRecv(fd, buf, n, flags, addr, lenAt)
 }
 
-func libcSendmsg(ctx uintptr, fd, msg, flags uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcSendmsg(fd, msg, flags uint32) uint32 {
 	f, err := p.socketFile(fd)
 
 	if err != nil {
@@ -764,8 +728,7 @@ func libcSendmsg(ctx uintptr, fd, msg, flags uint32) uint32 {
 	return p.result(p.sendmsg(f, msg, flags))
 }
 
-func libcRecvmsg(ctx uintptr, fd, msg, flags uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcRecvmsg(fd, msg, flags uint32) uint32 {
 	f, err := p.socketFile(fd)
 
 	if err != nil {
@@ -775,8 +738,7 @@ func libcRecvmsg(ctx uintptr, fd, msg, flags uint32) uint32 {
 	return p.result(p.recvmsg(f, msg, flags))
 }
 
-func libcShutdown(ctx uintptr, fd, how uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcShutdown(fd, how uint32) uint32 {
 	f, err := p.socketFile(fd)
 
 	if err == nil {
@@ -786,8 +748,7 @@ func libcShutdown(ctx uintptr, fd, how uint32) uint32 {
 	return p.result(0, err)
 }
 
-func libcSockatmark(ctx uintptr, fd uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcSockatmark(fd uint32) uint32 {
 	f, err := p.socketFile(fd)
 
 	if err != nil {
@@ -803,8 +764,7 @@ func libcSockatmark(ctx uintptr, fd uint32) uint32 {
 	return p.result(int(mark), nil)
 }
 
-func socketAccept(ctx uintptr, fd, addr, lenAt, flags uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) socketAccept(fd, addr, lenAt, flags uint32) uint32 {
 	f, err := p.socketFile(fd)
 
 	if err != nil {
@@ -838,8 +798,7 @@ func socketAccept(ctx uintptr, fd, addr, lenAt, flags uint32) uint32 {
 	return p.result(guest, nil)
 }
 
-func socketSend(ctx uintptr, fd, buf, n, flags, addr, alen uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) socketSend(fd, buf, n, flags, addr, alen uint32) uint32 {
 	f, err := p.socketFile(fd)
 
 	if err != nil {
@@ -869,8 +828,7 @@ func socketSend(ctx uintptr, fd, buf, n, flags, addr, alen uint32) uint32 {
 	return p.result(sent, err)
 }
 
-func socketRecv(ctx uintptr, fd, buf, n, flags, addr, lenAt uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) socketRecv(fd, buf, n, flags, addr, lenAt uint32) uint32 {
 	f, err := p.socketFile(fd)
 
 	if err != nil {

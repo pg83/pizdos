@@ -592,43 +592,7 @@ func (p *Process) kill(pid int32, sig uint32) error {
 	return nil
 }
 
-func (k *Kernel) signalFunctions() map[string]any {
-	t := map[string]any{
-		"signal":          libcSignal,
-		"sigaction":       libcSigaction,
-		"sigprocmask":     libcSigprocmask,
-		"pthread_sigmask": libcPthread_sigmask,
-		"sigfillset":      libcSigfillset,
-		"sigemptyset":     libcSigemptyset,
-		"sigaddset":       libcSigaddset,
-		"sigdelset":       libcSigdelset,
-		"sigismember":     libcSigismember,
-		"sigisemptyset":   libcSigisemptyset,
-		"sigorset":        libcSigorset,
-		"sigandset":       libcSigandset,
-		"sigpending":      libcSigpending,
-		"sigwait":         libcSigwait,
-		"sigwaitinfo":     libcSigwaitinfo,
-		"sigtimedwait":    libcSigtimedwait,
-		"sigaltstack":     libcSigaltstack,
-		"siginterrupt":    libcSiginterrupt,
-		"pause":           libcPause,
-		"sigsuspend":      libcSigsuspend,
-		"raise":           libcRaise,
-		"kill":            libcKill,
-		"sigqueue":        libcSigqueue,
-		"killpg":          libcKillpg,
-		"abort":           libcAbort,
-	}
-
-	t["bsd_signal"] = t["signal"]
-
-	return t
-}
-
-func libcSignal(ctx uintptr, sig, handler uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcSignal(sig, handler uint32) uint32 {
 	if !validSignal(sig) || sig == uint32(syscall.SIGKILL) || sig == uint32(syscall.SIGSTOP) {
 		p.setErrno(syscall.EINVAL)
 
@@ -638,9 +602,7 @@ func libcSignal(ctx uintptr, sig, handler uint32) uint32 {
 	return p.setAction(int(sig), sigAction{handler: handler, flags: saRestart}).handler
 }
 
-func libcSigaction(ctx uintptr, sig, act, old uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcSigaction(sig, act, old uint32) uint32 {
 	if !validSignal(sig) || act != 0 && (sig == uint32(syscall.SIGKILL) || sig == uint32(syscall.SIGSTOP)) {
 		return p.result(0, syscall.EINVAL)
 	}
@@ -663,16 +625,13 @@ func libcSigaction(ctx uintptr, sig, act, old uint32) uint32 {
 	return p.result(0, nil)
 }
 
-func libcSigprocmask(ctx uintptr, how, set, old uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcSigprocmask(how, set, old uint32) uint32 {
 	return p.result(0, p.sigprocmask(how, set, old))
 }
 
 // pthread_sigmask is sigprocmask of the process's one thread; it
 // returns an error number.
-func libcPthread_sigmask(ctx uintptr, how, set, old uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcPthread_sigmask(how, set, old uint32) uint32 {
 	err := p.sigprocmask(how, set, old)
 	p.deliver()
 
@@ -683,21 +642,19 @@ func libcPthread_sigmask(ctx uintptr, how, set, old uint32) uint32 {
 	return 0
 }
 
-func libcSigfillset(ctx uintptr, set uint32) uint32 {
-	proc(ctx).put64(set, ^uint64(0)&^(3<<31))
+func (p *Process) libcSigfillset(set uint32) uint32 {
+	p.put64(set, ^uint64(0)&^(3<<31))
 
 	return 0
 }
 
-func libcSigemptyset(ctx uintptr, set uint32) uint32 {
-	proc(ctx).put64(set, 0)
+func (p *Process) libcSigemptyset(set uint32) uint32 {
+	p.put64(set, 0)
 
 	return 0
 }
 
-func libcSigaddset(ctx uintptr, set, sig uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcSigaddset(set, sig uint32) uint32 {
 	if !p.setMember(sig) {
 		return math.MaxUint32
 	}
@@ -707,9 +664,7 @@ func libcSigaddset(ctx uintptr, set, sig uint32) uint32 {
 	return 0
 }
 
-func libcSigdelset(ctx uintptr, set, sig uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcSigdelset(set, sig uint32) uint32 {
 	if !p.setMember(sig) {
 		return math.MaxUint32
 	}
@@ -719,32 +674,27 @@ func libcSigdelset(ctx uintptr, set, sig uint32) uint32 {
 	return 0
 }
 
-func libcSigismember(ctx uintptr, set, sig uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcSigismember(set, sig uint32) uint32 {
 	return bit(validSignal(sig) && p.u64(set)&sigBit(int(sig)) != 0)
 }
 
-func libcSigisemptyset(ctx uintptr, set uint32) uint32 {
-	return bit(proc(ctx).u64(set) == 0)
+func (p *Process) libcSigisemptyset(set uint32) uint32 {
+	return bit(p.u64(set) == 0)
 }
 
-func libcSigorset(ctx uintptr, d, a, b uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcSigorset(d, a, b uint32) uint32 {
 	p.put64(d, p.u64(a)|p.u64(b))
 
 	return 0
 }
 
-func libcSigandset(ctx uintptr, d, a, b uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcSigandset(d, a, b uint32) uint32 {
 	p.put64(d, p.u64(a)&p.u64(b))
 
 	return 0
 }
 
-func libcSigpending(ctx uintptr, set uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcSigpending(set uint32) uint32 {
 	p.sig.mu.Lock()
 	pending := p.sig.pending
 	p.sig.mu.Unlock()
@@ -754,9 +704,7 @@ func libcSigpending(ctx uintptr, set uint32) uint32 {
 }
 
 // sigwait returns an error number.
-func libcSigwait(ctx uintptr, set, at uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcSigwait(set, at uint32) uint32 {
 	for {
 		sig, err := p.sigwait(p.u64(set), -1)
 
@@ -768,8 +716,7 @@ func libcSigwait(ctx uintptr, set, at uint32) uint32 {
 	}
 }
 
-func libcSigwaitinfo(ctx uintptr, set, info uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcSigwaitinfo(set, info uint32) uint32 {
 	sig, err := p.sigwait(p.u64(set), -1)
 
 	if err == nil {
@@ -779,8 +726,7 @@ func libcSigwaitinfo(ctx uintptr, set, info uint32) uint32 {
 	return p.result(sig, err)
 }
 
-func libcSigtimedwait(ctx uintptr, set, info, timeout uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcSigtimedwait(set, info, timeout uint32) uint32 {
 	d := time.Duration(-1)
 
 	if timeout != 0 {
@@ -800,8 +746,7 @@ func libcSigtimedwait(ctx uintptr, set, info, timeout uint32) uint32 {
 	return p.result(sig, err)
 }
 
-func libcSigaltstack(ctx uintptr, ss, old uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcSigaltstack(ss, old uint32) uint32 {
 	sp := binary.LittleEndian.Uint32(p.inst.block[p.stackPointer():])
 	p.sig.mu.Lock()
 	alt := p.sig.altstack
@@ -852,9 +797,7 @@ func libcSigaltstack(ctx uintptr, ss, old uint32) uint32 {
 
 // siginterrupt makes a signal's handler interrupt calls, or restart
 // them.
-func libcSiginterrupt(ctx uintptr, sig, flag uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcSiginterrupt(sig, flag uint32) uint32 {
 	if !validSignal(sig) {
 		return p.result(0, syscall.EINVAL)
 	}
@@ -872,9 +815,7 @@ func libcSiginterrupt(ctx uintptr, sig, flag uint32) uint32 {
 	return p.result(0, nil)
 }
 
-func libcPause(ctx uintptr) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcPause() uint32 {
 	for {
 		if _, err := p.waitFds(nil, -1, false); err != nil {
 			break
@@ -884,8 +825,7 @@ func libcPause(ctx uintptr) uint32 {
 	return p.result(0, syscall.EINTR)
 }
 
-func libcSigsuspend(ctx uintptr, set uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcSigsuspend(set uint32) uint32 {
 	old := p.setMask(p.u64(set))
 
 	for {
@@ -900,9 +840,7 @@ func libcSigsuspend(ctx uintptr, set uint32) uint32 {
 	return p.result(0, syscall.EINTR)
 }
 
-func libcRaise(ctx uintptr, sig uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcRaise(sig uint32) uint32 {
 	if !validSignal(sig) {
 		return p.result(0, syscall.EINVAL)
 	}
@@ -912,17 +850,13 @@ func libcRaise(ctx uintptr, sig uint32) uint32 {
 	return p.result(0, nil)
 }
 
-func libcKill(ctx uintptr, pid, sig uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcKill(pid, sig uint32) uint32 {
 	return p.result(0, p.kill(int32(pid), sig))
 }
 
 // sigqueue sends a signal as kill does; its value does not reach
 // the handler.
-func libcSigqueue(ctx uintptr, pid, sig, value uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcSigqueue(pid, sig, value uint32) uint32 {
 	if int32(pid) <= 0 {
 		return p.result(0, syscall.EINVAL)
 	}
@@ -930,18 +864,12 @@ func libcSigqueue(ctx uintptr, pid, sig, value uint32) uint32 {
 	return p.result(0, p.kill(int32(pid), sig))
 }
 
-func libcKillpg(ctx uintptr, pgrp, sig uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcKillpg(pgrp, sig uint32) uint32 {
 	if int32(pgrp) <= 1 {
 		return p.result(0, syscall.EINVAL)
 	}
 
 	return p.result(0, p.kill(-int32(pgrp), sig))
-}
-
-func libcAbort(ctx uintptr) {
-	proc(ctx).abort()
 }
 
 // abort raises SIGABRT, unblocked, and when a handler returns from it ends
@@ -981,4 +909,8 @@ func (k *Kernel) routeSignals() {
 			}
 		}
 	}()
+}
+
+func (p *Process) libcAbort() {
+	p.abort()
 }

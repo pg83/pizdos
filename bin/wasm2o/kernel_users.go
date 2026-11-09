@@ -303,111 +303,69 @@ func byGid(gid uint32) func(*groupEntry) bool {
 }
 
 // rewind starts the entries of a static slot again.
-func rewind(ctx uintptr, slot uint32) {
-	p := proc(ctx)
+func (p *Process) rewind(slot uint32) {
 	p.put32(p.staticAt(slot), 0)
 }
 
-func (k *Kernel) userFunctions() map[string]any {
-	return map[string]any{
-		"getpwnam":     libcGetpwnam,
-		"getpwuid":     libcGetpwuid,
-		"getpwnam_r":   libcGetpwnam_r,
-		"getpwuid_r":   libcGetpwuid_r,
-		"getpwent":     libcGetpwent,
-		"setpwent":     libcSetpwent,
-		"endpwent":     libcEndpwent,
-		"getgrnam":     libcGetgrnam,
-		"getgrgid":     libcGetgrgid,
-		"getgrnam_r":   libcGetgrnam_r,
-		"getgrgid_r":   libcGetgrgid_r,
-		"getgrent":     libcGetgrent,
-		"setgrent":     libcSetgrent,
-		"endgrent":     libcEndgrent,
-		"getgrouplist": libcGetgrouplist,
-	}
-}
-
-func libcGetpwnam(ctx uintptr, name uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcGetpwnam(name uint32) uint32 {
 	return p.staticPasswd(p.passwdBy(byName(p, name)))
 }
 
-func libcGetpwuid(ctx uintptr, uid uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcGetpwuid(uid uint32) uint32 {
 	return p.staticPasswd(p.passwdBy(byUid(uid)))
 }
 
-func libcGetpwnam_r(ctx uintptr, name, pwd, buf, size, result uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcGetpwnam_r(name, pwd, buf, size, result uint32) uint32 {
 	return p.passwdResult(p.passwdBy(byName(p, name)), pwd, buf, size, result)
 }
 
-func libcGetpwuid_r(ctx uintptr, uid, pwd, buf, size, result uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcGetpwuid_r(uid, pwd, buf, size, result uint32) uint32 {
 	return p.passwdResult(p.passwdBy(byUid(uid)), pwd, buf, size, result)
 }
 
-func libcGetpwent(ctx uintptr) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcGetpwent() uint32 {
 	return p.staticPasswd(nextEntry(p, staticPwent, p.passwdEntries()))
 }
 
-func libcSetpwent(ctx uintptr) {
-	rewind(ctx, staticPwent)
+func (p *Process) libcSetpwent() {
+	p.rewind(staticPwent)
 }
 
-func libcEndpwent(ctx uintptr) {
-	rewind(ctx, staticPwent)
+func (p *Process) libcEndpwent() {
+	p.rewind(staticPwent)
 }
 
-func libcGetgrnam(ctx uintptr, name uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcGetgrnam(name uint32) uint32 {
 	return p.staticGroup(p.groupBy(groupName(p, name)))
 }
 
-func libcGetgrgid(ctx uintptr, gid uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcGetgrgid(gid uint32) uint32 {
 	return p.staticGroup(p.groupBy(byGid(gid)))
 }
 
-func libcGetgrnam_r(ctx uintptr, name, grp, buf, size, result uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcGetgrnam_r(name, grp, buf, size, result uint32) uint32 {
 	return p.groupResult(p.groupBy(groupName(p, name)), grp, buf, size, result)
 }
 
-func libcGetgrgid_r(ctx uintptr, gid, grp, buf, size, result uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcGetgrgid_r(gid, grp, buf, size, result uint32) uint32 {
 	return p.groupResult(p.groupBy(byGid(gid)), grp, buf, size, result)
 }
 
-func libcGetgrent(ctx uintptr) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcGetgrent() uint32 {
 	return p.staticGroup(nextEntry(p, staticGrent, p.groupEntries()))
 }
 
-func libcSetgrent(ctx uintptr) {
-	rewind(ctx, staticGrent)
+func (p *Process) libcSetgrent() {
+	p.rewind(staticGrent)
 }
 
-func libcEndgrent(ctx uintptr) {
-	rewind(ctx, staticGrent)
+func (p *Process) libcEndgrent() {
+	p.rewind(staticGrent)
 }
 
 // getgrouplist lists group and the groups that name user a member;
 // when they do not fit it returns -1 and how many there are.
-func libcGetgrouplist(ctx uintptr, user, group, groups, count uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcGetgrouplist(user, group, groups, count uint32) uint32 {
 	name := p.str(user)
 	list := []uint32{group}
 

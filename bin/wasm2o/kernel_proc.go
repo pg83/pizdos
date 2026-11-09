@@ -378,81 +378,41 @@ func (p *Process) variableName(at uint32) (string, bool) {
 	return name, true
 }
 
-func (k *Kernel) procFunctions() map[string]any {
-	return map[string]any{
-		"getpid":    libcGetpid,
-		"getppid":   libcGetppid,
-		"getpgrp":   libcGetpgrp,
-		"setpgid":   libcSetpgid,
-		"tcgetpgrp": libcTcgetpgrp,
-		"tcsetpgrp": libcTcsetpgrp,
-		"getuid":    libcGetuid,
-		"geteuid":   libcGeteuid,
-		"getgid":    libcGetgid,
-		"getegid":   libcGetegid,
-		"getgroups": libcGetgroups,
-		"uname":     libcUname,
-		"sysconf":   libcSysconf,
-		"umask":     libcUmask,
-		"rand":      libcRand,
-		"srand":     libcSrand,
-		"getenv":    libcGetenv,
-		"putenv":    libcPutenv,
-		"setenv":    libcSetenv,
-		"unsetenv":  libcUnsetenv,
-		"clearenv":  libcClearenv,
-		"execve":    libcExecve,
-		"execvp":    libcExecvp,
-		"execv":     libcExecv,
-		"execvpe":   libcExecvpe,
-		"execle":    libcExecle,
-		"fexecve":   libcFexecve,
-		"execl":     libcExecl,
-		"execlp":    libcExeclp,
-		"_exit":     libc_exit,
-		"_Exit":     libc_Exit,
-		"system":    libcSystem,
-	}
+func (p *Process) libcGetpid() uint32 {
+	return uint32(p.pid)
 }
 
-func libcGetpid(ctx uintptr) uint32 {
-	return uint32(proc(ctx).pid)
-}
-
-func libcGetppid(ctx uintptr) uint32 {
-	p := proc(ctx)
+func (p *Process) libcGetppid() uint32 {
 	p.k.mu.Lock()
 	defer p.k.mu.Unlock()
 
 	return uint32(p.ppid)
 }
 
-func libcGetpgrp(ctx uintptr) uint32 {
-	p := proc(ctx)
+func (p *Process) libcGetpgrp() uint32 {
 	p.k.mu.Lock()
 	defer p.k.mu.Unlock()
 
 	return uint32(p.pgid)
 }
 
-func libcGetuid(ctx uintptr) uint32 {
+func (p *Process) libcGetuid() uint32 {
 	return uint32(os.Getuid())
 }
 
-func libcGeteuid(ctx uintptr) uint32 {
+func (p *Process) libcGeteuid() uint32 {
 	return uint32(os.Geteuid())
 }
 
-func libcGetgid(ctx uintptr) uint32 {
+func (p *Process) libcGetgid() uint32 {
 	return uint32(os.Getgid())
 }
 
-func libcGetegid(ctx uintptr) uint32 {
+func (p *Process) libcGetegid() uint32 {
 	return uint32(os.Getegid())
 }
 
-func libcGetgroups(ctx uintptr, n, list uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcGetgroups(n, list uint32) uint32 {
 	groups, err := os.Getgroups()
 
 	if err != nil {
@@ -474,8 +434,7 @@ func libcGetgroups(ctx uintptr, n, list uint32) uint32 {
 	return p.result(len(groups), nil)
 }
 
-func libcUname(ctx uintptr, at uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcUname(at uint32) uint32 {
 	var u syscall.Utsname
 
 	if err := syscall.Uname(&u); err != nil {
@@ -491,9 +450,7 @@ func libcUname(ctx uintptr, at uint32) uint32 {
 
 // sysconf's -1 for the buffers of the user and group databases
 // means no limit.
-func libcSysconf(ctx uintptr, name uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcSysconf(name uint32) uint32 {
 	switch name {
 	case 85:
 		return uint32(pages(false))
@@ -514,35 +471,31 @@ func libcSysconf(ctx uintptr, name uint32) uint32 {
 	return p.result(0, syscall.EINVAL)
 }
 
-func libcUmask(ctx uintptr, mask uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcUmask(mask uint32) uint32 {
 	old := p.umask
 	p.umask = mask & 0o777
 
 	return old
 }
 
-func libcRand(ctx uintptr) uint32 {
-	p := proc(ctx)
+func (p *Process) libcRand() uint32 {
 	p.seed = 6364136223846793005*p.seed + 1
 
 	return uint32(p.seed >> 33)
 }
 
-func libcSrand(ctx uintptr, seed uint32) {
-	proc(ctx).seed = uint64(seed) - 1
+func (p *Process) libcSrand(seed uint32) {
+	p.seed = uint64(seed) - 1
 }
 
-func libcGetenv(ctx uintptr, name uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcGetenv(name uint32) uint32 {
 	_, value, _ := p.lookupEnv(p.cstr(name))
 
 	return value
 }
 
 // putenv without a '=' removes the variable, as musl's.
-func libcPutenv(ctx uintptr, s uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcPutenv(s uint32) uint32 {
 	name, _, set := strings.Cut(p.str(s), "=")
 
 	if name == "" {
@@ -564,8 +517,7 @@ func libcPutenv(ctx uintptr, s uint32) uint32 {
 	return 0
 }
 
-func libcSetenv(ctx uintptr, at, value, overwrite uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcSetenv(at, value, overwrite uint32) uint32 {
 	name, ok := p.variableName(at)
 
 	if !ok {
@@ -590,8 +542,7 @@ func libcSetenv(ctx uintptr, at, value, overwrite uint32) uint32 {
 	return 0
 }
 
-func libcUnsetenv(ctx uintptr, at uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcUnsetenv(at uint32) uint32 {
 	name, ok := p.variableName(at)
 
 	if !ok {
@@ -607,8 +558,7 @@ func libcUnsetenv(ctx uintptr, at uint32) uint32 {
 	return 0
 }
 
-func libcClearenv(ctx uintptr) uint32 {
-	p := proc(ctx)
+func (p *Process) libcClearenv() uint32 {
 	old := p.u32(p.environAt)
 	p.put32(p.environAt, 0)
 
@@ -621,34 +571,25 @@ func libcClearenv(ctx uintptr) uint32 {
 	return 0
 }
 
-func libcExecve(ctx uintptr, path, argv, envp uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcExecve(path, argv, envp uint32) uint32 {
 	return p.result(0, p.exec(p.str(path), p.strings(argv), p.strings(envp)))
 }
 
-func libcExecvp(ctx uintptr, file, argv uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcExecvp(file, argv uint32) uint32 {
 	return p.result(0, p.execPath(p.str(file), p.strings(argv), p.environment()))
 }
 
-func libcExecv(ctx uintptr, path, argv uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcExecv(path, argv uint32) uint32 {
 	return p.result(0, p.exec(p.str(path), p.strings(argv), p.environment()))
 }
 
-func libcExecvpe(ctx uintptr, file, argv, envp uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcExecvpe(file, argv, envp uint32) uint32 {
 	return p.result(0, p.execPath(p.str(file), p.strings(argv), p.strings(envp)))
 }
 
 // execle's environment follows the null pointer that ends the
 // arguments.
-func libcExecle(ctx uintptr, path, arg0, va uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcExecle(path, arg0, va uint32) uint32 {
 	argv := p.argList(arg0, va)
 	envp := p.varArg(va, uint32(max(len(argv), 1)))
 
@@ -661,8 +602,7 @@ func libcExecle(ctx uintptr, path, arg0, va uint32) uint32 {
 
 // fexecve runs the file of a descriptor; a script's interpreter gets
 // its path.
-func libcFexecve(ctx uintptr, fd, argv, envp uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcFexecve(fd, argv, envp uint32) uint32 {
 	f, err := p.fd(fd)
 
 	if err != nil {
@@ -678,32 +618,27 @@ func libcFexecve(ctx uintptr, fd, argv, envp uint32) uint32 {
 	return p.result(0, p.execFrom(p.k.guestPath(host), f.fd, p.strings(argv), p.strings(envp)))
 }
 
-func libcExecl(ctx uintptr, path, arg0, va uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcExecl(path, arg0, va uint32) uint32 {
 	return p.result(0, p.exec(p.str(path), p.argList(arg0, va), p.environment()))
 }
 
-func libcExeclp(ctx uintptr, file, arg0, va uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcExeclp(file, arg0, va uint32) uint32 {
 	return p.result(0, p.execPath(p.str(file), p.argList(arg0, va), p.environment()))
 }
 
-func libc_exit(ctx uintptr, code uint32) {
-	proc(ctx).exitWith(int(code&0xff) << 8)
+func (p *Process) libc_exit(code uint32) {
+	p.exitWith(int(code&0xff) << 8)
 }
 
-func libc_Exit(ctx uintptr, code uint32) {
-	proc(ctx).exitWith(int(code&0xff) << 8)
+func (p *Process) libc_Exit(code uint32) {
+	p.exitWith(int(code&0xff) << 8)
 }
 
 // system runs a command in the shell of the root and waits for it:
 // a child of the process with its descriptors, its wait status
 // shifted as the shell's system reports it. The shell missing is
 // 127, the way a child that cannot run ends.
-func libcSystem(ctx uintptr, cmd uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcSystem(cmd uint32) uint32 {
 	argv := []string{"sh", "-c", string(p.cstr(cmd))}
 	code, _, err := p.loadProgram("/bin/sh", argv)
 
@@ -763,8 +698,7 @@ func (p *Process) groupExists(pgid int32) bool {
 	return false
 }
 
-func libcSetpgid(ctx uintptr, pid, pgid uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcSetpgid(pid, pgid uint32) uint32 {
 	target := p
 
 	if pid != 0 && int32(pid) != p.pid {
@@ -797,10 +731,8 @@ func libcSetpgid(ctx uintptr, pid, pgid uint32) uint32 {
 	return p.result(0, nil)
 }
 
-func libcTcgetpgrp(ctx uintptr, fd uint32) uint32 {
-	p := proc(ctx)
-
-	if libcIsatty(ctx, fd) == 0 {
+func (p *Process) libcTcgetpgrp(fd uint32) uint32 {
+	if p.libcIsatty(fd) == 0 {
 		return p.result(0, p.errno())
 	}
 
@@ -810,10 +742,8 @@ func libcTcgetpgrp(ctx uintptr, fd uint32) uint32 {
 	return p.result(int(p.k.fg), nil)
 }
 
-func libcTcsetpgrp(ctx uintptr, fd, pgrp uint32) uint32 {
-	p := proc(ctx)
-
-	if libcIsatty(ctx, fd) == 0 {
+func (p *Process) libcTcsetpgrp(fd, pgrp uint32) uint32 {
+	if p.libcIsatty(fd) == 0 {
 		return p.result(0, p.errno())
 	}
 

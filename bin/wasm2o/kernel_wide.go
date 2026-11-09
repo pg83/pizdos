@@ -132,50 +132,7 @@ func (p *Process) wcsftime(s, max, format, tm uint32) uint32 {
 	return uint32(len(out))
 }
 
-func (k *Kernel) wideFunctions() map[string]any {
-	return map[string]any{
-		"wcslen":   libcWcslen,
-		"wcsnlen":  libcWcsnlen,
-		"wcscpy":   libcWcscpy,
-		"wcsncpy":  libcWcsncpy,
-		"wcscat":   libcWcscat,
-		"wcscmp":   libcWcscmp,
-		"wcsncmp":  libcWcsncmp,
-		"wcscoll":  libcWcscoll,
-		"wcsxfrm":  libcWcsxfrm,
-		"wcschr":   libcWcschr,
-		"wcsrchr":  libcWcsrchr,
-		"wcsstr":   libcWcsstr,
-		"wcspbrk":  libcWcspbrk,
-		"wcsspn":   libcWcsspn,
-		"wcscspn":  libcWcscspn,
-		"wcstok":   libcWcstok,
-		"wcsdup":   libcWcsdup,
-		"wcsftime": libcWcsftime,
-		"wmemchr":  libcWmemchr,
-		"wmemcmp":  libcWmemcmp,
-		"wmemcpy":  libcWmemcpy,
-		"wmemmove": libcWmemmove,
-		"wmemset":  libcWmemset,
-		"wcwidth":  libcWcwidth,
-		"wcswidth": libcWcswidth,
-	}
-}
-
-func libcWcslen(ctx uintptr, s uint32) uint32 {
-	return proc(ctx).wcslen(s)
-}
-
-func libcWcsnlen(ctx uintptr, s, n uint32) uint32 {
-	return proc(ctx).wcsnlen(s, n)
-}
-
-func libcWcscpy(ctx uintptr, d, s uint32) uint32 {
-	return proc(ctx).wcscpy(d, s)
-}
-
-func libcWcsncpy(ctx uintptr, d, s, n uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcWcsncpy(d, s, n uint32) uint32 {
 	l := p.wcsnlen(s, n)
 	dst := p.wide(d, n)
 	copy(dst, p.wide(s, l))
@@ -184,16 +141,13 @@ func libcWcsncpy(ctx uintptr, d, s, n uint32) uint32 {
 	return d
 }
 
-func libcWcscat(ctx uintptr, d, s uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcWcscat(d, s uint32) uint32 {
 	p.wcscpy(d+4*p.wcslen(d), s)
 
 	return d
 }
 
-func libcWcscmp(ctx uintptr, a, b uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcWcscmp(a, b uint32) uint32 {
 	for i := uint32(0); ; i++ {
 		x, y := p.wcharAt(a, i), p.wcharAt(b, i)
 
@@ -203,9 +157,7 @@ func libcWcscmp(ctx uintptr, a, b uint32) uint32 {
 	}
 }
 
-func libcWcsncmp(ctx uintptr, a, b, n uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcWcsncmp(a, b, n uint32) uint32 {
 	for i := uint32(0); i < n; i++ {
 		x, y := p.wcharAt(a, i), p.wcharAt(b, i)
 
@@ -218,9 +170,7 @@ func libcWcsncmp(ctx uintptr, a, b, n uint32) uint32 {
 }
 
 // wcscoll and wcsxfrm are the C locale's: the order of the values.
-func libcWcscoll(ctx uintptr, a, b uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcWcscoll(a, b uint32) uint32 {
 	for i := uint32(0); ; i++ {
 		x, y := p.wcharAt(a, i), p.wcharAt(b, i)
 
@@ -230,8 +180,7 @@ func libcWcscoll(ctx uintptr, a, b uint32) uint32 {
 	}
 }
 
-func libcWcsxfrm(ctx uintptr, d, s, n uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcWcsxfrm(d, s, n uint32) uint32 {
 	l := p.wcslen(s)
 
 	if l < n {
@@ -244,9 +193,7 @@ func libcWcsxfrm(ctx uintptr, d, s, n uint32) uint32 {
 	return l
 }
 
-func libcWcschr(ctx uintptr, s, c uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcWcschr(s, c uint32) uint32 {
 	for i := uint32(0); ; i++ {
 		x := p.wcharAt(s, i)
 
@@ -260,9 +207,7 @@ func libcWcschr(ctx uintptr, s, c uint32) uint32 {
 	}
 }
 
-func libcWcsrchr(ctx uintptr, s, c uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcWcsrchr(s, c uint32) uint32 {
 	for i := p.wcslen(s); ; i-- {
 		if p.wcharAt(s, i) == c {
 			return s + 4*i
@@ -274,8 +219,7 @@ func libcWcsrchr(ctx uintptr, s, c uint32) uint32 {
 	}
 }
 
-func libcWcsstr(ctx uintptr, h, n uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcWcsstr(h, n uint32) uint32 {
 	needle := p.wide(n, p.wcslen(n))
 	hay := p.wide(h, p.wcslen(h))
 
@@ -294,8 +238,7 @@ func libcWcsstr(ctx uintptr, h, n uint32) uint32 {
 	}
 }
 
-func libcWcspbrk(ctx uintptr, s, set uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcWcspbrk(s, set uint32) uint32 {
 	at := s + 4*p.wcsspan(s, set, true)
 
 	if p.wcharAt(at, 0) == 0 {
@@ -305,17 +248,7 @@ func libcWcspbrk(ctx uintptr, s, set uint32) uint32 {
 	return at
 }
 
-func libcWcsspn(ctx uintptr, s, set uint32) uint32 {
-	return proc(ctx).wcsspan(s, set, false)
-}
-
-func libcWcscspn(ctx uintptr, s, set uint32) uint32 {
-	return proc(ctx).wcsspan(s, set, true)
-}
-
-func libcWcstok(ctx uintptr, s, sep, save uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcWcstok(s, sep, save uint32) uint32 {
 	if s == 0 {
 		if s = p.u32(save); s == 0 {
 			return 0
@@ -342,8 +275,7 @@ func libcWcstok(ctx uintptr, s, sep, save uint32) uint32 {
 	return s
 }
 
-func libcWcsdup(ctx uintptr, s uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcWcsdup(s uint32) uint32 {
 	n := p.wcslen(s) + 1
 
 	if uint64(n)*4 > heapMax {
@@ -365,13 +297,7 @@ func libcWcsdup(ctx uintptr, s uint32) uint32 {
 	return at
 }
 
-func libcWcsftime(ctx uintptr, s, max, format, tm uint32) uint32 {
-	return proc(ctx).wcsftime(s, max, format, tm)
-}
-
-func libcWmemchr(ctx uintptr, s, c, n uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcWmemchr(s, c, n uint32) uint32 {
 	for i := uint32(0); i < n; i++ {
 		if p.wcharAt(s, i) == c {
 			return s + 4*i
@@ -381,9 +307,7 @@ func libcWmemchr(ctx uintptr, s, c, n uint32) uint32 {
 	return 0
 }
 
-func libcWmemcmp(ctx uintptr, a, b, n uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcWmemcmp(a, b, n uint32) uint32 {
 	for i := uint32(0); i < n; i++ {
 		if x, y := p.wcharAt(a, i), p.wcharAt(b, i); x != y {
 			return wcmp(x, y)
@@ -393,22 +317,19 @@ func libcWmemcmp(ctx uintptr, a, b, n uint32) uint32 {
 	return 0
 }
 
-func libcWmemcpy(ctx uintptr, d, s, n uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcWmemcpy(d, s, n uint32) uint32 {
 	copy(p.wide(d, n), p.wide(s, n))
 
 	return d
 }
 
-func libcWmemmove(ctx uintptr, d, s, n uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcWmemmove(d, s, n uint32) uint32 {
 	copy(p.wide(d, n), p.wide(s, n))
 
 	return d
 }
 
-func libcWmemset(ctx uintptr, d, c, n uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcWmemset(d, c, n uint32) uint32 {
 	b := p.wide(d, n)
 
 	for i := 0; i < len(b); i += 4 {
@@ -418,12 +339,11 @@ func libcWmemset(ctx uintptr, d, c, n uint32) uint32 {
 	return d
 }
 
-func libcWcwidth(ctx uintptr, c uint32) uint32 {
+func (p *Process) libcWcwidth(c uint32) uint32 {
 	return uint32(wcwidth(c))
 }
 
-func libcWcswidth(ctx uintptr, s, n uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcWcswidth(s, n uint32) uint32 {
 	total := int32(0)
 
 	for i := uint32(0); i < n; i++ {
@@ -443,4 +363,28 @@ func libcWcswidth(ctx uintptr, s, n uint32) uint32 {
 	}
 
 	return uint32(total)
+}
+
+func (p *Process) libcWcslen(s uint32) uint32 {
+	return p.wcslen(s)
+}
+
+func (p *Process) libcWcsnlen(s, n uint32) uint32 {
+	return p.wcsnlen(s, n)
+}
+
+func (p *Process) libcWcscpy(d, s uint32) uint32 {
+	return p.wcscpy(d, s)
+}
+
+func (p *Process) libcWcsspn(s, set uint32) uint32 {
+	return p.wcsspan(s, set, false)
+}
+
+func (p *Process) libcWcscspn(s, set uint32) uint32 {
+	return p.wcsspan(s, set, true)
+}
+
+func (p *Process) libcWcsftime(s, max, format, tm uint32) uint32 {
+	return p.wcsftime(s, max, format, tm)
 }

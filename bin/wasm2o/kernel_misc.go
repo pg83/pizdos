@@ -379,48 +379,13 @@ func (p *Process) shells() []string {
 	return out
 }
 
-func (k *Kernel) miscFunctions() map[string]any {
-	return map[string]any{
-		"random":        libcRandom,
-		"srandom":       libcSrandom,
-		"initstate":     libcInitstate,
-		"setstate":      libcSetstate,
-		"rand_r":        libcRand_r,
-		"secure_getenv": libcSecure_getenv,
-		"getsubopt":     libcGetsubopt,
-		"daemon":        libcDaemon,
-		"prctl":         libcPrctl,
-		"getpass":       libcGetpass,
-		"vhangup":       libcVhangup,
-		"getusershell":  libcGetusershell,
-		"setusershell":  libcSetusershell,
-		"endusershell":  libcEndusershell,
-		"gethostname":   libcGethostname,
-		"getdomainname": libcGetdomainname,
-		"sethostname":   libcSethostname,
-		"setdomainname": libcSetdomainname,
-		"gethostid":     libcGethostid,
-		"sethostid":     libcSethostid,
-		"psignal":       libcPsignal,
-		"psiginfo":      libcPsiginfo,
-		"__assert_fail": libc__assert_fail,
-	}
-}
-
-func libcRandom(ctx uintptr) uint32 {
-	return proc(ctx).random()
-}
-
-func libcSrandom(ctx uintptr, seed uint32) {
-	p := proc(ctx)
+func (p *Process) libcSrandom(seed uint32) {
 	p.srandom(p.randomState(), seed)
 }
 
 // initstate makes a state of size bytes the one in use and returns
 // the one before.
-func libcInitstate(ctx uintptr, seed, state, size uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcInitstate(seed, state, size uint32) uint32 {
 	if size < 8 {
 		return 0
 	}
@@ -447,8 +412,7 @@ func libcInitstate(ctx uintptr, seed, state, size uint32) uint32 {
 	return old
 }
 
-func libcSetstate(ctx uintptr, state uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcSetstate(state uint32) uint32 {
 	old := p.randomState()
 	p.span(state, 4*(p.u32(state)>>16+1))
 	p.put32(p.staticAt(staticRandom), state)
@@ -456,8 +420,7 @@ func libcSetstate(ctx uintptr, state uint32) uint32 {
 	return old
 }
 
-func libcRand_r(ctx uintptr, seed uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcRand_r(seed uint32) uint32 {
 	s := p.u32(seed)*1103515245 + 12345
 	p.put32(seed, s)
 
@@ -465,36 +428,13 @@ func libcRand_r(ctx uintptr, seed uint32) uint32 {
 }
 
 // No program is set-user-ID: secure_getenv is getenv.
-func libcSecure_getenv(ctx uintptr, name uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcSecure_getenv(name uint32) uint32 {
 	_, value, _ := p.lookupEnv(p.cstr(name))
 
 	return value
 }
 
-func libcGetsubopt(ctx uintptr, opt, keys, val uint32) uint32 {
-	return proc(ctx).getsubopt(opt, keys, val)
-}
-
-func libcDaemon(ctx uintptr, nochdir, noclose uint32) uint32 {
-	return proc(ctx).daemon(nochdir, noclose)
-}
-
-func libcPrctl(ctx uintptr, option, va uint32) uint32 {
-	return proc(ctx).prctl(option, va)
-}
-
-func libcGetpass(ctx uintptr, prompt uint32) uint32 {
-	return proc(ctx).getpass(prompt)
-}
-
-// Hanging up the terminal needs privilege.
-func libcVhangup(ctx uintptr) uint32 {
-	return proc(ctx).result(0, syscall.EPERM)
-}
-
-func libcGetusershell(ctx uintptr) uint32 {
-	p := proc(ctx)
+func (p *Process) libcGetusershell() uint32 {
 	shell := nextEntry(p, staticShellIndex, p.shells())
 
 	if shell == nil {
@@ -510,20 +450,17 @@ func libcGetusershell(ctx uintptr) uint32 {
 	return block
 }
 
-func libcSetusershell(ctx uintptr) {
-	p := proc(ctx)
+func (p *Process) libcSetusershell() {
 	p.put32(p.staticAt(staticShellIndex), 0)
 }
 
-func libcEndusershell(ctx uintptr) {
-	p := proc(ctx)
+func (p *Process) libcEndusershell() {
 	p.put32(p.staticAt(staticShellIndex), 0)
 }
 
 // The host's names, which no process may set; the host id is
 // musl's, 0.
-func libcGethostname(ctx uintptr, name, n uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcGethostname(name, n uint32) uint32 {
 	var u syscall.Utsname
 
 	if err := syscall.Uname(&u); err != nil {
@@ -539,8 +476,7 @@ func libcGethostname(ctx uintptr, name, n uint32) uint32 {
 	return p.result(0, nil)
 }
 
-func libcGetdomainname(ctx uintptr, name, n uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcGetdomainname(name, n uint32) uint32 {
 	var u syscall.Utsname
 
 	if err := syscall.Uname(&u); err != nil {
@@ -558,34 +494,19 @@ func libcGetdomainname(ctx uintptr, name, n uint32) uint32 {
 	return p.result(0, nil)
 }
 
-func libcSethostname(ctx uintptr, name, n uint32) uint32 {
-	return proc(ctx).result(0, syscall.EPERM)
-}
-
-func libcSetdomainname(ctx uintptr, name, n uint32) uint32 {
-	return proc(ctx).result(0, syscall.EPERM)
-}
-
-func libcGethostid(ctx uintptr) uint32 {
+func (p *Process) libcGethostid() uint32 {
 	return 0
 }
 
-func libcSethostid(ctx uintptr, id uint32) uint32 {
-	return proc(ctx).result(0, syscall.EPERM)
-}
-
-func libcPsignal(ctx uintptr, sig, s uint32) {
-	p := proc(ctx)
+func (p *Process) libcPsignal(sig, s uint32) {
 	p.complain(s, signalMessage(int(sig)))
 }
 
-func libcPsiginfo(ctx uintptr, info, s uint32) {
-	p := proc(ctx)
+func (p *Process) libcPsiginfo(info, s uint32) {
 	p.complain(s, signalMessage(int(p.u32(info))))
 }
 
-func libc__assert_fail(ctx uintptr, expr, file, line, function uint32) {
-	p := proc(ctx)
+func (p *Process) libc__assert_fail(expr, file, line, function uint32) {
 	msg := fmt.Sprintf("Assertion failed: %s (%s: %s: %d)\n", p.str(expr), p.str(file), p.str(function), int32(line))
 
 	if f, err := p.fd(2); err == nil {
@@ -619,4 +540,41 @@ func utsField(b []int8) string {
 	}
 
 	return string(out)
+}
+
+func (p *Process) libcRandom() uint32 {
+	return p.random()
+}
+
+func (p *Process) libcGetsubopt(opt, keys, val uint32) uint32 {
+	return p.getsubopt(opt, keys, val)
+}
+
+func (p *Process) libcDaemon(nochdir, noclose uint32) uint32 {
+	return p.daemon(nochdir, noclose)
+}
+
+func (p *Process) libcPrctl(option, va uint32) uint32 {
+	return p.prctl(option, va)
+}
+
+func (p *Process) libcGetpass(prompt uint32) uint32 {
+	return p.getpass(prompt)
+}
+
+// Hanging up the terminal needs privilege.
+func (p *Process) libcVhangup() uint32 {
+	return p.result(0, syscall.EPERM)
+}
+
+func (p *Process) libcSethostname(name, n uint32) uint32 {
+	return p.result(0, syscall.EPERM)
+}
+
+func (p *Process) libcSetdomainname(name, n uint32) uint32 {
+	return p.result(0, syscall.EPERM)
+}
+
+func (p *Process) libcSethostid(id uint32) uint32 {
+	return p.result(0, syscall.EPERM)
 }

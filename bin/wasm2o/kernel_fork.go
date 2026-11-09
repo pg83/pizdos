@@ -454,49 +454,32 @@ func (p *Process) waitEvent(ready func() bool) error {
 	}
 }
 
-func (k *Kernel) forkFunctions() map[string]any {
-	return map[string]any{
-		"vfork":   libcVfork,
-		"fork":    libcFork,
-		"waitpid": libcWaitpid,
-		"wait":    libcWait,
-		"wait3":   libcWait3,
-		"wait4":   libcWait4,
-		"waitid":  libcWaitid,
-	}
-}
-
-func libcVfork(ctx uintptr) uint32 {
-	return proc(ctx).startVfork()
-}
-
-func libcFork(ctx uintptr) uint32 {
-	p := proc(ctx)
+func (p *Process) libcFork() uint32 {
 	pid, err := p.fork(nil)
 
 	return p.result(int(pid), err)
 }
 
-func libcWaitpid(ctx uintptr, pid, status, options uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcWaitpid(pid, status, options uint32) uint32 {
 	return p.result(p.waitpid(int32(pid), status, options))
 }
 
-func libcWait(ctx uintptr, status uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcWait(status uint32) uint32 {
 	return p.result(p.waitpid(-1, status, 0))
 }
 
-func libcWait3(ctx uintptr, status, options, usage uint32) uint32 {
-	return proc(ctx).wait4(-1, status, options, usage)
+func (p *Process) libcWait4(pid, status, options, usage uint32) uint32 {
+	return p.wait4(int32(pid), status, options, usage)
 }
 
-func libcWait4(ctx uintptr, pid, status, options, usage uint32) uint32 {
-	return proc(ctx).wait4(int32(pid), status, options, usage)
+func (p *Process) libcVfork() uint32 {
+	return p.startVfork()
 }
 
-func libcWaitid(ctx uintptr, idtype, id, info, options uint32) uint32 {
-	return proc(ctx).waitid(idtype, id, info, options)
+func (p *Process) libcWait3(status, options, usage uint32) uint32 {
+	return p.wait4(-1, status, options, usage)
+}
+
+func (p *Process) libcWaitid(idtype, id, info, options uint32) uint32 {
+	return p.waitid(idtype, id, info, options)
 }

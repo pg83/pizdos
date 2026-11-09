@@ -350,45 +350,7 @@ func (p *Process) writeTm(at uint32, t time.Time) {
 	p.put32(at+40, p.constant(tm.zone))
 }
 
-func (k *Kernel) timeFunctions() map[string]any {
-	return map[string]any{
-		"time":            libcTime,
-		"gettimeofday":    libcGettimeofday,
-		"clock_settime":   libcClock_settime,
-		"localtime":       libcLocaltime,
-		"localtime_r":     libcLocaltime_r,
-		"tzset":           libcTzset,
-		"asctime":         libcAsctime,
-		"asctime_r":       libcAsctime_r,
-		"ctime_r":         libcCtime_r,
-		"difftime":        libcDifftime,
-		"timegm":          libcTimegm,
-		"settimeofday":    libcSettimeofday,
-		"stime":           libcStime,
-		"adjtime":         libcAdjtime,
-		"usleep":          libcUsleep,
-		"ualarm":          libcUalarm,
-		"gmtime":          libcGmtime,
-		"gmtime_r":        libcGmtime_r,
-		"clock":           libcClock,
-		"clock_getres":    libcClock_getres,
-		"clock_nanosleep": libcClock_nanosleep,
-		"setitimer":       libcSetitimer,
-		"getitimer":       libcGetitimer,
-		"alarm":           libcAlarm,
-		"mktime":          libcMktime,
-		"ctime":           libcCtime,
-		"strftime":        libcStrftime,
-		"strptime":        libcStrptime,
-		"times":           libcTimes,
-		"sleep":           libcSleep,
-		"clock_gettime":   libcClock_gettime,
-		"nanosleep":       libcNanosleep,
-	}
-}
-
-func libcTime(ctx uintptr, at uint32) uint64 {
-	p := proc(ctx)
+func (p *Process) libcTime(at uint32) uint64 {
 	now := time.Now().Unix()
 
 	if at != 0 {
@@ -398,8 +360,7 @@ func libcTime(ctx uintptr, at uint32) uint64 {
 	return uint64(now)
 }
 
-func libcGettimeofday(ctx uintptr, tv, tz uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcGettimeofday(tv, tz uint32) uint32 {
 	now := time.Now()
 
 	if tv != 0 {
@@ -410,12 +371,7 @@ func libcGettimeofday(ctx uintptr, tv, tz uint32) uint32 {
 	return 0
 }
 
-func libcClock_settime(ctx uintptr, clock, ts uint32) uint32 {
-	return proc(ctx).result(0, syscall.EPERM)
-}
-
-func libcLocaltime(ctx uintptr, t uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcLocaltime(t uint32) uint32 {
 	at := p.staticAt(staticTm)
 	p.tzset()
 	p.writeTm(at, time.Unix(int64(p.u64(t)), 0).In(p.location()))
@@ -423,20 +379,14 @@ func libcLocaltime(ctx uintptr, t uint32) uint32 {
 	return at
 }
 
-func libcLocaltime_r(ctx uintptr, t, at uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcLocaltime_r(t, at uint32) uint32 {
 	p.tzset()
 	p.writeTm(at, time.Unix(int64(p.u64(t)), 0).In(p.location()))
 
 	return at
 }
 
-func libcTzset(ctx uintptr) {
-	proc(ctx).tzset()
-}
-
-func libcAsctime(ctx uintptr, tm uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcAsctime(tm uint32) uint32 {
 	s, ok := asctime(p.readTm(tm))
 
 	if !ok {
@@ -451,8 +401,7 @@ func libcAsctime(ctx uintptr, tm uint32) uint32 {
 	return at
 }
 
-func libcAsctime_r(ctx uintptr, tm, buf uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcAsctime_r(tm, buf uint32) uint32 {
 	s, ok := asctime(p.readTm(tm))
 
 	if !ok {
@@ -466,8 +415,7 @@ func libcAsctime_r(ctx uintptr, tm, buf uint32) uint32 {
 	return buf
 }
 
-func libcCtime_r(ctx uintptr, t, buf uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcCtime_r(t, buf uint32) uint32 {
 	s, ok := asctime(tmOf(time.Unix(int64(p.u64(t)), 0).In(p.location())))
 
 	if !ok {
@@ -481,13 +429,12 @@ func libcCtime_r(ctx uintptr, t, buf uint32) uint32 {
 	return buf
 }
 
-func libcDifftime(ctx uintptr, t1, t0 uint64) float64 {
+func (p *Process) libcDifftime(t1, t0 uint64) float64 {
 	return float64(int64(t1)) - float64(int64(t0))
 }
 
 // timegm is mktime in UTC: it normalizes the struct tm.
-func libcTimegm(ctx uintptr, at uint32) uint64 {
-	p := proc(ctx)
+func (p *Process) libcTimegm(at uint32) uint64 {
 	tm := p.readTm(at)
 	t := time.Date(tm.year+1900, time.Month(tm.mon+1), tm.mday, tm.hour, tm.min, tm.sec, 0, time.UTC)
 
@@ -502,21 +449,7 @@ func libcTimegm(ctx uintptr, at uint32) uint64 {
 	return uint64(t.Unix())
 }
 
-// The clock is the host's, which no process may set.
-func libcSettimeofday(ctx uintptr, tv, tz uint32) uint32 {
-	return proc(ctx).result(0, syscall.EPERM)
-}
-
-func libcStime(ctx uintptr, t uint32) uint32 {
-	return proc(ctx).result(0, syscall.EPERM)
-}
-
-func libcAdjtime(ctx uintptr, delta, old uint32) uint32 {
-	return proc(ctx).result(0, syscall.EPERM)
-}
-
-func libcUsleep(ctx uintptr, us uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcUsleep(us uint32) uint32 {
 	left := p.sleep(time.Duration(us) * time.Microsecond)
 	p.deliver()
 
@@ -527,29 +460,21 @@ func libcUsleep(ctx uintptr, us uint32) uint32 {
 	return p.result(0, nil)
 }
 
-func libcUalarm(ctx uintptr, value, interval uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcUalarm(value, interval uint32) uint32 {
 	left, _ := p.setTimer(itimerReal, time.Duration(value)*time.Microsecond, time.Duration(interval)*time.Microsecond)
 
 	return uint32(min(left/time.Microsecond, math.MaxUint32))
 }
 
-func libcGmtime(ctx uintptr, t uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcGmtime(t uint32) uint32 {
 	return p.gmtime(t, p.staticAt(staticTm))
 }
 
-func libcGmtime_r(ctx uintptr, t, at uint32) uint32 {
-	return proc(ctx).gmtime(t, at)
-}
-
-func libcClock(ctx uintptr) uint64 {
+func (p *Process) libcClock() uint64 {
 	return uint64(clockGettime(clockProcessCputime) / time.Microsecond)
 }
 
-func libcClock_getres(ctx uintptr, clock, res uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcClock_getres(clock, res uint32) uint32 {
 	host, ok := hostClock(clock)
 
 	if !ok {
@@ -569,9 +494,7 @@ func libcClock_getres(ctx uintptr, clock, res uint32) uint32 {
 
 // clock_nanosleep returns an error number; it sleeps on the real time
 // clocks.
-func libcClock_nanosleep(ctx uintptr, clock, flags, req, rem uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcClock_nanosleep(clock, flags, req, rem uint32) uint32 {
 	switch clock {
 	case clockRealtime, clockMonotonic, clockBoottime:
 	case clockProcessCputime:
@@ -604,9 +527,7 @@ func libcClock_nanosleep(ctx uintptr, clock, flags, req, rem uint32) uint32 {
 	return 0
 }
 
-func libcSetitimer(ctx uintptr, which, value, old uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcSetitimer(which, value, old uint32) uint32 {
 	if which > itimerProf {
 		return p.result(0, syscall.EINVAL)
 	}
@@ -633,9 +554,7 @@ func libcSetitimer(ctx uintptr, which, value, old uint32) uint32 {
 	return p.result(0, nil)
 }
 
-func libcGetitimer(ctx uintptr, which, at uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcGetitimer(which, at uint32) uint32 {
 	if which > itimerProf {
 		return p.result(0, syscall.EINVAL)
 	}
@@ -650,15 +569,13 @@ func libcGetitimer(ctx uintptr, which, at uint32) uint32 {
 	return p.result(0, nil)
 }
 
-func libcAlarm(ctx uintptr, seconds uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcAlarm(seconds uint32) uint32 {
 	left, _ := p.setTimer(itimerReal, time.Duration(seconds)*time.Second, 0)
 
 	return uint32((left + time.Second - 1) / time.Second)
 }
 
-func libcMktime(ctx uintptr, at uint32) uint64 {
-	p := proc(ctx)
+func (p *Process) libcMktime(at uint32) uint64 {
 	p.tzset()
 	tm := p.readTm(at)
 	t := time.Date(tm.year+1900, time.Month(tm.mon+1), tm.mday, tm.hour, tm.min, tm.sec, 0, p.location())
@@ -667,16 +584,14 @@ func libcMktime(ctx uintptr, at uint32) uint64 {
 	return uint64(t.Unix())
 }
 
-func libcCtime(ctx uintptr, t uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcCtime(t uint32) uint32 {
 	at := p.staticAt(staticCtime)
 	p.putString(at, time.Unix(int64(p.u64(t)), 0).In(p.location()).Format("Mon Jan _2 15:04:05 2006\n"))
 
 	return at
 }
 
-func libcStrftime(ctx uintptr, s, max, format, tm uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcStrftime(s, max, format, tm uint32) uint32 {
 	out := strftime(string(p.cstr(format)), p.readTm(tm))
 
 	if uint32(len(out)) >= max {
@@ -688,8 +603,7 @@ func libcStrftime(ctx uintptr, s, max, format, tm uint32) uint32 {
 	return uint32(len(out))
 }
 
-func libcStrptime(ctx uintptr, s, format, tm uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcStrptime(s, format, tm uint32) uint32 {
 	fields := p.readTm(tm)
 	n, ok := strptime(p.cstr(s), string(p.cstr(format)), &fields)
 
@@ -706,8 +620,7 @@ func libcStrptime(ctx uintptr, s, format, tm uint32) uint32 {
 	return s + uint32(n)
 }
 
-func libcTimes(ctx uintptr, at uint32) uint64 {
-	p := proc(ctx)
+func (p *Process) libcTimes(at uint32) uint64 {
 	var t syscall.Tms
 	ticks, err := syscall.Times(&t)
 
@@ -724,16 +637,14 @@ func libcTimes(ctx uintptr, at uint32) uint64 {
 	return p.result64(int64(ticks), nil)
 }
 
-func libcSleep(ctx uintptr, seconds uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcSleep(seconds uint32) uint32 {
 	left := p.sleep(time.Duration(seconds) * time.Second)
 	p.deliver()
 
 	return uint32((left + time.Second - 1) / time.Second)
 }
 
-func libcClock_gettime(ctx uintptr, clock, ts uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcClock_gettime(clock, ts uint32) uint32 {
 	host, ok := hostClock(clock)
 
 	if !ok {
@@ -748,8 +659,7 @@ func libcClock_gettime(ctx uintptr, clock, ts uint32) uint32 {
 	return p.result(0, nil)
 }
 
-func libcNanosleep(ctx uintptr, req, rem uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcNanosleep(req, rem uint32) uint32 {
 	d := time.Duration(p.u64(req))*time.Second + time.Duration(p.u32(req+8))*time.Nanosecond
 	left := p.sleep(d)
 	p.deliver()
@@ -1172,4 +1082,29 @@ func strptime(s []byte, format string, tm *tmFields) (int, bool) {
 	}
 
 	return at, true
+}
+
+func (p *Process) libcClock_settime(clock, ts uint32) uint32 {
+	return p.result(0, syscall.EPERM)
+}
+
+func (p *Process) libcTzset() {
+	p.tzset()
+}
+
+// The clock is the host's, which no process may set.
+func (p *Process) libcSettimeofday(tv, tz uint32) uint32 {
+	return p.result(0, syscall.EPERM)
+}
+
+func (p *Process) libcStime(t uint32) uint32 {
+	return p.result(0, syscall.EPERM)
+}
+
+func (p *Process) libcAdjtime(delta, old uint32) uint32 {
+	return p.result(0, syscall.EPERM)
+}
+
+func (p *Process) libcGmtime_r(t, at uint32) uint32 {
+	return p.gmtime(t, at)
 }

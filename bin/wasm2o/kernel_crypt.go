@@ -359,14 +359,7 @@ func descrypt(key, setting string) (string, bool) {
 	return string(out), true
 }
 
-func (k *Kernel) cryptFunctions() map[string]any {
-	return map[string]any{
-		"crypt": libcCrypt,
-	}
-}
-
-func libcCrypt(ctx uintptr, key, setting uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcCrypt(key, setting uint32) uint32 {
 	pw, s := p.str(key), p.str(setting)
 	var out string
 	ok := false

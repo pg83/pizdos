@@ -209,118 +209,29 @@ func ffs(x uint64) uint32 {
 	return uint32(bits.TrailingZeros64(x) + 1)
 }
 
-func (k *Kernel) stringFunctions() map[string]any {
-	t := map[string]any{
-		"strlen":         libcStrlen,
-		"strnlen":        libcStrnlen,
-		"strcmp":         libcStrcmp,
-		"strncmp":        libcStrncmp,
-		"strcasecmp":     libcStrcasecmp,
-		"strncasecmp":    libcStrncasecmp,
-		"memcmp":         libcMemcmp,
-		"memchr":         libcMemchr,
-		"strchr":         libcStrchr,
-		"strchrnul":      libcStrchrnul,
-		"strrchr":        libcStrrchr,
-		"strspn":         libcStrspn,
-		"strcspn":        libcStrcspn,
-		"strpbrk":        libcStrpbrk,
-		"strstr":         libcStrstr,
-		"strcasestr":     libcStrcasestr,
-		"strcpy":         libcStrcpy,
-		"stpcpy":         libcStpcpy,
-		"strncpy":        libcStrncpy,
-		"stpncpy":        libcStpncpy,
-		"strcat":         libcStrcat,
-		"memcpy":         libcMemcpy,
-		"memmove":        libcMemmove,
-		"memset":         libcMemset,
-		"mempcpy":        libcMempcpy,
-		"strdup":         libcStrdup,
-		"strndup":        libcStrndup,
-		"strtok_r":       libcStrtok_r,
-		"strsep":         libcStrsep,
-		"strverscmp":     libcStrverscmp,
-		"isspace":        libcIsspace,
-		"isdigit":        libcIsdigit,
-		"tolower":        libcTolower,
-		"toupper":        libcToupper,
-		"abs":            libcAbs,
-		"strerror":       libcStrerror,
-		"strsignal":      libcStrsignal,
-		"dirname":        libcDirname,
-		"fnmatch":        libcFnmatch,
-		"memrchr":        libcMemrchr,
-		"rawmemchr":      libcRawmemchr,
-		"memmem":         libcMemmem,
-		"memccpy":        libcMemccpy,
-		"bcopy":          libcBcopy,
-		"bzero":          libcBzero,
-		"explicit_bzero": libcExplicit_bzero,
-		"swab":           libcSwab,
-		"strncat":        libcStrncat,
-		"strlcpy":        libcStrlcpy,
-		"strlcat":        libcStrlcat,
-		"strtok":         libcStrtok,
-		"strcoll":        libcStrcoll,
-		"strxfrm":        libcStrxfrm,
-		"strerror_r":     libcStrerror_r,
-		"basename":       libcBasename,
-		"ffs":            libcFfs,
-		"ffsl":           libcFfsl,
-		"ffsll":          libcFfsll,
-		"labs":           libcLabs,
-		"llabs":          libcLlabs,
-		"div":            libcDiv,
-		"lldiv":          libcLldiv,
-	}
-
-	t["index"], t["rindex"] = t["strchr"], t["strrchr"]
-	t["ldiv"], t["imaxdiv"], t["imaxabs"] = t["div"], t["lldiv"], t["llabs"]
-
-	return t
+func (p *Process) libcStrlen(s uint32) uint32 {
+	return uint32(len(p.cstr(s)))
 }
 
-func libcStrlen(ctx uintptr, s uint32) uint32 {
-	return uint32(len(proc(ctx).cstr(s)))
-}
-
-func libcStrnlen(ctx uintptr, s, n uint32) uint32 {
-	return proc(ctx).strnlen(s, n)
-}
-
-func libcStrcmp(ctx uintptr, a, b uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcStrcmp(a, b uint32) uint32 {
 	return uint32(int32(bytes.Compare(p.cstr(a), p.cstr(b))))
 }
 
-func libcStrncmp(ctx uintptr, a, b, n uint32) uint32 {
-	return proc(ctx).strncmp(a, b, n, false)
+func (p *Process) libcStrcasecmp(a, b uint32) uint32 {
+	return p.strncmp(a, b, ^uint32(0), true)
 }
 
-func libcStrcasecmp(ctx uintptr, a, b uint32) uint32 {
-	return proc(ctx).strncmp(a, b, ^uint32(0), true)
-}
-
-func libcStrncasecmp(ctx uintptr, a, b, n uint32) uint32 {
-	return proc(ctx).strncmp(a, b, n, true)
-}
-
-func libcMemcmp(ctx uintptr, a, b, n uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcMemcmp(a, b, n uint32) uint32 {
 	return uint32(int32(bytes.Compare(p.span(a, n), p.span(b, n))))
 }
 
-func libcMemchr(ctx uintptr, s, c, n uint32) uint32 {
-	at, _ := proc(ctx).search(s, n, byte(c))
+func (p *Process) libcMemchr(s, c, n uint32) uint32 {
+	at, _ := p.search(s, n, byte(c))
 
 	return at
 }
 
-func libcStrchr(ctx uintptr, s, c uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcStrchr(s, c uint32) uint32 {
 	str := p.cstr(s)
 
 	if byte(c) == 0 {
@@ -334,8 +245,7 @@ func libcStrchr(ctx uintptr, s, c uint32) uint32 {
 	return 0
 }
 
-func libcStrchrnul(ctx uintptr, s, c uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcStrchrnul(s, c uint32) uint32 {
 	str := p.cstr(s)
 
 	if i := bytes.IndexByte(str, byte(c)); i >= 0 && byte(c) != 0 {
@@ -345,8 +255,7 @@ func libcStrchrnul(ctx uintptr, s, c uint32) uint32 {
 	return s + uint32(len(str))
 }
 
-func libcStrrchr(ctx uintptr, s, c uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcStrrchr(s, c uint32) uint32 {
 	str := p.cstr(s)
 
 	if byte(c) == 0 {
@@ -360,16 +269,7 @@ func libcStrrchr(ctx uintptr, s, c uint32) uint32 {
 	return 0
 }
 
-func libcStrspn(ctx uintptr, s, accept uint32) uint32 {
-	return proc(ctx).spanSet(s, accept, false)
-}
-
-func libcStrcspn(ctx uintptr, s, reject uint32) uint32 {
-	return proc(ctx).spanSet(s, reject, true)
-}
-
-func libcStrpbrk(ctx uintptr, s, accept uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcStrpbrk(s, accept uint32) uint32 {
 	n := p.spanSet(s, accept, true)
 
 	if p.u8(s+n) == 0 {
@@ -379,86 +279,60 @@ func libcStrpbrk(ctx uintptr, s, accept uint32) uint32 {
 	return s + n
 }
 
-func libcStrstr(ctx uintptr, h, n uint32) uint32 {
-	return proc(ctx).strstr(h, n, false)
-}
-
-func libcStrcasestr(ctx uintptr, h, n uint32) uint32 {
-	return proc(ctx).strstr(h, n, true)
-}
-
-func libcStrcpy(ctx uintptr, d, s uint32) uint32 {
-	proc(ctx).strcpy(d, s)
+func (p *Process) libcStrcpy(d, s uint32) uint32 {
+	p.strcpy(d, s)
 
 	return d
 }
 
-func libcStpcpy(ctx uintptr, d, s uint32) uint32 {
-	return proc(ctx).strcpy(d, s)
-}
-
-func libcStrncpy(ctx uintptr, d, s, n uint32) uint32 {
-	proc(ctx).stpncpy(d, s, n)
+func (p *Process) libcStrncpy(d, s, n uint32) uint32 {
+	p.stpncpy(d, s, n)
 
 	return d
 }
 
-func libcStpncpy(ctx uintptr, d, s, n uint32) uint32 {
-	return proc(ctx).stpncpy(d, s, n)
-}
-
-func libcStrcat(ctx uintptr, d, s uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcStrcat(d, s uint32) uint32 {
 	p.strcpy(d+uint32(len(p.cstr(d))), s)
 
 	return d
 }
 
-func libcMemcpy(ctx uintptr, d, s, n uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcMemcpy(d, s, n uint32) uint32 {
 	copy(p.span(d, n), p.span(s, n))
 
 	return d
 }
 
-func libcMemmove(ctx uintptr, d, s, n uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcMemmove(d, s, n uint32) uint32 {
 	copy(p.span(d, n), p.span(s, n))
 
 	return d
 }
 
-func libcMemset(ctx uintptr, d, c, n uint32) uint32 {
-	fill(proc(ctx).span(d, n), byte(c))
+func (p *Process) libcMemset(d, c, n uint32) uint32 {
+	fill(p.span(d, n), byte(c))
 
 	return d
 }
 
-func libcMempcpy(ctx uintptr, d, s, n uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcMempcpy(d, s, n uint32) uint32 {
 	copy(p.span(d, n), p.span(s, n))
 
 	return d + n
 }
 
-func libcStrdup(ctx uintptr, s uint32) uint32 {
-	return proc(ctx).strndup(s, ^uint32(0))
+func (p *Process) libcStrdup(s uint32) uint32 {
+	return p.strndup(s, ^uint32(0))
 }
 
-func libcStrndup(ctx uintptr, s, n uint32) uint32 {
-	return proc(ctx).strndup(s, n)
-}
-
-func libcStrtok_r(ctx uintptr, s, delim, save uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcStrtok_r(s, delim, save uint32) uint32 {
 	token, next := p.strtok(s, delim, p.u32(save))
 	p.put32(save, next)
 
 	return token
 }
 
-func libcStrsep(ctx uintptr, at, delim uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcStrsep(at, delim uint32) uint32 {
 	s := p.u32(at)
 
 	if s == 0 {
@@ -477,13 +351,11 @@ func libcStrsep(ctx uintptr, at, delim uint32) uint32 {
 	return s
 }
 
-func libcStrverscmp(ctx uintptr, a, b uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcStrverscmp(a, b uint32) uint32 {
 	return uint32(int32(strverscmp(p.cstr(a), p.cstr(b))))
 }
 
-func libcIsspace(ctx uintptr, c uint32) uint32 {
+func (p *Process) libcIsspace(c uint32) uint32 {
 	switch c {
 	case ' ', '\t', '\n', '\v', '\f', '\r':
 		return 1
@@ -492,7 +364,7 @@ func libcIsspace(ctx uintptr, c uint32) uint32 {
 	return 0
 }
 
-func libcIsdigit(ctx uintptr, c uint32) uint32 {
+func (p *Process) libcIsdigit(c uint32) uint32 {
 	if c >= '0' && c <= '9' {
 		return 1
 	}
@@ -500,7 +372,7 @@ func libcIsdigit(ctx uintptr, c uint32) uint32 {
 	return 0
 }
 
-func libcTolower(ctx uintptr, c uint32) uint32 {
+func (p *Process) libcTolower(c uint32) uint32 {
 	if c >= 'A' && c <= 'Z' {
 		return c + ('a' - 'A')
 	}
@@ -508,7 +380,7 @@ func libcTolower(ctx uintptr, c uint32) uint32 {
 	return c
 }
 
-func libcToupper(ctx uintptr, c uint32) uint32 {
+func (p *Process) libcToupper(c uint32) uint32 {
 	if c >= 'a' && c <= 'z' {
 		return c - ('a' - 'A')
 	}
@@ -516,7 +388,7 @@ func libcToupper(ctx uintptr, c uint32) uint32 {
 	return c
 }
 
-func libcAbs(ctx uintptr, n uint32) uint32 {
+func (p *Process) libcAbs(n uint32) uint32 {
 	if int32(n) < 0 {
 		return uint32(-int32(n))
 	}
@@ -524,25 +396,21 @@ func libcAbs(ctx uintptr, n uint32) uint32 {
 	return n
 }
 
-func libcStrerror(ctx uintptr, e uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcStrerror(e uint32) uint32 {
 	at := p.staticAt(staticStrerror)
 	p.putString(at, truncate(errorMessage(syscall.Errno(e)), staticStrsignal-staticStrerror-1))
 
 	return at
 }
 
-func libcStrsignal(ctx uintptr, sig uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcStrsignal(sig uint32) uint32 {
 	at := p.staticAt(staticStrsignal)
 	p.putString(at, truncate(signalMessage(int(sig)), staticLconv-staticStrsignal-1))
 
 	return at
 }
 
-func libcDirname(ctx uintptr, s uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcDirname(s uint32) uint32 {
 	if s == 0 || p.u8(s) == 0 {
 		return p.staticAt(staticDot)
 	}
@@ -573,9 +441,7 @@ func libcDirname(ctx uintptr, s uint32) uint32 {
 	return s
 }
 
-func libcFnmatch(ctx uintptr, pattern, s, flags uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcFnmatch(pattern, s, flags uint32) uint32 {
 	if fnmatch(p.cstr(pattern), p.cstr(s), int(flags), true) {
 		return 0
 	}
@@ -583,9 +449,7 @@ func libcFnmatch(ctx uintptr, pattern, s, flags uint32) uint32 {
 	return 1
 }
 
-func libcMemrchr(ctx uintptr, s, c, n uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcMemrchr(s, c, n uint32) uint32 {
 	if i := bytes.LastIndexByte(p.span(s, n), byte(c)); i >= 0 {
 		return s + uint32(i)
 	}
@@ -593,15 +457,13 @@ func libcMemrchr(ctx uintptr, s, c, n uint32) uint32 {
 	return 0
 }
 
-func libcRawmemchr(ctx uintptr, s, c uint32) uint32 {
-	at, _ := proc(ctx).search(s, math.MaxUint32, byte(c))
+func (p *Process) libcRawmemchr(s, c uint32) uint32 {
+	at, _ := p.search(s, math.MaxUint32, byte(c))
 
 	return at
 }
 
-func libcMemmem(ctx uintptr, h, hn, n, nn uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcMemmem(h, hn, n, nn uint32) uint32 {
 	if i := bytes.Index(p.span(h, hn), p.span(n, nn)); i >= 0 {
 		return h + uint32(i)
 	}
@@ -609,8 +471,7 @@ func libcMemmem(ctx uintptr, h, hn, n, nn uint32) uint32 {
 	return 0
 }
 
-func libcMemccpy(ctx uintptr, d, s, c, n uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcMemccpy(d, s, c, n uint32) uint32 {
 	end, found := p.search(s, n, byte(c))
 	l := n
 
@@ -627,22 +488,19 @@ func libcMemccpy(ctx uintptr, d, s, c, n uint32) uint32 {
 	return 0
 }
 
-func libcBcopy(ctx uintptr, s, d, n uint32) {
-	p := proc(ctx)
+func (p *Process) libcBcopy(s, d, n uint32) {
 	copy(p.span(d, n), p.span(s, n))
 }
 
-func libcBzero(ctx uintptr, d, n uint32) {
-	clear(proc(ctx).span(d, n))
+func (p *Process) libcBzero(d, n uint32) {
+	clear(p.span(d, n))
 }
 
-func libcExplicit_bzero(ctx uintptr, d, n uint32) {
-	clear(proc(ctx).span(d, n))
+func (p *Process) libcExplicit_bzero(d, n uint32) {
+	clear(p.span(d, n))
 }
 
-func libcSwab(ctx uintptr, s, d, n uint32) {
-	p := proc(ctx)
-
+func (p *Process) libcSwab(s, d, n uint32) {
 	if int32(n) < 2 {
 		return
 	}
@@ -655,8 +513,7 @@ func libcSwab(ctx uintptr, s, d, n uint32) {
 	}
 }
 
-func libcStrncat(ctx uintptr, d, s, n uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcStrncat(d, s, n uint32) uint32 {
 	end := d + uint32(len(p.cstr(d)))
 	l := p.strnlen(s, n)
 	copy(p.span(end, l), p.span(s, l))
@@ -665,8 +522,7 @@ func libcStrncat(ctx uintptr, d, s, n uint32) uint32 {
 	return d
 }
 
-func libcStrlcpy(ctx uintptr, d, s, n uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcStrlcpy(d, s, n uint32) uint32 {
 	src := p.cstr(s)
 
 	if n > 0 {
@@ -678,8 +534,7 @@ func libcStrlcpy(ctx uintptr, d, s, n uint32) uint32 {
 	return uint32(len(src))
 }
 
-func libcStrlcat(ctx uintptr, d, s, n uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcStrlcat(d, s, n uint32) uint32 {
 	l := p.strnlen(d, n)
 	src := p.cstr(s)
 
@@ -694,8 +549,7 @@ func libcStrlcat(ctx uintptr, d, s, n uint32) uint32 {
 	return l + uint32(len(src))
 }
 
-func libcStrtok(ctx uintptr, s, delim uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcStrtok(s, delim uint32) uint32 {
 	save := p.staticAt(staticStrtok)
 	token, next := p.strtok(s, delim, p.u32(save))
 	p.put32(save, next)
@@ -704,14 +558,11 @@ func libcStrtok(ctx uintptr, s, delim uint32) uint32 {
 }
 
 // strcoll and strxfrm are the C locale's: the order of the bytes.
-func libcStrcoll(ctx uintptr, a, b uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcStrcoll(a, b uint32) uint32 {
 	return uint32(int32(bytes.Compare(p.cstr(a), p.cstr(b))))
 }
 
-func libcStrxfrm(ctx uintptr, d, s, n uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcStrxfrm(d, s, n uint32) uint32 {
 	l := uint32(len(p.cstr(s)))
 
 	if n > l {
@@ -721,8 +572,7 @@ func libcStrxfrm(ctx uintptr, d, s, n uint32) uint32 {
 	return l
 }
 
-func libcStrerror_r(ctx uintptr, e, buf, n uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcStrerror_r(e, buf, n uint32) uint32 {
 	msg := errorMessage(syscall.Errno(e))
 
 	if uint32(len(msg)) >= n {
@@ -738,9 +588,7 @@ func libcStrerror_r(ctx uintptr, e, buf, n uint32) uint32 {
 	return 0
 }
 
-func libcBasename(ctx uintptr, s uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcBasename(s uint32) uint32 {
 	if s == 0 || p.u8(s) == 0 {
 		return p.staticAt(staticDot)
 	}
@@ -758,19 +606,19 @@ func libcBasename(ctx uintptr, s uint32) uint32 {
 	return s + uint32(i)
 }
 
-func libcFfs(ctx uintptr, x uint32) uint32 {
+func (p *Process) libcFfs(x uint32) uint32 {
 	return ffs(uint64(x))
 }
 
-func libcFfsl(ctx uintptr, x uint32) uint32 {
+func (p *Process) libcFfsl(x uint32) uint32 {
 	return ffs(uint64(x))
 }
 
-func libcFfsll(ctx uintptr, x uint64) uint32 {
+func (p *Process) libcFfsll(x uint64) uint32 {
 	return ffs(x)
 }
 
-func libcLabs(ctx uintptr, n uint32) uint32 {
+func (p *Process) libcLabs(n uint32) uint32 {
 	if int32(n) < 0 {
 		return uint32(-int32(n))
 	}
@@ -778,7 +626,7 @@ func libcLabs(ctx uintptr, n uint32) uint32 {
 	return n
 }
 
-func libcLlabs(ctx uintptr, n uint64) uint64 {
+func (p *Process) libcLlabs(n uint64) uint64 {
 	if int64(n) < 0 {
 		return uint64(-int64(n))
 	}
@@ -786,15 +634,13 @@ func libcLlabs(ctx uintptr, n uint64) uint64 {
 	return n
 }
 
-func libcDiv(ctx uintptr, ret, a, b uint32) {
-	p := proc(ctx)
+func (p *Process) libcDiv(ret, a, b uint32) {
 	q, r := divide(int64(int32(a)), int64(int32(b)), math.MinInt32)
 	p.put32(ret, uint32(q))
 	p.put32(ret+4, uint32(r))
 }
 
-func libcLldiv(ctx uintptr, ret uint32, a, b uint64) {
-	p := proc(ctx)
+func (p *Process) libcLldiv(ret uint32, a, b uint64) {
 	q, r := divide(int64(a), int64(b), math.MinInt64)
 	p.put64(ret, uint64(q))
 	p.put64(ret+8, uint64(r))
@@ -1113,4 +959,44 @@ func inClass(class string, c byte) bool {
 	}
 
 	return false
+}
+
+func (p *Process) libcStrnlen(s, n uint32) uint32 {
+	return p.strnlen(s, n)
+}
+
+func (p *Process) libcStrncmp(a, b, n uint32) uint32 {
+	return p.strncmp(a, b, n, false)
+}
+
+func (p *Process) libcStrncasecmp(a, b, n uint32) uint32 {
+	return p.strncmp(a, b, n, true)
+}
+
+func (p *Process) libcStrspn(s, accept uint32) uint32 {
+	return p.spanSet(s, accept, false)
+}
+
+func (p *Process) libcStrcspn(s, reject uint32) uint32 {
+	return p.spanSet(s, reject, true)
+}
+
+func (p *Process) libcStrstr(h, n uint32) uint32 {
+	return p.strstr(h, n, false)
+}
+
+func (p *Process) libcStrcasestr(h, n uint32) uint32 {
+	return p.strstr(h, n, true)
+}
+
+func (p *Process) libcStpcpy(d, s uint32) uint32 {
+	return p.strcpy(d, s)
+}
+
+func (p *Process) libcStpncpy(d, s, n uint32) uint32 {
+	return p.stpncpy(d, s, n)
+}
+
+func (p *Process) libcStrndup(s, n uint32) uint32 {
+	return p.strndup(s, n)
 }

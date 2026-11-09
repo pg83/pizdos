@@ -425,35 +425,7 @@ func (p *Process) mappingOf(addr uint32) (uint32, mapping, bool) {
 	return 0, mapping{}, false
 }
 
-func (k *Kernel) heapFunctions() map[string]any {
-	return map[string]any{
-		"malloc":             libcMalloc,
-		"free":               libcFree,
-		"calloc":             libcCalloc,
-		"realloc":            libcRealloc,
-		"mallopt":            libcMallopt,
-		"getpagesize":        libcGetpagesize,
-		"mmap":               libcMmap,
-		"munmap":             libcMunmap,
-		"msync":              libcMsync,
-		"madvise":            libcMadvise,
-		"mprotect":           libcMprotect,
-		"mlock":              libcMlock,
-		"munlock":            libcMunlock,
-		"mlockall":           libcMlockall,
-		"munlockall":         libcMunlockall,
-		"memalign":           libcMemalign,
-		"aligned_alloc":      libcAligned_alloc,
-		"valloc":             libcValloc,
-		"posix_memalign":     libcPosix_memalign,
-		"malloc_usable_size": libcMalloc_usable_size,
-		"malloc_trim":        libcMalloc_trim,
-		"reallocarray":       libcReallocarray,
-	}
-}
-
-func libcMalloc(ctx uintptr, n uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcMalloc(n uint32) uint32 {
 	at := p.malloc(n)
 
 	if at == 0 {
@@ -463,12 +435,7 @@ func libcMalloc(ctx uintptr, n uint32) uint32 {
 	return at
 }
 
-func libcFree(ctx uintptr, ptr uint32) {
-	proc(ctx).free(ptr)
-}
-
-func libcCalloc(ctx uintptr, n, size uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcCalloc(n, size uint32) uint32 {
 	total := uint64(n) * uint64(size)
 
 	if total > math.MaxUint32 {
@@ -490,8 +457,7 @@ func libcCalloc(ctx uintptr, n, size uint32) uint32 {
 	return at
 }
 
-func libcRealloc(ctx uintptr, ptr, n uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcRealloc(ptr, n uint32) uint32 {
 	at := p.realloc(ptr, n)
 
 	if at == 0 && n != 0 {
@@ -501,19 +467,18 @@ func libcRealloc(ctx uintptr, ptr, n uint32) uint32 {
 	return at
 }
 
-func libcMallopt(ctx uintptr, param, value uint32) uint32 {
+func (p *Process) libcMallopt(param, value uint32) uint32 {
 	return 1
 }
 
-func libcGetpagesize(ctx uintptr) uint32 {
+func (p *Process) libcGetpagesize() uint32 {
 	return 4096
 }
 
 // mmap maps from the heap: anonymous memory zeroed, a file read in
 // as a private copy. The process keeps the length of each mapping
 // for munmap.
-func libcMmap(ctx uintptr, addr, n, prot, flags, fd uint32, off uint64) uint32 {
-	p := proc(ctx)
+func (p *Process) libcMmap(addr, n, prot, flags, fd uint32, off uint64) uint32 {
 	const failed = math.MaxUint32
 
 	if n == 0 {
@@ -562,9 +527,7 @@ func libcMmap(ctx uintptr, addr, n, prot, flags, fd uint32, off uint64) uint32 {
 
 // munmap frees a mapping it covers whole; of part of one it frees
 // nothing, and the rest of the mapping stays.
-func libcMunmap(ctx uintptr, addr, n uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcMunmap(addr, n uint32) uint32 {
 	if n == 0 {
 		return p.result(0, syscall.EINVAL)
 	}
@@ -576,8 +539,7 @@ func libcMunmap(ctx uintptr, addr, n uint32) uint32 {
 	return p.result(0, nil)
 }
 
-func libcMsync(ctx uintptr, addr, n, flags uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcMsync(addr, n, flags uint32) uint32 {
 	at, m, ok := p.mappingOf(addr)
 
 	if !ok {
@@ -592,8 +554,7 @@ func libcMsync(ctx uintptr, addr, n, flags uint32) uint32 {
 // madvise's MADV_DONTNEED reads a private mapping of a file again,
 // leaves a shared one and zeroes other memory, as Linux's; other
 // advice changes nothing.
-func libcMadvise(ctx uintptr, addr, n, advice uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcMadvise(addr, n, advice uint32) uint32 {
 	b := p.span(addr, n)
 
 	if advice != madvDontneed {
@@ -615,32 +576,13 @@ func libcMadvise(ctx uintptr, addr, n, advice uint32) uint32 {
 }
 
 // Memory has no protection nor pages to lock.
-func libcMprotect(ctx uintptr, addr, n, prot uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcMprotect(addr, n, prot uint32) uint32 {
 	p.span(addr, n)
 
 	return p.result(0, nil)
 }
 
-func libcMlock(ctx uintptr, addr, n uint32) uint32 {
-	return proc(ctx).result(0, nil)
-}
-
-func libcMunlock(ctx uintptr, addr, n uint32) uint32 {
-	return proc(ctx).result(0, nil)
-}
-
-func libcMlockall(ctx uintptr, flags uint32) uint32 {
-	return proc(ctx).result(0, nil)
-}
-
-func libcMunlockall(ctx uintptr) uint32 {
-	return proc(ctx).result(0, nil)
-}
-
-func libcMemalign(ctx uintptr, align, n uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcMemalign(align, n uint32) uint32 {
 	if !alignment(align, false) {
 		p.setErrno(syscall.EINVAL)
 
@@ -656,9 +598,7 @@ func libcMemalign(ctx uintptr, align, n uint32) uint32 {
 	return at
 }
 
-func libcAligned_alloc(ctx uintptr, align, n uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcAligned_alloc(align, n uint32) uint32 {
 	if !alignment(align, false) {
 		p.setErrno(syscall.EINVAL)
 
@@ -674,8 +614,7 @@ func libcAligned_alloc(ctx uintptr, align, n uint32) uint32 {
 	return at
 }
 
-func libcValloc(ctx uintptr, n uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcValloc(n uint32) uint32 {
 	at := p.memalign(4096, n)
 
 	if at == 0 {
@@ -686,9 +625,7 @@ func libcValloc(ctx uintptr, n uint32) uint32 {
 }
 
 // posix_memalign returns an error number.
-func libcPosix_memalign(ctx uintptr, out, align, n uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcPosix_memalign(out, align, n uint32) uint32 {
 	if !alignment(align, true) {
 		return uint32(syscall.EINVAL)
 	}
@@ -704,9 +641,7 @@ func libcPosix_memalign(ctx uintptr, out, align, n uint32) uint32 {
 	return 0
 }
 
-func libcMalloc_usable_size(ctx uintptr, ptr uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcMalloc_usable_size(ptr uint32) uint32 {
 	if ptr == 0 {
 		return 0
 	}
@@ -715,12 +650,11 @@ func libcMalloc_usable_size(ctx uintptr, ptr uint32) uint32 {
 }
 
 // The heap gives no memory back.
-func libcMalloc_trim(ctx uintptr, pad uint32) uint32 {
+func (p *Process) libcMalloc_trim(pad uint32) uint32 {
 	return 0
 }
 
-func libcReallocarray(ctx uintptr, ptr, n, size uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcReallocarray(ptr, n, size uint32) uint32 {
 	total := uint64(n) * uint64(size)
 
 	if total > math.MaxUint32 {
@@ -736,4 +670,24 @@ func libcReallocarray(ctx uintptr, ptr, n, size uint32) uint32 {
 	}
 
 	return at
+}
+
+func (p *Process) libcFree(ptr uint32) {
+	p.free(ptr)
+}
+
+func (p *Process) libcMlock(addr, n uint32) uint32 {
+	return p.result(0, nil)
+}
+
+func (p *Process) libcMunlock(addr, n uint32) uint32 {
+	return p.result(0, nil)
+}
+
+func (p *Process) libcMlockall(flags uint32) uint32 {
+	return p.result(0, nil)
+}
+
+func (p *Process) libcMunlockall() uint32 {
+	return p.result(0, nil)
 }

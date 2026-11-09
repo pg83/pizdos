@@ -138,7 +138,9 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   shadow stack's 128-byte red zone, and repeats Interrupt every
   millisecond until they are taken.
 - `wasm2o run` runs an object importing module `kernel` in the kernel of
-  lib/c (`kernel*.go`): a process is a goroutine with its own pid, group,
+  lib/c (`kernel*.go`). `libc.go` is its table: every function lib/c imports
+  is a function `libcX(ctx, …)` there, a call of the Process method `libcX`
+  that does the work, the process taken from ctx. A process is a goroutine with its own pid, group,
   descriptors (host descriptors the kernel owns), cwd, umask, limits and
   signals; paths resolve inside `--root` through openat2 `RESOLVE_IN_ROOT`,
   but for a few host devices (/dev/null and kin); exec runs only objects of

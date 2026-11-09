@@ -99,72 +99,39 @@ func (p *Process) prioTargets(which, who uint32) ([]*Process, error) {
 	return nil, syscall.EINVAL
 }
 
-func (k *Kernel) identityFunctions() map[string]any {
-	return map[string]any{
-		"setuid":                 libcSetuid,
-		"seteuid":                libcSeteuid,
-		"setreuid":               libcSetreuid,
-		"setresuid":              libcSetresuid,
-		"setgid":                 libcSetgid,
-		"setegid":                libcSetegid,
-		"setregid":               libcSetregid,
-		"setresgid":              libcSetresgid,
-		"getresuid":              libcGetresuid,
-		"getresgid":              libcGetresgid,
-		"setgroups":              libcSetgroups,
-		"initgroups":             libcInitgroups,
-		"setsid":                 libcSetsid,
-		"getsid":                 libcGetsid,
-		"getpgid":                libcGetpgid,
-		"setpgrp":                libcSetpgrp,
-		"nice":                   libcNice,
-		"getpriority":            libcGetpriority,
-		"setpriority":            libcSetpriority,
-		"sched_yield":            libcSched_yield,
-		"sched_get_priority_max": libcSched_get_priority_max,
-		"sched_get_priority_min": libcSched_get_priority_min,
-		"sched_getscheduler":     libcSched_getscheduler,
-		"sched_getparam":         libcSched_getparam,
-		"sched_setparam":         libcSched_setparam,
-		"sched_setscheduler":     libcSched_setscheduler,
-		"sched_rr_get_interval":  libcSched_rr_get_interval,
-	}
+func (p *Process) libcSetuid(uid uint32) uint32 {
+	return p.result(0, setIds(syscall.SYS_GETRESUID, uid))
 }
 
-func libcSetuid(ctx uintptr, uid uint32) uint32 {
-	return proc(ctx).result(0, setIds(syscall.SYS_GETRESUID, uid))
+func (p *Process) libcSeteuid(uid uint32) uint32 {
+	return p.result(0, setIds(syscall.SYS_GETRESUID, uid))
 }
 
-func libcSeteuid(ctx uintptr, uid uint32) uint32 {
-	return proc(ctx).result(0, setIds(syscall.SYS_GETRESUID, uid))
+func (p *Process) libcSetreuid(r, e uint32) uint32 {
+	return p.result(0, setIds(syscall.SYS_GETRESUID, r, e))
 }
 
-func libcSetreuid(ctx uintptr, r, e uint32) uint32 {
-	return proc(ctx).result(0, setIds(syscall.SYS_GETRESUID, r, e))
+func (p *Process) libcSetresuid(r, e, s uint32) uint32 {
+	return p.result(0, setIds(syscall.SYS_GETRESUID, r, e, s))
 }
 
-func libcSetresuid(ctx uintptr, r, e, s uint32) uint32 {
-	return proc(ctx).result(0, setIds(syscall.SYS_GETRESUID, r, e, s))
+func (p *Process) libcSetgid(gid uint32) uint32 {
+	return p.result(0, setIds(syscall.SYS_GETRESGID, gid))
 }
 
-func libcSetgid(ctx uintptr, gid uint32) uint32 {
-	return proc(ctx).result(0, setIds(syscall.SYS_GETRESGID, gid))
+func (p *Process) libcSetegid(gid uint32) uint32 {
+	return p.result(0, setIds(syscall.SYS_GETRESGID, gid))
 }
 
-func libcSetegid(ctx uintptr, gid uint32) uint32 {
-	return proc(ctx).result(0, setIds(syscall.SYS_GETRESGID, gid))
+func (p *Process) libcSetregid(r, e uint32) uint32 {
+	return p.result(0, setIds(syscall.SYS_GETRESGID, r, e))
 }
 
-func libcSetregid(ctx uintptr, r, e uint32) uint32 {
-	return proc(ctx).result(0, setIds(syscall.SYS_GETRESGID, r, e))
+func (p *Process) libcSetresgid(r, e, s uint32) uint32 {
+	return p.result(0, setIds(syscall.SYS_GETRESGID, r, e, s))
 }
 
-func libcSetresgid(ctx uintptr, r, e, s uint32) uint32 {
-	return proc(ctx).result(0, setIds(syscall.SYS_GETRESGID, r, e, s))
-}
-
-func libcGetresuid(ctx uintptr, r, e, s uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcGetresuid(r, e, s uint32) uint32 {
 	ids := hostIds(syscall.SYS_GETRESUID)
 
 	for i, at := range []uint32{r, e, s} {
@@ -174,8 +141,7 @@ func libcGetresuid(ctx uintptr, r, e, s uint32) uint32 {
 	return p.result(0, nil)
 }
 
-func libcGetresgid(ctx uintptr, r, e, s uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcGetresgid(r, e, s uint32) uint32 {
 	ids := hostIds(syscall.SYS_GETRESGID)
 
 	for i, at := range []uint32{r, e, s} {
@@ -185,17 +151,7 @@ func libcGetresgid(ctx uintptr, r, e, s uint32) uint32 {
 	return p.result(0, nil)
 }
 
-// setgroups and initgroups need privilege.
-func libcSetgroups(ctx uintptr, n, list uint32) uint32 {
-	return proc(ctx).result(0, syscall.EPERM)
-}
-
-func libcInitgroups(ctx uintptr, user, gid uint32) uint32 {
-	return proc(ctx).result(0, syscall.EPERM)
-}
-
-func libcSetsid(ctx uintptr) uint32 {
-	p := proc(ctx)
+func (p *Process) libcSetsid() uint32 {
 	p.k.mu.Lock()
 	defer p.k.mu.Unlock()
 
@@ -210,8 +166,7 @@ func libcSetsid(ctx uintptr) uint32 {
 	return p.result(int(p.pid), nil)
 }
 
-func libcGetsid(ctx uintptr, pid uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcGetsid(pid uint32) uint32 {
 	q, err := p.process(int32(pid))
 
 	if err != nil {
@@ -224,8 +179,7 @@ func libcGetsid(ctx uintptr, pid uint32) uint32 {
 	return p.result(int(q.sid), nil)
 }
 
-func libcGetpgid(ctx uintptr, pid uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcGetpgid(pid uint32) uint32 {
 	q, err := p.process(int32(pid))
 
 	if err != nil {
@@ -238,13 +192,12 @@ func libcGetpgid(ctx uintptr, pid uint32) uint32 {
 	return p.result(int(q.pgid), nil)
 }
 
-func libcSetpgrp(ctx uintptr) uint32 {
-	return libcSetpgid(ctx, 0, 0)
+func (p *Process) libcSetpgrp() uint32 {
+	return p.libcSetpgid(0, 0)
 }
 
 // nice returns the new nice value; lowering it needs privilege.
-func libcNice(ctx uintptr, inc uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcNice(inc uint32) uint32 {
 	p.k.mu.Lock()
 	n := min(max(p.nice+int32(inc), niceMin), niceMax)
 
@@ -261,8 +214,7 @@ func libcNice(ctx uintptr, inc uint32) uint32 {
 }
 
 // getpriority returns the lowest nice value of the processes named.
-func libcGetpriority(ctx uintptr, which, who uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcGetpriority(which, who uint32) uint32 {
 	targets, err := p.prioTargets(which, who)
 
 	if err == nil && len(targets) == 0 {
@@ -285,8 +237,7 @@ func libcGetpriority(ctx uintptr, which, who uint32) uint32 {
 	return p.result(int(n), nil)
 }
 
-func libcSetpriority(ctx uintptr, which, who, prio uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcSetpriority(which, who, prio uint32) uint32 {
 	targets, err := p.prioTargets(which, who)
 
 	if err == nil && len(targets) == 0 {
@@ -314,15 +265,13 @@ func libcSetpriority(ctx uintptr, which, who, prio uint32) uint32 {
 	return p.result(0, nil)
 }
 
-func libcSched_yield(ctx uintptr) uint32 {
+func (p *Process) libcSched_yield() uint32 {
 	runtime.Gosched()
 
 	return 0
 }
 
-func libcSched_get_priority_max(ctx uintptr, policy uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcSched_get_priority_max(policy uint32) uint32 {
 	switch policy {
 	case schedFifo, schedRr:
 		return p.result(99, nil)
@@ -333,9 +282,7 @@ func libcSched_get_priority_max(ctx uintptr, policy uint32) uint32 {
 	return p.result(0, syscall.EINVAL)
 }
 
-func libcSched_get_priority_min(ctx uintptr, policy uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcSched_get_priority_min(policy uint32) uint32 {
 	switch policy {
 	case schedFifo, schedRr:
 		return p.result(1, nil)
@@ -346,8 +293,7 @@ func libcSched_get_priority_min(ctx uintptr, policy uint32) uint32 {
 	return p.result(0, syscall.EINVAL)
 }
 
-func libcSched_getscheduler(ctx uintptr, pid uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcSched_getscheduler(pid uint32) uint32 {
 	q, err := p.process(int32(pid))
 
 	if err != nil {
@@ -360,9 +306,7 @@ func libcSched_getscheduler(ctx uintptr, pid uint32) uint32 {
 	return p.result(int(q.policy), nil)
 }
 
-func libcSched_getparam(ctx uintptr, pid, param uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcSched_getparam(pid, param uint32) uint32 {
 	if _, err := p.process(int32(pid)); err != nil {
 		return p.result(0, err)
 	}
@@ -373,9 +317,7 @@ func libcSched_getparam(ctx uintptr, pid, param uint32) uint32 {
 }
 
 // The priority of the policies the kernel keeps is 0.
-func libcSched_setparam(ctx uintptr, pid, param uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcSched_setparam(pid, param uint32) uint32 {
 	if _, err := p.process(int32(pid)); err != nil {
 		return p.result(0, err)
 	}
@@ -387,8 +329,7 @@ func libcSched_setparam(ctx uintptr, pid, param uint32) uint32 {
 	return p.result(0, nil)
 }
 
-func libcSched_setscheduler(ctx uintptr, pid, policy, param uint32) uint32 {
-	p := proc(ctx)
+func (p *Process) libcSched_setscheduler(pid, policy, param uint32) uint32 {
 	q, err := p.process(int32(pid))
 
 	if err != nil {
@@ -414,9 +355,7 @@ func libcSched_setscheduler(ctx uintptr, pid, policy, param uint32) uint32 {
 }
 
 // sched_rr_get_interval is the quantum of Linux's SCHED_RR.
-func libcSched_rr_get_interval(ctx uintptr, pid, ts uint32) uint32 {
-	p := proc(ctx)
-
+func (p *Process) libcSched_rr_get_interval(pid, ts uint32) uint32 {
 	if _, err := p.process(int32(pid)); err != nil {
 		return p.result(0, err)
 	}
@@ -424,4 +363,13 @@ func libcSched_rr_get_interval(ctx uintptr, pid, ts uint32) uint32 {
 	p.putTimespec(ts, 100*time.Millisecond)
 
 	return p.result(0, nil)
+}
+
+// setgroups and initgroups need privilege.
+func (p *Process) libcSetgroups(n, list uint32) uint32 {
+	return p.result(0, syscall.EPERM)
+}
+
+func (p *Process) libcInitgroups(user, gid uint32) uint32 {
+	return p.result(0, syscall.EPERM)
 }

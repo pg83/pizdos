@@ -82,26 +82,14 @@ func (p *Process) longjmp(buf, val uint32) {
 	p.fatal("longjmp: the function that set the jmp_buf has returned")
 }
 
-func (k *Kernel) jumpFunctions() map[string]any {
-	t := map[string]any{
-		"setjmp":    libcSetjmp,
-		"sigsetjmp": libcSigsetjmp,
-		"longjmp":   libcLongjmp,
-	}
-	t["_setjmp"] = t["setjmp"]
-	t["_longjmp"], t["siglongjmp"] = t["longjmp"], t["longjmp"]
-
-	return t
+func (p *Process) libcSetjmp(buf uint32) uint32 {
+	return p.setjmp(buf, false)
 }
 
-func libcSetjmp(ctx uintptr, buf uint32) uint32 {
-	return proc(ctx).setjmp(buf, false)
+func (p *Process) libcSigsetjmp(buf, saveMask uint32) uint32 {
+	return p.setjmp(buf, saveMask != 0)
 }
 
-func libcSigsetjmp(ctx uintptr, buf, saveMask uint32) uint32 {
-	return proc(ctx).setjmp(buf, saveMask != 0)
-}
-
-func libcLongjmp(ctx uintptr, buf, val uint32) {
-	proc(ctx).longjmp(buf, val)
+func (p *Process) libcLongjmp(buf, val uint32) {
+	p.longjmp(buf, val)
 }
