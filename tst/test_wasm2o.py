@@ -35,6 +35,24 @@ def main():
                 assert got == want, f"{name}: {source} differs from native C++"
                 print(f"{name}: {Path(source).name} -> {len(want)} bytes, identical")
 
+        # An ignored custom section makes input end exactly on a page boundary.
+        # Supplying it through a pipe also exercises partial stdin reads.
+        empty = b"\0asm\1\0\0\0"
+        want = subprocess.run([native], input=empty, capture_output=True, check=True).stdout
+        payload_size = 2 * 65536 - len(empty) - 4
+        length = bytearray()
+        remaining = payload_size
+        while remaining >= 128:
+            length.append((remaining & 127) | 128)
+            remaining >>= 7
+        length.append(remaining)
+        padded = empty + b"\0" + length + bytes(payload_size)
+        assert len(padded) == 2 * 65536
+        for name, entry in {"native": [native], **compilers}.items():
+            got = subprocess.run(entry, input=padded, capture_output=True, check=True, pipesize=4096).stdout
+            assert got == want, f"{name}: page-aligned stdin changed the module"
+        print("page-aligned stdin: native/WASI/self-compiled/relinked identical")
+
         bad = Path(work) / "bad.wasm"
         bad.write_bytes(b"not wasm")
         out.write_bytes(b"previous output")

@@ -7007,8 +7007,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static VReg mFuncNewReg(MFunc* mf, u8 classValue) {
         VReg r = convert<VReg>((Int(32LL) + (mf)->nregs));
         (mf)->nregs++;
-        (mf)->classValue = appendValues((mf)->classValue, classValue);
         mf->registerClasses |= u8(1u << classValue);
+        (mf)->classValue = appendValues((mf)->classValue, classValue);
         return r;
     }
 
@@ -22635,15 +22635,22 @@ namespace {
     static Slice<u8> readInput(ObjPool& owner) {
         auto* input = &owner.make<ArrayStorage<u8, PageVec<u8>>>(&owner, ArrayData<u8>::Kind::Paged)->array;
         auto* pages = input->pages();
-        u8 buffer[pageBytes];
         for (;;) {
-            IoVec vector{buffer, sizeof(buffer)};
+            const usize before = pages->size();
+            pages->reserve(before + 1);
+            const usize offset = before % pageBytes;
+            const usize available = pageBytes - offset;
+            IoVec vector{pages->pages.data()[before / pageBytes] + offset, available};
             usize count = 0;
             require(wasiFdRead(0, &vector, 1, &count) == 0, "stdin read failed");
+            require(count <= available, "stdin read overflow");
             if (!count) {
                 break;
             }
-            pages->append(buffer, count);
+            pages->count += count;
+        }
+        if (pages->size() % pageBytes == 0) {
+            freePage(pages->pages.popBack());
         }
         require(pages->size() <= 0x7fffffff, "input exceeds address space");
         input->count = Int(pages->size());
