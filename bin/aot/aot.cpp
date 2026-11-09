@@ -1555,6 +1555,195 @@ namespace {
         return Int(values.size());
     }
 
+    // Short compiler work lists keep their first elements in the owner.
+    // Contiguous buffers are released on growth/destruction. Page containers
+    // belong to the current ObjPool, as does the surrounding interval.
+    template <typename T, usize inlineCount>
+    struct InlineVec {
+        static_assert(__is_trivially_copyable(T));
+        static_assert(__is_trivially_destructible(T));
+        static_assert(inlineCount > 0 && inlineCount * sizeof(T) <= sizeof(u64));
+
+        union Storage {
+            T values[inlineCount]{};
+            PageVec<T>* pages;
+        };
+
+        Storage storage{};
+        T* contiguous = storage.values;
+        u32 count = 0;
+        u32 space = inlineCount;
+
+        InlineVec() = default;
+        InlineVec(const InlineVec&) = delete;
+        InlineVec& operator=(const InlineVec&) = delete;
+
+        InlineVec(InitialValues<T> source) {
+            assign(Span<const T>(source));
+        }
+
+        ~InlineVec() {
+            releaseBuffer();
+        }
+
+        InlineVec(InlineVec&& other) noexcept
+            : storage(other.storage)
+            , contiguous(other.contiguous == other.storage.values ? storage.values : other.contiguous)
+            , count(other.count)
+            , space(other.space)
+        {
+            other.storage = Storage{};
+            other.contiguous = other.storage.values;
+            other.count = 0;
+            other.space = inlineCount;
+        }
+
+        InlineVec& operator=(InlineVec&& other) noexcept {
+            if (this != &other) {
+                releaseBuffer();
+                if (!contiguous) {
+                    *storage.pages = PageVec<T>{};
+                }
+                storage = other.storage;
+                contiguous = other.contiguous == other.storage.values ? storage.values : other.contiguous;
+                count = other.count;
+                space = other.space;
+                other.storage = Storage{};
+                other.contiguous = other.storage.values;
+                other.count = 0;
+                other.space = inlineCount;
+            }
+            return *this;
+        }
+
+        void releaseBuffer() {
+            if (contiguous && contiguous != storage.values) {
+                heap.release(contiguous);
+            }
+        }
+
+        usize size() const {
+            return count;
+        }
+
+        usize capacity() const {
+            return space;
+        }
+
+        T* data() {
+            return contiguous;
+        }
+
+        const T* data() const {
+            return contiguous;
+        }
+
+        T& operator[](usize index) {
+            if (!contiguous) {
+                return (*storage.pages)[index];
+            }
+            return contiguous[index];
+        }
+
+        const T& operator[](usize index) const {
+            if (!contiguous) {
+                return (*storage.pages)[index];
+            }
+            return contiguous[index];
+        }
+
+        void reserve(usize size) {
+            if (size > space) {
+                grow(size);
+            }
+        }
+
+        __attribute__((noinline)) void grow(usize size) {
+            require(size <= 0x7fffffff, "inline vector too large");
+            if (!contiguous) {
+                storage.pages->reserve(size);
+                const usize capacity = storage.pages->capacity();
+                space = u32(capacity < 0x7fffffff ? capacity : 0x7fffffff);
+            } else if (size <= PageVec<T>::itemsPerPage) {
+                const usize bytes = allocationBytes(checkedMultiply(size, sizeof(T)));
+                auto* next = static_cast<T*>(heap.allocate(bytes));
+                if (count) {
+                    copyBytes(next, data(), count * sizeof(T));
+                }
+                releaseBuffer();
+                contiguous = next;
+                space = u32(bytes / sizeof(T));
+            } else {
+                auto* pages = activePool->make<PageVec<T>>();
+                pages->reserve(size);
+                pages->append(data(), count);
+                releaseBuffer();
+                storage.pages = pages;
+                contiguous = nullptr;
+                const usize capacity = pages->capacity();
+                space = u32(capacity < 0x7fffffff ? capacity : 0x7fffffff);
+            }
+        }
+
+        void resize(usize size) {
+            reserve(size);
+            count = u32(size);
+        }
+
+        void clear() {
+            count = 0;
+        }
+
+        Span<T> view() {
+            if (!contiguous) {
+                // PageVec owns capacity; the list and its views own the length.
+                Span<T> result;
+                result.pages = storage.pages;
+                result.count = count;
+                return result;
+            }
+            return {data(), count};
+        }
+
+        void pushBack(T value) {
+            const usize at = count;
+            reserve(at + 1);
+            (*this)[at] = value;
+            count = u32(at + 1);
+        }
+
+        void assign(Span<const T> source) {
+            resize(source.count);
+            for (u32 i = 0; i < source.count; ++i) {
+                (*this)[i] = source[Int(i)];
+            }
+        }
+
+        void append(Span<const T> source) {
+            if (!source.count) {
+                return;
+            }
+            const uptr begin = reinterpret_cast<uptr>(source.contiguous);
+            const uptr own = reinterpret_cast<uptr>(contiguous);
+            const bool internal = own && begin >= own && begin - own < usize(count) * sizeof(T);
+            const usize offset = internal ? (begin - own) / sizeof(T) + source.offset : 0;
+            const usize before = count;
+            const usize length = source.count;
+            resize(before + length);
+            if (internal) {
+                source = subslice(view(), Int(offset), Int(offset + length));
+            }
+            for (usize i = 0; i < length; ++i) {
+                (*this)[before + i] = source[Int(i)];
+            }
+        }
+    };
+
+    template <typename T, usize inlineCount>
+    static Int length(const InlineVec<T, inlineCount>& values) {
+        return Int(values.size());
+    }
+
     // Nodes live in ObjPool; the vector owns only its compact pointer table.
     template <typename T>
     struct NodeVec {
@@ -3325,14 +3514,45 @@ namespace {
         i32 to{};
     };
 
+    struct IntervalChildren {
+        InlineVec<Interval*, 1>* entries = nullptr;
+
+        usize size() const {
+            return entries ? entries->size() : 0;
+        }
+
+        Interval*& operator[](usize index) {
+            return (*entries)[index];
+        }
+
+        Interval* operator[](usize index) const {
+            return (*entries)[index];
+        }
+
+        void insert(usize index, Interval* child) {
+            if (!entries) {
+                entries = activePool->make<InlineVec<Interval*, 1>>();
+            }
+            const usize before = entries->size();
+            entries->pushBack(child);
+            const auto values = entries->view();
+            copySlice(subslice(values, Int(index + 1), Int(before + 1)), subslice(values, Int(index), Int(before)));
+            (*entries)[index] = child;
+        }
+    };
+
+    static Int length(const IntervalChildren& children) {
+        return Int(children.size());
+    }
+
     struct Interval {
         VReg vreg{};
         u8 classValue{};
-        Vec<Lrange> ranges{};
-        Vec<i32> uses{};
+        InlineVec<Lrange, 1> ranges{};
+        InlineVec<i32, 2> uses{};
         VReg reg{};
         Interval* parent{};
-        Slice<Interval*> children{};
+        IntervalChildren children{};
         VReg hint{};
         // Fixed intervals already have physical vreg IDs. Reuse their flag's
         // storage for the upper bound, valid after finish and maintained by split.
@@ -3343,7 +3563,7 @@ namespace {
         VReg locationReg{};
     };
 
-    static_assert(sizeof(Interval) == (sizeof(void*) == 8 ? 136 : 88));
+    static_assert(sizeof(Interval) == (sizeof(void*) == 8 ? 104 : 84));
 
     struct Anonymous50 {
         i32 begin{};
@@ -6088,7 +6308,7 @@ namespace {
 
     static Int memX(Amem m);
 
-    static void mergeRanges(Vec<Lrange>& x, Vec<Lrange>& y, Vec<Lrange>& scratch);
+    static void mergeRanges(InlineVec<Lrange, 1>& x, InlineVec<Lrange, 1>& y, InlineVec<Lrange, 1>& scratch);
 
     static Bitset newBitset(Int n);
 
@@ -9366,7 +9586,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         MFunc* mf = a->mf;
         // The projection map has no remaining users after range construction.
         Vec<i32> parent(move(a->copyIndex));
-        Vec<Lrange> scratch;
+        InlineVec<Lrange, 1> scratch;
         parent.resize(usize(mf->nregs));
         for (Int x = 0; x < mf->nregs; ++x) {
             parent[usize(x)] = i32(x);
@@ -13706,9 +13926,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Int idx = sortSearch(length((root)->children), [&](Int i) mutable -> bool {
             return (intervalStart((root)->children[i]) > p);
         });
-        (root)->children = appendValues((root)->children, zeroValue<Interval*>());
-        copySlice(subslice((root)->children, (idx + Int(1LL)), length((root)->children)), subslice((root)->children, idx, length((root)->children)));
-        (root)->children[idx] = child;
+        root->children.insert(usize(idx), child);
         return child;
     }
 
@@ -21321,7 +21539,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // Merge two disjoint normalized sets. Their buffers are temporary coalescing
     // state: y is consumed, while x keeps the same canonical register ID.
-    static void mergeRanges(Vec<Lrange>& x, Vec<Lrange>& y, Vec<Lrange>& scratch) {
+    static void mergeRanges(InlineVec<Lrange, 1>& x, InlineVec<Lrange, 1>& y, InlineVec<Lrange, 1>& scratch) {
         if (!y.size()) {
             return;
         }
@@ -21338,7 +21556,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 first = 1;
             }
             x.append(subslice(y.view(), Int(first), Int(ny)));
-            y = Vec<Lrange>{};
+            y = InlineVec<Lrange, 1>{};
             return;
         }
         if (y[ny - 1].to <= x[0].from) {
@@ -21366,10 +21584,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 scratch.pushBack(range);
             }
         }
-        Vec<Lrange> previous(move(x));
+        InlineVec<Lrange, 1> previous(move(x));
         x = move(scratch);
         scratch = move(previous);
-        y = Vec<Lrange>{};
+        y = InlineVec<Lrange, 1>{};
     }
 
     static Bitset newBitset(Int n) {
@@ -23086,25 +23304,61 @@ namespace {
             }
         }
         {
-            Vec<Lrange> x({{10, 20}});
-            Vec<Lrange> y({{0, 5}});
-            Vec<Lrange> scratch;
+            ObjPool pool;
+            PoolScope scope(pool);
+            InlineVec<u32, 2> values({11, 22});
+            require(values.data() == values.storage.values && values.size() == 2, "inline vector starts in its owner");
+            values.pushBack(33);
+            require(values.data() != values.storage.values && values.size() == 3 && values[0] == 11 && values[2] == 33, "inline vector grows to a buffer");
+            values.append(values.view());
+            require(values.size() == 6 && values[0] == 11 && values[3] == 11 && values[5] == 33, "inline vector appends an internal view during growth");
+            values.assign(subslice(values.view(), 2, 5));
+            require(values.size() == 3 && values[0] == 33 && values[1] == 11 && values[2] == 22, "inline vector assigns an internal view");
+            InlineVec<u32, 2> moved(move(values));
+            require(!values.size() && values.data() == values.storage.values && moved.size() == 3 && moved[2] == 22, "inline vector moves buffer ownership");
+            moved = InlineVec<u32, 2>({41});
+            require(moved.data() == moved.storage.values && moved.size() == 1 && moved[0] == 41, "inline vector releases a replaced buffer");
+            values = move(moved);
+            require(!moved.size() && values.size() == 1 && values[0] == 41, "inline vector moves inline elements");
+            constexpr usize boundary = PageVec<u32>::itemsPerPage;
+            InlineVec<u32, 2> large;
+            for (u32 i = 0; i < boundary; ++i) {
+                large.pushBack(i);
+            }
+            large.append(subslice(large.view(), boundary - 4, boundary));
+            require(!large.data() && large.size() == boundary + 4, "inline vector grows from a full buffer to pages");
+            for (usize i = 0; i < large.size(); ++i) {
+                require(large[i] == (i < boundary ? i : i - 4), "inline vector preserves internal source on promotion");
+            }
+            values = move(large);
+            require(!large.size() && values.size() == boundary + 4 && values[boundary] == boundary - 4, "inline vector moves page ownership");
+            values = InlineVec<u32, 2>{};
+            require(!values.size() && values.data() == values.storage.values, "inline vector releases replaced pages");
+        }
+        {
+            ObjPool pool;
+            PoolScope scope(pool);
+            InlineVec<Lrange, 1> x({{10, 20}});
+            InlineVec<Lrange, 1> y({{0, 5}});
+            InlineVec<Lrange, 1> scratch;
             mergeRanges(x, y, scratch);
             require(!y.size() && x.size() == 2 && x[0].from == 0 && x[1].to == 20, "range union preserves a gap");
-            y = Vec<Lrange>({{5, 10}});
+            y = InlineVec<Lrange, 1>({{5, 10}});
             mergeRanges(x, y, scratch);
             require(!y.size() && x.size() == 1 && x[0].from == 0 && x[0].to == 20, "range union closes a gap");
-            y = Vec<Lrange>({{20, 25}, {40, 45}});
+            y = InlineVec<Lrange, 1>({{20, 25}, {40, 45}});
             mergeRanges(x, y, scratch);
             require(x.size() == 2 && x[0].to == 25 && x[1].from == 40 && x[1].to == 45, "range union appends after a touching range");
-            y = Vec<Lrange>({{30, 35}});
+            y = InlineVec<Lrange, 1>({{30, 35}});
             mergeRanges(x, y, scratch);
             require(x.size() == 3 && x[0].to == 25 && x[1].from == 30 && x[1].to == 35 && x[2].from == 40, "range union reuses merge storage");
         }
         {
-            Vec<Lrange> x;
-            Vec<Lrange> y;
-            Vec<Lrange> scratch;
+            ObjPool pool;
+            PoolScope scope(pool);
+            InlineVec<Lrange, 1> x;
+            InlineVec<Lrange, 1> y;
+            InlineVec<Lrange, 1> scratch;
             for (i32 i = 0; i < 12000; ++i) {
                 (i & 1 ? y : x).pushBack({4 * i, 4 * i + 2});
             }
