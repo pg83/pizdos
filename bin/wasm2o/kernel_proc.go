@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"runtime"
 	"strings"
@@ -84,6 +85,7 @@ func (k *Kernel) code(fd int, name string) (*Code, error) {
 
 		c = link(name, obj, k)
 	}); e != nil {
+		fmt.Fprintf(os.Stderr, "wasm2o: %s: %s\n", name, e)
 		return nil, syscall.ENOEXEC
 	}
 
@@ -96,11 +98,25 @@ func (k *Kernel) code(fd int, name string) (*Code, error) {
 
 // exec replaces the process's program; it returns only an error.
 func (p *Process) exec(path string, argv, envp []string) error {
+	code, argv, err := p.loadProgram(path, argv)
+
+	if err != nil {
+		return err
+	}
+
+	p.execImage(&execImage{code: code, argv: argv, envp: envp})
+
+	return syscall.ELOOP
+}
+
+// loadProgram is exec's search: a wasm object, or the interpreter of a #!
+// script, with argv rewritten for it.
+func (p *Process) loadProgram(path string, argv []string) (*Code, []string, error) {
 	for range 4 {
 		fd, err := p.openat2(path, syscall.O_RDONLY, 0)
 
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
 
 		var st syscall.Stat_t
@@ -108,13 +124,13 @@ func (p *Process) exec(path string, argv, envp []string) error {
 		if err := syscall.Fstat(fd, &st); err != nil || st.Mode&syscall.S_IFMT != syscall.S_IFREG {
 			syscall.Close(fd)
 
-			return syscall.EACCES
+			return nil, nil, syscall.EACCES
 		}
 
 		if err := atCall(sysFaccessat2, fd, "", 1, atEmptyPath); err != nil {
 			syscall.Close(fd)
 
-			return err
+			return nil, nil, err
 		}
 
 		head := make([]byte, 256)
@@ -127,7 +143,7 @@ func (p *Process) exec(path string, argv, envp []string) error {
 			fields := strings.Fields(string(line))
 
 			if len(fields) == 0 {
-				return syscall.ENOEXEC
+				return nil, nil, syscall.ENOEXEC
 			}
 
 			script := []string{fields[0]}
@@ -150,13 +166,13 @@ func (p *Process) exec(path string, argv, envp []string) error {
 		syscall.Close(fd)
 
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
 
-		p.execImage(&execImage{code: code, argv: argv, envp: envp})
+		return code, argv, nil
 	}
 
-	return syscall.ELOOP
+	return nil, nil, syscall.ELOOP
 }
 
 // execPath is exec with a search of PATH when file has no slash.
@@ -493,6 +509,36 @@ func (k *Kernel) procFunctions() map[string]any {
 		},
 		"_Exit": func(ctx uintptr, code uint32) {
 			proc(ctx).exitWith(int(code&0xff) << 8)
+		},
+		// system runs a command in the shell of the root and waits for it:
+		// a child of the process with its descriptors, its wait status
+		// shifted as the shell's system reports it. The shell missing is
+		// 127, the way a child that cannot run ends.
+		"system": func(ctx uintptr, cmd uint32) uint32 {
+			p := proc(ctx)
+			argv := []string{"sh", "-c", string(p.cstr(cmd))}
+			code, _, err := p.loadProgram("/bin/sh", argv)
+
+			if err != nil {
+				return uint32(int32(127 << 8))
+			}
+
+			c := p.k.newProcess(p)
+			c.inherit(p)
+			done := make(chan int, 1)
+
+			go func() {
+				c.run(&execImage{code: code, argv: argv, envp: p.environment()})
+				done <- c.status
+			}()
+
+			status := <-done
+			// its parent never waits for it: the child is reaped here
+			p.k.mu.Lock()
+			delete(p.k.procs, c.pid)
+			p.k.mu.Unlock()
+
+			return uint32(int32(status))
 		},
 	}
 }

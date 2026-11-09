@@ -31,6 +31,7 @@ GO = tool("go")
 
 MUSL = "1.2.5"
 BUSYBOX = "1.36.1"
+DOOMGENERIC = "e257a09527062bfb986b6e5e0780839b6cbd5b71"
 
 
 def fetch(name, url, sha256, output):
@@ -57,6 +58,21 @@ busybox_tarball = fetch(
     f"https://busybox.net/downloads/busybox-{BUSYBOX}.tar.bz2",
     "b8cc24c9574d809e7279c3be349795c5d5ceb6fdf19ca709f80cde50e47de314",
     f"$(B)/ext/busybox-{BUSYBOX}.tar.bz2",
+)
+
+doomgeneric_tarball = fetch(
+    "doomgeneric_tarball",
+    f"https://github.com/ozkl/doomgeneric/archive/{DOOMGENERIC}.tar.gz",
+    "26f8f60daa6c6e4d3c01e5eac9fb700d592dede803d13ac848154ff356b2a2e7",
+    f"$(B)/ext/doomgeneric-{DOOMGENERIC}.tar.gz",
+)
+
+# doom1.wad of the shareware 1.9, the last one id released
+doom_wad = fetch(
+    "doom_wad",
+    "https://silicon-pirates.com/doom/doom1.wad",
+    "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771",
+    "$(B)/ext/doom/doom1.wad",
 )
 
 LIBC_HEADERS = build.glob("$(S)/lib/c/include/**/*.h")
@@ -114,6 +130,31 @@ busybox_abi = command(
     cmd=["python3", "$(S)/dev/wasm_info.py", busybox.outputs[0], "$(B)/bin/busybox/abi.txt"],
     descr="AB",
     color="magenta",
+)
+
+# doom: doomgeneric with our terminal backend, drawn as ANSI half blocks on
+# the tty the kernel passes through.
+doom = command(
+    name="doom",
+    inputs=[
+        *LIBC_HEADERS,
+        "$(S)/bin/doom/doomgeneric_pizdos.c",
+        "$(S)/bin/doom/make.py",
+        "$(S)/dev/wasm.py",
+    ],
+    outputs=["$(B)/bin/doom/doom.wasm"],
+    deps=[doomgeneric_tarball, libc],
+    cmd=[
+        "python3", "$(S)/bin/doom/make.py",
+        CLANG, WASM_LD,
+        doomgeneric_tarball.outputs[0],
+        "$(S)/bin/doom/doomgeneric_pizdos.c",
+        "$(S)/lib/c/include",
+        libc.outputs[0],
+        "$(B)/bin/doom/doom.wasm",
+    ],
+    descr="DM",
+    color="light-magenta",
 )
 
 # bin/aot is a single freestanding C++ translation unit. The WASI reactor
@@ -206,6 +247,15 @@ busybox_o = command(
     outputs=["$(B)/bin/busybox/busybox.o"],
     deps=[wasm2o, busybox],
     cmd=[wasm2o.outputs[0], "-o", "$(B)/bin/busybox/busybox.o", busybox.outputs[0]],
+    descr="AO",
+    color="light-cyan",
+)
+
+doom_o = command(
+    name="doom_o",
+    outputs=["$(B)/bin/doom/doom.o"],
+    deps=[wasm2o, doom],
+    cmd=[wasm2o.outputs[0], "-o", "$(B)/bin/doom/doom.o", doom.outputs[0]],
     descr="AO",
     color="light-cyan",
 )
@@ -345,6 +395,7 @@ TESTED = {
     "aot": [aot, aot_command, wazero, wasm2o, busybox, aot_selftest],
     "busybox_abi": [busybox],
     "busybox": [wasm2o, busybox_o, busybox],
+    "doom": [wasm2o, doom_o, doom_wad],
     "wasm2o": [wasm2o, aot_native, aot, aot_command, aot_command_aot, aot_relinked, wazero, busybox],
 }
 tests = []
@@ -367,6 +418,6 @@ for test in build.glob("$(S)/tst/test_*.py"):
         color="green",
     ))
 
-group("install", busybox, busybox_abi, busybox_o, wasm2o, aot_native, aot, aot_aot, wazero)
+group("install", busybox, busybox_abi, busybox_o, doom, doom_o, wasm2o, aot_native, aot, aot_aot, wazero)
 group("test", *tests, wasm2o_go_test, wasm2o_spec_test)
 group("stand", wasm2o, aot_native, aot, aot_aot, busybox, stand_corpus, *decode_stand)

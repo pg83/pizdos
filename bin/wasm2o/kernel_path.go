@@ -286,6 +286,21 @@ func (k *Kernel) pathFunctions() map[string]any {
 				return unlinkat(dirfd, name, 0)
 			}))
 		},
+		// remove unlinks a file or empties a directory, whichever it is.
+		"remove": func(ctx uintptr, path uint32) uint32 {
+			p := proc(ctx)
+			take := func(dirfd int, name string) error {
+				err := unlinkat(dirfd, name, 0)
+
+				if err == syscall.EISDIR || err == syscall.EPERM {
+					return unlinkat(dirfd, name, atRemovedir)
+				}
+
+				return err
+			}
+
+			return p.result(0, p.onName(p.str(path), syscall.EBUSY, take))
+		},
 		"rename": func(ctx uintptr, old, new uint32) uint32 {
 			p := proc(ctx)
 			newPath := p.str(new)

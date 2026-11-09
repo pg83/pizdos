@@ -357,6 +357,27 @@ func (k *Kernel) stringFunctions() map[string]any {
 
 			return 0
 		},
+		"tolower": func(ctx uintptr, c uint32) uint32 {
+			if c >= 'A' && c <= 'Z' {
+				return c + ('a' - 'A')
+			}
+
+			return c
+		},
+		"toupper": func(ctx uintptr, c uint32) uint32 {
+			if c >= 'a' && c <= 'z' {
+				return c - ('a' - 'A')
+			}
+
+			return c
+		},
+		"abs": func(ctx uintptr, n uint32) uint32 {
+			if int32(n) < 0 {
+				return uint32(-int32(n))
+			}
+
+			return n
+		},
 		"strerror": func(ctx uintptr, e uint32) uint32 {
 			p := proc(ctx)
 			at := p.staticAt(staticStrerror)

@@ -10,6 +10,15 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
+)
+
+// clockids of the guest's time.h
+const (
+	clockRealtime        = 0
+	clockMonotonic       = 1
+	clockMonotonicRaw    = 4
+	clockMonotonicCoarse = 6
 )
 
 // Time of the C locale. The zone is the guest's TZ at each call: a zoneinfo
@@ -266,6 +275,37 @@ func (k *Kernel) timeFunctions() map[string]any {
 			p.deliver()
 
 			return uint32((left + time.Second - 1) / time.Second)
+		},
+		"clock_gettime": func(ctx uintptr, clock, ts uint32) uint32 {
+			p := proc(ctx)
+
+			if clock != clockRealtime && clock != clockMonotonic && clock != clockMonotonicRaw && clock != clockMonotonicCoarse {
+				return p.result(0, syscall.EINVAL)
+			}
+
+			var t syscall.Timespec
+			syscall.Syscall(syscall.SYS_CLOCK_GETTIME, uintptr(clock), uintptr(unsafe.Pointer(&t)), 0)
+			p.put64(ts, uint64(t.Sec))
+			p.put32(ts+8, uint32(t.Nsec))
+
+			return p.result(0, nil)
+		},
+		"nanosleep": func(ctx uintptr, req, rem uint32) uint32 {
+			p := proc(ctx)
+			d := time.Duration(p.u64(req))*time.Second + time.Duration(p.u32(req+8))*time.Nanosecond
+			left := p.sleep(d)
+			p.deliver()
+
+			if left > 0 {
+				if rem != 0 {
+					p.put64(rem, uint64(left/time.Second))
+					p.put32(rem+8, uint32(left%time.Second/time.Nanosecond))
+				}
+
+				return p.result(0, syscall.EINTR)
+			}
+
+			return p.result(0, nil)
 		},
 	}
 }

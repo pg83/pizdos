@@ -6,7 +6,8 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
 ## Build and test
 
 - `./build` builds `libc.a`, `busybox.wasm`, `busybox.links`,
-  `bin/busybox/abi.txt` (every kernel import busybox uses), `wasm2o`,
+  `bin/busybox/abi.txt` (every kernel import busybox uses), `doom.wasm`,
+  `doom.o` (doomgeneric with our terminal backend, `bin/doom`), `wasm2o`,
   native `aot`, `aot.wasm`, `aot.aot` and the wazero runner.
 - `./build test` runs `tst/test_*.py`, each with the outputs of the nodes
   `TESTED` names for it in build.py.
@@ -153,6 +154,12 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   self-compiled and ld.lld-relinked commands, and aot.wasm under wazero
   compile aot.wasm and busybox.wasm to identical bytes. `test_aot` also
   checks both WASI entry points, malformed modules and repeated reactor calls.
+- `test_doom` plays the shareware demo twice headless (`DG_HEADLESS=1`)
+  demanding the same frame hashes and the timedemo exit, then a pty session:
+  the alternate screen, truecolor half blocks and Ctrl-C restoring the
+  terminal. `bin/doom/make.py` builds the pinned doomgeneric release with our
+  terminal backend, patching one call through a cast the wasm table types
+  would refuse; `doom1.wad` comes with its sha256.
 - Go modules (the wazero runner's) are pinned by `go.mod` and `go.sum`;
   `dev/go.py download` fetches them in a node of its own and the build runs
   offline.

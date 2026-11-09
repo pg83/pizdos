@@ -366,6 +366,7 @@ func (k *Kernel) fileFunctions() map[string]any {
 		"isatty":    k.isatty,
 		"tcgetattr": k.tcgetattr,
 		"tcsetattr": k.tcsetattr,
+		"cfmakeraw": k.cfmakeraw,
 		"poll":      k.poll,
 		"fsync": func(ctx uintptr, fd uint32) uint32 {
 			p := proc(ctx)
@@ -593,6 +594,29 @@ const (
 	fioclex    = 0x5451
 )
 
+// struct termios flags and control characters, the guest's termios.h.
+const (
+	ignbrk = 0o000001
+	brkint = 0o000002
+	parmrk = 0o000010
+	istrip = 0o000040
+	inlcr  = 0o000100
+	igncr  = 0o000200
+	icrnl  = 0o000400
+	ixon   = 0o002000
+	opost  = 0o000001
+	csize  = 0o000060
+	cs8    = 0o000060
+	parenb = 0o000400
+	echo   = 0o000010
+	echonl = 0o000100
+	icanon = 0o000002
+	isig   = 0o000001
+	iexten = 0o100000
+	vtime  = 5
+	vmin   = 6
+)
+
 func ioctlPtr(fd int, req uintptr, arg unsafe.Pointer) error {
 	if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), req, uintptr(arg)); e != 0 {
 		return e
@@ -742,6 +766,25 @@ func (k *Kernel) tcsetattr(ctx uintptr, fd, action, at uint32) uint32 {
 	copy(t.cc[:], b[17:])
 
 	return p.result(0, ioctlPtr(f.fd, uintptr(tcsets+action), unsafe.Pointer(&t)))
+}
+
+// cfmakeraw puts the guest's struct termios in raw mode, the flags of
+// termios.h: no line editing, no signals, eight bit words.
+func (k *Kernel) cfmakeraw(ctx uintptr, at uint32) {
+	p := proc(ctx)
+	b := p.span(at, 60)
+	le := binary.LittleEndian
+
+	off := func(o int, clear, set uint32) {
+		le.PutUint32(b[o:], le.Uint32(b[o:])&^clear|set)
+	}
+
+	off(0, ignbrk|brkint|parmrk|istrip|inlcr|igncr|icrnl|ixon, 0)
+	off(4, opost, 0)
+	off(8, csize|parenb, cs8)
+	off(12, echo|echonl|icanon|isig|iexten, 0)
+	b[17+vtime] = 0
+	b[17+vmin] = 1
 }
 
 type pollFd struct {

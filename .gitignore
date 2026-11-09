@@ -21,5 +21,9 @@ __pycache__/
 /testsuite_tarball
 /musl_tarball
 /busybox_tarball
+/doom
+/doom_o
+/doom_wad
+/doomgeneric_tarball
 /test_*
 /stand_*

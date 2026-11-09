@@ -11,6 +11,7 @@ hardware, not a different kernel.
 bin/wasm2o/   Go loader and kernel; invokes its embedded aot.aot to compile wasm
 bin/aot/      wasm to x86-64 compiler in one freestanding C++ file, targeting WASI preview1
 bin/busybox/  busybox for the system: our config and the generator that replaces kconfig
+bin/doom/     doom (doomgeneric) for the system: our terminal backend and the build of doom.wasm from the tarball
 bin/kernel/   the kernel (Go), not yet
 bin/rootfs/   the root filesystem service (Go, wasm), not yet
 lib/c/        the C library processes link: headers, the in-process part, the musl subset
@@ -157,10 +158,20 @@ with the same loader and runtime settings.
   compare native C++, embedded AOT, self-compiled and relinked commands,
   and the reactor under wazero on aot.wasm and busybox.wasm.
 
+## doom
+
+`bin/doom` builds doomgeneric against lib/c with our backend
+(`doomgeneric_pizdos.c`): the 320x200 palette frame drawn as ANSI half
+blocks in truecolor, the terminal's keys in raw mode. `doom.wasm` is the
+pinned release; `doom.o` is its wasm2o object, which plays the shareware
+`doom1.wad` under `wasm2o run` on a real terminal. Headless
+(`DG_HEADLESS=1`) it runs the wad's demo and hashes every second of frames,
+which the test demands to come out the same twice.
+
 ## building
 
 ```
-./build          # libc.a, busybox, native aot, aot.wasm, aot.aot, wasm2o, wazero
+./build          # libc.a, busybox, doom, native aot, aot.wasm, aot.aot, wasm2o, wazero
 ./build test     # the tests in tst/, the spec testsuite included
 sh dev/stand/build.sh
                  # the full stand, with its pinned ix toolchain and libraries
@@ -172,10 +183,10 @@ dev/stand.py --only im,pdf,djvu,svg,magic
 
 Needs `clang` with the wasm32 target, `wasm-ld`, `llvm-ar`, Go 1.25 and
 `python3` on `PATH`, and `wast2json` for the spec testsuite;
-`ix run bld/compiler bld/wabt` provides them. The musl and
-busybox tarballs are fetched by the graph and checked against their sha256;
-the wazero runner's Go modules come from `go mod download`, checked against
-`tst/wazero/go.sum`.
+`ix run bld/compiler bld/wabt` provides them. The musl, busybox and
+doomgeneric tarballs and doom1.wad are fetched by the graph and checked
+against their sha256; the wazero runner's Go modules come from
+`go mod download`, checked against `tst/wazero/go.sum`.
 
 The stand's build script keeps a private ix checkout in `.build-stand/ix`,
 at the revision that produced [decode release 16](https://github.com/impulse-desktop/decode/releases/tag/16).

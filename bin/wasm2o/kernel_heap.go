@@ -261,6 +261,28 @@ func (k *Kernel) heapFunctions() map[string]any {
 		"free": func(ctx uintptr, ptr uint32) {
 			proc(ctx).free(ptr)
 		},
+		"calloc": func(ctx uintptr, n, size uint32) uint32 {
+			p := proc(ctx)
+			total := uint64(n) * uint64(size)
+
+			if total > math.MaxUint32 {
+				p.setErrno(syscall.ENOMEM)
+
+				return 0
+			}
+
+			at := p.malloc(uint32(total))
+
+			if at == 0 {
+				p.setErrno(syscall.ENOMEM)
+
+				return 0
+			}
+
+			clear(p.span(at, uint32(total)))
+
+			return at
+		},
 		"realloc": func(ctx uintptr, ptr, n uint32) uint32 {
 			p := proc(ctx)
 			at := p.realloc(ptr, n)
