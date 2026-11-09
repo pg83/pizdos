@@ -248,6 +248,9 @@ func (c *Code) keepFunc(f any) uintptr {
 	return funcval(f)
 }
 
+// memsetCode returns the address of memset (mem_amd64.s).
+func memsetCode() uintptr
+
 func (c *Code) resolve(sym string, imports Imports) uintptr {
 	switch sym {
 	case symMorestack:
@@ -260,6 +263,10 @@ func (c *Code) resolve(sym string, imports Imports) uintptr {
 		return c.keepFunc(helperTableGrow)
 	case symInterrupt:
 		return c.keepFunc(helperInterrupt)
+	case symMemmove:
+		return goSymbol("runtime.memmove")
+	case symMemset:
+		return memsetCode()
 	}
 
 	for k := range c.obj.meta.imports {

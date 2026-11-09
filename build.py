@@ -257,7 +257,7 @@ aot_command_aot = command(
     descr="AO", color="light-cyan",
 )
 
-WASM2O_SOURCES = [*build.glob("$(S)/bin/wasm2o/*.go"), "$(S)/bin/wasm2o/go.mod", "$(S)/dev/go.py"]
+WASM2O_SOURCES = [*build.glob("$(S)/bin/wasm2o/*.go"), *build.glob("$(S)/bin/wasm2o/*.s"), "$(S)/bin/wasm2o/go.mod", "$(S)/dev/go.py"]
 GO_RUNTIME = [*build.glob("$(S)/lib/goruntime/*.go"), "$(S)/lib/goruntime/edits.py"]
 
 wasm2o = command(
@@ -352,7 +352,7 @@ aot_relinked = command(
 # wasm2o's own tests: the loader drives Go's runtime through native frames.
 wasm2o_go_test = command(
     name="test_wasm2o_go",
-    inputs=[*build.glob("$(S)/bin/wasm2o/*.go"), "$(S)/bin/wasm2o/go.mod", "$(S)/dev/go.py", *GO_RUNTIME],
+    inputs=[*build.glob("$(S)/bin/wasm2o/*.go"), *build.glob("$(S)/bin/wasm2o/*.s"), "$(S)/bin/wasm2o/go.mod", "$(S)/dev/go.py", *GO_RUNTIME],
     outputs=["$(B)/tst/wasm2o_go.stamp"],
     deps=[aot_aot],
     cmd=["python3", "$(S)/dev/go.py", "test", GO, "$(S)/bin/wasm2o", "$(B)/tst/wasm2o_go.stamp", "--runtime", "$(S)/lib/goruntime", "--embed", aot_aot.outputs[0]],
