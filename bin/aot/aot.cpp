@@ -511,6 +511,7 @@ namespace {
         usize size() const;
         usize capacity() const;
         void reserve(usize size);
+        void grow(usize size);
         void resize(usize size);
         void clear();
         void append(const void* data, usize size);
@@ -566,10 +567,15 @@ usize Buffer::capacity() const {
     return header()->allocation == 0 ? 0 : header()->allocation - sizeof(Header);
 }
 
-void Buffer::reserve(usize size) {
-    if (size <= capacity()) {
-        return;
+// The capacity test stays small enough to be inlined where buffers grow
+// element by element; growth itself is out of line.
+inline void Buffer::reserve(usize size) {
+    if (size > capacity()) {
+        grow(size);
     }
+}
+
+__attribute__((noinline)) void Buffer::grow(usize size) {
     const usize need = checkedAdd(size, sizeof(Header));
     const usize bytes = allocationBytes(need);
     auto* before = header();
@@ -585,7 +591,7 @@ void Buffer::reserve(usize size) {
     storage = next + 1;
 }
 
-void Buffer::resize(usize size) {
+inline void Buffer::resize(usize size) {
     reserve(size);
     if (size != 0 || header() != &emptyBuffer) {
         header()->used = size;
