@@ -88,6 +88,8 @@ stdlib/qsort.c
 stdlib/qsort_nr.c
 stdlib/strtod.c
 stdlib/strtol.c
+stdlib/wcstol.c
+stdlib/wcstod.c
 misc/getopt.c
 misc/getopt_long.c
 multibyte/btowc.c
