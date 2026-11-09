@@ -17898,6 +17898,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         o->counted = true;
         o->uses.resize(usize(length(f->values)));
         o->uses.fill(0);
+        const Span<i32> uses = o->uses.view();
         for (Int b = 0, end = length(f->blocks); b < end; ++b) {
             Block* blk = &f->blocks[b];
             if (blk->dead) {
@@ -17909,17 +17910,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 auto args = functionArgs(f, v);
                 for (Int i = 0; i < length(args); ++i) {
                     i32 a = args[i];
-                    o->uses[a]++;
+                    uses[a]++;
                 }
             }
             Term* t = &blk->term;
             if (t->kind == TermIf || t->kind == TermSwitch) {
-                o->uses[t->value]++;
+                uses[t->value]++;
             }
             auto values = t->values;
             for (Int i = 0; i < length(values); ++i) {
                 i32 v = values[i];
-                o->uses[v]++;
+                uses[v]++;
             }
             auto edges = t->edges;
             for (Int i = 0; i < length(edges); ++i) {
@@ -17927,7 +17928,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 auto args = e.args;
                 for (Int i = 0; i < length(args); ++i) {
                     i32 a = args[i];
-                    o->uses[a]++;
+                    uses[a]++;
                 }
             }
         }
