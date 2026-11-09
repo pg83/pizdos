@@ -6576,6 +6576,8 @@ namespace {
 
     static bool versionMemoryLoops(Function* f);
 
+    static void versionedPreds(Function* f, i32 preheader, i32 header, Int first);
+
     static void writeELF(ObjCode* oc, Slice<u8> note);
 
     static Slice<VReg> xmmRange(Int n);
@@ -21749,6 +21751,36 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return u64(7LL);
     }
 
+    // versionedPreds brings predecessors up to date after versioning a loop:
+    // the preheader's edge to the header now leads to a block numbered from
+    // first, and every other new edge leaves such a block. Predecessors stay
+    // in the order of their blocks, as computePreds lists them.
+    static void versionedPreds(Function* f, i32 preheader, i32 header, Int first) {
+        PoolScope graphScope(*f->blocks.owner);
+        Slice<i32> preds = f->blocks[header].preds;
+        Int at = 0;
+        while (preds[at] != preheader) {
+            ++at;
+        }
+        for (Int i = at + 1; i < length(preds); ++i) {
+            preds[i - 1] = preds[i];
+        }
+        f->blocks[header].preds = subslice(preds, 0, length(preds) - 1);
+        auto add = [&](i32 from) {
+            auto edges = f->blocks[from].term.edges;
+            for (Int j = 0; j < length(edges); ++j) {
+                const i32 to = edges[j].block;
+                if (from >= first || to >= first) {
+                    f->blocks[to].preds = appendValues(f->blocks[to].preds, from);
+                }
+            }
+        };
+        add(preheader);
+        for (Int b = first; b < length(f->blocks); ++b) {
+            add(i32(b));
+        }
+    }
+
     // versionMemoryLoops reports whether it may have changed the function.
     static bool versionMemoryLoops(Function* f) {
         if (length(f->module->mems) == 0) {
@@ -21811,7 +21843,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
             }
             if (fast >= 0) {
-                functionComputePreds(f);
+                versionedPreds(f, loop->preheader, loop->header, before);
                 versioned++;
             }
         }
