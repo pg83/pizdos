@@ -3351,10 +3351,14 @@ namespace {
         u64 lo{};
         i32 stride{};
         bool valid{};
+        // A term that may be negative: its guard sums the terms sign
+        // extended and requires the span to begin at or above 0, and the
+        // fast copy keeps the wrapping additions of the address.
+        bool signedTerms{};
     };
 
     static bool operator==(const LoopSpan& a, const LoopSpan& b) {
-        return a.base == b.base && a.mul == b.mul && a.factor == b.factor && a.offset == b.offset && a.base2 == b.base2 && a.mul2 == b.mul2 && a.lo == b.lo && a.stride == b.stride && a.valid == b.valid;
+        return a.base == b.base && a.mul == b.mul && a.factor == b.factor && a.offset == b.offset && a.base2 == b.base2 && a.mul2 == b.mul2 && a.lo == b.lo && a.stride == b.stride && a.valid == b.valid && a.signedTerms == b.signedTerms;
     }
 
     static u64 hashValue(const LoopSpan& value) {
@@ -3675,6 +3679,13 @@ namespace {
         i32 start{};
         i32 limit{};
         bool signedLimit{};
+        // The variable compared with the limit advances by startStep, times
+        // the invariant startStride when that names a value; inclusive loops
+        // continue at the limit, exact ones until the variable equals it.
+        i64 startStep{};
+        i32 startStride = -1;
+        bool inclusive{};
+        bool exact{};
         Map<i32, LoopSpan> induction{};
         Map<i32, LoopSpan> cache{};
         Map<i32, bool> noWrap{};
@@ -8360,10 +8371,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             out = LoopSpan{-1, {}, {}, convert<u64>(convert<u32>(val->aux)), {}, {}, convert<u64>(convert<u32>(val->aux)), {}, true};
         } else if (memoryLoopInvariant(l, v, 0)) {
             out = LoopSpan{v, u64(1LL), {}, {}, {}, {}, {}, {}, true};
+            out.signedTerms = unsignedRangesOf(l->unsignedValue, v, 0).hi >= u64(2147483648LL);
         } else {
             UnsignedRange bound = unsignedRangesOf(l->unsignedValue, v, 0);
-            if (bound.hi < u64(4294967295LL)) {
+            // A bounded value spans its range; one reaching far past the
+            // memory the module starts with would hardly ever pass a guard.
+            const u64 reach = maximum(l->f->module->mems[0].limits.min * u64(65536), u64(67108864LL));
+            if (bound.hi <= reach) {
                 out = LoopSpan{-1, {}, {}, bound.hi, {}, {}, bound.lo, {}, true};
+            } else if (bound.hi < u64(4294967295LL)) {
+                out = bad;
             } else {
                 Span<i32> args = functionArgs(l->f, v);
                 switch (val->op) {
@@ -8371,7 +8388,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         LoopSpan a = memoryLoopSpan(l, args[0], depth + 1);
                         LoopSpan b = memoryLoopSpan(l, args[1], depth + 1);
                         out = addLoopSpans(a, b);
-                        if (out.valid) {
+                        if (out.valid && !out.signedTerms) {
                             setMap(l->noWrap, v, true);
                         }
                         break;
@@ -8508,6 +8525,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Slice<LoopSpan> guards = {};
         Map<i32, bool> proven = mapOf<i32, bool>({});
         bool unboundedWrite = false;
+        // An access at an invariant address is usually checked once before
+        // the loop already; the version must free one that moves.
+        bool moving = false;
         auto range308 = l->order;
         for (Int index309 = 0, rangeEnd310 = length(range308); index309 < rangeEnd310; ++index309) {
             i32 b = range308[index309];
@@ -8559,6 +8579,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     guards = appendValues(guards, bound);
                 }
                 setMap(proven, v, true);
+                moving = moving || bound.factor != 0;
             }
         }
         bool hasLoad = false;
@@ -8567,7 +8588,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             i32 v = invariantNodes[i];
             hasLoad = hasLoad || f->values[v].op == OpLoad;
         }
-        if (length(proven) < 2 || length(guards) > 24 || (unboundedWrite && hasLoad)) {
+        if (length(proven) < 2 || !moving || length(guards) > 24 || (unboundedWrite && hasLoad)) {
             return -1;
         }
         u64 minimum = 4;
@@ -8580,6 +8601,20 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         u64 minimumCount = (minimum - 1) * l->countStep + l->countStop + 1;
         if (l->count >= 0 && l->countBias < 0 && unsignedRangesOf(l->unsignedValue, l->count, 0).hi < minimumCount) {
             return -1;
+        }
+        if (l->limit >= 0) {
+            // What the ranges of the start and the limit say about the
+            // iterations: a loop known to be short is not worth a guard.
+            const u64 lo = unsignedRangesOf(l->unsignedValue, l->start, 0).lo;
+            const u64 hi = unsignedRangesOf(l->unsignedValue, l->limit, 0).hi;
+            if (hi < lo) {
+                return -1;
+            }
+            const u64 distance = hi - lo + (l->inclusive ? 1 : 0);
+            const u64 step = convert<u64>(l->startStep);
+            if ((distance + step - 1) / step < minimum) {
+                return -1;
+            }
         }
         i32 guard = functionNewBlock(f);
         i32 current = guard;
@@ -8665,12 +8700,57 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         if (l->limit >= 0) {
             i32 limit = mapValue(l->limit);
-            countValue = emit(OpSub, I32, sliceOf<i32>({limit, l->start}));
-            condition = emit(OpLtU, I32, sliceOf<i32>({l->start, limit}));
-            condition = emit(OpAnd, I32, sliceOf<i32>({condition, emit(OpGeU, I32, sliceOf<i32>({countValue, constant(I32, minimum)}))}));
+            auto both = [&](i32 a, i32 b) mutable -> i32 {
+                return emit(OpAnd, I32, sliceOf<i32>({a, b}));
+            };
+            // The variable runs from start to the limit, which an inclusive
+            // loop reaches: the iterations are the distance in steps.
+            condition = emit(l->inclusive ? OpLeU : OpLtU, I32, sliceOf<i32>({l->start, limit}));
             if (l->signedLimit) {
-                condition = emit(OpAnd, I32, sliceOf<i32>({condition, emit(OpLeU, I32, sliceOf<i32>({limit, constant(I32, u64(2147483647LL))}))}));
+                condition = both(condition, emit(OpLeU, I32, sliceOf<i32>({limit, constant(I32, u64(2147483647LL))})));
             }
+            i32 distance = emit(OpSub, I64, sliceOf<i32>({emit(OpExtendU, I64, sliceOf<i32>({limit})), emit(OpExtendU, I64, sliceOf<i32>({l->start}))}));
+            if (l->inclusive) {
+                distance = emit(OpAdd, I64, sliceOf<i32>({distance, constant(I64, u64(1LL))}));
+                condition = both(condition, emit(OpLeU, I32, sliceOf<i32>({distance, constant(I64, u64(4294967295LL))})));
+            }
+            if (l->startStride < 0 && l->startStep == 1) {
+                countValue = emit(OpWrap, I32, sliceOf<i32>({distance}));
+            } else {
+                i32 step = constant(I64, convert<u64>(l->startStep));
+                if (l->startStride >= 0) {
+                    // The guard's arithmetic runs whatever the stride is: a
+                    // stride outside 1..65536 fails it and divides as 1.
+                    i32 stride = mapValue(l->startStride);
+                    i32 small = emit(OpLtU, I32, sliceOf<i32>({emit(OpSub, I32, sliceOf<i32>({stride, constant(I32, u64(1LL))})), constant(I32, u64(65536LL))}));
+                    condition = both(condition, small);
+                    i32 strides = emit(OpSelect, I64, sliceOf<i32>({small, emit(OpExtendU, I64, sliceOf<i32>({stride})), constant(I64, u64(1LL))}));
+                    step = emit(OpMul, I64, sliceOf<i32>({strides, step}));
+                }
+                if (l->exact) {
+                    condition = both(condition, emit(OpEqz, I32, sliceOf<i32>({emit(OpRemU, I64, sliceOf<i32>({distance, step}))})));
+                    countValue = emit(OpWrap, I32, sliceOf<i32>({emit(OpDivU, I64, sliceOf<i32>({distance, step}))}));
+                } else {
+                    // Advancing the variable while it passes the test must
+                    // not wrap, nor change sign under a signed test, so that
+                    // it never falls below its start.
+                    i32 beyond = emit(OpAdd, I64, sliceOf<i32>({emit(OpExtendU, I64, sliceOf<i32>({limit})), step}));
+                    const u64 most = (l->signedLimit ? u64(2147483648LL) : u64(4294967296LL)) - (l->inclusive ? 1 : 0);
+                    condition = both(condition, emit(OpLeU, I32, sliceOf<i32>({beyond, constant(I64, most)})));
+                    i32 rounded = emit(OpAdd, I64, sliceOf<i32>({distance, emit(OpSub, I64, sliceOf<i32>({step, constant(I64, u64(1LL))}))}));
+                    countValue = emit(OpWrap, I32, sliceOf<i32>({emit(OpDivU, I64, sliceOf<i32>({rounded, step}))}));
+                }
+            }
+            condition = both(condition, emit(OpGeU, I32, sliceOf<i32>({countValue, constant(I32, minimum)})));
+        }
+        // The conditions so far are cheap and decide most entries that take
+        // the original loop; the guards of the accesses follow in a block of
+        // their own.
+        if (f->values[condition].op != OpConst) {
+            i32 next = functionNewBlock(f);
+            f->blocks[current].term = Term{TermIf, condition, sliceOf<Edge>({Edge{next, {}}, l->entry}), {}, {}};
+            current = next;
+            condition = constant(I32, u64(1LL));
         }
         i32 count = emit(OpExtendU, I64, sliceOf<i32>({countValue}));
         i32 iterations = emit(OpSub, I64, sliceOf<i32>({count, constant(I64, u64(1LL))}));
@@ -8683,7 +8763,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 if (term[1] == 0) {
                     continue;
                 }
-                i32 base = emit(OpExtendU, I64, sliceOf<i32>({mapValue(convert<i32>(term[0]))}));
+                i32 base = emit(bound.signedTerms ? OpExtendS : OpExtendU, I64, sliceOf<i32>({mapValue(convert<i32>(term[0]))}));
                 if (term[1] != 1) {
                     base = emit(OpMul, I64, sliceOf<i32>({base, constant(I64, convert<u64>(term[1]))}));
                 }
@@ -8705,8 +8785,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         for (Int index333 = 0, rangeEnd334 = length(range332); index333 < rangeEnd334; ++index333) {
             LoopSpan bound = range332[index333];
             auto temporary335 = evaluate(bound);
+            i32 begin = temporary335.v0;
             i32 end = temporary335.v1;
             condition = emit(OpAnd, I32, sliceOf<i32>({condition, emit(OpLeU, I32, sliceOf<i32>({end, size}))}));
+            if (bound.signedTerms) {
+                condition = emit(OpAnd, I32, sliceOf<i32>({condition, emit(OpGeS, I32, sliceOf<i32>({begin, constant(I64, u64(0LL))}))}));
+            }
         }
         auto range336 = writes;
         for (Int index337 = 0, rangeEnd338 = length(range336); index337 < rangeEnd338; ++index337) {
@@ -8715,6 +8799,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             i32 begin = temporary339.v0;
             i32 end = temporary339.v1;
             condition = emit(OpAnd, I32, sliceOf<i32>({condition, emit(OpLeU, I32, sliceOf<i32>({end, size}))}));
+            if (write.signedTerms) {
+                condition = emit(OpAnd, I32, sliceOf<i32>({condition, emit(OpGeS, I32, sliceOf<i32>({begin, constant(I64, u64(0LL))}))}));
+            }
             auto range340 = reads;
             for (Int index341 = 0, rangeEnd342 = length(range340); index341 < rangeEnd342; ++index341) {
                 LoadRangeLoop_version741 read = range340[index341];
@@ -19356,7 +19443,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (!a.valid || !b.valid || (a.factor != 0 && b.factor != 0 && a.stride != b.stride)) {
             return LoopSpan{};
         }
-        LoopSpan out = LoopSpan{-1, {}, a.factor + b.factor, a.offset + b.offset, {}, {}, a.lo + b.lo, a.stride, true};
+        LoopSpan out = LoopSpan{-1, {}, a.factor + b.factor, a.offset + b.offset, {}, {}, a.lo + b.lo, a.stride, true, a.signedTerms || b.signedTerms};
         if (a.factor == 0) {
             out.stride = b.stride;
         }
@@ -20140,7 +20227,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static MemoryLoop* findMemoryLoop(Function* f, CfgInfo* ci, i32 h) {
-        MemoryLoop* l = activePool->make<MemoryLoop>(MemoryLoop{f, ci, h, -1, -1, -1, {}, makeSlice<bool>(length(f->blocks)), {}, {}, -1, u64(1LL), {}, {}, {}, -1, -1, {}, mapOf<i32, LoopSpan>({}), mapOf<i32, LoopSpan>({}), {}, {}, {}, {}, {}});
+        MemoryLoop* l = activePool->make<MemoryLoop>(MemoryLoop{f, ci, h, -1, -1, -1, {}, makeSlice<bool>(length(f->blocks)), {}, {}, -1, u64(1LL), {}, {}, {}, -1, -1, {}, 0, -1, false, false, mapOf<i32, LoopSpan>({}), mapOf<i32, LoopSpan>({}), {}, {}, {}, {}, {}});
         auto preds = f->blocks[h].preds;
         for (Int i = 0; i < length(preds); ++i) {
             i32 p = preds[i];
@@ -20241,6 +20328,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             next = args[0];
             l->limit = args[1];
             l->signedLimit = condition->op == OpLtS;
+        } else if (t->edges[0].block == h && (condition->op == OpLeS || condition->op == OpLeU)) {
+            next = args[0];
+            l->limit = args[1];
+            l->signedLimit = condition->op == OpLeS;
+            l->inclusive = true;
+        } else if (t->edges[0].block == h && condition->op == OpNe) {
+            next = args[0];
+            l->limit = args[1];
+            l->exact = true;
         } else {
             return {};
         }
@@ -20275,8 +20371,28 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 continue;
             }
             i64 step = inductionStep(f, p, candidate);
-            if (l->limit >= 0 && step == 1) {
+            if (l->limit >= 0 && step >= 1 && step <= 65536) {
                 l->start = l->entry.args[j];
+                l->startStep = step;
+                l->startStride = -1;
+            } else if (l->limit >= 0 && step == 0 && l->start < 0) {
+                // The variable advances by one invariant stride, added once
+                // or, unrolled, several times per iteration.
+                auto [terms, ok] = inductionTerms(f, candidate, p, 0);
+                i32 stride = ok && length(terms) > 0 && length(terms) <= 65536 ? terms[0] : -1;
+                for (Int k = 1; stride >= 0 && k < length(terms); ++k) {
+                    if (terms[k] != stride) {
+                        stride = -1;
+                    }
+                }
+                if (stride >= 0) {
+                    const Value* sv = &f->values[stride];
+                    if (sv->op != OpConst && (sv->block < 0 || (!l->members[sv->block] && loopDominates(ci, sv->block, h)))) {
+                        l->start = l->entry.args[j];
+                        l->startStep = length(terms);
+                        l->startStride = stride;
+                    }
+                }
             } else if (l->limit < 0 && step < 0 && step >= -65536) {
                 u64 n = convert<u64>(-step);
                 u64 stop = 0;
