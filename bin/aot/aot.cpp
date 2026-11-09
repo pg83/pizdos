@@ -1218,10 +1218,11 @@ namespace {
         ArrayData<T>* array;
         if (!size) {
             return owner.make<ArrayData<T>>(&owner);
-        } else if (u64(size) * sizeof(T) <= pageBytes - sizeof(Buffer::Header)) {
-            auto* backing = owner.make<ArrayStorage<T, SmallVec<T>>>(&owner, ArrayData<T>::Kind::Small);
-            backing->values.resize(usize(size));
-            array = &backing->array;
+        } else if (u64(size) * sizeof(T) <= pageBytes - sizeof(ObjPool::Chunk)) {
+            // Slice growth creates another backing array, so one that fits a
+            // pool chunk is pool memory and needs no disposal.
+            array = owner.make<ArrayData<T>>(&owner);
+            array->storage = owner.allocate(usize(size) * sizeof(T), alignof(T));
         } else {
             auto* backing = owner.make<ArrayStorage<T, PageVec<T>>>(&owner, ArrayData<T>::Kind::Paged);
             backing->values.resize(usize(size));
@@ -1229,21 +1230,15 @@ namespace {
         }
         array->count = size;
         array->clearElements(clearFrom);
-        // Slice growth creates another backing array. This container never
-        // reallocates, so its pool-owned buffer can be addressed directly.
-        if (array->kind == ArrayData<T>::Kind::Small) {
-            array->storage = array->data();
-            array->kind = ArrayData<T>::Kind::Contiguous;
-        }
         return array;
     }
 
     // A view can be copied freely. Its storage belongs to exactly one ObjPool.
-    // Backing arrays are fixed after creation: Small buffers become direct
-    // Contiguous views, and only Paged storage needs a container lookup. A
-    // contiguous view holds the address of its first element, so reading one
-    // is a single load; a paged view holds its first index instead, and the
-    // low bit of its array pointer tells them apart.
+    // Backing arrays are fixed after creation: those that fit a pool chunk
+    // are Contiguous pool memory, and only Paged storage needs a container
+    // lookup. A contiguous view holds the address of its first element, so
+    // reading one is a single load; a paged view holds its first index
+    // instead, and the low bit of its array pointer tells them apart.
     template <typename T>
     struct Slice {
         uptr tagged = 0;
