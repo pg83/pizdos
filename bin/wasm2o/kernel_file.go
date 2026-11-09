@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"sync/atomic"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -250,7 +251,8 @@ func (p *Process) iovecs(iovs uint32, count uint32) ([]syscall.Iovec, error) {
 	return out, nil
 }
 
-func (p *Process) vectored(fd, iovs, count uint32, events int16, call uintptr) uint32 {
+// vectored runs readv or writev, or with an offset preadv or pwritev.
+func (p *Process) vectored(fd, iovs, count uint32, events int16, call uintptr, off uint64) uint32 {
 	f, err := p.fd(fd)
 
 	if err != nil {
@@ -264,7 +266,7 @@ func (p *Process) vectored(fd, iovs, count uint32, events int16, call uintptr) u
 	}
 
 	n, err := p.transfer(f, events, func() (int, error) {
-		r, _, e := syscall.Syscall(call, uintptr(f.fd), uintptr(unsafe.Pointer(&v[0])), uintptr(len(v)))
+		r, _, e := syscall.Syscall6(call, uintptr(f.fd), uintptr(unsafe.Pointer(&v[0])), uintptr(len(v)), uintptr(off), 0, 0)
 
 		if e != 0 {
 			return 0, e
@@ -274,6 +276,181 @@ func (p *Process) vectored(fd, iovs, count uint32, events int16, call uintptr) u
 	})
 
 	return p.result(n, err)
+}
+
+// waitLock takes a lock with try, which does not block: when it would and
+// block is set, it tries again until a signal interrupts.
+func (p *Process) waitLock(block bool, try func() error) error {
+	for {
+		err := try()
+
+		if !block || err != syscall.EAGAIN && err != syscall.EACCES {
+			return err
+		}
+
+		if _, err := p.waitFds(nil, 10, true); err != nil {
+			return err
+		}
+	}
+}
+
+// Record locks are the host's open file description locks: a guest's lock
+// is its open file's, which fork shares, and does not end when another
+// descriptor of the process closes.
+const (
+	fGetlk    = 5
+	fSetlk    = 6
+	fSetlkw   = 7
+	fOfdGetlk = 36
+	fOfdSetlk = 37
+	fRdlck    = 0
+	fWrlck    = 1
+	fUnlck    = 2
+)
+
+func fcntlLock(fd int, cmd int, lk *syscall.Flock_t) error {
+	if _, _, e := syscall.Syscall(syscall.SYS_FCNTL, uintptr(fd), uintptr(cmd), uintptr(unsafe.Pointer(lk))); e != 0 {
+		return e
+	}
+
+	return nil
+}
+
+// recordLock runs F_GETLK, F_SETLK or F_SETLKW with a guest struct flock.
+func (p *Process) recordLock(f *File, cmd, at uint32) error {
+	lk := syscall.Flock_t{Type: int16(p.u16(at)), Whence: int16(p.u16(at + 2)), Start: int64(p.u64(at + 8)), Len: int64(p.u64(at + 16))}
+
+	if cmd == fGetlk {
+		if err := fcntlLock(f.fd, fOfdGetlk, &lk); err != nil {
+			return err
+		}
+
+		p.put16(at, uint16(lk.Type))
+		p.put16(at+2, uint16(lk.Whence))
+		p.put64(at+8, uint64(lk.Start))
+		p.put64(at+16, uint64(lk.Len))
+		p.put32(at+24, uint32(lk.Pid))
+
+		return nil
+	}
+
+	return p.waitLock(cmd == fSetlkw, func() error {
+		return fcntlLock(f.fd, fOfdSetlk, &lk)
+	})
+}
+
+// fdSet is a guest fd_set: 1024 bits in words of 32.
+type fdSet struct {
+	at uint32
+}
+
+func (s fdSet) has(p *Process, fd int) bool {
+	return s.at != 0 && p.u32(s.at+uint32(fd/32*4))&(1<<(fd%32)) != 0
+}
+
+func (s fdSet) set(p *Process, fd int) {
+	p.put32(s.at+uint32(fd/32*4), p.u32(s.at+uint32(fd/32*4))|1<<(fd%32))
+}
+
+const (
+	sysSyncfs     = 306
+	pollPri       = 0x2
+	fdSetsize     = 1024
+	pollInSet     = pollIn | pollHup | pollErr
+	pollOutSet    = pollOut | pollErr
+	maxPollWaitMs = 1 << 30
+)
+
+// selectFds waits as select does, with a timeout in milliseconds, and
+// returns how many bits of the sets it left set.
+func (p *Process) selectFds(n uint32, sets [3]fdSet, timeout int) (int, error) {
+	if n > fdSetsize {
+		return 0, syscall.EINVAL
+	}
+
+	var host []pollFd
+	var fds []int
+
+	for fd := range int(n) {
+		events := int16(0)
+
+		for i, ev := range []int16{pollIn, pollOut, pollPri} {
+			if sets[i].has(p, fd) {
+				events |= ev
+			}
+		}
+
+		if events == 0 {
+			continue
+		}
+
+		f, err := p.fd(uint32(fd))
+
+		if err != nil {
+			return 0, err
+		}
+
+		host = append(host, pollFd{fd: int32(f.fd), events: events})
+		fds = append(fds, fd)
+	}
+
+	ready, err := p.waitFds(host, timeout, false)
+
+	if err != nil {
+		return 0, err
+	}
+
+	for _, s := range sets {
+		if s.at != 0 {
+			clear(p.span(s.at, (n+31)/32*4))
+		}
+	}
+
+	count := 0
+
+	for i, h := range host {
+		if ready == 0 {
+			break
+		}
+
+		if h.revents&pollNval != 0 {
+			return 0, syscall.EBADF
+		}
+
+		for k, mask := range []int16{pollInSet, pollOutSet, pollPri} {
+			if h.events&[]int16{pollIn, pollOut, pollPri}[k] != 0 && h.revents&mask != 0 {
+				sets[k].set(p, fds[i])
+				count++
+			}
+		}
+	}
+
+	return count, nil
+}
+
+// waitMs is a timeout in milliseconds of poll, rounded up and bounded.
+func waitMs(d time.Duration) int {
+	return int(min((d+time.Millisecond-1)/time.Millisecond, maxPollWaitMs))
+}
+
+// withMask runs a wait with the signal mask of pselect or ppoll, when
+// mask is not 0: a signal the wait took runs its handler before the old
+// mask returns.
+func (p *Process) withMask(mask uint32, wait func() (int, error)) (int, error) {
+	if mask == 0 {
+		return wait()
+	}
+
+	old := p.setMask(p.u64(mask))
+	n, err := wait()
+
+	if err == syscall.EINTR {
+		p.handleSignals()
+	}
+
+	p.setMask(old)
+
+	return n, err
 }
 
 func (k *Kernel) fileFunctions() map[string]any {
@@ -303,10 +480,190 @@ func (k *Kernel) fileFunctions() map[string]any {
 			return p.result(r, err)
 		},
 		"readv": func(ctx uintptr, fd, iovs, count uint32) uint32 {
-			return proc(ctx).vectored(fd, iovs, count, pollIn, syscall.SYS_READV)
+			return proc(ctx).vectored(fd, iovs, count, pollIn, syscall.SYS_READV, 0)
 		},
 		"writev": func(ctx uintptr, fd, iovs, count uint32) uint32 {
-			return proc(ctx).vectored(fd, iovs, count, pollOut, syscall.SYS_WRITEV)
+			return proc(ctx).vectored(fd, iovs, count, pollOut, syscall.SYS_WRITEV, 0)
+		},
+		"preadv": func(ctx uintptr, fd, iovs, count uint32, off uint64) uint32 {
+			return proc(ctx).vectored(fd, iovs, count, pollIn, syscall.SYS_PREADV, off)
+		},
+		"pwritev": func(ctx uintptr, fd, iovs, count uint32, off uint64) uint32 {
+			return proc(ctx).vectored(fd, iovs, count, pollOut, syscall.SYS_PWRITEV, off)
+		},
+		"pread": func(ctx uintptr, fd, buf, n uint32, off uint64) uint32 {
+			p := proc(ctx)
+			f, err := p.fd(fd)
+
+			if err != nil {
+				return p.result(0, err)
+			}
+
+			r, err := p.transfer(f, pollIn, func() (int, error) {
+				return syscall.Pread(f.fd, p.span(buf, n), int64(off))
+			})
+
+			return p.result(r, err)
+		},
+		"pwrite": func(ctx uintptr, fd, buf, n uint32, off uint64) uint32 {
+			p := proc(ctx)
+			f, err := p.fd(fd)
+
+			if err != nil {
+				return p.result(0, err)
+			}
+
+			r, err := p.transfer(f, pollOut, func() (int, error) {
+				return syscall.Pwrite(f.fd, p.span(buf, n), int64(off))
+			})
+
+			return p.result(r, err)
+		},
+		"fdatasync": func(ctx uintptr, fd uint32) uint32 {
+			p := proc(ctx)
+			f, err := p.fd(fd)
+
+			if err == nil {
+				err = syscall.Fdatasync(f.fd)
+			}
+
+			return p.result(0, err)
+		},
+		"sync": func(ctx uintptr) {
+			syscall.Sync()
+		},
+		"syncfs": func(ctx uintptr, fd uint32) uint32 {
+			p := proc(ctx)
+			f, err := p.fd(fd)
+
+			if err == nil {
+				if _, _, e := syscall.Syscall(sysSyncfs, uintptr(f.fd), 0, 0); e != 0 {
+					err = e
+				}
+			}
+
+			return p.result(0, err)
+		},
+		"flock": func(ctx uintptr, fd, op uint32) uint32 {
+			p := proc(ctx)
+			f, err := p.fd(fd)
+
+			if err != nil {
+				return p.result(0, err)
+			}
+
+			return p.result(0, p.waitLock(op&syscall.LOCK_NB == 0, func() error {
+				return syscall.Flock(f.fd, int(op|syscall.LOCK_NB))
+			}))
+		},
+		// lockf locks from the file's offset, as fcntl's write locks.
+		"lockf": func(ctx uintptr, fd, cmd uint32, n uint64) uint32 {
+			p := proc(ctx)
+			f, err := p.fd(fd)
+
+			if err != nil {
+				return p.result(0, err)
+			}
+
+			lk := syscall.Flock_t{Type: fWrlck, Whence: 1, Len: int64(n)}
+
+			switch cmd {
+			case 0:
+				lk.Type = fUnlck
+				err = fcntlLock(f.fd, fOfdSetlk, &lk)
+			case 1, 2:
+				err = p.waitLock(cmd == 1, func() error {
+					return fcntlLock(f.fd, fOfdSetlk, &lk)
+				})
+			case 3:
+				lk.Type = fRdlck
+
+				if err = fcntlLock(f.fd, fOfdGetlk, &lk); err == nil && lk.Type != fUnlck {
+					err = syscall.EACCES
+				}
+			default:
+				err = syscall.EINVAL
+			}
+
+			return p.result(0, err)
+		},
+		// posix_fadvise and posix_fallocate return an error number.
+		"posix_fadvise": func(ctx uintptr, fd uint32, off, n uint64, advice uint32) uint32 {
+			p := proc(ctx)
+			f, err := p.fd(fd)
+
+			if err != nil {
+				return uint32(syscall.EBADF)
+			}
+
+			_, _, e := syscall.Syscall6(syscall.SYS_FADVISE64, uintptr(f.fd), uintptr(off), uintptr(n), uintptr(advice), 0, 0)
+
+			return uint32(e)
+		},
+		"posix_fallocate": func(ctx uintptr, fd uint32, off, n uint64) uint32 {
+			p := proc(ctx)
+			f, err := p.fd(fd)
+
+			if err != nil {
+				return uint32(syscall.EBADF)
+			}
+
+			for {
+				err = syscall.Fallocate(f.fd, 0, int64(off), int64(n))
+
+				if err != syscall.EINTR {
+					break
+				}
+			}
+
+			if err != nil {
+				return uint32(errnoOf(err))
+			}
+
+			return 0
+		},
+		// select writes back the time left, as Linux's.
+		"select": func(ctx uintptr, n, r, w, e, tv uint32) uint32 {
+			p := proc(ctx)
+			timeout := -1
+			var d time.Duration
+
+			if tv != 0 {
+				var err error
+
+				if d, err = p.timeval(tv); err != nil {
+					return p.result(0, err)
+				}
+
+				timeout = waitMs(d)
+			}
+
+			start := time.Now()
+			count, err := p.selectFds(n, [3]fdSet{{r}, {w}, {e}}, timeout)
+
+			if tv != 0 && err != syscall.EINVAL {
+				p.putTimeval(tv, max(d-time.Since(start), 0))
+			}
+
+			return p.result(count, err)
+		},
+		"pselect": func(ctx uintptr, n, r, w, e, ts, mask uint32) uint32 {
+			p := proc(ctx)
+			timeout := -1
+
+			if ts != 0 {
+				d, err := p.timespec(ts)
+
+				if err != nil {
+					return p.result(0, err)
+				}
+
+				timeout = waitMs(d)
+			}
+
+			return p.result(p.withMask(mask, func() (int, error) {
+				return p.selectFds(n, [3]fdSet{{r}, {w}, {e}}, timeout)
+			}))
 		},
 		"lseek": func(ctx uintptr, fd uint32, off uint64, whence uint32) uint64 {
 			p := proc(ctx)
@@ -367,7 +724,54 @@ func (k *Kernel) fileFunctions() map[string]any {
 		"tcgetattr": k.tcgetattr,
 		"tcsetattr": k.tcsetattr,
 		"cfmakeraw": k.cfmakeraw,
-		"poll":      k.poll,
+		"tcdrain": func(ctx uintptr, fd uint32) uint32 {
+			return proc(ctx).termiosIoctl(fd, tcsbrk, 1)
+		},
+		"tcsendbreak": func(ctx uintptr, fd, duration uint32) uint32 {
+			return proc(ctx).termiosIoctl(fd, tcsbrk, 0)
+		},
+		"tcflow": func(ctx uintptr, fd, action uint32) uint32 {
+			return proc(ctx).termiosIoctl(fd, tcxonc, uintptr(action))
+		},
+		"tcflush": func(ctx uintptr, fd, queue uint32) uint32 {
+			return proc(ctx).termiosIoctl(fd, tcflsh, uintptr(queue))
+		},
+		// tcgetsid is the caller's session: the kernel keeps no session of
+		// a terminal.
+		"tcgetsid": func(ctx uintptr, fd uint32) uint32 {
+			p := proc(ctx)
+
+			if k.isatty(ctx, fd) == 0 {
+				return p.result(0, p.errno())
+			}
+
+			k.mu.Lock()
+			defer k.mu.Unlock()
+
+			return p.result(int(p.sid), nil)
+		},
+		"cfgetospeed": func(ctx uintptr, at uint32) uint32 {
+			return proc(ctx).u32(at+8) & cbaud
+		},
+		"cfgetispeed": func(ctx uintptr, at uint32) uint32 {
+			return proc(ctx).u32(at+8) & cbaud
+		},
+		"cfsetospeed": func(ctx uintptr, at, speed uint32) uint32 {
+			return proc(ctx).cfsetspeed(at, speed)
+		},
+		"cfsetspeed": func(ctx uintptr, at, speed uint32) uint32 {
+			return proc(ctx).cfsetspeed(at, speed)
+		},
+		// cfsetispeed's 0 is the output speed, as POSIX has it.
+		"cfsetispeed": func(ctx uintptr, at, speed uint32) uint32 {
+			if speed == 0 {
+				return 0
+			}
+
+			return proc(ctx).cfsetspeed(at, speed)
+		},
+		"poll":  k.poll,
+		"ppoll": k.ppoll,
 		"fsync": func(ctx uintptr, fd uint32) uint32 {
 			p := proc(ctx)
 			f, err := p.fd(fd)
@@ -422,6 +826,16 @@ func (k *Kernel) fileFunctions() map[string]any {
 
 			if err == nil {
 				err = syscall.Fchown(f.fd, int(int32(uid)), int(int32(gid)))
+			}
+
+			return p.result(0, err)
+		},
+		"futimes": func(ctx uintptr, fd, times uint32) uint32 {
+			p := proc(ctx)
+			f, err := p.fd(fd)
+
+			if err == nil {
+				err = utimensat(f.fd, nil, p.timevals(times), 0)
 			}
 
 			return p.result(0, err)
@@ -555,6 +969,8 @@ func (k *Kernel) fcntl(ctx uintptr, fd, cmd, va uint32) uint32 {
 		}
 
 		return p.result(fl, nil)
+	case fGetlk, fSetlk, fSetlkw:
+		return p.result(0, p.recordLock(f, cmd, p.varArg(va, 0)))
 	case fSetfl:
 		arg := int(p.varArg(va, 0))
 		fl, err := fcntl(f.fd, syscall.F_GETFL, 0)
@@ -584,6 +1000,9 @@ func (k *Kernel) fcntl(ctx uintptr, fd, cmd, va uint32) uint32 {
 const (
 	tcgets     = 0x5401
 	tcsets     = 0x5402
+	tcsbrk     = 0x5409
+	tcxonc     = 0x540a
+	tcflsh     = 0x540b
 	tiocgpgrp  = 0x540f
 	tiocspgrp  = 0x5410
 	tiocgwinsz = 0x5413
@@ -760,12 +1179,41 @@ func (k *Kernel) tcsetattr(ctx uintptr, fd, action, at uint32) uint32 {
 		return p.result(0, syscall.EINVAL)
 	}
 
-	b := p.span(at, 60)
-	le := binary.LittleEndian
-	t := hostTermios{iflag: le.Uint32(b), oflag: le.Uint32(b[4:]), cflag: le.Uint32(b[8:]), lflag: le.Uint32(b[12:]), line: b[16]}
-	copy(t.cc[:], b[17:])
+	t := p.guestTermios(at)
 
 	return p.result(0, ioctlPtr(f.fd, uintptr(tcsets+action), unsafe.Pointer(&t)))
+}
+
+// termiosIoctl runs an ioctl of a terminal's with an int argument.
+func (p *Process) termiosIoctl(fd uint32, req uintptr, arg uintptr) uint32 {
+	f, err := p.fd(fd)
+
+	if err != nil {
+		return p.result(0, err)
+	}
+
+	if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, uintptr(f.fd), req, arg); e != 0 {
+		return p.result(0, e)
+	}
+
+	return p.result(0, nil)
+}
+
+// cbaud is the speed of termios.h's c_cflag.
+const cbaud = 0o010017
+
+// cfsetspeed sets the speed of a guest's struct termios, as musl's: both
+// speeds are c_cflag's.
+func (p *Process) cfsetspeed(at, speed uint32) uint32 {
+	if speed&^cbaud != 0 {
+		p.setErrno(syscall.EINVAL)
+
+		return ^uint32(0)
+	}
+
+	p.put32(at+8, p.u32(at+8)&^cbaud|speed)
+
+	return 0
 }
 
 // cfmakeraw puts the guest's struct termios in raw mode, the flags of
@@ -806,8 +1254,32 @@ func poll(fds []pollFd, timeout int) (int, error) {
 func (k *Kernel) poll(ctx uintptr, at, n, timeout uint32) uint32 {
 	p := proc(ctx)
 
+	return p.result(p.poll(at, n, int(int32(timeout))))
+}
+
+func (k *Kernel) ppoll(ctx uintptr, at, n, ts, mask uint32) uint32 {
+	p := proc(ctx)
+	timeout := -1
+
+	if ts != 0 {
+		d, err := p.timespec(ts)
+
+		if err != nil {
+			return p.result(0, err)
+		}
+
+		timeout = waitMs(d)
+	}
+
+	return p.result(p.withMask(mask, func() (int, error) {
+		return p.poll(at, n, timeout)
+	}))
+}
+
+// poll polls a guest's array of struct pollfd.
+func (p *Process) poll(at, n uint32, timeout int) (int, error) {
 	if n > 1<<16 {
-		return p.result(0, syscall.EINVAL)
+		return 0, syscall.EINVAL
 	}
 
 	guest := p.span(at, 8*n)
@@ -838,19 +1310,19 @@ func (k *Kernel) poll(ctx uintptr, at, n, timeout uint32) uint32 {
 		host = append(host, pollFd{fd: int32(f.fd), events: int16(binary.LittleEndian.Uint16(e[4:]))})
 	}
 
-	wait := int(int32(timeout))
-
 	if invalid > 0 {
-		wait = 0
+		timeout = 0
 	}
 
-	ready, err := p.waitFds(host, wait, false)
+	ready, err := p.waitFds(host, timeout, false)
 
 	if err != nil {
-		return p.result(0, err)
+		return 0, err
 	}
 
 	if ready > 0 {
+		guest = p.span(at, 8*n)
+
 		for i := range n {
 			if slot[i] >= 0 {
 				binary.LittleEndian.PutUint16(guest[8*i+6:], uint16(host[slot[i]].revents))
@@ -858,7 +1330,7 @@ func (k *Kernel) poll(ctx uintptr, at, n, timeout uint32) uint32 {
 		}
 	}
 
-	return p.result(ready+invalid, nil)
+	return ready + invalid, nil
 }
 
 // putStat writes a guest struct stat.

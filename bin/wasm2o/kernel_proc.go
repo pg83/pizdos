@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"os"
 	"runtime"
 	"strings"
@@ -98,7 +99,12 @@ func (k *Kernel) code(fd int, name string) (*Code, error) {
 
 // exec replaces the process's program; it returns only an error.
 func (p *Process) exec(path string, argv, envp []string) error {
-	code, argv, err := p.loadProgram(path, argv)
+	return p.execFrom(path, -1, argv, envp)
+}
+
+// execFrom is exec of the file a host descriptor reads, when fd is one.
+func (p *Process) execFrom(path string, fd int, argv, envp []string) error {
+	code, argv, err := p.loadFrom(path, fd, argv)
 
 	if err != nil {
 		return err
@@ -112,8 +118,21 @@ func (p *Process) exec(path string, argv, envp []string) error {
 // loadProgram is exec's search: a wasm object, or the interpreter of a #!
 // script, with argv rewritten for it.
 func (p *Process) loadProgram(path string, argv []string) (*Code, []string, error) {
+	return p.loadFrom(path, -1, argv)
+}
+
+// loadFrom is loadProgram of the file a host descriptor reads, when first
+// is one: fexecve's.
+func (p *Process) loadFrom(path string, first int, argv []string) (*Code, []string, error) {
 	for range 4 {
-		fd, err := p.openat2(path, syscall.O_RDONLY, 0)
+		fd, err := first, error(nil)
+
+		if first >= 0 {
+			fd, err = dupHigh(first)
+			first = -1
+		} else {
+			fd, err = p.openat2(path, syscall.O_RDONLY, 0)
+		}
 
 		if err != nil {
 			return nil, nil, err
@@ -211,7 +230,8 @@ func (p *Process) execPath(file string, argv, envp []string) error {
 }
 
 // execReset is what a new program starts with: descriptors marked
-// close-on-exec are closed, handled signals are back to their defaults.
+// close-on-exec are closed, handled signals are back to their defaults and
+// there is no alternate signal stack.
 func (p *Process) execReset() {
 	for fd, d := range p.files {
 		if d != nil && d.cloexec {
@@ -227,7 +247,9 @@ func (p *Process) execReset() {
 		}
 	}
 
+	p.sig.altstack.sp, p.sig.altstack.size = 0, 0
 	p.sig.mu.Unlock()
+	p.comm = ""
 }
 
 // environment is the process's environ as it is now.
@@ -308,6 +330,54 @@ func (p *Process) setEnviron(entries []uint32) bool {
 	return true
 }
 
+// setVariable replaces the variables of environ named name by entry, or
+// removes them for 0. A string setenv made is freed when it goes.
+func (p *Process) setVariable(name string, entry uint32) bool {
+	var entries, gone []uint32
+
+	if env := p.u32(p.environAt); env != 0 {
+		for at := env; p.u32(at) != 0; at += 4 {
+			s := p.u32(at)
+
+			if e := p.cstr(s); len(e) > len(name) && e[len(name)] == '=' && string(e[:len(name)]) == name {
+				gone = append(gone, s)
+			} else {
+				entries = append(entries, s)
+			}
+		}
+	}
+
+	if entry != 0 {
+		entries = append(entries, entry)
+	}
+
+	if !p.setEnviron(entries) {
+		return false
+	}
+
+	for _, s := range gone {
+		if s != entry && p.envStrings[s] {
+			delete(p.envStrings, s)
+			p.free(s)
+		}
+	}
+
+	return true
+}
+
+// variableName is the name setenv and unsetenv take: not empty, no '='.
+func (p *Process) variableName(at uint32) (string, bool) {
+	name := p.str(at)
+
+	if name == "" || strings.IndexByte(name, '=') >= 0 {
+		p.setErrno(syscall.EINVAL)
+
+		return "", false
+	}
+
+	return name, true
+}
+
 func (k *Kernel) procFunctions() map[string]any {
 	ids := func(f func() int) func(uintptr) uint32 {
 		return func(uintptr) uint32 {
@@ -362,39 +432,6 @@ func (k *Kernel) procFunctions() map[string]any {
 
 			return p.result(len(groups), nil)
 		},
-		"getrlimit": func(ctx uintptr, res, at uint32) uint32 {
-			p := proc(ctx)
-
-			if res >= rlimitCount {
-				return p.result(0, syscall.EINVAL)
-			}
-
-			p.put64(at, p.limits[res].cur)
-			p.put64(at+8, p.limits[res].max)
-
-			return p.result(0, nil)
-		},
-		"setrlimit": func(ctx uintptr, res, at uint32) uint32 {
-			p := proc(ctx)
-
-			if res >= rlimitCount {
-				return p.result(0, syscall.EINVAL)
-			}
-
-			l := rlimit{p.u64(at), p.u64(at + 8)}
-
-			if l.cur > l.max {
-				return p.result(0, syscall.EINVAL)
-			}
-
-			if l.max > p.limits[res].max && os.Geteuid() != 0 {
-				return p.result(0, syscall.EPERM)
-			}
-
-			p.limits[res] = l
-
-			return p.result(0, nil)
-		},
 		"uname": func(ctx uintptr, at uint32) uint32 {
 			p := proc(ctx)
 			var u syscall.Utsname
@@ -409,12 +446,22 @@ func (k *Kernel) procFunctions() map[string]any {
 
 			return p.result(0, nil)
 		},
+		// sysconf's -1 for the buffers of the user and group databases
+		// means no limit.
 		"sysconf": func(ctx uintptr, name uint32) uint32 {
 			p := proc(ctx)
+
+			switch name {
+			case 85:
+				return uint32(pages(false))
+			case 86:
+				return uint32(pages(true))
+			}
+
 			values := map[uint32]int64{
 				0: 131072, 1: int64(min64(p.limits[rlimitNproc].cur, 1<<30)), 2: 100, 3: 65536,
 				4: int64(min64(p.limits[rlimitNofile].cur, 1<<30)), 7: 1, 8: 1, 29: 200809, 30: 4096, 43: 2048, 60: 1024,
-				71: 256, 72: 32, 83: int64(runtime.NumCPU()), 84: int64(runtime.NumCPU()), 149: 200809, 173: 40, 180: 64,
+				69: -1, 70: -1, 71: 256, 72: 32, 83: int64(runtime.NumCPU()), 84: int64(runtime.NumCPU()), 149: 200809, 173: 40, 180: 64,
 			}
 
 			if v, ok := values[name]; ok {
@@ -445,28 +492,66 @@ func (k *Kernel) procFunctions() map[string]any {
 
 			return value
 		},
+		// putenv without a '=' removes the variable, as musl's.
 		"putenv": func(ctx uintptr, s uint32) uint32 {
 			p := proc(ctx)
-			entry := p.cstr(s)
-			name, _, set := bytes.Cut(entry, []byte("="))
-			var entries []uint32
+			name, _, set := strings.Cut(p.str(s), "=")
 
-			if env := p.u32(p.environAt); env != 0 {
-				for at := env; p.u32(at) != 0; at += 4 {
-					e := p.cstr(p.u32(at))
+			if name == "" {
+				p.setErrno(syscall.EINVAL)
 
-					if !(len(e) > len(name) && e[len(name)] == '=' && bytes.Equal(e[:len(name)], name)) {
-						entries = append(entries, p.u32(at))
-					}
-				}
+				return math.MaxUint32
 			}
 
-			if set {
-				entries = append(entries, s)
+			if !set {
+				s = 0
 			}
 
-			if !p.setEnviron(entries) {
-				return p.result(0, syscall.ENOMEM)
+			if !p.setVariable(name, s) {
+				p.setErrno(syscall.ENOMEM)
+
+				return math.MaxUint32
+			}
+
+			return 0
+		},
+		"setenv": func(ctx uintptr, at, value, overwrite uint32) uint32 {
+			p := proc(ctx)
+			name, ok := p.variableName(at)
+
+			if !ok {
+				return math.MaxUint32
+			}
+
+			if _, _, set := p.lookupEnv([]byte(name)); set && overwrite == 0 {
+				return 0
+			}
+
+			s := p.newString(name + "=" + p.str(value))
+
+			if s == 0 || !p.setVariable(name, s) {
+				p.free(s)
+				p.setErrno(syscall.ENOMEM)
+
+				return math.MaxUint32
+			}
+
+			p.envStrings[s] = true
+
+			return 0
+		},
+		"unsetenv": func(ctx uintptr, at uint32) uint32 {
+			p := proc(ctx)
+			name, ok := p.variableName(at)
+
+			if !ok {
+				return math.MaxUint32
+			}
+
+			if !p.setVariable(name, 0) {
+				p.setErrno(syscall.ENOMEM)
+
+				return math.MaxUint32
 			}
 
 			return 0
@@ -493,6 +578,47 @@ func (k *Kernel) procFunctions() map[string]any {
 			p := proc(ctx)
 
 			return p.result(0, p.execPath(p.str(file), p.strings(argv), p.environment()))
+		},
+		"execv": func(ctx uintptr, path, argv uint32) uint32 {
+			p := proc(ctx)
+
+			return p.result(0, p.exec(p.str(path), p.strings(argv), p.environment()))
+		},
+		"execvpe": func(ctx uintptr, file, argv, envp uint32) uint32 {
+			p := proc(ctx)
+
+			return p.result(0, p.execPath(p.str(file), p.strings(argv), p.strings(envp)))
+		},
+		// execle's environment follows the null pointer that ends the
+		// arguments.
+		"execle": func(ctx uintptr, path, arg0, va uint32) uint32 {
+			p := proc(ctx)
+			argv := p.argList(arg0, va)
+			envp := p.varArg(va, uint32(max(len(argv), 1)))
+
+			if arg0 == 0 {
+				envp = p.varArg(va, 0)
+			}
+
+			return p.result(0, p.exec(p.str(path), argv, p.strings(envp)))
+		},
+		// fexecve runs the file of a descriptor; a script's interpreter gets
+		// its path.
+		"fexecve": func(ctx uintptr, fd, argv, envp uint32) uint32 {
+			p := proc(ctx)
+			f, err := p.fd(fd)
+
+			if err != nil {
+				return p.result(0, err)
+			}
+
+			host, err := p.k.hostPath(f.fd)
+
+			if err != nil {
+				return p.result(0, err)
+			}
+
+			return p.result(0, p.execFrom(p.k.guestPath(host), f.fd, p.strings(argv), p.strings(envp)))
 		},
 		"execl": func(ctx uintptr, path, arg0, va uint32) uint32 {
 			p := proc(ctx)
@@ -525,6 +651,7 @@ func (k *Kernel) procFunctions() map[string]any {
 
 			c := p.k.newProcess(p)
 			c.inherit(p)
+			c.execReset()
 			done := make(chan int, 1)
 
 			go func() {

@@ -123,6 +123,7 @@ sighandler_t signal(int, sighandler_t) __KERNEL(signal);
 sighandler_t bsd_signal(int, sighandler_t) __KERNEL(bsd_signal);
 int sigaction(int, const struct sigaction* __restrict, struct sigaction* __restrict) __KERNEL(sigaction);
 int sigprocmask(int, const sigset_t* __restrict, sigset_t* __restrict) __KERNEL(sigprocmask);
+int pthread_sigmask(int, const sigset_t* __restrict, sigset_t* __restrict) __KERNEL(pthread_sigmask);
 int sigsuspend(const sigset_t*) __KERNEL(sigsuspend);
 int sigpending(sigset_t*) __KERNEL(sigpending);
 int sigwait(const sigset_t* __restrict, int* __restrict) __KERNEL(sigwait);

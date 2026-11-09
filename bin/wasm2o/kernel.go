@@ -55,16 +55,28 @@ type Process struct {
 	ppid int32
 	pgid int32
 	sid  int32
-	inst *Instance
+	// nice and policy are the scheduling of the process (kernel_identity.go),
+	// pdeathsig the signal of prctl it gets when its parent ends, all under
+	// the kernel's lock.
+	nice      int32
+	policy    int32
+	pdeathsig int
+	// comm, undumpable and noNewPrivs are prctl's.
+	comm       string
+	undumpable bool
+	noNewPrivs bool
+	inst       *Instance
 	// image is what the instance runs: its code, arguments and environment.
 	image *execImage
 	files []*Descriptor
 	// cwd is the absolute guest path of the working directory.
 	cwd   string
 	umask uint32
-	// errnoAt and environAt are where the crt keeps errno and environ.
+	// errnoAt and environAt are where the crt keeps errno and environ, tzAt
+	// tzname, timezone and daylight.
 	errnoAt   uint32
 	environAt uint32
+	tzAt      [3]uint32
 	// heap is the allocator's header in memory, static the block of the
 	// results libc keeps in static storage, env the environ array the kernel
 	// allocated last.
@@ -75,10 +87,18 @@ type Process struct {
 	limits    [rlimitCount]rlimit
 	regexes   map[uint32]*posixRegex
 	nextRegex uint32
-	// zoneNames are the heap's strings of zone names for tm_zone, siginfo
-	// the siginfo_t of handlers.
-	zoneNames map[string]uint32
+	// constants are strings of the heap the kernel returns and the program
+	// does not free: zone names for tm_zone, locale names and items;
+	// siginfo is the siginfo_t of handlers.
+	constants map[string]uint32
 	siginfo   uint32
+	// locale is the name of each category's locale, "" for C;
+	// envStrings are the strings of environ setenv made, mappings the
+	// lengths of mmap's blocks.
+	locale     [lcAll]string
+	envStrings map[uint32]bool
+	mappings   map[uint32]mapping
+	timers     itimers
 	// jumps are the setjmps of the image by their jmp_buf, stackAt where
 	// the instance keeps __stack_pointer.
 	jumps   map[uint32]*jump
@@ -164,7 +184,9 @@ func (k *Kernel) functionTable() map[string]any {
 	t := map[string]any{"__kernel_start": k.kernelStart}
 
 	for _, part := range []map[string]any{k.fileFunctions(), k.pathFunctions(), k.heapFunctions(), k.stringFunctions(),
-		k.timeFunctions(), k.regexFunctions(), k.signalFunctions(), k.procFunctions(), k.jumpFunctions(), k.forkFunctions()} {
+		k.timeFunctions(), k.regexFunctions(), k.signalFunctions(), k.procFunctions(), k.jumpFunctions(), k.forkFunctions(),
+		k.localeFunctions(), k.wideFunctions(), k.identityFunctions(), k.systemFunctions(), k.userFunctions(),
+		k.ptyFunctions(), k.globFunctions(), k.miscFunctions()} {
 		for name, f := range part {
 			t[name] = f
 		}
@@ -234,6 +256,7 @@ func (k *Kernel) newProcess(parent *Process) *Process {
 		p.limits = hostLimits()
 	} else {
 		p.ppid, p.pgid, p.sid = parent.pid, parent.pgid, parent.sid
+		p.nice, p.policy = parent.nice, parent.policy
 		p.cwd, p.umask, p.limits, p.seed = parent.cwd, parent.umask, parent.limits, parent.seed
 	}
 
@@ -288,7 +311,8 @@ func (p *Process) runImage(img *execImage, i *Instance, enter func()) (next *exe
 		i = newInstance(img.code, p.k, runStack)
 		i.host = p
 		p.heap, p.static, p.env, p.errnoAt, p.environAt, p.siginfo = 0, 0, 0, 0, 0, 0
-		p.regexes, p.zoneNames = map[uint32]*posixRegex{}, map[string]uint32{}
+		p.regexes, p.constants, p.locale = map[uint32]*posixRegex{}, map[string]uint32{}, [lcAll]string{}
+		p.envStrings, p.mappings = map[uint32]bool{}, map[uint32]mapping{}
 		p.jumps, p.stackAt = map[uint32]*jump{}, 0
 		enter = func() {
 			i.start()
@@ -326,6 +350,7 @@ func (p *Process) runImage(img *execImage, i *Instance, enter func()) (next *exe
 		}
 
 		runtime.KeepAlive(i)
+		p.unmapAll()
 		p.setInstance(nil)
 		i.release()
 	}()
@@ -352,6 +377,8 @@ func trapSignal(code uint32) int {
 // or nothing when the parent ignores SIGCHLD; with the first process
 // wasm2o ends.
 func (p *Process) terminate(status int) {
+	p.stopTimers()
+
 	for fd := range p.files {
 		p.closeFd(fd)
 	}
@@ -365,10 +392,16 @@ func (p *Process) terminate(status int) {
 	parent := k.procs[p.ppid]
 	adopted := false
 
+	var bereaved []*Process
+
 	for _, q := range k.procs {
 		if q.ppid == p.pid {
 			q.ppid = k.first.pid
 			adopted = adopted || q.zombie
+
+			if q.pdeathsig != 0 && !q.zombie {
+				bereaved = append(bereaved, q)
+			}
 		}
 	}
 
@@ -384,6 +417,10 @@ func (p *Process) terminate(status int) {
 
 	if adopted && p != k.first {
 		k.first.childChanged(int(syscall.SIGCHLD))
+	}
+
+	for _, q := range bereaved {
+		q.send(q.pdeathsig)
 	}
 
 	if notify {
@@ -439,9 +476,10 @@ func (p *Process) exitWith(status int) {
 	panic(&procExit{status})
 }
 
-func (k *Kernel) kernelStart(ctx uintptr, errnoAt, environAt, argcAt, argvAt uint32) {
+func (k *Kernel) kernelStart(ctx uintptr, errnoAt, environAt, argcAt, argvAt, tznameAt, timezoneAt, daylightAt uint32) {
 	p := proc(ctx)
 	p.errnoAt, p.environAt = errnoAt, environAt
+	p.tzAt = [3]uint32{tznameAt, timezoneAt, daylightAt}
 	argv := p.stringArray(p.image.argv)
 	p.env = p.stringArray(p.image.envp)
 
@@ -583,6 +621,24 @@ func (p *Process) putString(at uint32, s string) {
 	b[len(s)] = 0
 }
 
+// constant is a string of the heap for results the program reads but
+// does not free; the process keeps one copy of each.
+func (p *Process) constant(s string) uint32 {
+	if at, ok := p.constants[s]; ok {
+		return at
+	}
+
+	at := p.newString(s)
+
+	if at == 0 {
+		p.exitWith(int(syscall.SIGABRT))
+	}
+
+	p.constants[s] = at
+
+	return at
+}
+
 // errors
 
 func errnoOf(err error) syscall.Errno {
@@ -643,13 +699,28 @@ func (p *Process) pointer(at uint32, err error) uint32 {
 // staticArea is the guest block of libc's static results, made at first
 // use: offsets staticDot.. below.
 const (
-	staticDot       = 0
-	staticSlash     = 2
-	staticTm        = 8
-	staticCtime     = 56
-	staticStrerror  = 88
-	staticStrsignal = 184
-	staticSize      = 256
+	staticDot        = 0
+	staticSlash      = 2
+	staticEmpty      = 4
+	staticTm         = 8
+	staticCtime      = 56
+	staticStrerror   = 88
+	staticStrsignal  = 184
+	staticLconv      = 256
+	staticStrtok     = 312
+	staticPasswd     = 316
+	staticGroup      = 320
+	staticPwent      = 324
+	staticGrent      = 328
+	staticShell      = 332
+	staticLogIdent   = 336
+	staticLogOption  = 368
+	staticLogMask    = 372
+	staticShellIndex = 376
+	staticPass       = 380
+	staticRandom     = 384
+	staticRandomInit = 388
+	staticSize       = 528
 )
 
 func (p *Process) staticAt(off uint32) uint32 {

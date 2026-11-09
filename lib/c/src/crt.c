@@ -37,7 +37,7 @@ __attribute__((__export_name__("_start"))) void _start(void) {
     int argc = 0;
     char** argv = 0;
 
-    __kernel_start(&errno, &environ, &argc, &argv);
+    __kernel_start(&errno, &environ, &argc, &argv, tzname, &timezone, &daylight);
 
     if (argc > 0) {
         program_invocation_name = argv[0];
@@ -53,4 +53,8 @@ __attribute__((__export_name__("__call_signal_handler"))) void __call_signal_han
 
 __attribute__((__export_name__("__call_signal_action"))) void __call_signal_action(void (*action)(int, siginfo_t*, void*), int signal, siginfo_t* info, void* context) {
     action(signal, info, context);
+}
+
+__attribute__((__export_name__("__call_glob_error"))) int __call_glob_error(int (*error)(const char*, int), const char* path, int code) {
+    return error(path, code);
 }

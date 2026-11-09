@@ -3,7 +3,10 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
+	"maps"
+	"os"
 	"syscall"
 )
 
@@ -19,7 +22,16 @@ import (
 const (
 	wNohang    = 1
 	wUntraced  = 2
+	wExited    = 4
 	wContinued = 8
+	wNowait    = 0x1000000
+	pAll       = 0
+	pPid       = 1
+	pPgid      = 2
+	cldExited  = 1
+	cldKilled  = 2
+	cldStopped = 5
+	cldCont    = 6
 	// the wait statuses of a stop by sig, sig<<8|stoppedBy, and a continue
 	stoppedBy = 0x7f
 	continued = 0xffff
@@ -55,7 +67,8 @@ func (p *Process) startVfork() uint32 {
 	c.setInstance(p.inst)
 	c.image, c.vfork = p.image, v
 	c.heap, c.static, c.env, c.errnoAt, c.environAt, c.siginfo = p.heap, p.static, p.env, p.errnoAt, p.environAt, p.siginfo
-	c.regexes, c.nextRegex, c.zoneNames, c.jumps, c.stackAt = p.regexes, p.nextRegex, p.zoneNames, p.jumps, p.stackAt
+	c.regexes, c.nextRegex, c.constants, c.jumps, c.stackAt = p.regexes, p.nextRegex, p.constants, p.jumps, p.stackAt
+	c.locale, c.envStrings, c.mappings, c.tzAt = p.locale, p.envStrings, p.mappings, p.tzAt
 	c.token.Store(p.token.Load())
 	c.inherit(p)
 	p.inst.host = c
@@ -63,11 +76,12 @@ func (p *Process) startVfork() uint32 {
 	return c.result(0, nil)
 }
 
-// startFork makes a child that is a copy of the process: its memory in use,
+// fork makes a child that is a copy of the process: its memory in use,
 // from the stack pointer to the top of the heap, its instance and its
-// frames up to _start, on a goroutine of its own. A signal handler cannot
-// fork: Go's frames are in the way.
-func (p *Process) startFork() uint32 {
+// frames up to _start, on a goroutine of its own; setup changes it before
+// it runs. The call fork is in returns 0 in the child. A signal handler
+// cannot fork: Go's frames are in the way.
+func (p *Process) fork(setup func(c *Process)) (int32, error) {
 	j := new(Jump)
 
 	if !p.inst.setjmp(j) {
@@ -77,7 +91,7 @@ func (p *Process) startFork() uint32 {
 	frames, ok := p.inst.frames(j, "_start")
 
 	if !ok {
-		return p.result(0, syscall.ENOSYS)
+		return 0, syscall.ENOSYS
 	}
 
 	from := uint64(binary.LittleEndian.Uint32(p.inst.block[p.stackPointer():])) &^ 4095
@@ -92,16 +106,27 @@ func (p *Process) startFork() uint32 {
 	inst.host = c
 	c.image = p.image
 	c.heap, c.static, c.env, c.errnoAt, c.environAt, c.siginfo = p.heap, p.static, p.env, p.errnoAt, p.environAt, p.siginfo
-	c.nextRegex, c.stackAt = p.nextRegex, p.stackAt
-	c.regexes, c.zoneNames, c.jumps = map[uint32]*posixRegex{}, map[string]uint32{}, map[uint32]*jump{}
+	c.nextRegex, c.stackAt, c.locale, c.tzAt = p.nextRegex, p.stackAt, p.locale, p.tzAt
+	c.regexes, c.constants, c.jumps = map[uint32]*posixRegex{}, map[string]uint32{}, map[uint32]*jump{}
 
 	for id, r := range p.regexes {
 		copied := *r
 		c.regexes[id] = &copied
 	}
 
-	for name, at := range p.zoneNames {
-		c.zoneNames[name] = at
+	for s, at := range p.constants {
+		c.constants[s] = at
+	}
+
+	c.envStrings, c.mappings = maps.Clone(p.envStrings), map[uint32]mapping{}
+
+	for at, m := range p.mappings {
+		if m.file != nil {
+			m.file.ref()
+			m.read = bytes.Clone(m.read)
+		}
+
+		c.mappings[at] = m
 	}
 
 	// The jumps of frames deeper than the call have no frames in the child.
@@ -113,12 +138,18 @@ func (p *Process) startFork() uint32 {
 	}
 
 	c.inherit(p)
+
+	if setup != nil {
+		setup(c)
+	}
+
 	go c.runFrom(p.image, inst, func() { inst.resume(frames) })
 
-	return p.result(int(c.pid), nil)
+	return c.pid, nil
 }
 
-// inherit gives a child its parent's descriptors, signal actions and mask.
+// inherit gives a child its parent's descriptors, signal actions, mask and
+// alternate stack.
 func (c *Process) inherit(p *Process) {
 	c.files = make([]*Descriptor, len(p.files))
 
@@ -129,7 +160,7 @@ func (c *Process) inherit(p *Process) {
 	}
 
 	p.sig.mu.Lock()
-	c.sig.actions, c.sig.blocked = p.sig.actions, p.sig.blocked
+	c.sig.actions, c.sig.blocked, c.sig.altstack = p.sig.actions, p.sig.blocked, p.sig.altstack
 	p.sig.mu.Unlock()
 }
 
@@ -169,24 +200,27 @@ func (p *Process) endBorrowers(i *Instance, e any) {
 	i.host = p
 }
 
-// waitSelects tells whether waitpid's pid selects child q.
-func (p *Process) waitSelects(pid int32, q *Process) bool {
+// pidSelector is what waitpid's pid selects of the children: one, the
+// caller's group (0), all (-1) or a group.
+func (p *Process) pidSelector(pid int32) func(q *Process) bool {
 	switch {
 	case pid > 0:
-		return q.pid == pid
+		return func(q *Process) bool { return q.pid == pid }
 	case pid == 0:
-		return q.pgid == p.pgid
+		pgid := p.pgid
+
+		return func(q *Process) bool { return q.pgid == pgid }
 	case pid == -1:
-		return true
+		return func(*Process) bool { return true }
 	}
 
-	return q.pgid == -pid
+	return func(q *Process) bool { return q.pgid == -pid }
 }
 
-// reap takes a child pid selects that ended, or stopped or continued when
-// options ask: it returns its pid and status, or 0 and whether any child
-// is selected.
-func (p *Process) reap(pid int32, options uint32) (int32, int, bool) {
+// reap takes a child selected that ended, stopped or continued, as options
+// ask: it returns its pid and status, or 0 and whether any child is
+// selected. With wNowait the child stays as it was.
+func (p *Process) reap(selects func(*Process) bool, options uint32) (int32, int, bool) {
 	k := p.k
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -194,53 +228,134 @@ func (p *Process) reap(pid int32, options uint32) (int32, int, bool) {
 	found := false
 
 	for _, q := range k.procs {
-		if q.ppid != p.pid || !p.waitSelects(pid, q) {
+		if q.ppid != p.pid || !selects(q) {
 			continue
 		}
 
-		if q.zombie {
-			delete(k.procs, q.pid)
+		found = true
+
+		if q.zombie && options&wExited != 0 {
+			if options&wNowait == 0 {
+				delete(k.procs, q.pid)
+			}
 
 			return q.pid, q.status, true
 		}
 
 		if r := q.report; r&0xff == stoppedBy && options&wUntraced != 0 || r == continued && options&wContinued != 0 {
-			q.report = 0
+			if options&wNowait == 0 {
+				q.report = 0
+			}
 
 			return q.pid, r, true
 		}
-
-		found = true
 	}
 
 	return 0, 0, found
 }
 
-func (p *Process) waitpid(pid int32, at, options uint32) (int, error) {
+// wait waits until a selected child changes as options ask and returns its
+// pid and wait status, or 0 with wNohang while none has.
+func (p *Process) wait(selects func(*Process) bool, options uint32) (int32, int, error) {
 	for {
 		seen := p.childEvents.Load()
-		q, status, found := p.reap(pid, options)
+		q, status, found := p.reap(selects, options)
 
 		if q != 0 {
-			if at != 0 {
-				p.put32(at, uint32(status))
-			}
-
-			return int(q), nil
+			return q, status, nil
 		}
 
 		if !found {
-			return 0, syscall.ECHILD
+			return 0, 0, syscall.ECHILD
 		}
 
 		if options&wNohang != 0 {
-			return 0, nil
+			return 0, 0, nil
 		}
 
 		if err := p.waitEvent(func() bool { return p.childEvents.Load() != seen }); err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 	}
+}
+
+// waitpid is wait4 without the usage of the child.
+func (p *Process) waitpid(pid int32, at, options uint32) (int, error) {
+	q, status, err := p.wait(p.pidSelector(pid), options&(wNohang|wUntraced|wContinued)|wExited)
+
+	if err == nil && q != 0 && at != 0 {
+		p.put32(at, uint32(status))
+	}
+
+	return int(q), err
+}
+
+// wait4 is waitpid with the child's struct rusage, which is the kernel's:
+// all zero.
+func (p *Process) wait4(pid int32, at, options, usage uint32) uint32 {
+	q, err := p.waitpid(pid, at, options)
+
+	if err == nil && q != 0 && usage != 0 {
+		p.putRusage(usage, nil)
+	}
+
+	return p.result(q, err)
+}
+
+func (p *Process) waitid(idtype, id, info, options uint32) uint32 {
+	var selects func(*Process) bool
+
+	switch {
+	case idtype == pAll:
+		selects = func(*Process) bool { return true }
+	case idtype == pPid && int32(id) > 0:
+		selects = p.pidSelector(int32(id))
+	case idtype == pPgid && int32(id) >= 0:
+		pgid := int32(id)
+
+		if pgid == 0 {
+			pgid = p.pgid
+		}
+
+		selects = func(q *Process) bool { return q.pgid == pgid }
+	default:
+		return p.result(0, syscall.EINVAL)
+	}
+
+	if options&(wExited|wUntraced|wContinued) == 0 || options&^(wNohang|wExited|wUntraced|wContinued|wNowait) != 0 {
+		return p.result(0, syscall.EINVAL)
+	}
+
+	q, status, err := p.wait(selects, options)
+
+	if err != nil {
+		return p.result(0, err)
+	}
+
+	if info != 0 {
+		clear(p.span(info, 36))
+
+		if q != 0 {
+			code, value := cldExited, status>>8&0xff
+
+			switch {
+			case status&0xff == stoppedBy:
+				code = cldStopped
+			case status == continued:
+				code, value = cldCont, int(syscall.SIGCONT)
+			case status&0x7f != 0:
+				code, value = cldKilled, status&0x7f
+			}
+
+			p.put32(info, uint32(syscall.SIGCHLD))
+			p.put32(info+8, uint32(code))
+			p.put32(info+12, uint32(q))
+			p.put32(info+16, uint32(os.Getuid()))
+			p.put32(info+20, uint32(value))
+		}
+	}
+
+	return p.result(0, nil)
 }
 
 // stopped stops the process by sig: its parent learns it, and it waits
@@ -345,7 +460,10 @@ func (k *Kernel) forkFunctions() map[string]any {
 			return proc(ctx).startVfork()
 		},
 		"fork": func(ctx uintptr) uint32 {
-			return proc(ctx).startFork()
+			p := proc(ctx)
+			pid, err := p.fork(nil)
+
+			return p.result(int(pid), err)
 		},
 		"waitpid": func(ctx uintptr, pid, status, options uint32) uint32 {
 			p := proc(ctx)
@@ -356,6 +474,15 @@ func (k *Kernel) forkFunctions() map[string]any {
 			p := proc(ctx)
 
 			return p.result(p.waitpid(-1, status, 0))
+		},
+		"wait3": func(ctx uintptr, status, options, usage uint32) uint32 {
+			return proc(ctx).wait4(-1, status, options, usage)
+		},
+		"wait4": func(ctx uintptr, pid, status, options, usage uint32) uint32 {
+			return proc(ctx).wait4(int32(pid), status, options, usage)
+		},
+		"waitid": func(ctx uintptr, idtype, id, info, options uint32) uint32 {
+			return proc(ctx).waitid(idtype, id, info, options)
 		},
 	}
 }

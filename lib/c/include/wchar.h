@@ -6,6 +6,8 @@ __BEGIN_DECLS
 
 typedef struct _IO_FILE FILE;
 
+struct tm;
+
 typedef struct {
     unsigned __opaque1;
     unsigned __opaque2;
@@ -44,6 +46,12 @@ int wcscoll(const wchar_t*, const wchar_t*) __KERNEL(wcscoll);
 wchar_t* wcschr(const wchar_t*, wchar_t) __KERNEL(wcschr);
 wchar_t* wcsrchr(const wchar_t*, wchar_t) __KERNEL(wcsrchr);
 wchar_t* wcsstr(const wchar_t* __restrict, const wchar_t* __restrict) __KERNEL(wcsstr);
+wchar_t* wcspbrk(const wchar_t*, const wchar_t*) __KERNEL(wcspbrk);
+size_t wcsspn(const wchar_t*, const wchar_t*) __KERNEL(wcsspn);
+size_t wcscspn(const wchar_t*, const wchar_t*) __KERNEL(wcscspn);
+wchar_t* wcstok(wchar_t* __restrict, const wchar_t* __restrict, wchar_t** __restrict) __KERNEL(wcstok);
+size_t wcsxfrm(wchar_t* __restrict, const wchar_t* __restrict, size_t) __KERNEL(wcsxfrm);
+size_t wcsftime(wchar_t* __restrict, size_t, const wchar_t* __restrict, const struct tm* __restrict) __KERNEL(wcsftime);
 wchar_t* wcsdup(const wchar_t*) __KERNEL(wcsdup);
 wchar_t* wmemchr(const wchar_t*, wchar_t, size_t) __KERNEL(wmemchr);
 int wmemcmp(const wchar_t*, const wchar_t*, size_t) __KERNEL(wmemcmp);

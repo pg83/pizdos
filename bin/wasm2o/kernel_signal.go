@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/binary"
+	"math"
 	"math/bits"
 	"os"
 	"os/signal"
@@ -29,6 +30,7 @@ const (
 	saNocldstop = 1
 	saNocldwait = 2
 	saSiginfo   = 4
+	saOnstack   = 0x08000000
 	saRestart   = 0x10000000
 	saNodefer   = 0x40000000
 	saResethand = 0x80000000
@@ -36,6 +38,9 @@ const (
 	sigUnblock  = 1
 	sigSetmask  = 2
 	nsig        = 65
+	ssOnstack   = 1
+	ssDisable   = 2
+	minSigstksz = 2048
 )
 
 // What a signal does by default.
@@ -94,6 +99,8 @@ type signalState struct {
 	pending uint64
 	// dead is set when the process ended and closed its wake descriptor.
 	dead bool
+	// altstack is the stack of sigaltstack, none when its size is 0.
+	altstack struct{ sp, size uint32 }
 }
 
 func (s *signalState) deliverable() uint64 {
@@ -358,9 +365,19 @@ func (p *Process) runHandler(sig int, act sigAction) {
 		p.sig.blocked |= sigBit(sig)
 	}
 
+	alt := p.sig.altstack
 	p.sig.mu.Unlock()
 	errno := p.errno()
 	ctx := p.inst.ctx()
+
+	// A handler of SA_ONSTACK runs on the alternate stack, unless it is
+	// on it already; a longjmp out of it restores the stack pointer.
+	sp := binary.LittleEndian.Uint32(p.inst.block[p.stackPointer():])
+	moved := act.flags&saOnstack != 0 && alt.size != 0 && sp-alt.sp > alt.size
+
+	if moved {
+		binary.LittleEndian.PutUint32(p.inst.block[p.stackPointer():], (alt.sp+alt.size)&^15)
+	}
 
 	if act.flags&saSiginfo != 0 {
 		if p.siginfo == 0 {
@@ -378,10 +395,109 @@ func (p *Process) runHandler(sig int, act sigAction) {
 		f.Interface().(func(uintptr, uint32, uint32))(ctx, act.handler, uint32(sig))
 	}
 
+	if moved {
+		binary.LittleEndian.PutUint32(p.inst.block[p.stackPointer():], sp)
+	}
+
 	p.setErrno(errno)
 	p.sig.mu.Lock()
 	p.sig.blocked = saved
 	p.sig.mu.Unlock()
+}
+
+func (p *Process) sigprocmask(how, set, old uint32) error {
+	mask := p.mask()
+
+	if old != 0 {
+		p.put64(old, mask)
+	}
+
+	if set != 0 {
+		s := p.u64(set)
+
+		switch how {
+		case sigBlock:
+			mask |= s
+		case sigUnblock:
+			mask &^= s
+		case sigSetmask:
+			mask = s
+		default:
+			return syscall.EINVAL
+		}
+
+		p.setMask(mask)
+	}
+
+	return nil
+}
+
+// sigwait waits until a signal of set is pending and takes it, for at most
+// timeout when that is not negative, else EAGAIN. Another signal the process
+// would deliver interrupts the wait: its handler runs and the error is
+// EINTR.
+func (p *Process) sigwait(set uint64, timeout time.Duration) (int, error) {
+	set &^= unblockable
+	end := time.Now().Add(timeout)
+	wake := []pollFd{{fd: int32(p.wake), events: pollIn}}
+
+	for {
+		var b [8]byte
+		syscall.Read(p.wake, b[:])
+		p.sig.mu.Lock()
+
+		if ready := p.sig.pending & set; ready != 0 {
+			sig := bits.TrailingZeros64(ready) + 1
+			p.sig.pending &^= sigBit(sig)
+			p.sig.mu.Unlock()
+
+			return sig, nil
+		}
+
+		other := p.sig.pending &^ p.sig.blocked
+		p.sig.mu.Unlock()
+
+		if other != 0 {
+			p.handleSignals()
+
+			return 0, syscall.EINTR
+		}
+
+		ms := -1
+
+		if timeout >= 0 {
+			left := time.Until(end)
+
+			if left <= 0 {
+				return 0, syscall.EAGAIN
+			}
+
+			ms = int(min(left.Milliseconds()+1, 1<<30))
+		}
+
+		wake[0].revents = 0
+		poll(wake, ms)
+	}
+}
+
+// putSiginfo writes the siginfo_t of a signal sigwaitinfo takes.
+func (p *Process) putSiginfo(at uint32, sig int) {
+	if at != 0 {
+		clear(p.span(at, 36))
+		p.put32(at, uint32(sig))
+	}
+}
+
+// setMember checks a signal a sigset_t takes: not 32 and 33, which
+// sigfillset leaves out as musl's.
+func (p *Process) setMember(sig uint32) bool {
+	if !validSignal(sig) || sig == 32 || sig == 33 {
+		p.setErrno(syscall.EINVAL)
+
+		return false
+	}
+
+	return true
 }
 
 func (p *Process) setAction(sig int, act sigAction) sigAction {
@@ -477,7 +593,7 @@ func (p *Process) kill(pid int32, sig uint32) error {
 }
 
 func (k *Kernel) signalFunctions() map[string]any {
-	return map[string]any{
+	t := map[string]any{
 		"signal": func(ctx uintptr, sig, handler uint32) uint32 {
 			p := proc(ctx)
 
@@ -515,35 +631,207 @@ func (k *Kernel) signalFunctions() map[string]any {
 		},
 		"sigprocmask": func(ctx uintptr, how, set, old uint32) uint32 {
 			p := proc(ctx)
-			mask := p.mask()
 
-			if old != 0 {
-				p.put64(old, mask)
+			return p.result(0, p.sigprocmask(how, set, old))
+		},
+		// pthread_sigmask is sigprocmask of the process's one thread; it
+		// returns an error number.
+		"pthread_sigmask": func(ctx uintptr, how, set, old uint32) uint32 {
+			p := proc(ctx)
+			err := p.sigprocmask(how, set, old)
+			p.deliver()
+
+			if err != nil {
+				return uint32(errnoOf(err))
 			}
 
-			if set != 0 {
-				s := p.u64(set)
-
-				switch how {
-				case sigBlock:
-					mask |= s
-				case sigUnblock:
-					mask &^= s
-				case sigSetmask:
-					mask = s
-				default:
-					return p.result(0, syscall.EINVAL)
-				}
-
-				p.setMask(mask)
-			}
-
-			return p.result(0, nil)
+			return 0
 		},
 		"sigfillset": func(ctx uintptr, set uint32) uint32 {
 			proc(ctx).put64(set, ^uint64(0)&^(3<<31))
 
 			return 0
+		},
+		"sigemptyset": func(ctx uintptr, set uint32) uint32 {
+			proc(ctx).put64(set, 0)
+
+			return 0
+		},
+		"sigaddset": func(ctx uintptr, set, sig uint32) uint32 {
+			p := proc(ctx)
+
+			if !p.setMember(sig) {
+				return math.MaxUint32
+			}
+
+			p.put64(set, p.u64(set)|sigBit(int(sig)))
+
+			return 0
+		},
+		"sigdelset": func(ctx uintptr, set, sig uint32) uint32 {
+			p := proc(ctx)
+
+			if !p.setMember(sig) {
+				return math.MaxUint32
+			}
+
+			p.put64(set, p.u64(set)&^sigBit(int(sig)))
+
+			return 0
+		},
+		"sigismember": func(ctx uintptr, set, sig uint32) uint32 {
+			p := proc(ctx)
+
+			return bit(validSignal(sig) && p.u64(set)&sigBit(int(sig)) != 0)
+		},
+		"sigisemptyset": func(ctx uintptr, set uint32) uint32 {
+			return bit(proc(ctx).u64(set) == 0)
+		},
+		"sigorset": func(ctx uintptr, d, a, b uint32) uint32 {
+			p := proc(ctx)
+			p.put64(d, p.u64(a)|p.u64(b))
+
+			return 0
+		},
+		"sigandset": func(ctx uintptr, d, a, b uint32) uint32 {
+			p := proc(ctx)
+			p.put64(d, p.u64(a)&p.u64(b))
+
+			return 0
+		},
+		"sigpending": func(ctx uintptr, set uint32) uint32 {
+			p := proc(ctx)
+			p.sig.mu.Lock()
+			pending := p.sig.pending
+			p.sig.mu.Unlock()
+			p.put64(set, pending)
+
+			return p.result(0, nil)
+		},
+		// sigwait returns an error number.
+		"sigwait": func(ctx uintptr, set, at uint32) uint32 {
+			p := proc(ctx)
+
+			for {
+				sig, err := p.sigwait(p.u64(set), -1)
+
+				if err == nil {
+					p.put32(at, uint32(sig))
+
+					return 0
+				}
+			}
+		},
+		"sigwaitinfo": func(ctx uintptr, set, info uint32) uint32 {
+			p := proc(ctx)
+			sig, err := p.sigwait(p.u64(set), -1)
+
+			if err == nil {
+				p.putSiginfo(info, sig)
+			}
+
+			return p.result(sig, err)
+		},
+		"sigtimedwait": func(ctx uintptr, set, info, timeout uint32) uint32 {
+			p := proc(ctx)
+			d := time.Duration(-1)
+
+			if timeout != 0 {
+				var err error
+
+				if d, err = p.timespec(timeout); err != nil {
+					return p.result(0, err)
+				}
+			}
+
+			sig, err := p.sigwait(p.u64(set), d)
+
+			if err == nil {
+				p.putSiginfo(info, sig)
+			}
+
+			return p.result(sig, err)
+		},
+		"sigaltstack": func(ctx uintptr, ss, old uint32) uint32 {
+			p := proc(ctx)
+			sp := binary.LittleEndian.Uint32(p.inst.block[p.stackPointer():])
+			p.sig.mu.Lock()
+			alt := p.sig.altstack
+			p.sig.mu.Unlock()
+			on := alt.size != 0 && sp-alt.sp <= alt.size
+
+			if old != 0 {
+				flags := uint32(0)
+
+				switch {
+				case alt.size == 0:
+					flags = ssDisable
+				case on:
+					flags = ssOnstack
+				}
+
+				p.put32(old, alt.sp)
+				p.put32(old+4, flags)
+				p.put32(old+8, alt.size)
+			}
+
+			if ss == 0 {
+				return p.result(0, nil)
+			}
+
+			flags := p.u32(ss + 4)
+
+			switch {
+			case on:
+				return p.result(0, syscall.EPERM)
+			case flags&^(ssOnstack|ssDisable|1<<31) != 0:
+				return p.result(0, syscall.EINVAL)
+			case flags&ssDisable != 0:
+				alt.sp, alt.size = 0, 0
+			case p.u32(ss+8) < minSigstksz:
+				return p.result(0, syscall.ENOMEM)
+			default:
+				alt.sp, alt.size = p.u32(ss), p.u32(ss+8)
+				p.span(alt.sp, alt.size)
+			}
+
+			p.sig.mu.Lock()
+			p.sig.altstack = alt
+			p.sig.mu.Unlock()
+
+			return p.result(0, nil)
+		},
+		// siginterrupt makes a signal's handler interrupt calls, or restart
+		// them.
+		"siginterrupt": func(ctx uintptr, sig, flag uint32) uint32 {
+			p := proc(ctx)
+
+			if !validSignal(sig) {
+				return p.result(0, syscall.EINVAL)
+			}
+
+			p.sig.mu.Lock()
+
+			if flag != 0 {
+				p.sig.actions[sig].flags &^= saRestart
+			} else {
+				p.sig.actions[sig].flags |= saRestart
+			}
+
+			p.sig.mu.Unlock()
+
+			return p.result(0, nil)
+		},
+		"pause": func(ctx uintptr) uint32 {
+			p := proc(ctx)
+
+			for {
+				if _, err := p.waitFds(nil, -1, false); err != nil {
+					break
+				}
+			}
+
+			return p.result(0, syscall.EINTR)
 		},
 		"sigsuspend": func(ctx uintptr, set uint32) uint32 {
 			p := proc(ctx)
@@ -576,6 +864,17 @@ func (k *Kernel) signalFunctions() map[string]any {
 
 			return p.result(0, p.kill(int32(pid), sig))
 		},
+		// sigqueue sends a signal as kill does; its value does not reach
+		// the handler.
+		"sigqueue": func(ctx uintptr, pid, sig, value uint32) uint32 {
+			p := proc(ctx)
+
+			if int32(pid) <= 0 {
+				return p.result(0, syscall.EINVAL)
+			}
+
+			return p.result(0, p.kill(int32(pid), sig))
+		},
 		"killpg": func(ctx uintptr, pgrp, sig uint32) uint32 {
 			p := proc(ctx)
 
@@ -586,15 +885,24 @@ func (k *Kernel) signalFunctions() map[string]any {
 			return p.result(0, p.kill(-int32(pgrp), sig))
 		},
 		"abort": func(ctx uintptr) {
-			p := proc(ctx)
-			abrt := int(syscall.SIGABRT)
-			p.setMask(p.mask() &^ sigBit(abrt))
-			p.sendSelf(abrt)
-			p.deliver()
-			p.setAction(abrt, sigAction{})
-			p.exitWith(abrt)
+			proc(ctx).abort()
 		},
 	}
+
+	t["bsd_signal"] = t["signal"]
+
+	return t
+}
+
+// abort raises SIGABRT, unblocked, and when a handler returns from it ends
+// the process by it.
+func (p *Process) abort() {
+	abrt := int(syscall.SIGABRT)
+	p.setMask(p.mask() &^ sigBit(abrt))
+	p.sendSelf(abrt)
+	p.deliver()
+	p.setAction(abrt, sigAction{})
+	p.exitWith(abrt)
 }
 
 // routeSignals takes the host's signals for the processes.

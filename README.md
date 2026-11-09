@@ -34,10 +34,12 @@ build.py      the build graph
   `memmove`, `memset` (`memory.copy`/`memory.fill`), `exit`/`atexit`,
   `popen`, `syslog` and the crt.
 - Start-up: the kernel calls the exported `_start`, which calls
-  `__kernel_start(&errno, &environ, &argc, &argv)`; the kernel has placed the
-  argument vector in the process heap and keeps `errno` and `environ`
-  current. Signal handlers are called through the exported
-  `__call_signal_handler` and `__call_signal_action`.
+  `__kernel_start(&errno, &environ, &argc, &argv, tzname, &timezone,
+  &daylight)`; the kernel has placed the argument vector in the process heap,
+  keeps `errno` and `environ` current and sets the zone's globals in
+  `tzset`. Signal handlers are called through the exported
+  `__call_signal_handler` and `__call_signal_action`, glob's error function
+  through `__call_glob_error`.
 - Memory: the stack comes first (1 MiB, overflow traps), the heap starts at
   the exported `__heap_base` and is the kernel's to manage. `__stack_pointer`
   is exported too: `longjmp` restores it.
