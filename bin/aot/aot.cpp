@@ -9863,76 +9863,81 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             });
         }
         usize nextMove = 0;
-        {
-            auto range491 = (a)->order.view();
-            for (Int index492 = 0, rangeEnd493 = length(range491); index492 < rangeEnd493; ++index492) {
-                i32 b = range491[index492];
-                MBlock* blk = (&((mf)->blocks[b]));
-                Vec<MInst> out;
-                out.reserve(blk->insts.size());
-                auto emitMoves = [&](Slice<Move> moves) mutable -> void {
-                    if ((length(moves) == Int(0LL))) {
+        for (usize index = 0; index < a->order.size(); ++index) {
+            const i32 b = a->order[index];
+            MBlock* blk = &mf->blocks[b];
+            const usize count = blk->insts.size();
+            const auto instructions = blk->insts.view();
+            Vec<MInst> out;
+            bool rebuilding = false;
+            // Keep the original storage until an inserted instruction needs
+            // space. Earlier instructions have already been rewritten.
+            auto prepareOutput = [&](usize prefix) {
+                if (!rebuilding) {
+                    out.reserve(count);
+                    out.append(subslice(instructions, 0, Int(prefix)));
+                    rebuilding = true;
+                }
+            };
+            auto emitMoves = [&](Slice<Move> moves, usize prefix) {
+                if (length(moves)) {
+                    prepareOutput(prefix);
+                    out.pushBack(parMove(moves));
+                }
+            };
+            const auto endMoves = atEnd[b];
+            emitMoves(atStart[b], 0);
+            const Int branches = length(endMoves) ? firstBranch(blk->insts) : Int(count);
+            const i32 firstKey = 2 * (a->blockFrom[b] + 2);
+            while (nextMove < inner.entries.size() && inner.entries[nextMove].position < firstKey) {
+                ++nextMove;
+            }
+            const bool hasInner = count && nextMove < inner.entries.size() && inner.entries[nextMove].position < 2 * (a->blockTo[b] - 1);
+            for (usize i = 0; i < count; ++i) {
+                const i32 p = a->blockFrom[b] + 2 + 2 * i32(i);
+                if (Int(i) == branches) {
+                    emitMoves(endMoves, i);
+                }
+                if (hasInner) {
+                    for (i32 half = 0; half < 2; ++half) {
+                        const i32 key = 2 * p + half;
+                        while (nextMove < inner.entries.size() && inner.entries[nextMove].position < key) {
+                            ++nextMove;
+                        }
+                        if (nextMove < inner.entries.size() && inner.entries[nextMove].position == key) {
+                            prepareOutput(i);
+                            MInst moves = inst(mParMove);
+                            auto& list = mInstExtra(&moves)->moves;
+                            do {
+                                list.pushBack(inner.entries[nextMove++].move);
+                            } while (nextMove < inner.entries.size() && inner.entries[nextMove].position == key);
+                            out.pushBack(moves);
+                        }
+                    }
+                }
+                MInst* in = &instructions[Int(i)];
+                mInstForEachOperand(in, [&](VReg* r, Int role) {
+                    if (*r == noReg || vRegIsPhys(*r)) {
                         return;
                     }
-                    out.pushBack(parMove(moves));
-                };
-                emitMoves(atStart[b]);
-                Int branches = firstBranch((blk)->insts);
-                {
-                    auto range503 = (blk)->insts.view();
-                    for (Int index504 = 0, rangeEnd505 = length(range503); index504 < rangeEnd505; ++index504) {
-                        Int i = index504;
-                        i32 p = a->blockFrom[b] + 2 + 2 * i;
-                        if ((i == branches)) {
-                            emitMoves(atEnd[b]);
-                        }
-                        {
-                            auto range506 = Array<i32, 2>{{(i32(2LL) * p), ((i32(2LL) * p) + i32(1LL))}};
-                            for (Int index507 = 0, rangeEnd508 = length(range506); index507 < rangeEnd508; ++index507) {
-                                i32 key = range506[index507];
-                                // Positions at block boundaries have no
-                                // instruction here, just as in the old table.
-                                while (nextMove < inner.entries.size() && inner.entries[nextMove].position < key) {
-                                    ++nextMove;
-                                }
-                                if (nextMove < inner.entries.size() && inner.entries[nextMove].position == key) {
-                                    MInst moves = inst(mParMove);
-                                    auto& list = mInstExtra(&moves)->moves;
-                                    do {
-                                        list.pushBack(inner.entries[nextMove++].move);
-                                    } while (nextMove < inner.entries.size() && inner.entries[nextMove].position == key);
-                                    out.pushBack(moves);
-                                }
-                            }
-                        }
-                        MInst in = (blk)->insts[i];
-                        mInstForEachOperand(&(in), [&](VReg* r, Int role) mutable -> void {
-                            if (((*(r)) == noReg)) {
-                                return;
-                            }
-                            if (vRegIsPhys(*(r))) {
-                                return;
-                            }
-                            i32 at = p;
-                            if ((role == roleDef)) {
-                                at = (p + i32(1LL));
-                            }
-                            VReg v = (*(r));
-                            (*(r)) = allocatorLocation(a, v, at);
-                            if ((isSlot((*(r))) && ((in).op != mParMove))) {
-                                compilerError(String("internal error: operand of %s in a stack slot"));
-                            }
-                        });
-                        if (((in).op == mParMove)) {
-                            mInstExtra(&in)->moves.resize(usize(length(dropSelfMoves(mInstMoves(&in)))));
-                        }
-                        out.pushBack(in);
+                    const i32 at = role == roleDef ? p + 1 : p;
+                    *r = allocatorLocation(a, *r, at);
+                    if (isSlot(*r) && in->op != mParMove) {
+                        compilerError(String("internal error: operand of %s in a stack slot"));
                     }
+                });
+                if (in->op == mParMove) {
+                    mInstExtra(in)->moves.resize(usize(length(dropSelfMoves(mInstMoves(in)))));
                 }
-                if ((branches == length((blk)->insts))) {
-                    emitMoves(atEnd[b]);
+                if (rebuilding) {
+                    out.pushBack(*in);
                 }
-                (blk)->insts = move(out);
+            }
+            if (branches == Int(count)) {
+                emitMoves(endMoves, count);
+            }
+            if (rebuilding) {
+                blk->insts = move(out);
             }
         }
     }
