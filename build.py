@@ -402,6 +402,7 @@ DECODE = {
 }
 NATIVE_CONFIG = json.dumps({
     "cc": CLANG,
+    "ar": LLVM_AR,
     "cxx": shutil.which("clang++") or "clang++",
     "pkg_config": shutil.which("pkg-config") or "pkg-config",
     "cppflags": build.cppflags,
@@ -443,6 +444,17 @@ for kind, (module, digest, source, source_digest) in DECODE.items():
     )
     decode_stand.extend([obj, native])
 
+# CPython built natively from the tarball python.wasm comes from, with its
+# built-in modules, against python.o on dev/stand/pybench.py.
+stand_python_native = command(
+    name="stand_python_native",
+    inputs=["$(S)/dev/stand/python.py", "$(S)/bin/python/make.py", "$(S)/dev/wasm.py"],
+    deps=[python_tarball],
+    outputs=["$(B)/stand/python/native"],
+    cmd=["python3", "$(S)/dev/stand/python.py", python_tarball.outputs[0], "$(B)/stand/python/native", NATIVE_CONFIG],
+    descr="CC", color="green",
+)
+
 stand_corpus = fetch(
     "stand_corpus",
     "https://raw.githubusercontent.com/pg83/store/1a4411b2ee6fdf6c3a05b7ddafd4d71ab79dbb54/decode-corpus-1.tgz",
@@ -481,4 +493,4 @@ for test in build.glob("$(S)/tst/test_*.py"):
 
 group("install", busybox, busybox_abi, busybox_o, doom, doom_o, python, python_o, wasm2o, aot_native, aot, aot_aot, wazero)
 group("test", *tests, wasm2o_go_test, wasm2o_spec_test)
-group("stand", wasm2o, aot_native, aot, aot_aot, busybox, stand_corpus, *decode_stand)
+group("stand", wasm2o, aot_native, aot, aot_aot, busybox, stand_corpus, *decode_stand, python, python_o, stand_python_native)

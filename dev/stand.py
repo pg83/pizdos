@@ -2,14 +2,17 @@
 """The stand: native (A) against our AOT (C).
 
     sh dev/stand/build.sh
-    dev/stand.py [--runs N] [--only aot,im,pdf,djvu,svg,magic] [--json FILE]
+    dev/stand.py [--runs N] [--only aot,im,pdf,djvu,svg,magic,py] [--json FILE]
 
 Compiler workloads measure end-to-end wall and CPU time. Decode workloads
 measure work inside each driver, excluding startup, linking, file I/O and
 output hashing. Small workloads repeat in the same instance. The compiler's
 outputs must be identical; decode must agree on status, dimensions and
 page count, and the report counts the files whose pixels match exactly:
-native pixels may differ with libm and floating-point arithmetic.
+native pixels may differ with libm and floating-point arithmetic. The
+Python workload is dev/stand/pybench.py, timed inside the interpreter, the
+native CPython and python.o each in a root with the same standard library
+zip; their digests of the results must be equal.
 
 The original positional form is accepted for compiler workloads alone:
     stand.py [--runs N] <aot-native> <wasm2o> <input.wasm>...
@@ -22,6 +25,7 @@ import os
 import platform
 import re
 import resource
+import shutil
 import statistics
 import subprocess
 import tarfile
@@ -180,6 +184,68 @@ def decode_work(build, wasm2o, kinds, runs, minimum, work, objects=None):
     return rows
 
 
+def python_root(root, interpreter, build):
+    """A root of the Python workload: the interpreter as /usr/bin/python3,
+    the standard library zip and the benchmark."""
+    (root / "usr/bin").mkdir(parents=True)
+    (root / "usr/lib/python3.14/lib-dynload").mkdir(parents=True)
+    shutil.copy(interpreter, root / "usr/bin/python3")
+    (root / "usr/bin/python3").chmod(0o755)
+    shutil.copy(build / "bin/python/python314.zip", root / "usr/lib/python314.zip")
+    shutil.copy(Path(__file__).resolve().parent / "stand" / "pybench.py", root / "pybench.py")
+
+    return root
+
+
+def python_run(command, repeat):
+    env = {"PYTHONHASHSEED": "0", **{k: environment()[k] for k in ("GOMAXPROCS", "MAGICK_THREAD_LIMIT", "OMP_NUM_THREADS")}}
+
+    try:
+        r = subprocess.run([*command, str(repeat)], env=env, capture_output=True, text=True, check=True)
+    except subprocess.CalledProcessError as error:
+        raise SystemExit(f"py: {command[0]} exited {error.returncode}\n{error.stderr}") from None
+
+    times = re.findall(r"^time ([0-9.]+)$", r.stderr, re.M)
+
+    if len(times) != 1 or len(r.stdout.split()) != 1:
+        raise SystemExit(f"bad benchmark output: {command}\n{r.stdout}\n{r.stderr}")
+
+    return float(times[0]), r.stdout.strip()
+
+
+def python_work(build, wasm2o, runs, minimum, work):
+    native = python_root(work / "python-A", build / "stand/python/native", build)
+    aot = python_root(work / "python-C", build / "bin/python/python.o", build)
+    commands = {
+        "A": [str(native / "usr/bin/python3"), "-S", str(native / "pybench.py")],
+        "C": [str(wasm2o), "run", "--root", str(aot), "-a", "/usr/bin/python3", str(aot / "usr/bin/python3"), "--", "-S", "/pybench.py"],
+    }
+    native_time, _ = python_run(commands["A"], 1)
+    repeat = max(1, math.ceil(minimum / max(native_time, 0.000001)))
+    samples = {name: [] for name in commands}
+    outputs = {}
+
+    for run in range(runs):
+        order = list(commands)
+        order = order[run % 2:] + order[:run % 2]
+
+        for name in order:
+            elapsed, got = python_run(commands[name], repeat)
+
+            if outputs.setdefault(name, got) != got:
+                raise SystemExit(f"py: {name}'s results changed between runs")
+
+            samples[name].append(elapsed / repeat)
+
+    if outputs["A"] != outputs["C"]:
+        raise SystemExit(f"py: wasm2o computes {outputs['C']}, native {outputs['A']}")
+
+    medians = {name: statistics.median(values) for name, values in samples.items()}
+    print(f"py/pybench        A {medians['A']:7.3f}s  C {medians['C']:7.3f}s  C/A {medians['C'] / medians['A']:.3f}  x{repeat}, digest equal", flush=True)
+
+    return [{"work": "py/pybench", "repeat": repeat, "seconds": medians, "samples": samples, "digest": outputs["A"]}]
+
+
 def geomean(rows):
     ratios = [(row.get("wall") or row["seconds"])["C"] / (row.get("wall") or row["seconds"])["A"] for row in rows]
 
@@ -192,7 +258,7 @@ def main():
     parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--build-dir", type=Path, default=Path(".build"))
     parser.add_argument("--objects", type=Path, help="use saved KIND.o files for generated-code comparisons")
-    parser.add_argument("--only", default="aot," + ",".join(KINDS))
+    parser.add_argument("--only", default="aot," + ",".join(KINDS) + ",py")
     parser.add_argument("--min-time", type=float, default=0.25, help="minimum native time per decode sample")
     parser.add_argument("--json", type=Path, help="write samples and per-file results")
     args = parser.parse_args()
@@ -201,7 +267,7 @@ def main():
     if args.runs < 1 or not math.isfinite(args.min_time) or args.min_time <= 0:
         parser.error("runs and min-time must be positive")
 
-    if set(selected) - {"aot", *KINDS}:
+    if set(selected) - {"aot", "py", *KINDS}:
         parser.error("unknown workload in --only")
 
     build = args.build_dir.resolve()
@@ -227,6 +293,9 @@ def main():
 
             if kinds:
                 rows.extend(decode_work(build, wasm2o, kinds, args.runs, args.min_time, work, args.objects))
+
+            if "py" in selected:
+                rows.extend(python_work(build, wasm2o, args.runs, args.min_time, work))
 
     if rows:
         print(f"geomean C/A {geomean(rows):.3f}", flush=True)

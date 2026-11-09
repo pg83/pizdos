@@ -238,7 +238,19 @@ with `GOMAXPROCS=1`, `MAGICK_THREAD_LIMIT=1` and `OMP_NUM_THREADS=1`.
 
 Native and wasm2o must agree on success, dimensions and page counts; the
 pixel hashes can differ with floating point and libm, and the report
-states how many files match exactly. It ends with the geometric mean of
-C/A over the workloads. `--json` saves the samples and every file's
+states how many files match exactly.
+
+For Python the stand runs `dev/stand/pybench.py`, pure Python workloads
+(n-body, fannkuch, spectral norm, small objects, strings, regular
+expressions, JSON, generators, recursion), in python.o under `wasm2o run`
+and in CPython built natively from the same tarball by CPython's own
+configure: -O3 without vectorization, AVX or FMA as the codecs, no
+computed gotos, which wasm cannot express, so both interpreters dispatch
+through the same switch, and the modules python.wasm has built in. Each
+runs in a root with the same standard library zip; the benchmark times its
+work inside the interpreter, and the digests of the results must be
+equal.
+
+The report ends with the geometric mean of C/A over the workloads. `--json` saves the samples and every file's
 result. The original positional `dev/stand.py` invocation runs the
 compiler workloads alone.

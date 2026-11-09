@@ -14,7 +14,9 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
 - `sh dev/stand/build.sh` supplies the pinned ix revision's libraries and
   tools and runs `./build stand`: decode's im, pdf, djvu, svg and magic
   modules through wasm2o, and their wrappers against the native
-  libraries. `dev/stand.py --runs 5 --json FILE` runs native (A) and our
+  libraries; python.o and CPython built natively from the same tarball
+  (`dev/stand/python.py`: no computed gotos, the same built-in modules).
+  `dev/stand.py --runs 5 --json FILE` runs native (A) and our
   AOT (C) interleaved and prints the geometric mean of C/A; C/A <= 1.2 is
   the goal. Native is ordinary clang code of the same program, never
   wasm2c. Native codec libraries and wrappers disable SIMD implementations,
@@ -95,8 +97,9 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   ordinary checks. Profiled objects are for counting, not timing.
 - Speed is measured against native code by the stand: the C++ compiler
   compiling busybox.wasm and aot.wasm, natively and as aot.aot in wasm2o,
-  and the scalar modules of decode release 16 on their file corpora against
-  the same wrappers compiled with the pinned ix libraries.
+  the scalar modules of decode release 16 on their file corpora against
+  the same wrappers compiled with the pinned ix libraries, and CPython on
+  `dev/stand/pybench.py`, timed inside the interpreter.
 - An import named setjmp, _setjmp, sigsetjmp, vfork, fork or forkpty returns
   twice: its direct calls go through an adapter that writes the caller's
   frame to the instance header (`abi.go`), and the caller keeps an

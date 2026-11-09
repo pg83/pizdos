@@ -36,7 +36,7 @@ PREFIX = "/usr"
 PLATFORM = "pizdos"
 
 FLAGS = [
-    "-O2",
+    "-O3",
     "-std=c11",
     "-fwrapv",
     "-fno-strict-overflow",
