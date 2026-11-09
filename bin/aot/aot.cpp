@@ -9912,9 +9912,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return slotLoc(a->slots[allocatorVindex(a, it->vreg)]);
     }
 
-    // location of vreg r at position p: a register, or a stack slot encoded as
-    // a negative value below noReg. The root caches the range it last found,
-    // which consecutive lookups of a register usually hit.
+    // location of vreg r at position p, where r is live: a register, or a
+    // stack slot encoded as a negative value below noReg. A part of a split
+    // interval has one location over its whole extent, and parts do not
+    // overlap; the root caches the extent it last found.
     static VReg allocatorLocation(Allocator* a, VReg r, i32 p) {
         Interval* root = a->intervals[allocatorVindex(a, r)];
         if (p >= root->locationFrom && p < root->locationTo) {
@@ -9937,11 +9938,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             part = root->children[end - 1];
         }
-        const Int range = sortSearch(length(part->ranges), [&](Int i) {
-            return part->ranges[i].to > p;
-        });
-        root->locationFrom = part->ranges[range].from;
-        root->locationTo = part->ranges[range].to;
+        root->locationFrom = intervalStart(part);
+        root->locationTo = intervalEnd(part);
         root->locationReg = allocatorLoc(a, part);
         return root->locationReg;
     }
