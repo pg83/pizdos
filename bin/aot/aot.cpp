@@ -5698,6 +5698,8 @@ namespace {
 
     static VReg allocatorLocation(Allocator* a, VReg r, i32 p);
 
+    static VReg allocatorLocate(Allocator* a, Interval* root, i32 p);
+
     static u8 allocatorRegClass(Allocator* a, VReg r);
 
     static void allocatorResolve(Allocator* a);
@@ -9911,12 +9913,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     // location of vreg r at position p: a register, or a stack slot encoded as
-    // a negative value below noReg.
+    // a negative value below noReg. The root caches the range it last found,
+    // which consecutive lookups of a register usually hit.
     static VReg allocatorLocation(Allocator* a, VReg r, i32 p) {
         Interval* root = a->intervals[allocatorVindex(a, r)];
         if (p >= root->locationFrom && p < root->locationTo) {
             return root->locationReg;
         }
+        return allocatorLocate(a, root, p);
+    }
+
+    static __attribute__((noinline)) VReg allocatorLocate(Allocator* a, Interval* root, i32 p) {
         Interval* part = root;
         if (!intervalCovers(part, p)) {
             // Splitting cuts an interval's suffix. Children therefore have
