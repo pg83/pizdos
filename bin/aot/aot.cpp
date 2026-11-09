@@ -14816,24 +14816,238 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return (l)->vregs[v];
     }
 
+    // signedMagic gives the multiplier and shift dividing a 32-bit signed value
+    // by d, 2 <= |d| < 2^31, after Hacker's Delight, figure 10-1.
+    static Tuple2<i32, i32> signedMagic(i32 d) {
+        const u32 two31 = 0x80000000u;
+        const u32 ad = d < 0 ? u32(0) - u32(d) : u32(d);
+        const u32 t = two31 + (u32(d) >> 31);
+        const u32 anc = t - 1 - t % ad;
+        i32 p = 31;
+        u32 q1 = two31 / anc;
+        u32 r1 = two31 - q1 * anc;
+        u32 q2 = two31 / ad;
+        u32 r2 = two31 - q2 * ad;
+        u32 delta = 0;
+        do {
+            ++p;
+            q1 *= 2;
+            r1 *= 2;
+            if (r1 >= anc) {
+                ++q1;
+                r1 -= anc;
+            }
+            q2 *= 2;
+            r2 *= 2;
+            if (r2 >= ad) {
+                ++q2;
+                r2 -= ad;
+            }
+            delta = ad - r2;
+        } while (q1 < delta || (q1 == delta && r1 == 0));
+        const i32 m = i32(q2 + 1);
+        return {d < 0 ? -m : m, p - 32};
+    }
+
+    static void lowererShift(Lowerer* l, VReg r, Int kind, i64 n, u8 size) {
+        if (n == 0) {
+            return;
+        }
+        MInst in = inst(mShiftImm);
+        in.dst = r;
+        in.imm = n;
+        in.size = size;
+        in.aux = u8(kind);
+        lowererEmit(l, in);
+    }
+
+    static void lowererAluTo(Lowerer* l, VReg dst, AluOp op, VReg src, u8 size) {
+        MInst in = inst(mAlu);
+        in.dst = dst;
+        in.src = src;
+        in.size = size;
+        in.aux = u8(op);
+        lowererEmit(l, in);
+    }
+
+    static VReg lowererCopy(Lowerer* l, VReg src, u8 size) {
+        VReg r = mFuncNewReg(l->mf, classGPR);
+        lowererMov(l, r, src, size);
+        return r;
+    }
+
+    static void lowererZero(Lowerer* l, VReg d, u8 size) {
+        MInst zero = inst(mMovImm);
+        zero.dst = d;
+        zero.imm = 0;
+        zero.size = size;
+        lowererEmit(l, zero);
+    }
+
+    // divideByConstant divides by a constant without a division instruction
+    // where it can: shifts for powers of two, otherwise a multiplication by
+    // the divisor's reciprocal for 32-bit divisors. A remainder subtracts the
+    // product of the quotient and the divisor. It reports false for zero, a
+    // signed quotient by -1 and the divisors it leaves to a division.
+    static bool lowererDivideByConstant(Lowerer* l, i32 v, Op op, i32 a, i32 b, u8 size) {
+        if (l->f->values[b].op != OpConst) {
+            return false;
+        }
+        const bool signedValue = op == OpDivS || op == OpRemS;
+        const bool remainder = op == OpRemS || op == OpRemU;
+        const i64 width = size == u8(8LL) ? 64 : 32;
+        const u64 mask = width == 64 ? ~u64(0) : u64(0xffffffffu);
+        const u64 bits = u64(lowererConstBits(l, b)) & mask;
+        const i64 divisor = width == 64 ? i64(bits) : i64(i32(u32(bits)));
+        // A signed minimum keeps its bits as the magnitude.
+        const u64 magnitude = signedValue && divisor < 0 ? (u64(0) - bits) & mask : bits;
+        const bool power = (magnitude & (magnitude - 1)) == 0;
+        if (bits == 0 || (signedValue && divisor == -1 && !remainder)) {
+            return false;
+        }
+        if (!power && (width != 32 || magnitude >= (u64(1) << 31))) {
+            return false;
+        }
+        VReg x = lowererUse(l, a);
+        VReg d = lowererDef(l, v);
+        if (magnitude == 1) {
+            if (remainder) {
+                lowererZero(l, d, size);
+            } else {
+                lowererMov(l, d, x, size);
+            }
+            return true;
+        }
+        if (power) {
+            const i64 k = bitsTrailingZeros64(magnitude);
+            if (!signedValue) {
+                lowererMov(l, d, x, size);
+                if (remainder) {
+                    lowererShift(l, d, shiftShl, width - k, size);
+                    lowererShift(l, d, shiftShr, width - k, size);
+                } else {
+                    lowererShift(l, d, shiftShr, k, size);
+                }
+                return true;
+            }
+            // Rounding toward zero adds 2^k - 1 to a negative dividend.
+            VReg t = lowererCopy(l, x, size);
+            lowererShift(l, t, shiftSar, width - 1, size);
+            lowererShift(l, t, shiftShr, width - k, size);
+            lowererAluTo(l, t, aluAdd, x, size);
+            if (remainder) {
+                lowererShift(l, t, shiftSar, k, size);
+                lowererShift(l, t, shiftShl, k, size);
+                lowererMov(l, d, x, size);
+                lowererAluTo(l, d, aluSub, t, size);
+                return true;
+            }
+            lowererShift(l, t, shiftSar, k, size);
+            lowererMov(l, d, t, size);
+            if (divisor < 0) {
+                MInst neg = inst(mUnary);
+                neg.dst = d;
+                neg.size = size;
+                neg.aux = 0;
+                lowererEmit(l, neg);
+            }
+            return true;
+        }
+        VReg q = mFuncNewReg(l->mf, classGPR);
+        if (signedValue) {
+            const auto magic = signedMagic(i32(divisor));
+            VReg wide = mFuncNewReg(l->mf, classGPR);
+            MInst ext = inst(mExt);
+            ext.dst = wide;
+            ext.src = x;
+            ext.size = u8(4LL);
+            ext.dsize = u8(8LL);
+            ext.aux = u8(1LL);
+            lowererEmit(l, ext);
+            MInst mul = inst(mImul3);
+            mul.dst = q;
+            mul.src = wide;
+            mul.imm = magic.v0;
+            mul.size = u8(8LL);
+            lowererEmit(l, mul);
+            lowererShift(l, q, shiftSar, 32, u8(8LL));
+            if (divisor > 0 && magic.v0 < 0) {
+                lowererAluTo(l, q, aluAdd, x, u8(4LL));
+            } else if (divisor < 0 && magic.v0 > 0) {
+                lowererAluTo(l, q, aluSub, x, u8(4LL));
+            }
+            lowererShift(l, q, shiftSar, magic.v1, u8(4LL));
+            VReg sign = lowererCopy(l, q, u8(4LL));
+            lowererShift(l, sign, shiftShr, 31, u8(4LL));
+            lowererAluTo(l, q, aluAdd, sign, u8(4LL));
+        } else {
+            // q = x * m >> (32 + s) with m = floor(2^(32+s) / d) + 1 of 33 bits:
+            // x * (m - 2^32) fits 64 bits, and adding x stands for the top bit.
+            const i64 s = 64 - bitsLeadingZeros64(magnitude - 1);
+            const u64 low = (u64(1) << (32 + s)) / magnitude + 1 - (u64(1) << 32);
+            if (low < (u64(1) << 31)) {
+                MInst mul = inst(mImul3);
+                mul.dst = q;
+                mul.src = x;
+                mul.imm = i64(low);
+                mul.size = u8(8LL);
+                lowererEmit(l, mul);
+            } else {
+                MInst c = inst(mMovImm);
+                c.dst = q;
+                c.imm = i64(low);
+                c.size = u8(8LL);
+                lowererEmit(l, c);
+                lowererAluTo(l, q, aluImul, x, u8(8LL));
+            }
+            lowererShift(l, q, shiftShr, 32, u8(8LL));
+            lowererAluTo(l, q, aluAdd, x, u8(8LL));
+            lowererShift(l, q, shiftShr, s, u8(8LL));
+        }
+        if (!remainder) {
+            lowererMov(l, d, q, u8(4LL));
+            return true;
+        }
+        MInst product = inst(mImul3);
+        product.dst = q;
+        product.src = q;
+        product.imm = divisor;
+        product.size = u8(4LL);
+        lowererEmit(l, product);
+        lowererMov(l, d, x, u8(4LL));
+        lowererAluTo(l, d, aluSub, q, u8(4LL));
+        return true;
+    }
+
     static void lowererDivide(Lowerer* l, i32 v, Op op, i32 a, i32 b, u8 size) {
+        if (lowererDivideByConstant(l, v, op, a, b, size)) {
+            return;
+        }
+        // A constant divisor needs neither the zero test nor, unless it is
+        // -1, the guard of a signed minimum's quotient and remainder.
+        const bool constant = l->f->values[b].op == OpConst;
+        const u64 bits = u64(lowererConstBits(l, b)) & (size == u8(8LL) ? ~u64(0) : u64(0xffffffffu));
+        const bool nonzero = constant && bits != 0;
+        const bool minusOne = !constant || bits == (size == u8(8LL) ? ~u64(0) : u64(0xffffffffu));
         VReg ra = lowererUse(l, a);
         VReg rb = lowererUse(l, b);
-        MInst t = inst(mTest);
-        (t).src = rb;
-        (t).src2 = rb;
-        (t).size = size;
-        lowererEmit(l, t);
-        lowererTrapIf(l, ccE, trapDivByZero);
+        if (!nonzero) {
+            MInst t = inst(mTest);
+            (t).src = rb;
+            (t).src2 = rb;
+            (t).size = size;
+            lowererEmit(l, t);
+            lowererTrapIf(l, ccE, trapDivByZero);
+        }
         bool signedValue = ((op == OpDivS) || (op == OpRemS));
-        if ((op == OpDivS)) {
+        if ((op == OpDivS) && minusOne) {
             MInst in = inst(mDivOvf);
             (in).src = ra;
             (in).src2 = rb;
             (in).size = size;
             lowererEmit(l, in);
         }
-        if ((op == OpRemS)) {
+        if ((op == OpRemS) && minusOne) {
             VReg one = mFuncNewReg((l)->mf, classGPR);
             MInst mi = inst(mMovImm);
             (mi).dst = one;
