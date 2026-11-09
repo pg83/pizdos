@@ -3415,6 +3415,12 @@ namespace {
         i32 incoming{};
         i32 profile{};
         bool cold{};
+        // Emission positions of blocks, the last position control falls into
+        // from the end of each position, and the final target of each block
+        // that only forwards (-1 for others): see objCodeEmitFunction.
+        Slice<Int> positions{};
+        Vec<Int> reach;
+        Vec<i32> forward;
     };
 
     struct Amem {
@@ -5921,7 +5927,7 @@ namespace {
 
     static i32 frontendZero(Frontend* fe, ValType t);
 
-    static void funcEmitterBlock(FuncEmitter* e, MBlock* blk, i32 next);
+    static void funcEmitterBlock(FuncEmitter* e, MBlock* blk, Int at);
 
     static void funcEmitterCheck(FuncEmitter* e, MInst* in);
 
@@ -13223,7 +13229,47 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return frontendConstant(fe, t, i64(0LL));
     }
 
-    static void funcEmitterBlock(FuncEmitter* e, MBlock* blk, i32 next) {
+    // An instruction the emitter drops: a no-op or a copy onto itself.
+    static bool mInstSilent(MInst* in) {
+        switch (in->op) {
+            case mNop: {
+                return true;
+            }
+            case mMov: {
+                return in->dst == in->src && in->aux == u8(0LL);
+            }
+            case mFMov: {
+                return in->dst == in->src;
+            }
+            case mParMove: {
+                const auto moves = mInstMoves(in);
+                for (Int i = 0; i < length(moves); ++i) {
+                    if (moves[i].dst != moves[i].src) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            default: {
+                return false;
+            }
+        }
+    }
+
+    // target is where a jump to block b goes: blocks that only forward to
+    // another one are not emitted.
+    static i32 funcEmitterTarget(FuncEmitter* e, i32 b) {
+        return e->forward[usize(b)] >= 0 ? e->forward[usize(b)] : b;
+    }
+
+    // lands reports whether the end of the block at position at reaches block
+    // b without a jump: b follows it, perhaps past blocks that emit nothing.
+    static bool funcEmitterLands(FuncEmitter* e, Int at, i32 b) {
+        const Int position = e->positions[funcEmitterTarget(e, b)];
+        return position > at && position <= e->reach[usize(at)];
+    }
+
+    static void funcEmitterBlock(FuncEmitter* e, MBlock* blk, Int at) {
         (e)->cold = (blk)->cold;
         Span<MInst> insts = (blk)->insts.view();
         Int n = length(insts);
@@ -13235,15 +13281,23 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     auto switch690 = (in)->op;
                     switch (switch690) {
                         case mJmp: {
-                            if (((in)->target != next)) {
-                                funcEmitterJumpTo(e, Int(-1LL), (in)->target);
+                            if (!funcEmitterLands(e, at, in->target)) {
+                                funcEmitterJumpTo(e, Int(-1LL), in->target);
                             }
                             break;
                         }
                         case mJcc: {
-                            if (((((i + Int(1LL)) == (n - Int(1LL))) && ((insts[(i + Int(1LL))]).op == mJmp)) && ((in)->target == next))) {
-                                funcEmitterJumpTo(e, convert<i64>(u8((in)->cc ^ u8(1LL))), (insts[(i + Int(1LL))]).target);
-                                i++;
+                            // Resolve can leave emptied moves before the final jump.
+                            Int last = i + 1;
+                            while (last < n && mInstSilent(&insts[last])) {
+                                ++last;
+                            }
+                            if (last == n - 1 && insts[last].op == mJmp && funcEmitterLands(e, at, in->target)) {
+                                const i32 other = insts[last].target;
+                                if (!funcEmitterLands(e, at, other)) {
+                                    funcEmitterJumpTo(e, convert<i64>(u8(in->cc ^ u8(1LL))), other);
+                                }
+                                i = last;
                                 continue;
                             }
                             funcEmitterJumpTo(e, convert<i64>((in)->cc), (in)->target);
@@ -13682,7 +13736,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         } else {
             at = asmJccRel((e)->a, convert<u8>(cc));
         }
-        (e)->jumps = appendValues((e)->jumps, JumpFixup{at, block});
+        (e)->jumps = appendValues((e)->jumps, JumpFixup{at, funcEmitterTarget(e, block)});
     }
 
     static Amem funcEmitterMem(FuncEmitter* e, Mem m) {
@@ -17104,28 +17158,80 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 positions[b] = j;
             }
         }
+        // A block of silent instructions and a jump is not emitted: jumps to
+        // it go to its final target, unless such blocks form a cycle. Every
+        // transfer in machine IR is explicit, so no block relies on falling
+        // into it. Walking backwards past those and blocks with no code at
+        // all gives each position the last one its end falls into.
+        e->positions = positions;
+        e->reach.resize(usize(length(order)));
+        e->forward.resize(mf->blocks.size());
+        e->forward.fill(-1);
+        Vec<u8> empty;
+        empty.resize(mf->blocks.size());
+        empty.fill(0);
+        Vec<i32> jumps;
+        jumps.resize(mf->blocks.size());
+        jumps.fill(-1);
+        for (Int j = 0; j < length(order); ++j) {
+            const auto insts = mf->blocks[order[j]].insts.view();
+            Int k = 0;
+            while (k < length(insts) && mInstSilent(&insts[k])) {
+                ++k;
+            }
+            empty[usize(order[j])] = k == length(insts);
+            if (k + 1 == length(insts) && insts[k].op == mJmp) {
+                jumps[usize(order[j])] = insts[k].target;
+            }
+        }
+        for (Int j = 0; j < length(order); ++j) {
+            const i32 b = order[j];
+            i32 x = b;
+            for (Int hops = 0; jumps[usize(x)] >= 0 && hops < 16; ++hops) {
+                x = jumps[usize(x)];
+                if (x == b) {
+                    break;
+                }
+            }
+            if (jumps[usize(b)] >= 0 && jumps[usize(x)] < 0) {
+                e->forward[usize(b)] = x;
+            }
+        }
+        for (Int j = length(order) - 1; j >= 0; --j) {
+            const i32 next = j + 1 < length(order) ? order[j + 1] : -1;
+            const bool passes = next >= 0 && (empty[usize(next)] || e->forward[usize(next)] >= 0);
+            e->reach[usize(j)] = next < 0 ? j : passes ? e->reach[usize(j + 1)] : j + 1;
+        }
+        // Loop headers are aligned; a back edge through a forwarding block
+        // reaches its final target.
+        Vec<u8> header;
+        header.resize(mf->blocks.size());
+        header.fill(0);
+        for (Int j = 0; j < length(order); ++j) {
+            const i32 b = order[j];
+            const auto preds = mf->blocks[b].preds;
+            for (Int k = 0; k < length(preds); ++k) {
+                const i32 p = preds[k];
+                const i32 to = funcEmitterTarget(e, b);
+                if (!mf->blocks[to].cold && !mf->blocks[p].cold && positions[p] >= positions[to]) {
+                    header[usize(to)] = 1;
+                }
+            }
+        }
         {
             auto range1001 = order;
             for (Int index1002 = 0, rangeEnd1003 = length(range1001); index1002 < rangeEnd1003; ++index1002) {
                 Int i = index1002;
                 i32 b = range1001[index1002];
-                i32 next = i32(-1LL);
-                if (((i + Int(1LL)) < length(order))) {
-                    next = order[(i + Int(1LL))];
-                }
                 asmSetSP(a, (e)->body);
-                {
-                    auto range1004 = ((mf)->blocks[b]).preds;
-                    for (Int index1005 = 0, rangeEnd1006 = length(range1004); index1005 < rangeEnd1006; ++index1005) {
-                        i32 p = range1004[index1005];
-                        if ((((!(((mf)->blocks[b]).cold)) && (!(((mf)->blocks[p]).cold))) && (positions[p] >= positions[b]))) {
-                            asmNops(a, ((-(asmPos(a))) & i32(31LL)));
-                            break;
-                        }
-                    }
+                if (e->forward[usize(b)] >= 0) {
+                    continue;
+                }
+                if (header[usize(b)]) {
+                    asmNops(a, ((-(asmPos(a))) & i32(31LL)));
                 }
                 (e)->blockAt[b] = asmPos(a);
-                funcEmitterBlock(e, (&((mf)->blocks[b])), next);
+                funcEmitterBlock(e, (&((mf)->blocks[b])), i);
             }
         }
         {
@@ -17179,7 +17285,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     auto range1017 = (t).table;
                     for (Int index1018 = 0, rangeEnd1019 = length(range1017); index1018 < rangeEnd1019; ++index1018) {
                         i32 b = range1017[index1018];
-                        (oc)->addresses = appendValues((oc)->addresses, TextAddress{asmPos(a), (e)->blockAt[b]});
+                        (oc)->addresses = appendValues((oc)->addresses, TextAddress{asmPos(a), (e)->blockAt[funcEmitterTarget(e, b)]});
                         asmU64(a, u64(0LL));
                     }
                 }

@@ -74,8 +74,9 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   logical size traps. Machine-code range versioning lets one address guard
   cover related addresses within 64 KiB on the fast path, with each access
   checked in order on the fallback path. Versioning precedes register
-  allocation; emission places fallback blocks after hot code and uses
-  multi-byte NOPs for loop alignment.
+  allocation; emission places fallback blocks after hot code, sends jumps
+  past blocks that only jump, falls through blocks that emit nothing and
+  uses multi-byte NOPs for loop alignment.
   `memory.size`, growth limits and the zero initialization of newly grown
   pages retain their logical meaning. The object records the extension;
   running it needs this loader but no environment setting.
