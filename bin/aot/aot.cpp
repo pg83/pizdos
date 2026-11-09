@@ -17441,18 +17441,28 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if ((length((o)->alias) == Int(0LL))) {
             return;
         }
-        {
-            auto& range1114 = (f)->values;
-            for (Int index1115 = 0, rangeEnd1116 = length(range1114); index1115 < rangeEnd1116; ++index1115) {
-                Int v = index1115;
-                Value* val = (&((f)->values[v]));
-                {
-                    i32 i = i32(0LL);
-                    for (; (i < convert<i32>((val)->nargs)); i++) {
-                        (f)->pool[((val)->args + i)] = optimizerResolve(o, (f)->pool[((val)->args + i)]);
-                    }
+        const Span<const i32> aliases = o->alias.view();
+        auto resolve = [&](i32 v) {
+            while (u32(v) < aliases.count) {
+                const i32 next = aliases[v];
+                if (next < 0) {
+                    break;
                 }
+                v = next;
             }
+            return v;
+        };
+        // This pool contains only operand IDs. Old tails left by shortened
+        // argument lists have no users, so resolving them is harmless.
+        // Walk each page directly instead of fetching every Value header.
+        usize remaining = f->pool.size();
+        for (usize p = 0; remaining; ++p) {
+            const usize take = remaining < PageVec<i32>::itemsPerPage ? remaining : PageVec<i32>::itemsPerPage;
+            i32* operands = f->pool.pages.data()[p];
+            for (usize i = 0; i < take; ++i) {
+                operands[i] = resolve(operands[i]);
+            }
+            remaining -= take;
         }
         {
             auto& range1117 = (f)->blocks;
@@ -17460,13 +17470,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 Int b = index1118;
                 Term* t = (&(((f)->blocks[b]).term));
                 if ((((t)->kind == TermIf) || ((t)->kind == TermSwitch))) {
-                    (t)->value = optimizerResolve(o, (t)->value);
+                    (t)->value = resolve((t)->value);
                 }
                 {
                     auto range1120 = (t)->values;
                     for (Int index1121 = 0, rangeEnd1122 = length(range1120); index1121 < rangeEnd1122; ++index1121) {
                         Int i = index1121;
-                        (t)->values[i] = optimizerResolve(o, (t)->values[i]);
+                        (t)->values[i] = resolve((t)->values[i]);
                     }
                 }
                 {
@@ -17477,7 +17487,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             auto range1126 = ((t)->edges[i]).args;
                             for (Int index1127 = 0, rangeEnd1128 = length(range1126); index1127 < rangeEnd1128; ++index1127) {
                                 Int j = index1127;
-                                ((t)->edges[i]).args[j] = optimizerResolve(o, ((t)->edges[i]).args[j]);
+                                ((t)->edges[i]).args[j] = resolve(((t)->edges[i]).args[j]);
                             }
                         }
                     }
@@ -23018,6 +23028,47 @@ namespace {
                     require(found.v0 == (i % 2 == 0 ? i * 7 : -i), "map value after reuse");
                 }
             }
+        }
+        {
+            ObjPool pool;
+            PoolScope scope(pool);
+            auto* f = pool.make<Function>();
+            auto* o = pool.make<Optimizer>();
+            o->f = f;
+            for (i32 b = 0; b < 3; ++b) {
+                functionNewBlock(f);
+            }
+            const i32 input = functionNewValue(f, OpParam, I32, 0, 0, {});
+            const i32 zero = functionNewValue(f, OpConst, I32, -1, 0, {});
+            const i32 first = functionNewValue(f, OpAdd, I32, 0, 0, Span<const i32>({input, zero}));
+            const i32 second = functionNewValue(f, OpAdd, I32, 0, 0, Span<const i32>({input, zero}));
+            const i32 user = functionNewValue(f, OpAdd, I32, 0, 0, Span<const i32>({second, first}));
+            f->blocks[0].params = sliceOf<i32>({input});
+            f->blocks[0].instrs = {first, second, user};
+            i32 last = -1;
+            for (i32 i = 0; i < 9000; ++i) {
+                // Removed instructions retain their value and operand records.
+                last = functionNewValue(f, OpAdd, I32, 0, 0, Span<const i32>({second, zero}));
+            }
+            const i32 left = functionNewValue(f, OpParam, I32, 1, 0, {});
+            const i32 right = functionNewValue(f, OpParam, I32, 2, 0, {});
+            f->blocks[1].params = sliceOf<i32>({left});
+            f->blocks[2].params = sliceOf<i32>({right});
+            f->blocks[0].term = Term{TermIf, second, sliceOf<Edge>({Edge{1, sliceOf<i32>({second})}, Edge{2, sliceOf<i32>({user})}}), {}, {}};
+            f->blocks[1].term = Term{TermReturn, {}, {}, sliceOf<i32>({left}), {}};
+            f->blocks[2].term = Term{TermReturn, {}, {}, sliceOf<i32>({second}), {}};
+            optimizerReplace(o, second, first);
+            optimizerReplace(o, first, input);
+            optimizerSetArgs(o, user, Span<const i32>({second}));
+            f->values[user].op = OpEqz;
+            optimizerApply(o);
+            require(functionArgs(f, user)[0] == input && f->values[user].nargs == 1, "aliases in shortened operand lists");
+            require(functionArgs(f, last)[0] == input, "aliases across operand pages");
+            require(f->blocks[0].term.value == input && f->blocks[0].term.edges[0].args[0] == input && f->blocks[2].term.values[0] == input, "aliases in terminators and edges");
+            optimizerSetArgs(o, user, Span<const i32>({second, zero}));
+            f->values[user].op = OpAdd;
+            optimizerApply(o);
+            require(functionArgs(f, user)[0] == input && functionArgs(f, user)[1] == zero, "aliases after growing a shortened operand list");
         }
         {
             ObjPool pool;
