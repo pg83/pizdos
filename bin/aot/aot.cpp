@@ -1086,7 +1086,6 @@ namespace {
     struct ArrayData {
         enum struct Kind : u8 {
             Contiguous,
-            Small,
             Paged,
         };
 
@@ -1115,9 +1114,6 @@ namespace {
         }
 
         T* data() const {
-            if (kind == Kind::Small) {
-                return static_cast<SmallVec<T>*>(storage)->data();
-            }
             return kind == Kind::Contiguous ? static_cast<T*>(storage) : nullptr;
         }
 
@@ -1144,16 +1140,13 @@ namespace {
             if (!size) {
                 return;
             }
-            if (u64(size) * sizeof(T) > pageBytes - sizeof(Buffer::Header)) {
+            if (u64(size) * sizeof(T) > pageBytes - sizeof(ObjPool::Chunk)) {
                 kind = Kind::Paged;
                 auto* values = owner->make<PageVec<T>>();
                 storage = values;
                 values->resize(usize(size));
             } else {
-                kind = Kind::Small;
-                auto* values = owner->make<SmallVec<T>>();
-                storage = values;
-                values->resize(usize(size));
+                storage = owner->allocate(usize(size) * sizeof(T), alignof(T));
             }
             clearElements(clearFrom);
         }
@@ -1174,12 +1167,11 @@ namespace {
             }
         }
 
-        // Pool destruction owns the container; rehash can release its buffer
-        // earlier without removing its disposal record from the pool.
+        // Contiguous storage is pool memory. Pool destruction owns a paged
+        // container; rehash can release its pages earlier without removing
+        // its disposal record from the pool.
         void releaseStorage() {
-            if (kind == Kind::Small) {
-                *static_cast<SmallVec<T>*>(storage) = SmallVec<T>{};
-            } else if (kind == Kind::Paged) {
+            if (kind == Kind::Paged) {
                 *static_cast<PageVec<T>*>(storage) = PageVec<T>{};
             }
             storage = nullptr;
@@ -1190,9 +1182,6 @@ namespace {
         T& operator[](Int i) {
             if (kind == Kind::Contiguous) {
                 return static_cast<T*>(storage)[i];
-            }
-            if (kind == Kind::Small) {
-                return static_cast<SmallVec<T>*>(storage)->data()[i];
             }
             const usize index = usize(i);
             return static_cast<PageVec<T>*>(storage)->pages.data()[index / PageVec<T>::itemsPerPage][index % PageVec<T>::itemsPerPage];
