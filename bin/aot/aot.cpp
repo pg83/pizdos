@@ -7160,8 +7160,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static Span<i32> functionArgs(Function* f, i32 v) {
-        Value* val = (&((f)->values[v]));
-        return subslice((f)->pool, (val)->args, ((val)->args + convert<i32>((val)->nargs)));
+        const Value& val = f->values[v];
+        // Records refer to operands already stored in this append-only pool.
+        // Growth preserves their offsets; shortening only reduces the count.
+        Span<i32> args;
+        args.pages = &f->pool;
+        args.offset = u32(val.args);
+        args.count = val.nargs;
+        return args;
     }
 
     // computePreds fills each block's predecessor list from the terminators, one
@@ -23959,6 +23965,29 @@ namespace {
                     require(found.v0 == (i % 2 == 0 ? i * 7 : -i), "map value after reuse");
                 }
             }
+        }
+        {
+            ObjPool pool;
+            PoolScope scope(pool);
+            auto* f = pool.make<Function>();
+            Optimizer optimizer;
+            optimizer.f = f;
+            const usize boundary = PageVec<i32>::itemsPerPage;
+            f->pool.resize(boundary - 1);
+            const i32 value = functionNewValue(f, OpSelect, I32, 0, 0, Span<const i32>({11, 22, 33}));
+            auto before = functionArgs(f, value);
+            require(before.count == 3 && before[0] == 11 && before[1] == 22 && before[2] == 33, "operand view across page boundary");
+            before[1] = 44;
+            require(f->pool[boundary] == 44, "operand view updates stored operands");
+            f->pool.resize(2 * boundary + 1);
+            require(before[0] == 11 && before[1] == 44 && before[2] == 33, "operand view survives pool growth");
+            optimizerSetArgs(&optimizer, value, Span<const i32>({55}));
+            require(functionArgs(f, value).count == 1 && functionArgs(f, value)[0] == 55 && before[1] == 44, "shortened operand view across pages");
+            optimizerSetArgs(&optimizer, value, Span<const i32>({66, 77, 88, 99}));
+            const auto after = functionArgs(f, value);
+            require(after.count == 4 && after[0] == 66 && after[3] == 99 && before[0] == 55, "grown operand record preserves old view");
+            const i32 empty = functionNewValue(f, OpUndef, I32, -1, 0, {});
+            require(functionArgs(f, empty).count == 0, "empty operand view at pool end");
         }
         {
             ObjPool pool;
