@@ -4173,8 +4173,11 @@ namespace {
         Int incoming{};
         bool hasCalls{};
         bool returnsTwice{};
+        u8 registerClasses{};
         Slice<u64> consts{};
     };
+
+    static_assert(sizeof(MFunc) == (sizeof(void*) == 8 ? 112 : 68));
 
     struct TailRangeRegion {
         Slice<TailRangeGroup*> groups{};
@@ -5252,7 +5255,7 @@ namespace {
 
     static u8 mFuncRegClass(MFunc* mf, VReg r);
 
-    static Slice<VReg> mInstClobberSet(MInst* in);
+    static Slice<VReg> mInstClobberSet(MInst* in, u8 registerClasses);
 
     template <typename F>
     static void mInstForEachOperand(MInst* in, F cb);
@@ -6274,6 +6277,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static Slice<VReg> callerSaved{};
 
+    static Slice<VReg> callerSavedGprs{};
+
+    static Slice<VReg> callerSavedXmms{};
+
     static u8 floatOpcode(FAluOp op) {
         switch (op) {
             case fAdd:
@@ -6378,7 +6385,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
         calleeSaved = sliceOf<VReg>({R10, R11, R12});
 
-        callerSaved = appendSlice(sliceOf<VReg>({RAX, RBX, RCX, RDX, RSI, RDI, R8, R9}), xmmRange(Int(15LL)));
+        callerSavedGprs = sliceOf<VReg>({RAX, RBX, RCX, RDX, RSI, RDI, R8, R9});
+        callerSavedXmms = xmmRange(Int(15LL));
+        callerSaved = appendSlice(callerSavedGprs, callerSavedXmms);
 
         floatUnary = Array<Op, 7>{{OpFAbs, OpFNeg, OpFCeil, OpFFloor, OpFTrunc, OpFNearest, OpFSqrt}};
 
@@ -6999,6 +7008,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         VReg r = convert<VReg>((Int(32LL) + (mf)->nregs));
         (mf)->nregs++;
         (mf)->classValue = appendValues((mf)->classValue, classValue);
+        mf->registerClasses |= u8(1u << classValue);
         return r;
     }
 
@@ -7012,38 +7022,26 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return (mf)->classValue[(r - firstVirtual)];
     }
 
-    // clobberSet lists the registers an instruction destroys besides its
-    // definitions: a call every caller-saved register, a call of a bulk memory
-    // stub only the registers its string instruction uses.
-    static Slice<VReg> mInstClobberSet(MInst* in) {
-        {
-            auto switch80 = (in)->op;
-            switch (switch80) {
-                case mCall: {
-                    if (((in)->aux == calleeStub)) {
-                        {
-                            auto switch81 = (in)->imm;
-                            switch (switch81) {
-                                case stubMemmove: {
-                                    return memmoveClobbers;
-                                    break;
-                                }
-                                case stubMemset: {
-                                    return memsetClobbers;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    return callerSaved;
-                    break;
-                }
-                case mCallInd:
-                case mGrowMem: {
-                    return callerSaved;
-                    break;
-                }
+    // Fixed intervals constrain virtual allocation only in the same register
+    // class. Calls need no XMM clobbers in an integer-only function, or GPR
+    // clobbers in a function with only virtual XMM registers.
+    static Slice<VReg> mInstClobberSet(MInst* in, u8 registerClasses) {
+        if (in->op == mCall && in->aux == calleeStub) {
+            if (in->imm == stubMemmove) {
+                return registerClasses & (1u << classGPR) ? memmoveClobbers : Slice<VReg>{};
             }
+            if (in->imm == stubMemset) {
+                return registerClasses & (1u << classGPR) ? memsetClobbers : Slice<VReg>{};
+            }
+        }
+        if (in->op == mCall || in->op == mCallInd || in->op == mGrowMem) {
+            if (registerClasses == (1u << classGPR)) {
+                return callerSavedGprs;
+            }
+            if (registerClasses == (1u << classXMM)) {
+                return callerSavedXmms;
+            }
+            return registerClasses ? callerSaved : Slice<VReg>{};
         }
         return {};
     }
@@ -9186,7 +9184,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 MInst* in = &instructions[j];
                 const i32 p = from + 2 + 2 * j;
                 if (!copiesOnly) {
-                    auto clobbers = mInstClobberSet(in);
+                    auto clobbers = mInstClobberSet(in, mf->registerClasses);
                     for (Int k = 0; k < length(clobbers); ++k) {
                         intervalAddRange(allocatorInterval(a, clobbers[k]), p + 1, p + 2);
                     }
@@ -23032,6 +23030,40 @@ namespace {
             }
             mergeRanges(x, y, scratch);
             require(!y.size() && x.size() == 1 && x[0].from == 0 && x[0].to == 48000, "range union coalesces page-spanning gaps");
+        }
+        {
+            ObjPool pool;
+            PoolScope scope(pool);
+            const auto oldAll = callerSaved;
+            const auto oldGprs = callerSavedGprs;
+            const auto oldXmms = callerSavedXmms;
+            callerSavedGprs = sliceOf<VReg>({RAX});
+            callerSavedXmms = sliceOf<VReg>({XMM0});
+            callerSaved = sliceOf<VReg>({RAX, XMM0});
+            for (u8 mask = 0; mask < 4; ++mask) {
+                MFunc function;
+                function.blocks.pushBack(MBlock{});
+                if (mask & (1u << classGPR)) {
+                    mFuncNewReg(&function, classGPR);
+                }
+                if (mask & (1u << classXMM)) {
+                    mFuncNewReg(&function, classXMM);
+                }
+                MInst call = inst(mCall);
+                call.aux = calleeFunc;
+                function.blocks[0].insts.pushBack(call);
+                Allocator allocation;
+                allocation.mf = &function;
+                allocatorLinearize(&allocation);
+                allocatorLiveness(&allocation);
+                allocatorBuildIntervals(&allocation);
+                require(function.registerClasses == mask, "machine register class summary");
+                require(bool(allocation.fixed[RAX]) == bool(mask & (1u << classGPR)), "call clobbers constrain virtual GPRs");
+                require(bool(allocation.fixed[XMM0]) == bool(mask & (1u << classXMM)), "call clobbers constrain virtual XMMs");
+            }
+            callerSaved = oldAll;
+            callerSavedGprs = oldGprs;
+            callerSavedXmms = oldXmms;
         }
         {
             ObjPool pool;
