@@ -4252,6 +4252,12 @@ namespace {
         Slice<i32> idom{};
         Slice<i32> depth{};
         Slice<bool> header{};
+        // For loop versioning, the dominator tree in preorder: a block
+        // dominates the blocks from its own place there up to the end of its
+        // subtree. Unreachable blocks that are not dead follow the tree.
+        Slice<i32> preorder{};
+        Slice<i32> enter{};
+        Slice<i32> leave{};
         // Loop versioning adds blocks after the analysis; each is entered
         // only from the preheader recorded here.
         Slice<i32> added{};
@@ -5883,6 +5889,14 @@ namespace {
 
     static bool loopDominates(CfgInfo* ci, i32 a, i32 b);
 
+    // loopEachDominated calls f with every block an analyzed block h
+    // dominates: its subtree of the dominator tree, then the blocks added
+    // after the analysis under it. It stops when f returns true.
+    template <typename F>
+    static bool loopEachDominated(CfgInfo* ci, i32 h, F f);
+
+    static void cfgInfoPreorder(CfgInfo* ci, Function* f);
+
     static void cfgInfoDominators(CfgInfo* ci, Function* f);
 
     static i32 cfgInfoIntersect(CfgInfo* ci, i32 a, i32 b);
@@ -7161,7 +7175,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static CfgInfo* functionAnalyze(Function* f) {
-        CfgInfo* ci = activePool->make<CfgInfo>(CfgInfo{functionRpo(f), {}, {}, {}, {}, {}});
+        CfgInfo* ci = activePool->make<CfgInfo>(CfgInfo{functionRpo(f), {}, {}, {}, {}, {}, {}, {}, {}});
         Int n = length(f->blocks);
         ci->rpoIndex = makeSlice<i32>(n);
         for (Int i = 0, end = length(ci->rpoIndex); i < end; ++i) {
@@ -7743,9 +7757,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             // appends below only grow edges inside the original/copied loop.
             outsideUses.pushBack(use);
         };
-        for (Int b = 0; b < oldBlocks; ++b) {
-            if (f->blocks[b].dead || (b < length(l->members) && l->members[b])) {
-                continue;
+        // Only blocks the header dominates and unreachable ones use values
+        // of the loop; the order of the uses found does not matter. Blocks
+        // added by this versioning use none.
+        auto scan = [&](i32 b) -> bool {
+            if (b >= oldBlocks || f->blocks[b].dead || (b < length(l->members) && l->members[b])) {
+                return false;
             }
             Block& block = f->blocks[b];
             if (scanBodies) {
@@ -7768,6 +7785,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     mark(&args[j]);
                 }
             }
+            return false;
+        };
+        loopEachDominated(l->ci, l->header, scan);
+        for (Int i = length(l->ci->order); i < length(l->ci->preorder); ++i) {
+            scan(l->ci->preorder[i]);
         }
         if (escapedValues.size() > 1) {
             sortValues(escapedValues.view(), [&](Int i, Int j) {
@@ -8220,12 +8242,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             i32 b = f->values[v].block;
             return b >= 0 && l->members[b];
         };
-        for (Int b = 0, end = length(f->blocks); b < end; ++b) {
-            // The header dominates every definition in the loop and
-            // therefore every direct use. Merged exit parameters have
-            // their own definitions outside the loop.
-            if (l->members[b] || f->blocks[b].dead || !loopDominates(l->ci, l->header, i32(b))) {
-                continue;
+        // The header dominates every definition in the loop and therefore
+        // every direct use. Merged exit parameters have their own
+        // definitions outside the loop.
+        return loopEachDominated(l->ci, l->header, [&](i32 b) -> bool {
+            if (l->members[b] || f->blocks[b].dead) {
+                return false;
             }
             Block* blk = &f->blocks[b];
             auto instrs = blk->instrs.view();
@@ -8260,8 +8282,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     }
                 }
             }
-        }
-        return false;
+            return false;
+        });
     }
 
     static bool memoryLoopInvariant(MemoryLoop* l, i32 v, Int depth) {
@@ -11121,6 +11143,58 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             b = ci->idom[b];
         }
+    }
+
+    // preorder numbers the dominator tree depth first; unreachable blocks
+    // have no place in it.
+    static void cfgInfoPreorder(CfgInfo* ci, Function* f) {
+        const Int n = length(ci->idom);
+        DominatorChildren children = cfgInfoChildren(ci);
+        ci->preorder = makeSlice<i32>(length(ci->order));
+        ci->enter = makeSlice<i32>(n);
+        ci->leave = makeSlice<i32>(n);
+        for (Int b = 0; b < n; ++b) {
+            ci->enter[b] = -1;
+            ci->leave[b] = -1;
+        }
+        Vec<i32> stack;
+        stack.pushBack(ci->order[0]);
+        i32 count = 0;
+        while (stack.size()) {
+            const i32 b = stack[stack.size() - 1];
+            if (ci->enter[b] >= 0) {
+                stack.popBack();
+                ci->leave[b] = count;
+                continue;
+            }
+            ci->enter[b] = count;
+            ci->preorder[count++] = b;
+            for (i32 child = children.first[usize(b)]; child >= 0; child = children.next[usize(child)]) {
+                stack.pushBack(child);
+            }
+        }
+        for (Int b = 0; b < n; ++b) {
+            if (ci->rpoIndex[b] < 0 && !f->blocks[b].dead) {
+                ci->preorder = appendValues(ci->preorder, i32(b));
+            }
+        }
+    }
+
+    template <typename F>
+    static bool loopEachDominated(CfgInfo* ci, i32 h, F f) {
+        for (Int i = ci->enter[h]; i < ci->leave[h]; ++i) {
+            if (f(ci->preorder[i])) {
+                return true;
+            }
+        }
+        const Int analyzed = length(ci->rpoIndex);
+        for (Int k = 0; k < length(ci->added); ++k) {
+            const i32 b = i32(analyzed + k);
+            if (loopDominates(ci, h, b) && f(b)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // loopDominates also answers for blocks added after the analysis: every
@@ -21697,9 +21771,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             {
                 PoolScope analysisScope(analysisPool);
                 full = functionAnalyze(f);
+                cfgInfoPreorder(full, f);
             }
             PoolScope cfgScope(cfgPool);
-            ci = activePool->make<CfgInfo>(CfgInfo{appendSlice(Slice<i32>{}, full->order), appendSlice(Slice<i32>{}, full->rpoIndex), appendSlice(Slice<i32>{}, full->idom), {}, appendSlice(Slice<bool>{}, full->header), {}});
+            ci = activePool->make<CfgInfo>(CfgInfo{appendSlice(Slice<i32>{}, full->order), appendSlice(Slice<i32>{}, full->rpoIndex), appendSlice(Slice<i32>{}, full->idom), {}, appendSlice(Slice<bool>{}, full->header), appendSlice(Slice<i32>{}, full->preorder), appendSlice(Slice<i32>{}, full->enter), appendSlice(Slice<i32>{}, full->leave), {}});
         }
         // Versioning sends the preheader's edge to blocks of its own, which
         // enter the original loop first, and adds no other edge between
@@ -23308,6 +23383,7 @@ namespace {
             loop.members = makeSlice<bool>(4);
             loop.members[1] = true;
             loop.ci = functionAnalyze(f);
+            cfgInfoPreorder(loop.ci, f);
             require(!memoryLoopHasLiveOut(&loop), "loop without direct live-out values");
             f->blocks[2].term.values[0] = value;
             require(memoryLoopHasLiveOut(&loop), "loop value used by a dominated exit");
@@ -23317,6 +23393,7 @@ namespace {
             f->blocks[1].term.edges[1].args = sliceOf<i32>({value});
             f->blocks[3].term = Term{TermJump, {}, sliceOf<Edge>({Edge{2, sliceOf<i32>({one})}}), {}, {}};
             loop.ci = functionAnalyze(f);
+            cfgInfoPreorder(loop.ci, f);
             require(!cfgInfoDominates(loop.ci, 1, 2) && !memoryLoopHasLiveOut(&loop), "loop value merged with an entry bypass");
         }
         {
@@ -23387,6 +23464,8 @@ namespace {
                             appended = functionNewValue(f, OpAdd, I32, 3, 0, Span<const i32>({increment, one}));
                             f->blocks[3].instrs.pushBack(appended);
                         }
+                        loop.ci = functionAnalyze(f);
+                        cfgInfoPreorder(loop.ci, f);
                         memoryLoopClone(&loop, {}, {}, {});
                     }
                     require(f->blocks[2].params.count == (appendAfter ? 2u : 1u), "loop exit parameter preserved across copies");
