@@ -5618,7 +5618,7 @@ namespace {
 
     static void allocatorAddUnhandled(Allocator* a, Interval* it);
 
-    static void allocatorAdvance(Allocator* a, i32 pos);
+    static i32 allocatorAdvance(Allocator* a, i32 pos);
 
     static void allocatorAllocateBlocked(Allocator* a, Interval* cur);
 
@@ -9395,7 +9395,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         a->unhandled.push(it, intervalStart(it));
     }
 
-    static void allocatorAdvance(Allocator* a, i32 pos) {
+    static i32 allocatorAdvance(Allocator* a, i32 pos) {
+        i32 nextChange = maxPos;
         Span<Interval*> active = subslice(a->active.view(), 0, 0);
         Interval* moved[32];
         usize movedCount = 0;
@@ -9408,8 +9409,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     } else if ((!(intervalCoversAt(it, pos)))) {
                         require(movedCount < 32, "too many active register intervals");
                         moved[movedCount++] = it;
+                        nextChange = minimum(nextChange, it->ranges[it->cursor].from);
                     } else {
                         active[active.count++] = it;
+                        nextChange = minimum(nextChange, it->ranges[it->cursor].to);
                     }
                 switchEnd378:;
                 }
@@ -9425,8 +9428,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     if (intervalEndsBefore(it, pos)) {
                     } else if (intervalCoversAt(it, pos)) {
                         a->active.pushBack(it);
+                        nextChange = minimum(nextChange, it->ranges[it->cursor].to);
                     } else {
                         inactive[inactive.count++] = it;
+                        nextChange = minimum(nextChange, it->ranges[it->cursor].from);
                     }
                 switchEnd383:;
                 }
@@ -9434,6 +9439,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         a->inactive.resize(inactive.count);
         a->inactive.append(Span<Interval* const>(moved, movedCount));
+        return nextChange;
     }
 
     static void allocatorAllocateBlocked(Allocator* a, Interval* cur) {
@@ -10607,16 +10613,23 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         a->slots.resize(usize(a->mf->nregs));
         a->slots.fill(-1);
+        // Only range boundaries change active/inactive membership. Eviction
+        // removes active intervals; shortening an inactive prefix can only
+        // leave an inert, ended entry until the next advance.
+        i32 nextChange = -1;
         {
             for (; !a->unhandled.empty();) {
                 Interval* cur = a->unhandled.pop();
                 i32 pos = intervalStart(cur);
-                allocatorAdvance(a, pos);
+                if (pos >= nextChange) {
+                    nextChange = allocatorAdvance(a, pos);
+                }
                 if ((!(allocatorTryFree(a, cur)))) {
                     allocatorAllocateBlocked(a, cur);
                 }
                 if (((cur)->reg != noReg)) {
                     a->active.pushBack(cur);
+                    nextChange = minimum(nextChange, cur->ranges[0].to);
                 }
             }
         }
@@ -23878,6 +23891,55 @@ namespace {
             Allocator skipped;
             skipped.mf = &noCopies;
             require(!allocatorSelectCopies(&skipped) && !skipped.copyIndex.size(), "physical copies need no coalescing analysis");
+        }
+        {
+            ObjPool pool;
+            PoolScope scope(pool);
+            Allocator allocation;
+            Interval first{.vreg = firstVirtual, .reg = RBX};
+            Interval second{.vreg = firstVirtual + 1, .reg = RCX};
+            Interval third{.vreg = firstVirtual + 2, .reg = RDX};
+            Interval fixed{.vreg = RAX, .reg = RAX};
+            intervalAddRange(&first, 6, 10);
+            intervalAddRange(&first, 0, 3);
+            intervalAddRange(&second, 0, 7);
+            intervalAddRange(&third, 4, 6);
+            intervalAddRange(&fixed, 8, 12);
+            intervalAddRange(&fixed, 2, 4);
+            for (Interval* it : {&first, &second, &third, &fixed}) {
+                intervalFinish(it);
+            }
+            allocation.active = {&first, &second};
+            allocation.inactive = {&third, &fixed};
+            const i32 positions[] = {0, 2, 3, 4, 6, 7, 8, 10, 12};
+            const i32 boundaries[] = {2, 3, 4, 6, 7, 8, 10, 12, maxPos};
+            for (usize i = 0; i < 9; ++i) {
+                const i32 pos = positions[i];
+                require(allocatorAdvance(&allocation, pos) == boundaries[i], "scan next membership boundary");
+                for (usize j = 0; j < allocation.active.size(); ++j) {
+                    require(intervalCovers(allocation.active[j], pos), "scan active membership at boundary");
+                }
+                for (usize j = 0; j < allocation.inactive.size(); ++j) {
+                    require(!intervalCovers(allocation.inactive[j], pos) && intervalEnd(allocation.inactive[j]) > pos, "scan inactive membership at boundary");
+                }
+                if (pos == 3) {
+                    require(allocation.active.size() == 2 && allocation.active[0] == &second && allocation.active[1] == &fixed && allocation.inactive.size() == 2 && allocation.inactive[0] == &third && allocation.inactive[1] == &first, "scan preserves membership order across holes");
+                }
+            }
+            require(!allocation.active.size() && !allocation.inactive.size(), "scan releases expired memberships");
+            Interval prefix{.vreg = firstVirtual, .reg = RBX, .hint = noReg};
+            Interval probe{.vreg = firstVirtual + 1, .reg = RCX, .hint = noReg};
+            intervalAddRange(&prefix, 8, 12);
+            intervalAddRange(&prefix, 0, 2);
+            intervalAddRange(&probe, 5, 7);
+            intervalFinish(&prefix);
+            intervalFinish(&probe);
+            allocation.inactive.pushBack(&prefix);
+            const i32 boundary = allocatorAdvance(&allocation, 4);
+            require(boundary == 8, "scan future inactive range boundary");
+            intervalSplit(&prefix, 6);
+            require(prefix.reg == RBX && intervalEnd(&prefix) == 2 && prefix.cursor == length(prefix.ranges) && intervalIntersection(&prefix, &probe) == maxPos, "shortened inactive prefix stays inert until advance");
+            require(allocatorAdvance(&allocation, boundary) == maxPos && !allocation.inactive.size(), "scan cleans shortened inactive prefix at cached boundary");
         }
         {
             ObjPool pool;
