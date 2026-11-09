@@ -3692,7 +3692,6 @@ namespace {
         bool allowLoads{};
         Map<i32, bool> invariantCache{};
         Slice<i32> invariantNodes{};
-        Slice<i32> copies{};
         LoopBodyUses* bodyUses = nullptr;
     };
 
@@ -4253,6 +4252,9 @@ namespace {
         Slice<i32> idom{};
         Slice<i32> depth{};
         Slice<bool> header{};
+        // Loop versioning adds blocks after the analysis; each is entered
+        // only from the preheader recorded here.
+        Slice<i32> added{};
     };
 
     struct DominatorChildren {
@@ -5879,6 +5881,8 @@ namespace {
 
     static bool cfgInfoDominates(CfgInfo* ci, i32 a, i32 b);
 
+    static bool loopDominates(CfgInfo* ci, i32 a, i32 b);
+
     static void cfgInfoDominators(CfgInfo* ci, Function* f);
 
     static i32 cfgInfoIntersect(CfgInfo* ci, i32 a, i32 b);
@@ -7157,7 +7161,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static CfgInfo* functionAnalyze(Function* f) {
-        CfgInfo* ci = activePool->make<CfgInfo>(CfgInfo{functionRpo(f), {}, {}, {}, {}});
+        CfgInfo* ci = activePool->make<CfgInfo>(CfgInfo{functionRpo(f), {}, {}, {}, {}, {}});
         Int n = length(f->blocks);
         ci->rpoIndex = makeSlice<i32>(n);
         for (Int i = 0, end = length(ci->rpoIndex); i < end; ++i) {
@@ -8220,7 +8224,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             // The header dominates every definition in the loop and
             // therefore every direct use. Merged exit parameters have
             // their own definitions outside the loop.
-            if (l->members[b] || f->blocks[b].dead || !cfgInfoDominates(l->ci, l->header, i32(b))) {
+            if (l->members[b] || f->blocks[b].dead || !loopDominates(l->ci, l->header, i32(b))) {
                 continue;
             }
             Block* blk = &f->blocks[b];
@@ -8266,7 +8270,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return true;
         }
         if (!l->members[val->block]) {
-            return cfgInfoDominates(l->ci, val->block, l->header);
+            return loopDominates(l->ci, val->block, l->header);
         }
         auto [known, ok] = lookupMap(l->invariantCache, v);
         if (ok) {
@@ -8686,7 +8690,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         i32 fast = memoryLoopClone(l, proven, invariants, {});
-        l->copies = appendValues(l->copies, fast);
         Edge entry = Edge{fast, appendSlice(Slice<i32>{}, l->entry.args)};
         i32 bulk = memoryLoopCopyLoop(l, fast, countValue, size, proven, invariants);
         if (bulk >= 0) {
@@ -8704,7 +8707,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             if (length(cases) >= 2) {
                 i32 specialized = memoryLoopClone(l, proven, invariants, cases);
-                l->copies = appendValues(l->copies, specialized);
                 i32 choice = functionNewBlock(f);
                 i32 eq = functionNewValue(f, OpEqz, I32, choice, 0, Span<const i32>({index}));
                 f->blocks[choice].instrs.pushBack(eq);
@@ -11119,6 +11121,24 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             b = ci->idom[b];
         }
+    }
+
+    // loopDominates also answers for blocks added after the analysis: every
+    // path to one passes its preheader, so an analyzed block dominates it
+    // exactly when it dominates that preheader. Loops read no value defined
+    // in an added block, which is taken to dominate no analyzed one.
+    static bool loopDominates(CfgInfo* ci, i32 a, i32 b) {
+        const Int analyzed = length(ci->rpoIndex);
+        if (a == b) {
+            return true;
+        }
+        if (a >= analyzed) {
+            return false;
+        }
+        while (b >= analyzed) {
+            b = ci->added[b - analyzed];
+        }
+        return cfgInfoDominates(ci, a, b);
     }
 
     // dominators is Cooper, Harvey and Kennedy's iterative algorithm.
@@ -19952,11 +19972,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static MemoryLoop* findMemoryLoop(Function* f, CfgInfo* ci, i32 h) {
-        MemoryLoop* l = activePool->make<MemoryLoop>(MemoryLoop{f, ci, h, -1, -1, -1, {}, makeSlice<bool>(length(f->blocks)), {}, {}, -1, u64(1LL), {}, {}, {}, -1, -1, {}, mapOf<i32, LoopSpan>({}), mapOf<i32, LoopSpan>({}), {}, {}, {}, {}, {}, {}});
+        MemoryLoop* l = activePool->make<MemoryLoop>(MemoryLoop{f, ci, h, -1, -1, -1, {}, makeSlice<bool>(length(f->blocks)), {}, {}, -1, u64(1LL), {}, {}, {}, -1, -1, {}, mapOf<i32, LoopSpan>({}), mapOf<i32, LoopSpan>({}), {}, {}, {}, {}, {}});
         auto preds = f->blocks[h].preds;
         for (Int i = 0; i < length(preds); ++i) {
             i32 p = preds[i];
-            if (cfgInfoDominates(ci, h, p)) {
+            if (loopDominates(ci, h, p)) {
                 if (l->latch >= 0) {
                     return {};
                 }
@@ -19986,7 +20006,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             if (l->members[b]) {
                 continue;
             }
-            if (ci->header[b] || !cfgInfoDominates(ci, h, b)) {
+            // An added block belongs to a versioned loop, whose header the
+            // walk would reach as well.
+            if (b >= length(ci->header) || ci->header[b] || !loopDominates(ci, h, b)) {
                 return {};
             }
             l->members[b] = true;
@@ -20073,7 +20095,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 Int k = 0;
                 for (; k < 2; k++) {
                     i32 other = f->values[a[1 - k]].block;
-                    if (a[k] == back.args[j] && (other < 0 || (!l->members[other] && cfgInfoDominates(ci, other, h)))) {
+                    if (a[k] == back.args[j] && (other < 0 || (!l->members[other] && loopDominates(ci, other, h)))) {
                         auto temporary1509 = a[k];
                         auto temporary1510 = a[1 - k];
                         candidate = temporary1509;
@@ -21609,52 +21631,57 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return false;
         }
         LoopBodyUses bodyUses(f);
-        Map<i32, bool> done = mapOf<i32, bool>({});
+        // Only what loops read outlives the analysis, so the function can
+        // grow into the memory of its working sets.
+        ObjPool cfgPool;
+        CfgInfo* ci;
+        {
+            ObjPool analysisPool;
+            CfgInfo* full;
+            {
+                PoolScope analysisScope(analysisPool);
+                full = functionAnalyze(f);
+            }
+            PoolScope cfgScope(cfgPool);
+            ci = activePool->make<CfgInfo>(CfgInfo{appendSlice(Slice<i32>{}, full->order), appendSlice(Slice<i32>{}, full->rpoIndex), appendSlice(Slice<i32>{}, full->idom), {}, appendSlice(Slice<bool>{}, full->header), {}});
+        }
+        // Versioning sends the preheader's edge to blocks of its own, which
+        // enter the original loop first, and adds no other edge between
+        // analyzed blocks. Their order, dominators and headers stay as
+        // analyzed, so one analysis serves every loop of the function.
         bool tried = false;
-        Int round = 0;
-        for (; round < 64; round++) {
-            ObjPool cfgPool;
-            CfgInfo* ci;
+        Int versioned = 0;
+        auto order = ci->order;
+        for (Int i = 0; i < length(order) && versioned < 64; ++i) {
+            i32 h = order[i];
+            if (!ci->header[h]) {
+                continue;
+            }
+            ObjPool loopPool;
+            MemoryLoop* loop;
+            {
+                PoolScope analysisScope(loopPool);
+                loop = findMemoryLoop(f, ci, h);
+                if (loop) {
+                    loop->bodyUses = &bodyUses;
+                    loop->invariantNodes = makeSlice<i32>(0);
+                }
+            }
+            if (isNil(loop)) {
+                continue;
+            }
+            tried = true;
+            const Int before = length(f->blocks);
+            const i32 fast = memoryLoopVersion(loop);
             {
                 PoolScope analysisScope(cfgPool);
-                ci = functionAnalyze(f);
-            }
-            bool changed = false;
-            auto order = ci->order;
-            for (Int i = 0; i < length(order); ++i) {
-                i32 h = order[i];
-                if (!ci->header[h] || done[h]) {
-                    continue;
-                }
-                setMap(done, h, true);
-                ObjPool loopPool;
-                MemoryLoop* loop;
-                {
-                    PoolScope analysisScope(loopPool);
-                    loop = findMemoryLoop(f, ci, h);
-                    if (loop) {
-                        loop->bodyUses = &bodyUses;
-                        loop->invariantNodes = makeSlice<i32>(0);
-                        loop->copies = makeSlice<i32>(0);
-                    }
-                }
-                if (isNil(loop)) {
-                    continue;
-                }
-                tried = true;
-                i32 fast = memoryLoopVersion(loop);
-                if (fast >= 0) {
-                    auto copies = loop->copies;
-                    for (Int i = 0; i < length(copies); ++i) {
-                        i32 h = copies[i];
-                        setMap(done, h, true);
-                    }
-                    changed = true;
-                    break;
+                for (Int b = before; b < length(f->blocks); ++b) {
+                    ci->added = appendValues(ci->added, loop->preheader);
                 }
             }
-            if (!changed) {
-                break;
+            if (fast >= 0) {
+                functionComputePreds(f);
+                versioned++;
             }
         }
         return tried;
