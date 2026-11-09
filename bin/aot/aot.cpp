@@ -3597,6 +3597,8 @@ namespace {
         u32 repairEpoch = 0;
     };
 
+    struct LoopBodyUses;
+
     struct MemoryLoop {
         Function* f{};
         CfgInfo* ci{};
@@ -3624,6 +3626,7 @@ namespace {
         Map<i32, bool> invariantCache{};
         Slice<i32> invariantNodes{};
         Slice<i32> copies{};
+        LoopBodyUses* bodyUses = nullptr;
     };
 
     struct PredRef {
@@ -4683,6 +4686,83 @@ namespace {
         Term term{};
         Slice<i32> preds{};
         bool dead{};
+    };
+
+    // Loop versioning only appends instructions to bodies. Existing body
+    // operands only change when escaping values are replaced by fresh exit
+    // parameters. Their counts are marked unknown; old counts remain upper
+    // bounds. Terminator operands are handled by the original escape walk.
+    struct LoopBodyUses {
+        Function* function;
+        Vec<u32> counts;
+        Vec<Lrange> valueRanges;
+        Vec<u32> instructionsSeen;
+        usize nextValue = 0;
+        u32 clones = 0;
+        bool ready = false;
+
+        explicit LoopBodyUses(Function* f)
+            : function(f)
+        {
+        }
+
+        void ensureSize() {
+            const usize before = counts.size();
+            counts.resize(function->values.size());
+            for (usize i = before; i < counts.size(); ++i) {
+                counts[i] = 0;
+            }
+        }
+
+        bool prepare() {
+            if (++clones < 5) {
+                return false;
+            }
+            ensureSize();
+            const usize seen = instructionsSeen.size();
+            instructionsSeen.resize(function->blocks.size());
+            for (usize i = seen; i < instructionsSeen.size(); ++i) {
+                instructionsSeen[i] = 0;
+            }
+            const usize before = valueRanges.size();
+            valueRanges.resize(function->blocks.size());
+            for (usize i = before; i < valueRanges.size(); ++i) {
+                valueRanges[i] = {0x7fffffff, 0};
+            }
+            for (; nextValue < function->values.size(); ++nextValue) {
+                const i32 block = function->values[nextValue].block;
+                if (block >= 0 && usize(block) < valueRanges.size()) {
+                    auto& range = valueRanges[usize(block)];
+                    range.from = range.from < i32(nextValue) ? range.from : i32(nextValue);
+                    range.to = i32(nextValue + 1);
+                }
+            }
+            for (usize b = 0; b < function->blocks.size(); ++b) {
+                const auto& block = function->blocks[b];
+                if (block.dead) {
+                    continue;
+                }
+                for (usize i = instructionsSeen[b]; i < block.instrs.size(); ++i) {
+                    const Value& value = function->values[block.instrs[i]];
+                    for (u32 j = 0; j < value.nargs; ++j) {
+                        u32& count = counts[usize(function->pool[usize(value.args) + j])];
+                        if (count != 0xffffffffu) {
+                            ++count;
+                        }
+                    }
+                }
+                instructionsSeen[b] = u32(block.instrs.size());
+            }
+            ready = true;
+            return true;
+        }
+
+        void unknown(i32 value) {
+            if (ready) {
+                ensureSize();
+                counts[usize(value)] = 0xffffffffu;
+            }
+        }
     };
 
     Function::Function() {
@@ -7480,6 +7560,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Function* f = l->f;
         const Int oldBlocks = length(f->blocks);
         const Int oldValues = length(f->values);
+        const bool indexed = l->bodyUses && l->bodyUses->prepare();
         Vec<i32> blocks;
         Vec<i32> values;
         blocks.resize(usize(oldBlocks));
@@ -7503,16 +7584,42 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Vec<ClonedValue> cloned;
         // Value IDs retain their original order, including values no longer
         // present in instruction lists, so allocation and code layout agree.
-        for (Int v = 0; v < oldValues; ++v) {
-            const Value val = f->values[v];
-            if (val.block < 0 || val.block >= length(l->members) || !l->members[val.block] || values[usize(v)] >= 0) {
-                continue;
+        Vec<Lrange> ranges;
+        if (indexed) {
+            for (Int b = 0; b < length(l->members); ++b) {
+                if (l->members[b]) {
+                    const Lrange range = l->bodyUses->valueRanges[usize(b)];
+                    if (range.from < range.to) {
+                        ranges.pushBack(range);
+                    }
+                }
             }
-            const bool checked = proven[i32(v)];
-            const i32 n = functionNewValue(f, val.op, val.typ, blocks[usize(val.block)], val.aux, {});
-            f->values[n].aux2 = val.aux2 | (checked ? i32(32) : i32(0));
-            values[usize(v)] = n;
-            cloned.pushBack({i32(v), checked});
+            if (ranges.size() > 1) {
+                sortValues(ranges.view(), [&](Int i, Int j) {
+                    return ranges[usize(i)].from < ranges[usize(j)].from;
+                });
+            }
+        } else {
+            ranges.pushBack({0, oldValues});
+        }
+        usize nextRange = 0;
+        while (nextRange < ranges.size()) {
+            Lrange range = ranges[nextRange++];
+            while (nextRange < ranges.size() && ranges[nextRange].from <= range.to) {
+                const i32 end = ranges[nextRange++].to;
+                range.to = range.to > end ? range.to : end;
+            }
+            for (i32 v = range.from; v < range.to; ++v) {
+                const Value val = f->values[v];
+                if (val.block < 0 || val.block >= length(l->members) || !l->members[val.block] || values[usize(v)] >= 0) {
+                    continue;
+                }
+                const bool checked = proven[v];
+                const i32 n = functionNewValue(f, val.op, val.typ, blocks[usize(val.block)], val.aux, {});
+                f->values[n].aux2 = val.aux2 | (checked ? i32(32) : i32(0));
+                values[usize(v)] = n;
+                cloned.pushBack({v, checked});
+            }
         }
         auto remap = [&](i32 v) {
             const i32 mapped = values[usize(v)];
@@ -7597,6 +7704,51 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         Vec<i32> escapedValues;
         Vec<i32*> outsideUses;
+        bool scanBodies = true;
+        if (indexed) {
+            auto eligible = [&](i32 v) {
+                if (u32(v) >= u32(oldValues) || values[usize(v)] < 0) {
+                    return false;
+                }
+                const i32 block = f->values[v].block;
+                return block >= 0 && block < length(l->members) && l->members[block];
+            };
+            auto account = [&](bool restore) {
+                for (Int i = 0; i < length(l->order); ++i) {
+                    const auto& block = f->blocks[l->order[i]];
+                    if (block.dead) {
+                        continue;
+                    }
+                    for (Int j = 0; j < length(block.instrs); ++j) {
+                        const auto args = functionArgs(f, block.instrs[j]);
+                        for (Int k = 0; k < length(args); ++k) {
+                            const i32 v = args[k];
+                            if (eligible(v)) {
+                                u32& count = l->bodyUses->counts[usize(v)];
+                                if (count != 0xffffffffu) {
+                                    count = restore ? count + 1 : count ? count - 1 : 0xffffffffu;
+                                }
+                            }
+                        }
+                    }
+                }
+            };
+            account(false);
+            scanBodies = false;
+            for (usize i = 0; i < cloned.size(); ++i) {
+                if (eligible(cloned[i].original) && l->bodyUses->counts[usize(cloned[i].original)] != 0) {
+                    scanBodies = true;
+                    break;
+                }
+            }
+            for (Int i = 0; !scanBodies && i < mapSlots(invariants); ++i) {
+                if (mapOccupied(invariants, i)) {
+                    const i32 v = mapKey(invariants, i);
+                    scanBodies = eligible(v) && l->bodyUses->counts[usize(v)] != 0;
+                }
+            }
+            account(true);
+        }
         auto mark = [&](i32* use) {
             const i32 v = *use;
             const i32 block = f->values[v].block;
@@ -7616,10 +7768,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 continue;
             }
             Block& block = f->blocks[b];
-            for (Int i = 0; i < length(block.instrs); ++i) {
-                auto args = functionArgs(f, block.instrs[i]);
-                for (Int j = 0; j < length(args); ++j) {
-                    mark(&args[j]);
+            if (scanBodies) {
+                for (Int i = 0; i < length(block.instrs); ++i) {
+                    auto args = functionArgs(f, block.instrs[i]);
+                    for (Int j = 0; j < length(args); ++j) {
+                        mark(&args[j]);
+                    }
                 }
             }
             if (block.term.kind == TermIf || block.term.kind == TermSwitch) {
@@ -7645,6 +7799,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             const i32 v = escapedValues[i];
             const i32 fast = values[usize(v)];
             const i32 p = functionNewValue(f, OpParam, f->values[v].typ, l->exit, i64(length(f->blocks[l->exit].params)), {});
+            if (l->bodyUses) {
+                l->bodyUses->unknown(p);
+            }
             f->blocks[l->exit].params = appendValues(f->blocks[l->exit].params, p);
             for (Int j = 0; j < length(l->order); ++j) {
                 const i32 b = l->order[j];
@@ -22549,6 +22706,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if ((length(((f)->module)->mems) == Int(0LL))) {
             return;
         }
+        LoopBodyUses bodyUses(f);
         Map<i32, bool> done = mapOf<i32, bool>({});
         {
             Int round = Int(0LL);
@@ -22574,6 +22732,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             PoolScope analysisScope(loopPool);
                             loop = findMemoryLoop(f, ci, h);
                             if (loop) {
+                                loop->bodyUses = &bodyUses;
                                 loop->invariantNodes = makeSlice<i32>(0);
                                 loop->copies = makeSlice<i32>(0);
                             }
@@ -23913,6 +24072,83 @@ namespace {
                 require(incoming[0] == &f->blocks[2].term.edges[0], "incoming first predecessor");
                 require(incoming[1] == &f->blocks[0].term.edges[0] && incoming[2] == &f->blocks[0].term.edges[2], "incoming edge order");
                 require(incoming[3] == &f->blocks[1].term.edges[0], "incoming last predecessor");
+            }
+        }
+        for (bool appendAfter : {false, true}) {
+            for (bool outsideBody : {false, true}) {
+                ObjPool pool;
+                PoolScope scope(pool);
+                auto build = [&](bool indexed) {
+                    auto* f = pool.make<Function>();
+                    for (i32 i = 0; i < 4; ++i) {
+                        functionNewBlock(f);
+                    }
+                    const i32 one = functionNewValue(f, OpConst, I32, -1, 1, {});
+                    const i32 value = functionNewValue(f, OpParam, I32, 1, 0, {});
+                    functionNewValue(f, OpAdd, I32, 1, 0, Span<const i32>({value, one}));
+                    const i32 increment = functionNewValue(f, OpAdd, I32, 1, 0, Span<const i32>({value, one}));
+                    f->blocks[0].term = Term{TermJump, {}, sliceOf<Edge>({{1, sliceOf<i32>({one})}}), {}, {}};
+                    f->blocks[1].params = sliceOf<i32>({value});
+                    f->blocks[1].instrs.pushBack(increment);
+                    f->blocks[1].term = Term{TermIf, value, sliceOf<Edge>({{1, sliceOf<i32>({increment})}, {2, {}}}), {}, {}};
+                    if (outsideBody) {
+                        const i32 user = functionNewValue(f, OpAdd, I32, 2, 0, Span<const i32>({increment, one}));
+                        f->blocks[2].instrs.pushBack(user);
+                        f->blocks[2].term = Term{TermReturn, {}, {}, borrowSlice(&f->pool[usize(f->values[user].args)], 1), {}};
+                    } else {
+                        f->blocks[2].term = Term{TermReturn, {}, {}, sliceOf<i32>({increment}), {}};
+                    }
+                    functionNewValue(f, OpConst, I32, 3, 7, {});
+                    functionNewValue(f, OpAdd, I32, 1, 0, Span<const i32>({value, one}));
+                    LoopBodyUses uses(f);
+                    uses.clones = 4;
+                    MemoryLoop loop;
+                    loop.f = f;
+                    loop.header = 1;
+                    loop.exit = 2;
+                    loop.order = sliceOf<i32>({1});
+                    loop.members = makeSlice<bool>(4);
+                    loop.members[1] = true;
+                    loop.bodyUses = indexed ? &uses : nullptr;
+                    i32 appended = -1;
+                    for (i32 copy = 0; copy < 2; ++copy) {
+                        if (copy && appendAfter) {
+                            appended = functionNewValue(f, OpAdd, I32, 3, 0, Span<const i32>({increment, one}));
+                            f->blocks[3].instrs.pushBack(appended);
+                        }
+                        memoryLoopClone(&loop, {}, {}, {});
+                    }
+                    require(f->blocks[2].params.count == (appendAfter ? 2u : 1u), "loop exit parameter preserved across copies");
+                    require(f->blocks[2].term.values[0] == f->blocks[2].params[0], "loop exit operand rewritten");
+                    if (appendAfter) {
+                        require(functionArgs(f, appended)[0] == f->blocks[2].params[1], "uses appended to a previously indexed block");
+                    }
+                    return f;
+                };
+                Function* original = build(false);
+                Function* indexed = build(true);
+                auto same = [](const auto& left, const auto& right) {
+                    require(length(left) == length(right), "indexed loop collection size");
+                    for (Int i = 0; i < length(left); ++i) {
+                        require(left[i] == right[i], "indexed loop collection values");
+                    }
+                };
+                same(original->values, indexed->values);
+                same(original->pool, indexed->pool);
+                require(original->blocks.size() == indexed->blocks.size(), "indexed loop block count");
+                for (usize b = 0; b < original->blocks.size(); ++b) {
+                    const auto& left = original->blocks[b];
+                    const auto& right = indexed->blocks[b];
+                    same(left.params, right.params);
+                    same(left.instrs, right.instrs);
+                    require(left.dead == right.dead && left.term.kind == right.term.kind && left.term.value == right.term.value && left.term.aux == right.term.aux, "indexed loop block metadata");
+                    same(left.term.values, right.term.values);
+                    require(left.term.edges.count == right.term.edges.count, "indexed loop edge count");
+                    for (Int i = 0; i < length(left.term.edges); ++i) {
+                        require(left.term.edges[i].block == right.term.edges[i].block, "indexed loop edge target");
+                        same(left.term.edges[i].args, right.term.edges[i].args);
+                    }
+                }
             }
         }
         {
