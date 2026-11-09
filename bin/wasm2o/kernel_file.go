@@ -25,6 +25,27 @@ type File struct {
 	owned    bool
 	// nonblock is the guest's O_NONBLOCK.
 	nonblock atomic.Bool
+	// A socket's SO_RCVTIMEO and SO_SNDTIMEO in milliseconds, 0 for none,
+	// which its blocking calls keep; the guest path an AF_UNIX socket is
+	// bound to (kernel_socket.go).
+	recvTimeout atomic.Int64
+	sendTimeout atomic.Int64
+	unixName    atomic.Pointer[string]
+}
+
+// timeout is the milliseconds a blocking transfer of events waits, or -1.
+func (f *File) timeout(events int16) int {
+	ms := f.sendTimeout.Load()
+
+	if events&pollIn != 0 {
+		ms = f.recvTimeout.Load()
+	}
+
+	if ms == 0 {
+		return -1
+	}
+
+	return int(min(ms, maxPollWaitMs))
 }
 
 type Descriptor struct {
@@ -174,17 +195,33 @@ func (p *Process) waitFds(fds []pollFd, timeout int, restart bool) (int, error) 
 	}
 }
 
+// ioMode is how one transfer goes: nonblock as with MSG_DONTWAIT, quiet
+// with MSG_NOSIGNAL, an EPIPE without SIGPIPE.
+type ioMode struct {
+	nonblock bool
+	quiet    bool
+}
+
 // transfer runs a read or a write of f, blocking as described at File.
 func (p *Process) transfer(f *File, events int16, op func() (int, error)) (int, error) {
+	return p.transferMode(f, events, ioMode{}, op)
+}
+
+// transferMode is transfer of a mode; a socket's timeout ends a blocking
+// wait with EAGAIN.
+func (p *Process) transferMode(f *File, events int16, mode ioMode, op func() (int, error)) (int, error) {
+	nonblock := mode.nonblock || f.nonblock.Load()
+	timeout := f.timeout(events)
+
 	for {
 		if f.pollable && !f.owned {
-			timeout := -1
+			wait := timeout
 
-			if f.nonblock.Load() {
-				timeout = 0
+			if nonblock {
+				wait = 0
 			}
 
-			n, err := p.waitFds([]pollFd{{fd: int32(f.fd), events: events}}, timeout, true)
+			n, err := p.waitFds([]pollFd{{fd: int32(f.fd), events: events}}, wait, true)
 
 			if err != nil {
 				return 0, err
@@ -201,15 +238,21 @@ func (p *Process) transfer(f *File, events int16, op func() (int, error)) (int, 
 			continue
 		}
 
-		if err == syscall.EAGAIN && f.pollable && f.owned && !f.nonblock.Load() {
-			if _, err := p.waitFds([]pollFd{{fd: int32(f.fd), events: events}}, -1, true); err != nil {
+		if err == syscall.EAGAIN && f.pollable && f.owned && !nonblock {
+			ready, err := p.waitFds([]pollFd{{fd: int32(f.fd), events: events}}, timeout, true)
+
+			if err != nil {
 				return 0, err
+			}
+
+			if ready == 0 {
+				return 0, syscall.EAGAIN
 			}
 
 			continue
 		}
 
-		if err == syscall.EPIPE {
+		if err == syscall.EPIPE && !mode.quiet {
 			p.sendSelf(int(syscall.SIGPIPE))
 		}
 

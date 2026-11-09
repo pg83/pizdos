@@ -4,6 +4,7 @@
  * the environment, random, the heap, files and directories, the user
  * databases, signals and the in-process parts.
  */
+#include <arpa/inet.h>
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
@@ -16,6 +17,9 @@
 #include <locale.h>
 #include <malloc.h>
 #include <mntent.h>
+#include <net/if.h>
+#include <netdb.h>
+#include <netinet/in.h>
 #include <pwd.h>
 #include <signal.h>
 #include <stdint.h>
@@ -25,9 +29,11 @@
 #include <strings.h>
 #include <sys/file.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/time.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -368,6 +374,89 @@ static void signals(void) {
     printf(" wait4 %d %d\n", wait4(pid, &status, 0, 0) == pid, WEXITSTATUS(status));
 }
 
+static void network(void) {
+    struct in_addr in;
+    printf("inet %d %08x %08x %s", inet_aton("10.1.2", &in), in.s_addr, inet_addr("0x7f.1"), inet_ntoa(in));
+    unsigned char six[16];
+    char text[INET6_ADDRSTRLEN];
+    printf(" %d %s %d %d\n", inet_pton(AF_INET6, "2001:db8::ff00:42:8329", six), inet_ntop(AF_INET6, six, text, sizeof text),
+           inet_pton(AF_INET, "1.2.3.04", six), inet_pton(AF_INET, "1.2.3.4", six));
+    struct addrinfo hints = {.ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM, .ai_flags = AI_CANONNAME};
+    struct addrinfo* res;
+    int e = getaddrinfo("box", "http", &hints, &res);
+    printf("getaddrinfo %d", e);
+
+    for (struct addrinfo* a = res; !e && a; a = a->ai_next) {
+        char host[64], serv[16];
+        getnameinfo(a->ai_addr, a->ai_addrlen, host, sizeof host, serv, sizeof serv, NI_NUMERICHOST | NI_NUMERICSERV);
+        printf(" %d/%d %s:%s %s", a->ai_family, a->ai_protocol, host, serv, a->ai_canonname ? a->ai_canonname : "-");
+    }
+
+    freeaddrinfo(res);
+    hints.ai_flags = AI_NUMERICHOST;
+    printf(" %d %s\n", getaddrinfo("box", 0, &hints, &res), gai_strerror(EAI_NONAME));
+    struct sockaddr_in sin = {.sin_family = AF_INET, .sin_port = htons(22)};
+    inet_pton(AF_INET, "10.0.0.7", &sin.sin_addr);
+    char host[64], serv[16];
+    printf("getnameinfo %d %s %s", getnameinfo((struct sockaddr*)&sin, sizeof sin, host, sizeof host, serv, sizeof serv, 0), host, serv);
+    struct servent* se = getservbyname("domain", "udp");
+    struct protoent* pe = getprotobyname("udp");
+    printf(" servent %s %d %s protoent %s %d", se->s_name, ntohs(se->s_port), se->s_proto, pe->p_name, pe->p_proto);
+    struct hostent* he = gethostbyname("box");
+    printf(" hostent %s %s %d\n", he->h_name, inet_ntoa(*(struct in_addr*)he->h_addr_list[0]),
+           gethostbyname2("box", AF_UNIX) == 0 && h_errno == NO_RECOVERY);
+    int pair[2];
+    socketpair(AF_UNIX, SOCK_STREAM, 0, pair);
+    char buf[16] = {0};
+    send(pair[0], "ping", 4, 0);
+    recv(pair[1], buf, sizeof buf, 0);
+    int server = socket(AF_UNIX, SOCK_STREAM, 0);
+    struct sockaddr_un sun = {.sun_family = AF_UNIX};
+    strcpy(sun.sun_path, "/tmp/socket");
+    printf("socketpair %s bind %d listen %d", buf, bind(server, (struct sockaddr*)&sun, sizeof sun), listen(server, 4));
+    struct stat st;
+    stat("/tmp/socket", &st);
+    int client = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    printf(" %d connect %d", S_ISSOCK(st.st_mode), connect(client, (struct sockaddr*)&sun, sizeof sun));
+    struct sockaddr_un name;
+    socklen_t length = sizeof name;
+    int conn = accept(server, 0, 0);
+    getsockname(server, (struct sockaddr*)&name, &length);
+    printf(" accept %d getsockname %s", conn >= 0, name.sun_path);
+    char data = 'x';
+    struct iovec iov = {&data, 1};
+    union {
+        struct cmsghdr header;
+        char space[CMSG_SPACE(sizeof(int))];
+    } control;
+    struct msghdr msg = {.msg_iov = &iov, .msg_iovlen = 1, .msg_control = &control, .msg_controllen = sizeof control};
+    struct cmsghdr* c = CMSG_FIRSTHDR(&msg);
+    c->cmsg_level = SOL_SOCKET;
+    c->cmsg_type = SCM_RIGHTS;
+    c->cmsg_len = CMSG_LEN(sizeof(int));
+    int sent = pair[0];
+    memcpy(CMSG_DATA(c), &sent, sizeof sent);
+    printf(" sendmsg %zd", sendmsg(client, &msg, 0));
+    memset(&control, 0, sizeof control);
+    msg.msg_controllen = sizeof control;
+    data = 0;
+    ssize_t got = recvmsg(conn, &msg, 0);
+    int passed;
+    memcpy(&passed, CMSG_DATA(CMSG_FIRSTHDR(&msg)), sizeof passed);
+    write(passed, "pass", 4);
+    memset(buf, 0, sizeof buf);
+    recv(pair[1], buf, sizeof buf, 0);
+    printf(" recvmsg %zd %c %s", got, data, buf);
+    struct timeval tv = {0, 50000};
+    setsockopt(conn, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    errno = 0;
+    printf(" timeout %zd %d\n", recv(conn, buf, 1, 0), errno == EAGAIN);
+    struct if_nameindex* ifs = if_nameindex();
+    printf("if_nameindex %d crypt %s", ifs && ifs[0].if_index > 0, crypt("secret", "$6$salt"));
+    printf(" %s\n", crypt("secret", "xy"));
+    if_freenameindex(ifs);
+}
+
 static void rest(void) {
     fenv_t env;
     fexcept_t flags;
@@ -392,6 +481,7 @@ int main(void) {
     files();
     users();
     signals();
+    network();
     rest();
 
     return 0;

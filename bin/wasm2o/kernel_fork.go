@@ -68,7 +68,7 @@ func (p *Process) startVfork() uint32 {
 	c.image, c.vfork = p.image, v
 	c.heap, c.static, c.env, c.errnoAt, c.environAt, c.siginfo = p.heap, p.static, p.env, p.errnoAt, p.environAt, p.siginfo
 	c.regexes, c.nextRegex, c.constants, c.jumps, c.stackAt = p.regexes, p.nextRegex, p.constants, p.jumps, p.stackAt
-	c.locale, c.envStrings, c.mappings, c.tzAt = p.locale, p.envStrings, p.mappings, p.tzAt
+	c.locale, c.envStrings, c.mappings, c.tzAt, c.herrnoAt = p.locale, p.envStrings, p.mappings, p.tzAt, p.herrnoAt
 	c.token.Store(p.token.Load())
 	c.inherit(p)
 	p.inst.host = c
@@ -106,7 +106,7 @@ func (p *Process) fork(setup func(c *Process)) (int32, error) {
 	inst.host = c
 	c.image = p.image
 	c.heap, c.static, c.env, c.errnoAt, c.environAt, c.siginfo = p.heap, p.static, p.env, p.errnoAt, p.environAt, p.siginfo
-	c.nextRegex, c.stackAt, c.locale, c.tzAt = p.nextRegex, p.stackAt, p.locale, p.tzAt
+	c.nextRegex, c.stackAt, c.locale, c.tzAt, c.herrnoAt = p.nextRegex, p.stackAt, p.locale, p.tzAt, p.herrnoAt
 	c.regexes, c.constants, c.jumps = map[uint32]*posixRegex{}, map[string]uint32{}, map[uint32]*jump{}
 
 	for id, r := range p.regexes {

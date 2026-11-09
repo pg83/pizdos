@@ -40,6 +40,11 @@ type Kernel struct {
 	first     *Process
 	exit      chan int
 	functions map[string]any
+	// abstract prefixes the abstract socket names of the kernel's
+	// processes; unixNames are the guest paths of the host paths their
+	// sockets are bound by (kernel_socket.go).
+	abstract  string
+	unixNames sync.Map
 }
 
 // fileKey identifies a version of a file: device, inode, size, mtime.
@@ -73,10 +78,11 @@ type Process struct {
 	cwd   string
 	umask uint32
 	// errnoAt and environAt are where the crt keeps errno and environ, tzAt
-	// tzname, timezone and daylight.
+	// tzname, timezone and daylight, herrnoAt h_errno.
 	errnoAt   uint32
 	environAt uint32
 	tzAt      [3]uint32
+	herrnoAt  uint32
 	// heap is the allocator's header in memory, static the block of the
 	// results libc keeps in static storage, env the environ array the kernel
 	// allocated last.
@@ -141,7 +147,7 @@ type procExit struct {
 }
 
 func newKernel(root string) *Kernel {
-	k := &Kernel{procs: map[int32]*Process{}, codes: map[fileKey]*Code{}, exit: make(chan int, 1)}
+	k := &Kernel{procs: map[int32]*Process{}, codes: map[fileKey]*Code{}, exit: make(chan int, 1), abstract: fmt.Sprintf("pizdos.%d.", os.Getpid())}
 	k.root = throw2(syscall.Open(root, oPath|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0))
 	k.rootPath = throw2(os.Readlink(fmt.Sprintf("/proc/self/fd/%d", k.root)))
 	k.functions = k.functionTable()
@@ -186,7 +192,8 @@ func (k *Kernel) functionTable() map[string]any {
 	for _, part := range []map[string]any{k.fileFunctions(), k.pathFunctions(), k.heapFunctions(), k.stringFunctions(),
 		k.timeFunctions(), k.regexFunctions(), k.signalFunctions(), k.procFunctions(), k.jumpFunctions(), k.forkFunctions(),
 		k.localeFunctions(), k.wideFunctions(), k.identityFunctions(), k.systemFunctions(), k.userFunctions(),
-		k.ptyFunctions(), k.globFunctions(), k.miscFunctions()} {
+		k.ptyFunctions(), k.globFunctions(), k.miscFunctions(), k.socketFunctions(), k.netdbFunctions(),
+		k.cryptFunctions()} {
 		for name, f := range part {
 			t[name] = f
 		}
@@ -476,10 +483,10 @@ func (p *Process) exitWith(status int) {
 	panic(&procExit{status})
 }
 
-func (k *Kernel) kernelStart(ctx uintptr, errnoAt, environAt, argcAt, argvAt, tznameAt, timezoneAt, daylightAt uint32) {
+func (k *Kernel) kernelStart(ctx uintptr, errnoAt, environAt, argcAt, argvAt, tznameAt, timezoneAt, daylightAt, herrnoAt uint32) {
 	p := proc(ctx)
 	p.errnoAt, p.environAt = errnoAt, environAt
-	p.tzAt = [3]uint32{tznameAt, timezoneAt, daylightAt}
+	p.tzAt, p.herrnoAt = [3]uint32{tznameAt, timezoneAt, daylightAt}, herrnoAt
 	argv := p.stringArray(p.image.argv)
 	p.env = p.stringArray(p.image.envp)
 
@@ -720,7 +727,13 @@ const (
 	staticPass       = 380
 	staticRandom     = 384
 	staticRandomInit = 388
-	staticSize       = 528
+	staticHostent    = 516
+	staticHostIndex  = 520
+	staticServent    = 524
+	staticProtoent   = 528
+	staticNtoa       = 532
+	staticCrypt      = 548
+	staticSize       = 560
 )
 
 func (p *Process) staticAt(off uint32) uint32 {

@@ -37,7 +37,7 @@ __attribute__((__export_name__("_start"))) void _start(void) {
     int argc = 0;
     char** argv = 0;
 
-    __kernel_start(&errno, &environ, &argc, &argv, tzname, &timezone, &daylight);
+    __kernel_start(&errno, &environ, &argc, &argv, tzname, &timezone, &daylight, &h_errno);
 
     if (argc > 0) {
         program_invocation_name = argv[0];

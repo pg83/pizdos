@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """lib/c's functions under `wasm2o run`: tst/libc/check.c prints one line
-of results per area, which must be these. Its root has /etc/passwd and
-/etc/group and a /tmp to make files in.
+of results per area, which must be these. Its root has /etc/passwd,
+/etc/group, /etc/hosts and /etc/services, so no name goes to the host's
+resolver, and a /tmp to make files and sockets in.
 
     test_libc.py <wasm2o> <check.o>
 """
@@ -12,6 +13,8 @@ from pathlib import Path
 
 PASSWD = "root:x:0:0:root:/root:/bin/sh\nuser:x:1000:100:User:/home/user:/bin/sh\n"
 GROUP = "root:x:0:\nwheel:x:10:root,user\nusers:x:100:\nstaff:x:50:user\n"
+HOSTS = "127.0.0.1 localhost\n10.0.0.7 box box.example\n::1 localhost\n"
+SERVICES = "ssh 22/tcp\nhttp 80/tcp www\ndomain 53/tcp\ndomain 53/udp\n"
 
 EXPECTED = """\
 strtok 3 a b c
@@ -49,6 +52,11 @@ getpwnam user 1000 /home/user getpwuid_r 0 root 34 getpwent 2 getgrnam wheel 10 
 mntent / ext4 rw,noatime 1 noatime
 sigset 1 0 -1 pending 1 sigwait 0 10 sigtimedwait -1 1 alarm 1 setitimer 1 sigaltstack 0 1
 waitid 0 1 5 wait4 1 5
+inet 1 0200010a 0100007f 10.1.0.2 1 2001:db8::ff00:42:8329 0 1
+getaddrinfo 0 2/6 10.0.0.7:80 box -2 Name does not resolve
+getnameinfo 0 box ssh servent domain 53 udp protoent udp 17 hostent box 10.0.0.7 1
+socketpair ping bind 0 listen 0 1 connect 0 accept 1 getsockname /tmp/socket sendmsg 1 recvmsg 1 x pass timeout -1 1
+if_nameindex 1 crypt $6$salt$egUxKNxDs8kPfh8iPMNcosMhb2eWah6d3R44JDm5Rj/j/XWR5E33QPd0YmHXoDHOIDR6kL5D3JcQcz0O8FHE00 xy/gRonXQz8UE
 fenv 0 0 0 0 0 gethostname 1 confstr 14 sysconf 1 pathconf 255
 """
 
@@ -62,6 +70,8 @@ def main():
         (root / "tmp").mkdir()
         (root / "etc" / "passwd").write_text(PASSWD)
         (root / "etc" / "group").write_text(GROUP)
+        (root / "etc" / "hosts").write_text(HOSTS)
+        (root / "etc" / "services").write_text(SERVICES)
         r = subprocess.run([wasm2o, "run", "--root", str(root), "-a", "check", check], capture_output=True, text=True,
                            env={"PATH": "/bin"}, timeout=120)
 
