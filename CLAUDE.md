@@ -100,8 +100,10 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
 - Speed is measured against native code by the stand: the C++ compiler
   compiling busybox.wasm and aot.wasm, natively and as aot.aot in wasm2o,
   the scalar modules of decode release 16 on their file corpora against
-  the same wrappers compiled with the pinned ix libraries, and CPython on
-  `dev/stand/pybench.py`, timed inside the interpreter.
+  the same wrappers compiled with the pinned ix libraries, and CPython's
+  interpreter on the pure Python benchmarks of `dev/stand/pybench.py`
+  (`--only py/NAME` selects one), each timed inside the interpreter; the
+  suite enters the corpus mean as one workload, its own geometric mean.
 - An import named setjmp, _setjmp, sigsetjmp, vfork, fork or forkpty returns
   twice: its direct calls go through an adapter that writes the caller's
   frame to the instance header (`abi.go`), and the caller keeps an

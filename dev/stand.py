@@ -2,17 +2,18 @@
 """The stand: native (A) against our AOT (C).
 
     sh dev/stand/build.sh
-    dev/stand.py [--runs N] [--only aot,im,pdf,djvu,svg,magic,py] [--json FILE]
+    dev/stand.py [--runs N] [--only aot,im,pdf,djvu,svg,magic,py,py/NAME] [--json FILE]
 
 Compiler workloads measure end-to-end wall and CPU time. Decode workloads
 measure work inside each driver, excluding startup, linking, file I/O and
 output hashing. Small workloads repeat in the same instance. The compiler's
 outputs must be identical; decode must agree on status, dimensions and
 page count, and the report counts the files whose pixels match exactly:
-native pixels may differ with libm and floating-point arithmetic. The
-Python workload is dev/stand/pybench.py, timed inside the interpreter, the
-native CPython and python.o each in a root with the same standard library
-zip; their digests of the results must be equal.
+native pixels may differ with libm and floating-point arithmetic. CPython's
+workloads are the benchmarks of dev/stand/pybench.py, pure Python timed
+inside the interpreter, the native CPython and python.o each in a root with
+the same standard library zip; their digests of the results must be equal.
+The suite counts as one workload in the geometric mean, by its own.
 
 The original positional form is accepted for compiler workloads alone:
     stand.py [--runs N] <aot-native> <wasm2o> <input.wasm>...
@@ -213,41 +214,72 @@ def python_run(command, repeat):
     return float(times[0]), r.stdout.strip()
 
 
-def python_work(build, wasm2o, runs, minimum, work):
+def python_work(build, wasm2o, runs, minimum, work, only=None):
+    """Every benchmark of the suite: its repeat calibrated on native to the
+    minimum time, A and C interleaved, their digests equal."""
     native = python_root(work / "python-A", build / "stand/python/native", build)
     aot = python_root(work / "python-C", build / "bin/python/python.o", build)
-    commands = {
-        "A": [str(native / "usr/bin/python3"), "-S", str(native / "pybench.py")],
-        "C": [str(wasm2o), "run", "--root", str(aot), "-a", "/usr/bin/python3", str(aot / "usr/bin/python3"), "--", "-S", "/pybench.py"],
-    }
-    native_time, _ = python_run(commands["A"], 1)
-    repeat = max(1, math.ceil(minimum / max(native_time, 0.000001)))
-    samples = {name: [] for name in commands}
-    outputs = {}
+    names = subprocess.run([str(native / "usr/bin/python3"), "-S", str(native / "pybench.py"), "--list"],
+                           env={"PYTHONHASHSEED": "0"}, capture_output=True, text=True, check=True).stdout.split()
+    rows = []
 
-    for run in range(runs):
-        order = list(commands)
-        order = order[run % 2:] + order[:run % 2]
+    for bench in names:
+        if only and bench not in only:
+            continue
 
-        for name in order:
-            elapsed, got = python_run(commands[name], repeat)
+        commands = {
+            "A": [str(native / "usr/bin/python3"), "-S", str(native / "pybench.py"), bench],
+            "C": [str(wasm2o), "run", "--root", str(aot), "-a", "/usr/bin/python3", str(aot / "usr/bin/python3"), "--", "-S", "/pybench.py", bench],
+        }
+        native_time, _ = python_run(commands["A"], 1)
+        repeat = max(1, math.ceil(minimum / max(native_time, 0.000001)))
+        samples = {name: [] for name in commands}
+        outputs = {}
 
-            if outputs.setdefault(name, got) != got:
-                raise SystemExit(f"py: {name}'s results changed between runs")
+        for run in range(runs):
+            order = list(commands)
+            order = order[run % 2:] + order[:run % 2]
 
-            samples[name].append(elapsed / repeat)
+            for name in order:
+                elapsed, got = python_run(commands[name], repeat)
 
-    if outputs["A"] != outputs["C"]:
-        raise SystemExit(f"py: wasm2o computes {outputs['C']}, native {outputs['A']}")
+                if outputs.setdefault(name, got) != got:
+                    raise SystemExit(f"py/{bench}: {name}'s results changed between runs")
 
-    medians = {name: statistics.median(values) for name, values in samples.items()}
-    print(f"py/pybench        A {medians['A']:7.3f}s  C {medians['C']:7.3f}s  C/A {medians['C'] / medians['A']:.3f}  x{repeat}, digest equal", flush=True)
+                samples[name].append(elapsed / repeat)
 
-    return [{"work": "py/pybench", "repeat": repeat, "seconds": medians, "samples": samples, "digest": outputs["A"]}]
+        if outputs["A"] != outputs["C"]:
+            raise SystemExit(f"py/{bench}: wasm2o computes {outputs['C']}, native {outputs['A']}")
+
+        medians = {name: statistics.median(values) for name, values in samples.items()}
+        print(f"py/{bench:16s} A {medians['A']:7.4f}s  C {medians['C']:7.4f}s  C/A {medians['C'] / medians['A']:.3f}  x{repeat}, digest equal",
+              flush=True)
+        rows.append({"work": "py/" + bench, "repeat": repeat, "seconds": medians, "samples": samples, "digest": outputs["A"]})
+
+    if rows:
+        print(f"py geomean C/A {geomean(rows):.3f}", flush=True)
+
+    return rows
+
+
+def ratio(row):
+    seconds = row.get("wall") or row["seconds"]
+
+    return seconds["C"] / seconds["A"]
 
 
 def geomean(rows):
-    ratios = [(row.get("wall") or row["seconds"])["C"] / (row.get("wall") or row["seconds"])["A"] for row in rows]
+    return math.exp(sum(math.log(ratio(row)) for row in rows) / len(rows))
+
+
+def corpus_geomean(rows):
+    """The geometric mean over the workloads, CPython's suite one of them by
+    its own geometric mean."""
+    py = [row for row in rows if row["work"].startswith("py/")]
+    ratios = [ratio(row) for row in rows if not row["work"].startswith("py/")]
+
+    if py:
+        ratios.append(geomean(py))
 
     return math.exp(sum(map(math.log, ratios)) / len(ratios))
 
@@ -267,7 +299,7 @@ def main():
     if args.runs < 1 or not math.isfinite(args.min_time) or args.min_time <= 0:
         parser.error("runs and min-time must be positive")
 
-    if set(selected) - {"aot", "py", *KINDS}:
+    if {s for s in selected if not s.startswith("py/")} - {"aot", "py", *KINDS}:
         parser.error("unknown workload in --only")
 
     build = args.build_dir.resolve()
@@ -294,11 +326,13 @@ def main():
             if kinds:
                 rows.extend(decode_work(build, wasm2o, kinds, args.runs, args.min_time, work, args.objects))
 
-            if "py" in selected:
-                rows.extend(python_work(build, wasm2o, args.runs, args.min_time, work))
+            benches = {s[len("py/"):] for s in selected if s.startswith("py/")}
+
+            if "py" in selected or benches:
+                rows.extend(python_work(build, wasm2o, args.runs, args.min_time, work, benches if "py" not in selected else None))
 
     if rows:
-        print(f"geomean C/A {geomean(rows):.3f}", flush=True)
+        print(f"geomean C/A {corpus_geomean(rows):.3f}", flush=True)
 
     if args.json:
         args.json.parent.mkdir(parents=True, exist_ok=True)
