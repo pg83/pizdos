@@ -5937,6 +5937,9 @@ namespace {
     template <typename F>
     static void bitsetEach(Bitset s, F cb);
 
+    template <typename F>
+    static void bitsetEachIntersection(Bitset s, Bitset filter, F cb);
+
     static bool bitsetHas(Bitset s, Int i);
 
     static void bitsetSet(Bitset s, Int i);
@@ -9774,6 +9777,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void allocatorResolve(Allocator* a) {
         MFunc* mf = (a)->mf;
         PositionedMoves inner;
+        Bitset split;
         {
             auto range478 = (a)->intervals.view();
             for (Int index479 = 0, rangeEnd480 = length(range478); index479 < rangeEnd480; ++index479) {
@@ -9781,6 +9785,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 Interval* it = range478[index479];
                 if (isNil(it)) {
                     continue;
+                }
+                if (length(it->children)) {
+                    if (!split.data) {
+                        split = newBitset(mf->nregs);
+                    }
+                    bitsetSet(split, x);
                 }
                 {
                     Int i = Int(0LL);
@@ -9820,7 +9830,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         Map<i32, Slice<Move>> atEnd = mapOf<i32, Slice<Move>>({});
         Map<i32, Slice<Move>> atStart = mapOf<i32, Slice<Move>>({});
-        {
+        // An unsplit interval has one location throughout the CFG. Only
+        // split registers can need a move between predecessor and successor.
+        if (split.data) {
             auto range485 = (a)->order.view();
             for (Int index486 = 0, rangeEnd487 = length(range485); index486 < rangeEnd487; ++index486) {
                 i32 b = range485[index486];
@@ -9830,7 +9842,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     for (Int index489 = 0, rangeEnd490 = length(range488); index489 < rangeEnd490; ++index489) {
                         i32 s = range488[index489];
                         Slice<Move> moves = {};
-                        bitsetEach((a)->liveIn[s], [&](Int x) mutable -> void {
+                        bitsetEachIntersection((a)->liveIn[s], split, [&](Int x) mutable -> void {
                             VReg r = (convert<VReg>(x) + firstVirtual);
                             VReg src = allocatorLocation(a, r, ((a)->blockTo[b] - i32(1LL)));
                             VReg dst = allocatorLocation(a, r, (a)->blockFrom[s]);
@@ -19392,6 +19404,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         });
     }
 
+    template <typename F>
+    static void bitsetEachIntersection(Bitset s, Bitset filter, F cb) {
+        visitBitsetWords(s, [&](usize index, u64 word) {
+            word &= bitsetWord(filter, index);
+            while (word) {
+                cb(Int(index * 64 + bitsTrailingZeros64(word)));
+                word &= word - 1;
+            }
+        });
+    }
+
     static bool bitsetHas(Bitset s, Int i) {
         require(i >= 0 && s.data && usize(i) < s.data->bits, "bitset index");
         return (bitsetWord(s, usize(i) / 64) & (u64(1) << (usize(i) % 64))) != 0;
@@ -23376,6 +23399,30 @@ namespace {
             require(seen == 5, "sparse bitset contents");
             require(bitsetUnion(live, out) && bitsetHas(live, 16384), "sparse union");
             require(!bitsetUnion(live, out), "sparse union convergence");
+            Bitset filter = newBitset(70001);
+            for (Int bit : {64, 42, 16384, 70000}) {
+                bitsetSet(filter, bit);
+            }
+            const Int intersection[] = {64, 16384, 70000};
+            seen = 0;
+            bitsetEachIntersection(live, filter, [&](Int bit) {
+                require(seen < 3 && bit == intersection[seen++], "sparse intersection order and contents");
+            });
+            require(seen == 3, "sparse intersection size");
+            Bitset dense = newBitset(2048);
+            bitsetSet(dense, 64);
+            bitsetSet(dense, 100);
+            seen = 0;
+            bitsetEachIntersection(filter, dense, [&](Int bit) {
+                require(bit == 64 && !seen++, "sparse intersection with dense filter");
+            });
+            bitsetEachIntersection(dense, filter, [&](Int bit) {
+                require(bit == 64 && seen++ == 1, "dense intersection with sparse filter");
+            });
+            bitsetEachIntersection(live, {}, [&](Int) {
+                fail("intersection with an empty filter");
+            });
+            require(seen == 2, "mixed intersection sizes");
         }
         int count = 0;
         int order[3]{};
