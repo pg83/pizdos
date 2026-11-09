@@ -3174,6 +3174,7 @@ namespace {
         Int importedTables{};
         Int importedMems{};
         Int importedGlobals{};
+        bool batchData{};
     };
 
     struct MetaWriter {
@@ -4345,6 +4346,7 @@ namespace {
         String regionName{};
         Map<String, bool> globals{};
         Int initFn{};
+        i32 dataInitTable = -1;
     };
 
     struct Table {
@@ -8495,9 +8497,47 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return fast;
     }
 
+    // Large collections of constant data segments do not need a compiler
+    // pipeline per copy. Only omit their bounds checks when fresh, private
+    // memory is guaranteed to contain every destination, including empty ones.
+    static bool moduleCanBatchData(Module* m) {
+        if (length(m->mems) != 1 || m->mems[0].imported) {
+            return false;
+        }
+        const u64 minimum = m->mems[0].limits.min * u64(pageBytes);
+        if (m->start >= 0) {
+            if (u64(m->start) >= u64(length(m->funcs)) || m->funcs[Int(m->start)].returnsTwice) {
+                return false;
+            }
+            const auto* type = moduleFuncType(m, u32(m->start));
+            if (length(type->params) || length(type->results)) {
+                return false;
+            }
+        }
+        u32 count = 0;
+        for (Int i = 0; i < length(m->datas); ++i) {
+            const Data& data = m->datas[i];
+            if (data.mode != segmentActive) {
+                continue;
+            }
+            if (data.memory != 0 || !length(data.offset) || data.offset[0] != 0x41) {
+                return false;
+            }
+            const auto offset = constOffset(data.offset);
+            if (!offset.v1 || u64(offset.v0) > minimum || u64(length(data.bytes)) > minimum - u64(offset.v0)) {
+                return false;
+            }
+            ++count;
+        }
+        // The existing initializer splits after 128 operations. Keep small
+        // initializers on that path and bound the descriptor allocation.
+        return count >= 128 && count <= 0x7fffffff / 16;
+    }
+
     // addInitFunction appends a function that initializes the globals and
     // applies the active data segments, then calls the start function.
     static Int moduleAddInitFunction(Module* m) {
+        m->batchData = moduleCanBatchData(m);
         Slice<u8> code = sliceOf<u8>({u8(0LL)});
         Slice<Slice<u8>> parts = {};
         Int steps = Int(0LL);
@@ -8524,7 +8564,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             for (Int index350 = 0, rangeEnd351 = length(range349); index350 < rangeEnd351; ++index350) {
                 Int i = index350;
                 Data d = range349[index350];
-                if (((d).mode != segmentActive)) {
+                if (m->batchData || d.mode != segmentActive) {
                     continue;
                 }
                 next();
@@ -8567,7 +8607,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
             }
         }
-        if (((m)->start >= i64(0LL))) {
+        if (m->start >= 0 && !m->batchData) {
             code = appendLeb(appendValues(code, u8(16LL)), convert<u64>((m)->start));
         }
         code = appendValues(code, u8(11LL));
@@ -16821,10 +16861,48 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
     }
 
-    // initThunk emits the thunk Go calls on a new instance, func(instance
-    // uintptr): it fills the function descriptors, applies the active element
-    // segments and calls the init function, which sets the globals, applies the
-    // data segments and calls the start function.
+    // Every destination was checked against the private memory's minimum.
+    // Sources remain the original data blobs; the table preserves segment
+    // order, overlapping writes, and each segment's dropped state.
+    static void objCodeInitData(ObjCode* oc) {
+        Module* m = oc->m;
+        Asm* a = &oc->a;
+        Int count = 0;
+        for (Int i = 0; i < length(m->datas); ++i) {
+            count += m->datas[i].mode == segmentActive;
+        }
+        Slice<u8> table = makeSlice<u8>(count * 16);
+        Int row = 0;
+        for (Int i = 0; i < length(m->datas); ++i) {
+            const Data& data = m->datas[i];
+            if (data.mode != segmentActive) {
+                continue;
+            }
+            auto entry = subslice(table, row++ * 16, length(table));
+            littlePutUint32(entry, u32(constOffset(data.offset).v0));
+            littlePutUint32(subslice(entry, 4, length(entry)), u32(length(data.bytes)));
+            littlePutUint32(subslice(entry, 12, length(entry)), u32(layoutDataDropped(oc->lay, i)));
+        }
+        oc->dataInitTable = objCodeAddBlob(oc, table, 4);
+        asmLea(a, 8, R8, Amem{-1, -1, {}, {}, oc->dataInitTable, labelModule});
+        asmMovImm(a, 4, R9, count);
+        const i32 loop = asmPos(a);
+        asmLoad(a, 4, 4, false, RDI, baseAt(R8, 0));
+        asmAluRR(a, aluAdd, 8, RDI, memReg);
+        asmLoad(a, 4, 4, false, RCX, baseAt(R8, 4));
+        asmLoad(a, 4, 8, true, RSI, baseAt(R8, 8));
+        asmAluRR(a, aluAdd, 8, RSI, R8);
+        asmBytes(a, {0xf3, 0xa4});
+        asmLoad(a, 4, 4, false, RAX, baseAt(R8, 12));
+        asmStoreImm(a, 1, indexed(ctxReg, RAX), 1);
+        asmAluRI(a, aluAdd, 8, R8, 16);
+        asmAluRI(a, aluSub, 4, R9, 1);
+        asmPatch32(a, asmJccRel(a, ccNE), loop);
+    }
+
+    // initThunk fills function descriptors and active elements, then sets
+    // globals, initializes data and calls start. Large, statically safe data
+    // initializers run here; the other cases stay in the generated function.
     static void objCodeInitThunk(ObjCode* oc) {
         Module* m = (oc)->m;
         Layout* lay = (oc)->lay;
@@ -16903,6 +16981,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
             }
             objCodeCallFunc(oc, (oc)->initFn);
+            if (m->batchData) {
+                objCodeInitData(oc);
+                if (m->start >= 0) {
+                    objCodeCallFunc(oc, Int(m->start));
+                }
+            }
         });
     }
 
@@ -17043,6 +17127,20 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             offset += length(blob.bytes);
         }
         oc->rodataSize = offset;
+        if (oc->dataInitTable >= 0) {
+            auto table = oc->blobs[oc->dataInitTable].bytes;
+            const i32 base = oc->blobAt[oc->dataInitTable];
+            Int row = 0;
+            for (Int i = 0; i < length(oc->m->datas); ++i) {
+                if (oc->m->datas[i].mode != segmentActive) {
+                    continue;
+                }
+                const i32 at = row++ * 16;
+                const i64 source = i64(oc->blobAt[dataLabel(i)]) - (i64(base) + at);
+                require(source >= -2147483648LL && source <= 2147483647LL, "data initializer displacement overflow");
+                littlePutUint32(subslice(table, at + 8, length(table)), u32(source));
+            }
+        }
     }
 
     // recordFrame writes the jump frame in an adapter, whose RBP is set while
@@ -19806,7 +19904,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // constOffset evaluates a constant offset expression: i32.const or
     // i64.const.
     static Tuple2<i64, bool> constOffset(Slice<u8> expr) {
-        Reader* r = activePool->make<Reader>(Reader{expr, {}});
+        Reader reader{expr, {}};
+        Reader* r = &reader;
         u8 op = readerByte(r);
         i64 v = {};
         {
