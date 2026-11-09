@@ -49,7 +49,7 @@ extern char g_exception_cause[256];
         cxx = kind == "djvu"
         flags = [*config["cxxflags"], "-DHAVE_CONFIG_H", "-DHAVE_PTHREAD=1"] if cxx else []
         subprocess.run([config["cxx"] if cxx else config["cc"], *common, *flags, *extra, "-c", str(wrapper), "-o", str(tmp / "wrapper.o")], check=True)
-        subprocess.run([config["cc"], *common, "-DSTAND_NATIVE", "-DSTAND_KIND_" + kind.upper(), "-I" + str(here),
+        subprocess.run([config["cc"], *common, "-DSTAND_KIND_" + kind.upper(), "-I" + str(here),
                         "-c", str(here / "decode.c"), "-o", str(tmp / "driver.o")], check=True)
         objects = [str(tmp / "driver.o"), str(tmp / "wrapper.o")]
 

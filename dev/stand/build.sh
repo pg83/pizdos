@@ -21,5 +21,5 @@ export STAND_NATIVE_SCALAR=1
 exec "$tree/ix" run lib/image/magick --stand_scalar=1 lib/pdf/ium --stand_scalar=1 \
     lib/djvulibre --stand_scalar=1 lib/magic --stand_scalar=1 lib/svg --stand_scalar=1 \
     lib/z --stand_scalar=1 lib/png --stand_scalar=1 lib/jpeg --stand_scalar=1 \
-    lib/webp --stand_scalar=1 lib/gif --stand_scalar=1 bld/pkg/config bld/compiler bld/wabt bin/zstd \
+    lib/webp --stand_scalar=1 lib/gif --stand_scalar=1 bld/pkg/config bld/compiler bin/zstd \
     -- ./build stand "$@"

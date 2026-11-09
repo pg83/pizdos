@@ -1,8 +1,8 @@
 // The work of the stand (dev/stand.py) over files, with one pure module of
-// impulse-desktop/decode: wasm2c's code of it, translated with module name
-// "mod" (STAND_W2C). It does what `wasm2o stand` does with wasm2o's code
-// (bin/wasm2o/stand.go), which says the work and the results: one line per
-// file on standard output, the time of the calls on standard error.
+// impulse-desktop/decode built natively: its wrapper against the native
+// libraries (native.py). It does what `wasm2o stand` does with wasm2o's
+// code (bin/wasm2o/stand.go), which says the work and the results: one line
+// per file on standard output, the time of the calls on standard error.
 //
 //     decode KIND FILE...
 //
@@ -36,52 +36,6 @@ static void fnv_word(fnv* h, uint32_t v) {
 static uint32_t le32(const uint8_t* b) {
     return b[0] | b[1] << 8 | b[2] << 16 | (uint32_t)b[3] << 24;
 }
-
-#if defined(STAND_W2C)
-
-#include "mod.h"
-#include "wasm-rt-exceptions.h"
-#include "wasm-rt-impl.h"
-
-// an address in the module's memory
-typedef uint32_t ref;
-
-static w2c_mod inst;
-static int live;
-
-static uint8_t* at(ref p) {
-    return w2c_mod_memory(&inst)->data + p;
-}
-
-static ref put(const void* b, size_t n) {
-    ref p = w2c_mod_malloc(&inst, n);
-
-    if (!p && n) {
-        fprintf(stderr, "malloc of %zu bytes failed\n", n);
-        exit(2);
-    }
-
-    memcpy(at(p), b, n);
-
-    return p;
-}
-
-static void drop(ref p) {
-    w2c_mod_free(&inst, p);
-}
-
-static void fresh(void) {
-    if (live) {
-        wasm2c_mod_free(&inst);
-    }
-
-    wasm2c_mod_instantiate(&inst);
-    live = 1;
-}
-
-#define CALL(name, ...) w2c_mod_##name(&inst, __VA_ARGS__)
-
-#elif defined(STAND_NATIVE)
 
 #include <setjmp.h>
 #include "native.h"
@@ -122,10 +76,6 @@ static void fresh(void) {
 }
 
 #define CALL(name, ...) name(__VA_ARGS__)
-
-#else
-#error "no backend: STAND_W2C or STAND_NATIVE"
-#endif
 
 // image adds the image block at p to h and frees it.
 static void image(fnv* h, ref p, uint32_t* width, uint32_t* height) {
@@ -271,9 +221,6 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-#if defined(STAND_W2C)
-    wasm_rt_init();
-#endif
     fresh();
     double total = 0;
 
@@ -288,11 +235,7 @@ int main(int argc, char** argv) {
             untimed = 0;
             double start = now();
 
-#if defined(STAND_W2C)
-            if (wasm_rt_impl_try() != 0) {
-#else
             if (setjmp(landing) != 0) {
-#endif
                 snprintf(out, sizeof(out), "trap");
             } else {
                 work(name, data, len, out, sizeof(out));

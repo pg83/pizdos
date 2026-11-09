@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
-"""The stand: native (A), our AOT (C), and bounds-checked wasm2c (R).
+"""The stand: native (A) against our AOT (C).
 
     sh dev/stand/build.sh
     dev/stand.py [--runs N] [--only aot,im,pdf,djvu,svg,magic] [--json FILE]
 
 Compiler workloads measure end-to-end wall and CPU time. Decode workloads
 measure work inside each driver, excluding startup, linking, file I/O and
-output hashing. Small workloads repeat in the same instance. C and R must
-agree exactly; native must agree on status, dimensions and page count, but
-its pixels may differ with libm and floating-point arithmetic.
+output hashing. Small workloads repeat in the same instance. The compiler's
+outputs must be identical; decode must agree on status, dimensions and
+page count, and the report counts the files whose pixels match exactly:
+native pixels may differ with libm and floating-point arithmetic.
 
 The original positional form is accepted for compiler workloads alone:
-    stand.py [--runs N] <aot-native> <wasm2o> <stand> <input.wasm>...
+    stand.py [--runs N] <aot-native> <wasm2o> <input.wasm>...
 """
 import argparse
 import hashlib
@@ -51,19 +52,19 @@ def compile_run(command, wasm, out, streams=False):
     return wall, after.ru_utime - before.ru_utime + after.ru_stime - before.ru_stime
 
 
-def compile_work(native, wasm2o, stand, inputs, runs, work):
+def compile_work(native, wasm2o, inputs, runs, work):
     rows = []
 
     for wasm in inputs:
         expected = work / "want.o"
         compile_run([str(native)], wasm, expected, streams=True)
         want = expected.read_bytes()
-        commands = {"A": ([str(native)], True), "C": ([str(wasm2o)], False), "R": ([str(stand)], True)}
+        commands = {"A": ([str(native)], True), "C": ([str(wasm2o)], False)}
         samples = {name: [] for name in commands}
 
         for run in range(runs):
             order = list(commands)
-            order = order[run % 3:] + order[:run % 3]
+            order = order[run % 2:] + order[:run % 2]
 
             for name in order:
                 out = work / (name + ".o")
@@ -75,8 +76,7 @@ def compile_work(native, wasm2o, stand, inputs, runs, work):
 
         wall = {name: statistics.median(t[0] for t in values) for name, values in samples.items()}
         cpu = {name: statistics.median(t[1] for t in values) for name, values in samples.items()}
-        print(f"aot/{Path(wasm).name:16s} A {wall['A']:7.3f}s  C {wall['C']:7.3f}s  R {wall['R']:7.3f}s"
-              f"  C/R {wall['C'] / wall['R']:.3f}  C/A {wall['C'] / wall['A']:.3f}  identical", flush=True)
+        print(f"aot/{Path(wasm).name:16s} A {wall['A']:7.3f}s  C {wall['C']:7.3f}s  C/A {wall['C'] / wall['A']:.3f}  identical", flush=True)
         rows.append({"work": "aot/" + Path(wasm).name, "wall": wall, "cpu": cpu, "samples": samples, "identical": True})
 
     return rows
@@ -136,23 +136,23 @@ def decode_work(build, wasm2o, kinds, runs, minimum, work, objects=None):
         obj = objects / f"{kind}.o" if objects else folder / "module.o"
         files = sorted(p for p in (root.rglob("*") if kind == "magic" else (root / kind).iterdir())
                        if p.is_file() and p.name not in ("MANIFEST", "SHA256SUMS"))
-        commands = {"A": [str(folder / "native")], "C": [str(wasm2o), "stand"], "R": [str(folder / "reference")]}
-        # The AOT command has its object after KIND, unlike the C drivers.
-        reference_time, want = decode_run(commands["R"], 1, kind, files)
+        commands = {"A": [str(folder / "native")], "C": [str(wasm2o), "stand"]}
+        # The AOT command has its object after KIND, unlike the native driver.
+        native_time, want = decode_run(commands["A"], 1, kind, files)
         repeat = 1
 
-        while reference_time < minimum and repeat < 10000:
-            repeat = min(10000, max(repeat + 1, math.ceil(repeat * minimum / max(reference_time, 0.000001) * 1.1)))
-            reference_time, got = decode_run(commands["R"], repeat, kind, files)
+        while native_time < minimum and repeat < 10000:
+            repeat = min(10000, max(repeat + 1, math.ceil(repeat * minimum / max(native_time, 0.000001) * 1.1)))
+            native_time, got = decode_run(commands["A"], repeat, kind, files)
 
             if got != want:
-                raise SystemExit(f"{kind}: reference results changed during calibration")
+                raise SystemExit(f"{kind}: native results changed during calibration")
         samples = {name: [] for name in commands}
         outputs = {}
 
         for run in range(runs):
             order = list(commands)
-            order = order[run % 3:] + order[:run % 3]
+            order = order[run % 2:] + order[:run % 2]
 
             for name in order:
                 inputs = [obj, *files] if name == "C" else files
@@ -164,25 +164,26 @@ def decode_work(build, wasm2o, kinds, runs, minimum, work, objects=None):
                 outputs[name] = got
                 samples[name].append(elapsed / repeat)
 
-                if name in ("C", "R") and got != want:
-                    diff = [f"  want {x}\n  got  {y}" for x, y in zip(want, got) if x != y]
-                    raise SystemExit(f"{kind}: {name} disagrees with wasm2c:\n" + "\n".join(diff[:8]))
-
-        mismatches = [f"{a} != {r}" for a, r in zip(outputs["A"], want) if shape(kind, a) != shape(kind, r)]
+        mismatches = [f"{c} != {a}" for c, a in zip(outputs["C"], want) if shape(kind, c) != shape(kind, a)]
 
         if mismatches:
-            raise SystemExit(f"{kind}: native does different work:\n" + "\n".join(mismatches[:8]))
+            raise SystemExit(f"{kind}: wasm2o does different work than native:\n" + "\n".join(mismatches[:8]))
 
-        native_same = sum(a == r for a, r in zip(outputs["A"], want))
+        exact = sum(c == a for c, a in zip(outputs["C"], want))
         medians = {name: statistics.median(values) for name, values in samples.items()}
-        print(f"decode/{kind:12s} A {medians['A']:7.3f}s  C {medians['C']:7.3f}s  R {medians['R']:7.3f}s"
-              f"  C/R {medians['C'] / medians['R']:.3f}  C/A {medians['C'] / medians['A']:.3f}"
-              f"  {len(files)} files x{repeat}, C=R, native exact {native_same}/{len(files)}", flush=True)
+        print(f"decode/{kind:12s} A {medians['A']:7.3f}s  C {medians['C']:7.3f}s  C/A {medians['C'] / medians['A']:.3f}"
+              f"  {len(files)} files x{repeat}, exact {exact}/{len(files)}", flush=True)
         rows.append({"work": "decode/" + kind, "files": len(files), "repeat": repeat, "seconds": medians,
-                     "samples": samples, "outputs": outputs, "native_exact": native_same, "aot_reference_identical": True,
+                     "samples": samples, "outputs": outputs, "exact": exact,
                      "object_sha256": hashlib.sha256(obj.read_bytes()).hexdigest()})
 
     return rows
+
+
+def geomean(rows):
+    ratios = [(row.get("wall") or row["seconds"])["C"] / (row.get("wall") or row["seconds"])["A"] for row in rows]
+
+    return math.exp(sum(map(math.log, ratios)) / len(ratios))
 
 
 def main():
@@ -192,7 +193,7 @@ def main():
     parser.add_argument("--build-dir", type=Path, default=Path(".build"))
     parser.add_argument("--objects", type=Path, help="use saved KIND.o files for generated-code comparisons")
     parser.add_argument("--only", default="aot," + ",".join(KINDS))
-    parser.add_argument("--min-time", type=float, default=0.25, help="minimum reference time per decode sample")
+    parser.add_argument("--min-time", type=float, default=0.25, help="minimum native time per decode sample")
     parser.add_argument("--json", type=Path, help="write samples and per-file results")
     args = parser.parse_args()
     selected = args.only.split(",")
@@ -206,26 +207,29 @@ def main():
     build = args.build_dir.resolve()
     wasm2o = build / "bin/wasm2o/wasm2o"
     rows = []
-    print("A=native C=wasm2o R=wasm2c; GOMAXPROCS=1, MAGICK/OMP threads=1; decode excludes startup, I/O and pixel hashing", flush=True)
+    print("A=native C=wasm2o; GOMAXPROCS=1, MAGICK/OMP threads=1; decode excludes startup, I/O and pixel hashing", flush=True)
 
     with tempfile.TemporaryDirectory(prefix="stand-") as tmp:
         work = Path(tmp)
 
         if args.paths:
-            if len(args.paths) < 4:
-                parser.error("positional form needs aot-native, wasm2o, reference and input.wasm")
+            if len(args.paths) < 3:
+                parser.error("positional form needs aot-native, wasm2o and input.wasm")
 
-            native, compiler, reference, *inputs = (Path(p).absolute() for p in args.paths)
-            rows.extend(compile_work(native, compiler, reference, inputs, args.runs, work))
+            native, compiler, *inputs = (Path(p).absolute() for p in args.paths)
+            rows.extend(compile_work(native, compiler, inputs, args.runs, work))
         else:
             if "aot" in selected:
-                rows.extend(compile_work(build / "bin/aot/aot", wasm2o, build / "stand/aot",
+                rows.extend(compile_work(build / "bin/aot/aot", wasm2o,
                                          [build / "bin/busybox/busybox.wasm", build / "bin/aot/aot.wasm"], args.runs, work))
 
             kinds = [kind for kind in KINDS if kind in selected]
 
             if kinds:
                 rows.extend(decode_work(build, wasm2o, kinds, args.runs, args.min_time, work, args.objects))
+
+    if rows:
+        print(f"geomean C/A {geomean(rows):.3f}", flush=True)
 
     if args.json:
         args.json.parent.mkdir(parents=True, exist_ok=True)

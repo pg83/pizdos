@@ -277,60 +277,11 @@ wazero = command(
     color="light-blue",
 )
 
-# The stand: aot-command.wasm as wasm2c and clang make it, in the mode that
-# matches wasm2o's code (explicit bounds checks, memory reserved with mmap
-# and grown in place, a counted call depth) and at its best otherwise: -O3,
-# ThinLTO across the parts, no frame pointer. Its host is dev/stand. It
-# takes a host C library, `ix run lib/c bld/compiler bld/wabt -- ./build
-# stand_bin`; the full stand below also adds native decoder libraries.
-WASM2C = shutil.which("wasm2c") or ""
-WASM2C_RT = os.path.join(os.path.dirname(WASM2C), "../share/wabt/wasm2c") if WASM2C else ""
-STAND_PARTS = 16
-STAND_HOST = ["$(S)/dev/stand/host_w2c.c", "$(S)/dev/stand/wasi.c", "$(S)/dev/stand/wasi.h"]
-STAND_RT = [f"{WASM2C_RT}/wasm-rt-impl.c", f"{WASM2C_RT}/wasm-rt-mem-impl.c", f"{WASM2C_RT}/wasm-rt-exceptions-impl.c"]
-STAND_FLAGS = [
-    *build.cppflags, *build.cflags,
-    "-O3", "-march=x86-64-v3", "-fomit-frame-pointer", "-flto=thin",
-    "-DWASM_RT_MEMCHECK_BOUNDS_CHECK=1", "-DWASM_RT_USE_MMAP=1",
-    "-DWASM_RT_STACK_DEPTH_COUNT=1", "-DWASM_RT_MAX_CALL_STACK_DEPTH=100000000",
-    "-I" + WASM2C_RT, "-I$(B)/stand",
-]
-
-stand_src = command(
-    name="stand_src",
-    deps=[aot_command],
-    outputs=["$(B)/stand/prog.h", "$(B)/stand/prog-impl.h", *[f"$(B)/stand/prog_{i}.c" for i in range(STAND_PARTS)]],
-    cmd=[WASM2C, "--num-outputs", str(STAND_PARTS), "-n", "prog", "-o", "$(B)/stand/prog.c", aot_command.outputs[0]],
-    descr="WC",
-    color="magenta",
-)
-
-stand_parts = [
-    command(
-        name=f"stand_part{i}",
-        deps=[stand_src],
-        outputs=[f"$(B)/stand/prog_{i}.o"],
-        cmd=[CLANG, *STAND_FLAGS, "-w", "-c", f"$(B)/stand/prog_{i}.c", "-o", f"$(B)/stand/prog_{i}.o"],
-        descr="CC",
-        color="green",
-    )
-    for i in range(STAND_PARTS)
-]
-
-stand = command(
-    name="stand_bin",
-    deps=[stand_src, *stand_parts],
-    inputs=STAND_HOST,
-    outputs=["$(B)/stand/aot"],
-    cmd=[CLANG, *STAND_FLAGS, "-I$(S)/dev/stand", "-o", "$(B)/stand/aot", "$(S)/dev/stand/host_w2c.c", "$(S)/dev/stand/wasi.c",
-         *STAND_RT, *[p.outputs[0] for p in stand_parts], *build.ldflags],
-    descr="LD",
-    color="green",
-)
-
-# decode release 16 is pure C/C++ wasm; its native column uses the same
-# wrappers and the libraries of the ix revision that built that release.
-# dev/stand/build.sh supplies those libraries and the host toolchain.
+# The stand compares wasm2o's code with native code of the same programs:
+# the C++ compiler, and decode release 16, pure C/C++ wasm whose native
+# column uses the same wrappers and the libraries of the ix revision that
+# built that release. dev/stand/build.sh supplies those libraries and the
+# host toolchain.
 DECODE_IX = "53f12e265c480e7849bfa58eedf608db63020b1b"
 DECODE = {
     "im": ("im", "0a168cb80eb61c6540a4e445a509f0d57b086565e99da0605671fb8d61b99783", "lib/image/magick/wasm/decode.c", "06a48395995911dc4f6ddeaf5fd07b13232de1872eb5d5f340fc01cad735a8c1"),
@@ -380,31 +331,7 @@ for kind, (module, digest, source, source_digest) in DECODE.items():
         env={"PKG_CONFIG_PATH": os.environ.get("PKG_CONFIG_PATH", "")},
         descr="CC", color="green",
     )
-    parts = 8
-    src = command(
-        name=f"stand_{kind}_src",
-        deps=[wasm],
-        outputs=[f"{folder}/mod.h", f"{folder}/mod-impl.h", *[f"{folder}/mod_{i}.c" for i in range(parts)]],
-        cmd=[WASM2C, "--num-outputs", str(parts), "-n", "mod", "-o", f"{folder}/mod.c", wasm.outputs[0]],
-        descr="WC", color="magenta",
-    )
-    objects = [command(
-        name=f"stand_{kind}_part{i}",
-        deps=[src],
-        outputs=[f"{folder}/mod_{i}.o"],
-        cmd=[CLANG, *STAND_FLAGS, "-I" + folder, "-w", "-c", f"{folder}/mod_{i}.c", "-o", f"{folder}/mod_{i}.o"],
-        descr="CC", color="green",
-    ) for i in range(parts)]
-    reference = command(
-        name=f"stand_{kind}_reference",
-        inputs=["$(S)/dev/stand/decode.c"],
-        deps=[src, *objects],
-        outputs=[f"{folder}/reference"],
-        cmd=[CLANG, *STAND_FLAGS, "-I" + folder, "-DSTAND_W2C", "-DSTAND_KIND_" + kind.upper(),
-             "$(S)/dev/stand/decode.c", *STAND_RT, *[p.outputs[0] for p in objects], "-o", f"{folder}/reference", *build.ldflags, "-lm"],
-        descr="LD", color="green",
-    )
-    decode_stand.extend([obj, native, reference])
+    decode_stand.extend([obj, native])
 
 stand_corpus = fetch(
     "stand_corpus",
@@ -442,4 +369,4 @@ for test in build.glob("$(S)/tst/test_*.py"):
 
 group("install", busybox, busybox_abi, busybox_o, wasm2o, aot_native, aot, aot_aot, wazero)
 group("test", *tests, wasm2o_go_test, wasm2o_spec_test)
-group("stand", stand, wasm2o, aot_native, aot, aot_command, aot_aot, busybox, stand_corpus, *decode_stand)
+group("stand", wasm2o, aot_native, aot, aot_aot, busybox, stand_corpus, *decode_stand)

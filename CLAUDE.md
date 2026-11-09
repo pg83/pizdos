@@ -11,17 +11,18 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
 - `./build test` runs `tst/test_*.py`, each with the outputs of the nodes
   `TESTED` names for it in build.py.
 - `sh dev/stand/build.sh` supplies the pinned ix revision's libraries and
-  tools and runs `./build stand`: aot-command.wasm through wasm2c, plus decode's
-  im, pdf, djvu, svg and magic modules through wasm2o, wasm2c and native
-  libraries with the same wrappers. `dev/stand.py --runs 5 --json FILE`
-  runs native (A), our AOT (C) and wasm2c (R) interleaved; C/A <= 1.2 is the
-  goal. Native codec libraries and wrappers disable SIMD implementations,
+  tools and runs `./build stand`: decode's im, pdf, djvu, svg and magic
+  modules through wasm2o, and their wrappers against the native
+  libraries. `dev/stand.py --runs 5 --json FILE` runs native (A) and our
+  AOT (C) interleaved and prints the geometric mean of C/A; C/A <= 1.2 is
+  the goal. Native is ordinary clang code of the same program, never
+  wasm2c. Native codec libraries and wrappers disable SIMD implementations,
   loop/SLP vectorization, AVX and FMA (scalar.py edits only the private ix
   checkout); AVIF uses libaom, as the wasm module does. The stand_scalar
   flag belongs to each decoder library, never to the whole ix realm or
   host toolchain. Decode excludes startup, I/O and host hashing and repeats short
-  workloads. C and R must agree exactly; native agrees on status and sizes,
-  with pixel hash differences counted separately. The 89-file corpus is
+  workloads. The compiler's outputs must be identical; decode must agree on
+  status and sizes, with pixel hash differences counted separately. The 89-file corpus is
   pinned by hash in build.py and fetched from pg83/store; corpus.sh makes
   it reproducibly with the same encoder toolchain (README.md).
 - A node that consumes another node's output names it in `deps=`: the engine
@@ -87,11 +88,10 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   `W2O_TAIL_PROFILE=FILE` when running a stand or WASI command appends JSON
   records with executed guards, fallback entries, omitted checks and
   ordinary checks. Profiled objects are for counting, not timing.
-- Speed is measured against wasm2c in its bounds-checked mode (clang -O3,
-  `WASM_RT_MEMCHECK_BOUNDS_CHECK`, memory on mmap, counted call depth) by
-  the stand: both run the C++ compiler compiling busybox.wasm and aot.wasm,
-  and the scalar modules of decode release 16 on their file corpora. A
-  native column compiles the same wrappers against the pinned ix libraries.
+- Speed is measured against native code by the stand: the C++ compiler
+  compiling busybox.wasm and aot.wasm, natively and as aot.aot in wasm2o,
+  and the scalar modules of decode release 16 on their file corpora against
+  the same wrappers compiled with the pinned ix libraries.
 - An import named setjmp, _setjmp, sigsetjmp, vfork or fork returns twice:
   its direct calls go through an adapter that writes the caller's frame to
   the instance header (`abi.go`), and the caller keeps an invocation token

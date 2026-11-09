@@ -14,9 +14,8 @@ import (
 
 // wasm2o stand runs the work of the stand (dev/stand) over files with a
 // pure module of impulse-desktop/decode compiled by wasm2o: what
-// dev/stand/decode.c does with wasm2c's code of the module and with the
-// module's sources compiled natively. One line per file says the result,
-// equal for wasm2o and wasm2c; native pixels may differ:
+// dev/stand/decode.c does with the module's sources compiled natively. One
+// line per file says the result; native pixels may differ:
 //
 //	im              decode(file, name): WxH and the digest of the image, or fail
 //	pdf, djvu, svg  open(file), then each of the first standPages pages rendered
