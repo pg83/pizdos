@@ -20660,6 +20660,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if ((limit == Int(0LL))) {
             return {};
         }
+        // The analysis keeps its tables in a pool of its own; only the proofs
+        // go to the caller's.
+        ObjPool* caller = activePool;
+        ObjPool temporary;
+        PoolScope scope(temporary);
         Slice<Slice<CheckedEdge>> incoming = makeSlice<Slice<CheckedEdge>>(length((f)->blocks));
         {
             auto range1400 = (ci)->order;
@@ -20721,7 +20726,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
             }
         }
-        Int n = length(values);
+        const Int n = length(values);
         if (((n == Int(0LL)) || (n > limit))) {
             return {};
         }
@@ -20739,36 +20744,41 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
             }
         }
-        Slice<i64> out = makeSlice<i64>((n * length((f)->blocks)));
-        Slice<i64> cur = makeSlice<i64>(n);
+        // Each block's checked ends form one row of n values, an allocation
+        // of its own: the merges below run over plain arrays.
+        const usize rowBytes = usize(n) * sizeof(i64);
+        auto newRow = [&]() {
+            auto* row = static_cast<i64*>(temporary.allocate(rowBytes, alignof(i64)));
+            zeroBytes(row, rowBytes);
+            return row;
+        };
+        Slice<i64*> rows = makeSlice<i64*>(length((f)->blocks));
+        for (Int b = 0; b < length(f->blocks); ++b) {
+            rows[b] = newRow();
+        }
+        i64* cur = newRow();
         auto entry = [&](i32 b) mutable -> void {
             bool first = true;
             if ((b != i32(0LL))) {
-                {
-                    auto range1421 = ((f)->blocks[b]).preds;
-                    for (Int index1422 = 0, rangeEnd1423 = length(range1421); index1422 < rangeEnd1423; ++index1422) {
-                        i32 p = range1421[index1422];
-                        if (((ci)->rpoIndex[p] < i32(0LL))) {
-                            continue;
-                        }
-                        Slice<i64> row = subslice(out, (convert<i64>(p) * n), (((convert<i64>(p) + Int(1LL))) * n));
-                        {
-                            auto range1424 = cur;
-                            for (Int index1425 = 0, rangeEnd1426 = length(range1424); index1425 < rangeEnd1426; ++index1425) {
-                                Int j = index1425;
-                                if (first) {
-                                    cur[j] = row[j];
-                                } else {
-                                    cur[j] = minimum(cur[j], row[j]);
-                                }
-                            }
-                        }
-                        first = false;
+                const auto preds = f->blocks[b].preds;
+                for (Int k = 0; k < length(preds); ++k) {
+                    const i32 p = preds[k];
+                    if (ci->rpoIndex[p] < 0) {
+                        continue;
                     }
+                    const i64* row = rows[p];
+                    if (first) {
+                        copyBytes(cur, row, rowBytes);
+                    } else {
+                        for (Int j = 0; j < n; ++j) {
+                            cur[j] = minimum(cur[j], row[j]);
+                        }
+                    }
+                    first = false;
                 }
             }
             if (first) {
-                clearMap(cur);
+                zeroBytes(cur, rowBytes);
             }
             {
                 auto range1427 = defs[b];
@@ -20791,7 +20801,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         for (Int index1434 = 0, rangeEnd1435 = length(range1433); index1434 < rangeEnd1435; ++index1434) {
                             CheckedEdge e = range1433[index1434];
                             i32 arg = tracked[((e).edge)->args[((f)->values[p]).aux]];
-                            end = minimum(end, out[((convert<i64>((e).pred) * n) + convert<i64>(arg))]);
+                            end = minimum(end, rows[e.pred][arg]);
                         }
                     }
                     cur[j] = end;
@@ -20822,15 +20832,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                                 }
                             }
                         }
-                        Slice<i64> row = subslice(out, (convert<i64>(b) * n), (((convert<i64>(b) + Int(1LL))) * n));
-                        {
-                            auto range1442 = cur;
-                            for (Int index1443 = 0, rangeEnd1444 = length(range1442); index1443 < rangeEnd1444; ++index1443) {
-                                Int j = index1443;
-                                i64 end = range1442[index1443];
-                                changed = (changed || (row[j] != end));
-                                row[j] = end;
-                            }
+                        i64* row = rows[b];
+                        for (Int j = 0; j < n; ++j) {
+                            changed = changed || row[j] != cur[j];
+                            row[j] = cur[j];
                         }
                     }
                 }
@@ -20839,22 +20844,19 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
             }
         }
+        PoolScope results(*caller);
         Slice<Slice<CheckedValue>> proofs = makeSlice<Slice<CheckedValue>>(length((f)->blocks));
         {
             auto range1445 = (ci)->order;
             for (Int index1446 = 0, rangeEnd1447 = length(range1445); index1446 < rangeEnd1447; ++index1446) {
                 i32 b = range1445[index1446];
                 entry(b);
-                {
-                    auto range1448 = cur;
-                    for (Int index1449 = 0, rangeEnd1450 = length(range1448); index1449 < rangeEnd1450; ++index1449) {
-                        Int j = index1449;
-                        i64 end = range1448[index1449];
-                        i32 v = values[j];
-                        i32 owner = ((f)->values[v]).block;
-                        if (((end > i64(0LL)) && (((owner < i32(0LL)) || cfgInfoDominates(ci, owner, b))))) {
-                            proofs[b] = appendValues(proofs[b], CheckedValue{v, end});
-                        }
+                for (Int j = 0; j < n; ++j) {
+                    const i64 end = cur[j];
+                    i32 v = values[j];
+                    i32 owner = ((f)->values[v]).block;
+                    if (((end > i64(0LL)) && (((owner < i32(0LL)) || cfgInfoDominates(ci, owner, b))))) {
+                        proofs[b] = appendValues(proofs[b], CheckedValue{v, end});
                     }
                 }
             }
