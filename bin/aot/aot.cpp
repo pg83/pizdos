@@ -10206,9 +10206,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             const bool hasInner = count && nextMove < inner.entries.size() && inner.entries[nextMove].position < 2 * (a->blockTo[b] - 1);
             for (usize i = 0; i < count; ++i) {
                 const i32 p = a->blockFrom[b] + 2 + 2 * i32(i);
-                if (Int(i) == branches) {
-                    emitMoves(endMoves, i);
-                }
                 if (hasInner) {
                     for (i32 half = 0; half < 2; ++half) {
                         const i32 key = 2 * p + half;
@@ -10225,6 +10222,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             out.pushBack(moves);
                         }
                     }
+                }
+                // The moves of the edge read locations at the end of the
+                // block: after the moves inside it at the branch, a split
+                // there or the save of a value defined just before it.
+                if (Int(i) == branches) {
+                    emitMoves(endMoves, i);
                 }
                 MInst* in = &instructions[Int(i)];
                 mInstForEachOperand(in, [&](VReg* r, Int role) {
