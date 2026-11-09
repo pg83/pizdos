@@ -19539,25 +19539,45 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
             }
         };
+        // The accesses of the blocks in order, each with its address and the
+        // end it checks; from blocks[i] on are those of the block order[i].
+        Vec<CheckedValue> accesses;
+        Vec<i32> blocks;
         auto range1412 = ci->order;
         for (Int index1413 = 0, rangeEnd1414 = length(range1412); index1413 < rangeEnd1414; ++index1413) {
             i32 b = range1412[index1413];
+            blocks.pushBack(i32(accesses.size()));
             auto instrs = f->blocks[b].instrs.view();
             for (Int i = 0; i < length(instrs); ++i) {
                 i32 v = instrs[i];
                 Value* val = &f->values[v];
                 if (val->op == OpLoad || val->op == OpStore) {
                     i32 addr = functionArgs(f, v)[0];
+                    accesses.pushBack(CheckedValue{addr, val->aux + convert<i64>(memKindWidth(convert<MemKind>(val->aux2)))});
                     if (f->values[addr].op == OpParam) {
                         add(addr);
                     }
                 }
             }
         }
+        blocks.pushBack(i32(accesses.size()));
         const Int n = length(values);
         if (n == 0 || n > limit) {
             return {};
         }
+        // Only accesses through tracked values check anything.
+        usize kept = 0;
+        for (usize i = 0, at = 0; i + 1 < blocks.size(); ++i) {
+            const usize end = usize(blocks[i + 1]);
+            blocks[i] = i32(kept);
+            for (; at < end; ++at) {
+                const i32 j = tracked[accesses[at].value];
+                if (j >= 0) {
+                    accesses[kept++] = CheckedValue{j, accesses[at].end};
+                }
+            }
+        }
+        blocks[blocks.size() - 1] = i32(kept);
         Slice<Slice<Int>> defs = makeSlice<Slice<Int>>(length(f->blocks));
         auto range1418 = values;
         for (Int index1419 = 0, rangeEnd1420 = length(range1418); index1419 < rangeEnd1420; ++index1419) {
@@ -19683,16 +19703,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             for (Int i = 0; i < length(order); ++i) {
                 i32 b = order[i];
                 entry(b);
-                auto range1439 = f->blocks[b].instrs.view();
-                for (Int index1440 = 0, rangeEnd1441 = length(range1439); index1440 < rangeEnd1441; ++index1440) {
-                    i32 v = range1439[index1440];
-                    Value* val = &f->values[v];
-                    if (val->op == OpLoad || val->op == OpStore) {
-                        i32 j = tracked[functionArgs(f, v)[0]];
-                        if (j >= 0) {
-                            set(j, maximum(ends[j], val->aux + convert<i64>(memKindWidth(convert<MemKind>(val->aux2)))));
-                        }
-                    }
+                for (usize k = usize(blocks[usize(i)]), end = usize(blocks[usize(i + 1)]); k < end; ++k) {
+                    const CheckedValue access = accesses[k];
+                    set(access.value, maximum(ends[access.value], access.end));
                 }
                 collect();
                 const Slice<CheckedValue> old = rows[b];
