@@ -19493,20 +19493,44 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 defs[b] = appendValues(defs[b], j);
             }
         }
-        // Each block's checked ends form one row of n values, an allocation
-        // of its own: the merges below run over plain arrays.
-        const usize rowBytes = usize(n) * sizeof(i64);
-        auto newRow = [&]() {
-            auto* row = static_cast<i64*>(temporary.allocate(rowBytes, alignof(i64)));
-            zeroBytes(row, rowBytes);
-            return row;
+        // A block's row lists the tracked values checked at its end, by index
+        // in increasing order, with how far each is checked. Few values are
+        // checked in any one block, so rows hold only those. The current
+        // block's ends are kept by index, with the indices it has set.
+        Slice<Slice<CheckedValue>> rows = makeSlice<Slice<CheckedValue>>(length(f->blocks));
+        Slice<i64> ends = makeSlice<i64>(n);
+        Slice<u32> marks = makeSlice<u32>(n);
+        u32 epoch = 0;
+        Slice<i32> touched = makeSlice<i32>(n);
+        Int touchedCount = 0;
+        Slice<CheckedValue> row = makeSlice<CheckedValue>(n);
+        Int rowCount = 0;
+        auto set = [&](i32 j, i64 end) {
+            ends[j] = end;
+            if (marks[j] != epoch) {
+                marks[j] = epoch;
+                touched[touchedCount++] = j;
+            }
         };
-        Slice<i64*> rows = makeSlice<i64*>(length(f->blocks));
-        for (Int b = 0; b < length(f->blocks); ++b) {
-            rows[b] = newRow();
-        }
-        i64* cur = newRow();
-        auto entry = [&](i32 b) mutable -> void {
+        auto lookup = [&](Slice<CheckedValue> checked, i32 j) -> i64 {
+            Int low = 0;
+            Int high = length(checked);
+            while (low < high) {
+                const Int middle = (low + high) / 2;
+                if (checked[middle].value < j) {
+                    low = middle + 1;
+                } else {
+                    high = middle;
+                }
+            }
+            return low < length(checked) && checked[low].value == j ? checked[low].end : 0;
+        };
+        auto entry = [&](i32 b) {
+            for (Int t = 0; t < touchedCount; ++t) {
+                ends[touched[t]] = 0;
+            }
+            touchedCount = 0;
+            ++epoch;
             bool first = true;
             if (b != 0) {
                 const auto preds = f->blocks[b].preds;
@@ -19515,24 +19539,30 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     if (ci->rpoIndex[p] < 0) {
                         continue;
                     }
-                    const i64* row = rows[p];
+                    const Slice<CheckedValue> checked = rows[p];
                     if (first) {
-                        copyBytes(cur, row, rowBytes);
+                        for (Int i = 0; i < length(checked); ++i) {
+                            set(checked[i].value, checked[i].end);
+                        }
                     } else {
-                        for (Int j = 0; j < n; ++j) {
-                            cur[j] = minimum(cur[j], row[j]);
+                        // The indices set so far are in increasing order; an
+                        // index the row lacks is unchecked.
+                        Int i = 0;
+                        for (Int t = 0; t < touchedCount; ++t) {
+                            const i32 j = touched[t];
+                            while (i < length(checked) && checked[i].value < j) {
+                                ++i;
+                            }
+                            ends[j] = i < length(checked) && checked[i].value == j ? minimum(ends[j], checked[i].end) : 0;
                         }
                     }
                     first = false;
                 }
             }
-            if (first) {
-                zeroBytes(cur, rowBytes);
-            }
             auto range1427 = defs[b];
             for (Int index1428 = 0, rangeEnd1429 = length(range1427); index1428 < rangeEnd1429; ++index1428) {
                 Int j = range1427[index1428];
-                cur[j] = 0;
+                ends[j] = 0;
             }
             auto range1430 = f->blocks[b].params;
             for (Int index1431 = 0, rangeEnd1432 = length(range1430); index1431 < rangeEnd1432; ++index1431) {
@@ -19546,9 +19576,29 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 for (Int index1434 = 0, rangeEnd1435 = length(range1433); index1434 < rangeEnd1435; ++index1434) {
                     CheckedEdge e = range1433[index1434];
                     i32 arg = tracked[e.edge->args[f->values[p].aux]];
-                    end = minimum(end, rows[e.pred][arg]);
+                    end = minimum(end, lookup(rows[e.pred], arg));
                 }
-                cur[j] = end;
+                set(j, end);
+            }
+        };
+        // collect fills row with the current block's checked values in
+        // increasing index order.
+        auto collect = [&]() {
+            rowCount = 0;
+            for (Int t = 0; t < touchedCount; ++t) {
+                const i32 j = touched[t];
+                if (ends[j] > 0) {
+                    row[rowCount++] = CheckedValue{j, ends[j]};
+                }
+            }
+            for (Int i = 1; i < rowCount; ++i) {
+                const CheckedValue item = row[i];
+                Int at = i;
+                while (at > 0 && row[at - 1].value > item.value) {
+                    row[at] = row[at - 1];
+                    --at;
+                }
+                row[at] = item;
             }
         };
         Int round = 0;
@@ -19565,14 +19615,19 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     if (val->op == OpLoad || val->op == OpStore) {
                         i32 j = tracked[functionArgs(f, v)[0]];
                         if (j >= 0) {
-                            cur[j] = maximum(cur[j], val->aux + convert<i64>(memKindWidth(convert<MemKind>(val->aux2))));
+                            set(j, maximum(ends[j], val->aux + convert<i64>(memKindWidth(convert<MemKind>(val->aux2)))));
                         }
                     }
                 }
-                i64* row = rows[b];
-                for (Int j = 0; j < n; ++j) {
-                    changed = changed || row[j] != cur[j];
-                    row[j] = cur[j];
+                collect();
+                const Slice<CheckedValue> old = rows[b];
+                bool same = length(old) == rowCount;
+                for (Int k = 0; same && k < rowCount; ++k) {
+                    same = old[k].value == row[k].value && old[k].end == row[k].end;
+                }
+                if (!same) {
+                    changed = true;
+                    rows[b] = appendSlice(Slice<CheckedValue>{}, subslice(row, 0, rowCount));
                 }
             }
             if (!changed) {
@@ -19585,11 +19640,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         for (Int index1446 = 0, rangeEnd1447 = length(range1445); index1446 < rangeEnd1447; ++index1446) {
             i32 b = range1445[index1446];
             entry(b);
-            for (Int j = 0; j < n; ++j) {
-                const i64 end = cur[j];
-                i32 v = values[j];
+            collect();
+            for (Int k = 0; k < rowCount; ++k) {
+                const i64 end = row[k].end;
+                i32 v = values[row[k].value];
                 i32 owner = f->values[v].block;
-                if (end > i64(0LL) && (owner < 0 || cfgInfoDominates(ci, owner, b))) {
+                if (owner < 0 || cfgInfoDominates(ci, owner, b)) {
                     proofs[b] = appendValues(proofs[b], CheckedValue{v, end});
                 }
             }
