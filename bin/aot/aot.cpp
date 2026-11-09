@@ -1392,6 +1392,7 @@ namespace {
     template <typename T>
     struct Vec {
         SmallVec<T> small;
+        // The page count also holds the size while storage is still small.
         PageVec<T> pages;
         bool paged = false;
 
@@ -1411,7 +1412,7 @@ namespace {
         Vec& operator=(Vec&&) = default;
 
         usize size() const {
-            return paged ? pages.size() : small.size();
+            return pages.count;
         }
 
         void reserve(usize count) {
@@ -1420,7 +1421,9 @@ namespace {
                 return;
             }
             if (!paged) {
-                pages.append(small.data(), small.size());
+                const usize before = pages.count;
+                pages.count = 0;
+                pages.append(small.data(), before);
                 small = SmallVec<T>{};
                 paged = true;
             }
@@ -1433,6 +1436,7 @@ namespace {
                 pages.resize(count);
             } else {
                 small.resize(count);
+                pages.count = count;
             }
         }
 
@@ -1441,6 +1445,7 @@ namespace {
                 pages.clear();
             } else {
                 small.clear();
+                pages.count = 0;
             }
         }
 
@@ -1466,7 +1471,7 @@ namespace {
             if (paged) {
                 return {pages, 0, pages.size()};
             }
-            return {small.data(), small.size()};
+            return {small.data(), pages.count};
         }
 
         operator Span<T>() {
@@ -1476,16 +1481,22 @@ namespace {
         void pushBack(T value) {
             if (paged) {
                 pages.pushBack(value);
-            } else if (small.size() < (pageBytes - sizeof(Buffer::Header)) / sizeof(T)) {
+            } else if (pages.count < (pageBytes - sizeof(Buffer::Header)) / sizeof(T)) {
                 small.pushBack(value);
+                ++pages.count;
             } else {
-                reserve(small.size() + 1);
+                reserve(pages.count + 1);
                 pages.pushBack(value);
             }
         }
 
         T popBack() {
-            return paged ? pages.popBack() : small.popBack();
+            if (paged) {
+                return pages.popBack();
+            }
+            T value = small.popBack();
+            --pages.count;
+            return value;
         }
 
         void assign(Span<const T> source) {
@@ -1503,7 +1514,7 @@ namespace {
                 }
             };
             if (!paged) {
-                fillRange(small.data(), small.size());
+                fillRange(small.data(), pages.count);
                 return;
             }
             usize remaining = pages.size();
@@ -3946,6 +3957,11 @@ namespace {
         Slice<bool> header{};
     };
 
+    struct DominatorChildren {
+        Vec<i32> first;
+        Vec<i32> next;
+    };
+
     struct GlobalMeta {
         u32 offset{};
         ValType typ{};
@@ -5469,7 +5485,7 @@ namespace {
 
     static void asmXchg(Asm* a, VReg x, VReg y);
 
-    static Slice<Slice<i32>> cfgInfoChildren(CfgInfo* ci);
+    static DominatorChildren cfgInfoChildren(CfgInfo* ci);
 
     static bool cfgInfoDominates(CfgInfo* ci, i32 a, i32 b);
 
@@ -7892,7 +7908,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             auto& range257 = (f)->blocks;
             for (Int index258 = 0, rangeEnd259 = length(range257); index258 < rangeEnd259; ++index258) {
                 Int b = index258;
-                if (((l)->members[b] || ((f)->blocks[b]).dead)) {
+                // The header dominates every definition in the loop and
+                // therefore every direct use. Merged exit parameters have
+                // their own definitions outside the loop.
+                if (l->members[b] || f->blocks[b].dead || !cfgInfoDominates(l->ci, l->header, i32(b))) {
                     continue;
                 }
                 Block* blk = (&((f)->blocks[b]));
@@ -10876,16 +10895,18 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         asmOpRR(a, true, Span<const u8>({u8(135LL)}), convert<i64>(x), convert<i64>(y), false);
     }
 
-    // children lists the immediate dominator's children in a stable order.
-    static Slice<Slice<i32>> cfgInfoChildren(CfgInfo* ci) {
-        Slice<Slice<i32>> children = makeSlice<Slice<i32>>(length((ci)->idom));
-        {
-            auto range596 = subslice((ci)->order, Int(1LL), length((ci)->order));
-            for (Int index597 = 0, rangeEnd598 = length(range596); index597 < rangeEnd598; ++index597) {
-                i32 b = range596[index597];
-                i32 p = (ci)->idom[b];
-                children[p] = appendValues(children[p], b);
-            }
+    // Link children in reverse RPO: pushing this list onto a stack visits
+    // siblings in the same forward order as the dominator traversal.
+    static DominatorChildren cfgInfoChildren(CfgInfo* ci) {
+        DominatorChildren children;
+        children.first.resize(usize(length(ci->idom)));
+        children.first.fill(-1);
+        children.next.resize(usize(length(ci->idom)));
+        for (Int i = 1; i < length(ci->order); ++i) {
+            const i32 b = ci->order[i];
+            const i32 p = ci->idom[b];
+            children.next[usize(b)] = children.first[usize(p)];
+            children.first[usize(p)] = b;
         }
         return children;
     }
@@ -17559,12 +17580,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         optimizerApply(o);
         CfgInfo* ci = functionAnalyze(f);
         auto children = cfgInfoChildren(ci);
+
         struct Entry {
             u64 hash;
             CseKey key;
             i32 value;
             i32 next;
         };
+
         Vec<i32> heads;
         Vec<Entry> entries;
         Vec<CseVisit> stack;
@@ -17645,9 +17668,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 heads[bucket] = at;
             }
             stack.pushBack({visit.block, true, base});
-            auto kids = children[visit.block];
-            for (Int i = length(kids) - 1; i >= 0; --i) {
-                stack.pushBack({kids[i], false, 0});
+            for (i32 child = children.first[usize(visit.block)]; child >= 0; child = children.next[usize(child)]) {
+                stack.pushBack({child, false, 0});
             }
         }
         optimizerApply(o);
@@ -20887,12 +20909,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
             }
         }
-        Slice<Slice<i32>> children = cfgInfoChildren((l)->ci);
-        Slice<LowerVisit> visits = sliceOf<LowerVisit>({LowerVisit{((l)->ci)->order[Int(0LL)], {}, {}}});
+        auto children = cfgInfoChildren(l->ci);
+        Vec<LowerVisit> visits;
+        visits.pushBack({l->ci->order[0], false, 0});
         {
             for (; (length(visits) > Int(0LL));) {
-                LowerVisit visit = visits[(length(visits) - Int(1LL))];
-                visits = subslice(visits, Int(0), (length(visits) - Int(1LL)));
+                const LowerVisit visit = visits.popBack();
                 if ((visit).leave) {
                     {
                         for (; (length((l)->checkUndo) > (visit).undo);) {
@@ -20950,11 +20972,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     }
                 }
                 lowererTerminator(l, b);
-                visits = appendValues(visits, LowerVisit{b, true, undo});
+                visits.pushBack({b, true, undo});
                 {
-                    Int i = (length(children[b]) - Int(1LL));
-                    for (; (i >= Int(0LL)); i--) {
-                        visits = appendValues(visits, LowerVisit{children[b][i], {}, {}});
+                    for (i32 child = children.first[usize(b)]; child >= 0; child = children.next[usize(child)]) {
+                        visits.pushBack({child, false, 0});
                     }
                 }
             }
@@ -22718,6 +22739,31 @@ namespace {
         filled.resize(37);
         filled.fill(-1);
         require(filled.size() == 37 && filled[0] == -1 && filled[36] == -1, "small fill contents");
+        for (usize count : {usize(37), usize(17000)}) {
+            Vec<i32> values;
+            values.reserve(count);
+            require(values.size() == 0, "vector reserve preserves size");
+            values.resize(count);
+            values.fill(-7);
+            Vec<i32> movedValues(move(values));
+            require(values.size() == 0 && movedValues.size() == count, "vector move preserves size");
+            require(movedValues.popBack() == -7 && movedValues.size() == count - 1, "vector pop preserves contents");
+            values.pushBack(11);
+            values = move(movedValues);
+            require(movedValues.size() == 0 && values.size() == count - 1 && values[0] == -7, "vector move assignment replaces contents");
+            values.clear();
+            require(values.size() == 0, "vector clear resets size");
+            values.pushBack(13);
+            require(values.size() == 1 && values[0] == 13, "vector reuse after clear");
+        }
+        {
+            Vec<u32> values;
+            const usize count = (pageBytes - sizeof(Buffer::Header)) / sizeof(u32);
+            values.resize(count);
+            values.fill(19);
+            values.append(subslice(values.view(), Int(count - 3), Int(count)));
+            require(values.size() == count + 3 && values[count - 1] == 19 && values[count + 2] == 19, "self append promotes vector storage");
+        }
         static_assert(sizeof(MInst) <= 72);
         {
             Interval interval;
@@ -22962,6 +23008,39 @@ namespace {
             require(optimizerResolve(o, second) == second, "CSE restores sibling scope after growth");
             require(optimizerResolve(o, third) == third, "CSE does not merge sibling definitions");
             require(f->blocks[3].term.values[0] == third && f->blocks[3].term.values[1] == third, "CSE merges expressions within a scope");
+        }
+        {
+            ObjPool pool;
+            PoolScope scope(pool);
+            auto* f = pool.make<Function>();
+            for (i32 b = 0; b < 4; ++b) {
+                functionNewBlock(f);
+            }
+            const i32 input = functionNewValue(f, OpParam, I32, 0, 0, {});
+            const i32 one = functionNewValue(f, OpConst, I32, -1, 1, {});
+            const i32 value = functionNewValue(f, OpAdd, I32, 1, 0, Span<const i32>({input, one}));
+            f->blocks[0].params = sliceOf<i32>({input});
+            f->blocks[0].term = Term{TermIf, input, sliceOf<Edge>({Edge{1, {}}, Edge{3, {}}}), {}, {}};
+            f->blocks[1].instrs.pushBack(value);
+            f->blocks[1].term = Term{TermIf, input, sliceOf<Edge>({Edge{1, {}}, Edge{2, {}}}), {}, {}};
+            f->blocks[2].term = Term{TermReturn, {}, {}, sliceOf<i32>({one}), {}};
+            f->blocks[3].term = Term{TermReturn, {}, {}, sliceOf<i32>({one}), {}};
+            MemoryLoop loop;
+            loop.f = f;
+            loop.header = 1;
+            loop.members = makeSlice<bool>(4);
+            loop.members[1] = true;
+            loop.ci = functionAnalyze(f);
+            require(!memoryLoopHasLiveOut(&loop), "loop without direct live-out values");
+            f->blocks[2].term.values[0] = value;
+            require(memoryLoopHasLiveOut(&loop), "loop value used by a dominated exit");
+            const i32 merged = functionNewValue(f, OpParam, I32, 2, 0, {});
+            f->blocks[2].params = sliceOf<i32>({merged});
+            f->blocks[2].term.values[0] = merged;
+            f->blocks[1].term.edges[1].args = sliceOf<i32>({value});
+            f->blocks[3].term = Term{TermJump, {}, sliceOf<Edge>({Edge{2, sliceOf<i32>({one})}}), {}, {}};
+            loop.ci = functionAnalyze(f);
+            require(!cfgInfoDominates(loop.ci, 1, 2) && !memoryLoopHasLiveOut(&loop), "loop value merged with an entry bypass");
         }
         {
             ObjPool pool;
