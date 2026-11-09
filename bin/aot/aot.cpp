@@ -5911,7 +5911,7 @@ namespace {
 
     static Slice<i32> frontendTop(Frontend* fe, Int n);
 
-    static i32 frontendTryRemoveTrivial(Frontend* fe, i32 phi);
+    static i32 frontendTryRemoveTrivial(Frontend* fe, i32 phi, Span<const i32> ops);
 
     static ValType frontendTypeOf(Frontend* fe, i32 v);
 
@@ -11662,18 +11662,27 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return frontendAddParam(fe, b, t);
     }
 
+    static __attribute__((noinline)) void frontendRetainOperands(Frontend* fe, i32 phi, Span<const i32> ops) {
+        setMap(fe->phiOps, phi, appendSlice(Slice<i32>{}, ops));
+    }
+
     static i32 frontendAddOperands(Frontend* fe, i32 local, i32 phi) {
         i32 b = (((fe)->f)->values[phi]).block;
-        Slice<i32> ops = makeSlice<i32>(Int(0LL), length((fe)->preds[b]));
+        InlineVec<i32, 2> ops;
+        ops.reserve(usize(length(fe->preds[b])));
         {
             auto range617 = (fe)->preds[b];
             for (Int index618 = 0, rangeEnd619 = length(range617); index618 < rangeEnd619; ++index618) {
                 PredRef p = range617[index618];
-                ops = appendValues(ops, frontendRead(fe, local, (p).block));
+                ops.pushBack(frontendRead(fe, local, (p).block));
             }
         }
-        setMap((fe)->phiOps, phi, ops);
-        return frontendTryRemoveTrivial(fe, phi);
+        const i32 result = frontendTryRemoveTrivial(fe, phi, ops.view());
+        if (result == phi) {
+            // Removed phis have no later users of their incoming list.
+            frontendRetainOperands(fe, phi, ops.view());
+        }
+        return result;
     }
 
     static i32 frontendAddParam(Frontend* fe, i32 b, ValType t) {
@@ -13158,10 +13167,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // tryRemoveTrivial replaces a parameter that receives a single value (or
     // itself) on every edge by that value.
-    static i32 frontendTryRemoveTrivial(Frontend* fe, i32 phi) {
+    static i32 frontendTryRemoveTrivial(Frontend* fe, i32 phi, Span<const i32> ops) {
         i32 same = i32(-1LL);
         {
-            auto range684 = (fe)->phiOps[phi];
+            auto range684 = ops;
             for (Int index685 = 0, rangeEnd686 = length(range684); index685 < rangeEnd686; ++index685) {
                 i32 op = range684[index685];
                 i32 arg = frontendResolve(fe, op);
@@ -24263,6 +24272,104 @@ namespace {
             f->values[user].op = OpAdd;
             optimizerApply(o);
             require(functionArgs(f, user)[0] == input && functionArgs(f, user)[1] == zero, "aliases after growing a shortened operand list");
+        }
+        for (i32 count : {0, 1, 2, 3, 9, 16385, 70001}) {
+            for (bool distinct : {false, true}) {
+                if (distinct && count < 2) {
+                    continue;
+                }
+                ObjPool pool;
+                PoolScope scope(pool);
+                auto* f = pool.make<Function>();
+                auto* fe = pool.make<Frontend>();
+                fe->f = f;
+                fe->phiOps = makeMap<i32, Slice<i32>>();
+                fe->locals = sliceOf<ValType>({I32});
+                fe->defs = makeSlice<Slice<i32>>(3);
+                fe->preds = makeSlice<Slice<PredRef>>(3);
+                for (i32 b = 0; b < 3; ++b) {
+                    functionNewBlock(f);
+                }
+                const i32 one = functionNewValue(f, OpConst, I32, -1, 1, {});
+                const i32 two = functionNewValue(f, OpConst, I32, -1, 2, {});
+                const i32 phi = frontendAddParam(fe, 2, I32);
+                fe->defs[0] = sliceOf<i32>({one});
+                fe->defs[1] = sliceOf<i32>({two});
+                fe->defs[2] = sliceOf<i32>({phi});
+                fe->preds[2] = makeSlice<PredRef>(count);
+                for (i32 i = 0; i < count; ++i) {
+                    fe->preds[2][i] = PredRef{distinct && i + 1 == count ? 1 : 0, i};
+                }
+                const i32 result = frontendAddOperands(fe, 0, phi);
+                const auto saved = lookupMap(fe->phiOps, phi);
+                if (distinct) {
+                    require(result == phi && saved.v1 && saved.v0.count == u32(count) && saved.v0[0] == one && saved.v0[count - 1] == two, "nontrivial phi retains every incoming value");
+                    const i32 discarded = frontendAddParam(fe, 1, I32);
+                    fe->preds[1] = makeSlice<PredRef>(count);
+                    for (i32 i = 0; i < count; ++i) {
+                        fe->preds[1][i] = PredRef{0, i};
+                    }
+                    require(frontendAddOperands(fe, 0, discarded) == one && !lookupMap(fe->phiOps, discarded).v1 && length(fe->phiOps) == 1, "later trivial phi leaves no operand record");
+                    require(saved.v0[0] == one && saved.v0[count - 1] == two, "retained phi inputs outlive temporary operand buffers");
+                } else {
+                    require(!saved.v1 && length(fe->phiOps) == 0 && frontendResolve(fe, phi) == result, "trivial phi leaves no operand record");
+                    require(count ? result == one : f->values[result].op == OpUndef, "zero and uniform phi inputs preserve replacement values");
+                }
+            }
+        }
+        for (bool onlySelf : {false, true}) {
+            ObjPool pool;
+            PoolScope scope(pool);
+            auto* f = pool.make<Function>();
+            auto* fe = pool.make<Frontend>();
+            fe->f = f;
+            fe->phiOps = makeMap<i32, Slice<i32>>();
+            fe->locals = sliceOf<ValType>({I32});
+            fe->defs = makeSlice<Slice<i32>>(2);
+            fe->preds = makeSlice<Slice<PredRef>>(2);
+            functionNewBlock(f);
+            functionNewBlock(f);
+            const i32 one = functionNewValue(f, OpConst, I32, -1, 1, {});
+            const i32 phi = frontendAddParam(fe, 1, I32);
+            fe->defs[0] = sliceOf<i32>({one});
+            fe->defs[1] = sliceOf<i32>({phi});
+            fe->preds[1] = sliceOf<PredRef>({PredRef{onlySelf ? 1 : 0, 0}, PredRef{1, 1}});
+            const i32 result = frontendAddOperands(fe, 0, phi);
+            require(frontendResolve(fe, phi) == result && !lookupMap(fe->phiOps, phi).v1, "self-referencing trivial phi needs no saved inputs");
+            require(onlySelf ? f->values[result].op == OpUndef : result == one, "self-referencing phi replacement");
+        }
+        {
+            ObjPool pool;
+            PoolScope scope(pool);
+            auto* f = pool.make<Function>();
+            auto* fe = pool.make<Frontend>();
+            fe->f = f;
+            fe->phiOps = makeMap<i32, Slice<i32>>();
+            fe->locals = sliceOf<ValType>({I32});
+            fe->defs = makeSlice<Slice<i32>>(3);
+            fe->preds = makeSlice<Slice<PredRef>>(3);
+            fe->sealed = makeSlice<bool>(3);
+            fe->explicitValue = makeSlice<Int>(3);
+            for (i32 b = 0; b < 3; ++b) {
+                functionNewBlock(f);
+            }
+            const i32 one = functionNewValue(f, OpConst, I32, -1, 1, {});
+            const i32 two = functionNewValue(f, OpConst, I32, -1, 2, {});
+            fe->defs[0] = sliceOf<i32>({one});
+            fe->defs[1] = sliceOf<i32>({two});
+            fe->preds[1] = sliceOf<PredRef>({PredRef{0, 0}});
+            fe->preds[2] = sliceOf<PredRef>({PredRef{0, 1}, PredRef{1, 0}});
+            fe->sealed[2] = true;
+            f->blocks[0].term = Term{TermIf, one, sliceOf<Edge>({Edge{1, {}}, Edge{2, {}}}), {}, {}};
+            f->blocks[1].term = Term{TermJump, {}, sliceOf<Edge>({Edge{2, {}}}), {}, {}};
+            const i32 phi = frontendRead(fe, 0, 2);
+            require(phi == 2 && frontendRead(fe, 0, 2) == phi && length(fe->phiOps) == 1, "sealed read retains its nontrivial phi once");
+            const i32 discarded = frontendAddParam(fe, 1, I32);
+            require(frontendAddOperands(fe, 0, discarded) == one && length(fe->phiOps) == 1, "trivial phi has no retained inputs before sealing edges");
+            f->blocks[2].term = Term{TermReturn, {}, {}, sliceOf<i32>({phi}), {}};
+            frontendResolveAliases(fe);
+            require(f->values.size() == 3 && !f->blocks[1].params.count && f->blocks[2].params.count == 1 && f->blocks[2].params[0] == 2, "phi completion removes only the trivial parameter");
+            require(f->blocks[0].term.edges[1].args.count == 1 && f->blocks[0].term.edges[1].args[0] == one && f->blocks[1].term.edges[0].args.count == 1 && f->blocks[1].term.edges[0].args[0] == two && f->blocks[2].term.values[0] == 2, "retained phi inputs reach the original edges after compaction");
         }
         for (i32 removed : {0, 1, 2047, 2048, 2049, 16385}) {
             for (bool crossPage : {false, true}) {
