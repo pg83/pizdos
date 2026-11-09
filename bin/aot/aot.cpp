@@ -4395,7 +4395,13 @@ namespace {
         VReg src2{};
         i64 imm{};
         Mem mem{};
-        i32 target{};
+
+        union {
+            i32 target{};
+            // mCheck retains the logical address even if registers are reused.
+            i32 addressValue;
+        };
+
         MInstExtra* extra = nullptr;
     };
 
@@ -13737,6 +13743,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             MInst in = inst(mCheck);
             (in).src = ra;
             (in).imm = end;
+            in.addressValue = addr;
             lowererEmit(l, in);
             return memIndexed(memReg, ra, convert<i32>(offset));
         }
@@ -16030,30 +16037,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Function* f = (l)->f;
         MFunc* mf = (l)->mf;
         AddressExpressions* ranges = activePool->make<AddressExpressions>(AddressExpressions{f, makeSlice<AddressExpression>(length((f)->values)), makeSlice<bool>(length((f)->values))});
-        Slice<i32> values = makeSlice<i32>((mf)->nregs);
-        {
-            auto range915 = values;
-            for (Int index916 = 0, rangeEnd917 = length(range915); index916 < rangeEnd917; ++index916) {
-                Int j = index916;
-                values[j] = i32(-1LL);
-            }
-        }
-        {
-            auto range918 = (l)->vregs.view();
-            for (Int index919 = 0, rangeEnd920 = length(range918); index919 < rangeEnd920; ++index919) {
-                Int v = index919;
-                VReg reg = range918[index919];
-                if ((reg >= firstVirtual)) {
-                    values[(reg - firstVirtual)] = convert<i32>(v);
-                }
-            }
-        }
-        auto address = [&](VReg reg) mutable -> AddressExpression {
-            if (((reg >= firstVirtual) && (values[(reg - firstVirtual)] >= i32(0LL)))) {
-                return addressExpressionsOf(ranges, values[(reg - firstVirtual)], Int(0LL));
-            }
-            return addressAtom((i32(-2LL) - convert<i32>(reg)));
-        };
         Int n = length((mf)->blocks);
         bool changed = false;
         {
@@ -16092,7 +16075,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             }
                             continue;
                         }
-                        AddressExpression expr = address((in).src);
+                        AddressExpression expr = addressExpressionsOf(ranges, in.addressValue, Int(0LL));
                         TailRangeGroup* group = {};
                         {
                             auto range925 = active[(expr).terms];
@@ -23022,6 +23005,53 @@ namespace {
             require(values.size() == count + 3 && values[count - 1] == 19 && values[count + 2] == 19, "self append promotes vector storage");
         }
         static_assert(sizeof(MInst) <= 72);
+        for (i32 delta : {32, 131072}) {
+            ObjPool pool;
+            PoolScope scope(pool);
+            Module module;
+            module.memoryTail = pageBytes;
+            auto* f = pool.make<Function>();
+            f->module = &module;
+            functionNewBlock(f);
+            const i32 a = functionNewValue(f, OpParam, I32, 0, 0, {});
+            const i32 offset = functionNewValue(f, OpConst, I32, -1, delta, {});
+            const i32 b = functionNewValue(f, OpAdd, I32, 0, 0, Span<const i32>({a, offset}));
+            MFunc machine;
+            machine.blocks.pushBack(MBlock{});
+            const VReg shared = mFuncNewReg(&machine, classGPR);
+            auto check = [&](i32 value) {
+                MInst in = inst(mCheck);
+                in.src = shared;
+                in.imm = 4;
+                in.addressValue = value;
+                machine.blocks[0].insts.pushBack(in);
+            };
+            check(a);
+            MInst add = inst(mLea);
+            add.dst = shared;
+            add.mem = memAt(shared, delta);
+            add.size = 4;
+            machine.blocks[0].insts.pushBack(add);
+            check(b);
+            Lowerer lowerer;
+            lowerer.m = &module;
+            lowerer.f = f;
+            lowerer.mf = &machine;
+            lowerer.vregs.resize(f->values.size());
+            lowerer.vregs.fill(noReg);
+            lowerer.vregs[a] = shared;
+            lowerer.vregs[b] = shared;
+            lowererVersionTailRanges(&lowerer);
+            require((machine.blocks.size() > 1) == (delta == 32), "range guards distinguish SSA addresses in one reused register");
+            for (usize block = 0; block < machine.blocks.size(); ++block) {
+                auto instructions = machine.blocks[block].insts.view();
+                for (Int i = 0; i < length(instructions); ++i) {
+                    if (instructions[i].op == mCheck) {
+                        require(instructions[i].addressValue == a || instructions[i].addressValue == b, "fallback checks retain their SSA addresses");
+                    }
+                }
+            }
+        }
         {
             Vec<Lrange> x({{10, 20}});
             Vec<Lrange> y({{0, 5}});
