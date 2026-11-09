@@ -2,7 +2,7 @@ package main
 
 import (
 	"encoding/binary"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -174,9 +174,11 @@ func readObject(data []byte) *Object {
 		}
 	}
 
-	// relocations of a section: what each points at
-	relocations := func(of int) map[uint32]objReloc {
-		out := map[uint32]objReloc{}
+	// relocations of a section by offset, what each points at; a later
+	// entry at an offset replaces an earlier one
+	relocations := func(of int) []objReloc {
+		var out []objReloc
+		byOffset := func(a, b objReloc) int { return int(a.at) - int(b.at) }
 
 		for i, s := range sections {
 			if s.typ != shtRela || int(s.info) != of {
@@ -186,6 +188,8 @@ func readObject(data []byte) *Object {
 			if int(s.link) != symtab || len(s.data)%24 != 0 {
 				throwFmt("malformed relocations in section %d", i)
 			}
+
+			out = slices.Grow(out, len(s.data)/24)
 
 			for at := 0; at < len(s.data); at += 24 {
 				e := s.data[at:]
@@ -209,18 +213,29 @@ func readObject(data []byte) *Object {
 					throwFmt("relocation into section %s", sectionName(target.section))
 				}
 
-				out[r.at] = r
+				out = append(out, r)
 			}
 		}
 
-		return out
+		if !slices.IsSortedFunc(out, byOffset) {
+			slices.SortStableFunc(out, byOffset)
+		}
+
+		n := 0
+
+		for _, r := range out {
+			if n > 0 && out[n-1].at == r.at {
+				n--
+			}
+
+			out[n] = r
+			n++
+		}
+
+		return out[:n]
 	}
 
-	for _, r := range relocations(text) {
-		obj.relocs = append(obj.relocs, r)
-	}
-
-	sort.Slice(obj.relocs, func(i, j int) bool { return obj.relocs[i].at < obj.relocs[j].at })
+	obj.relocs = relocations(text)
 	note := find(".note.wasm2o")
 
 	if note < 0 {
@@ -266,7 +281,7 @@ func readNote(data []byte) []byte {
 
 // readEhFrame takes the regions from the FDEs: their ranges, and the stack
 // pointer, CFA less 8, along each.
-func readEhFrame(data []byte, relocs map[uint32]objReloc, obj *Object) []Region {
+func readEhFrame(data []byte, relocs []objReloc, obj *Object) []Region {
 	le := binary.LittleEndian
 	type cie struct {
 		code uint64
@@ -345,7 +360,12 @@ func readEhFrame(data []byte, relocs map[uint32]objReloc, obj *Object) []Region 
 		}
 
 		c, ok := cies[start-int(le.Uint32(e))]
-		r, rok := relocs[uint32(start+4)]
+		k, rok := slices.BinarySearchFunc(relocs, uint32(start+4), func(r objReloc, at uint32) int { return int(r.at) - int(at) })
+		var r objReloc
+
+		if rok {
+			r = relocs[k]
+		}
 
 		if !ok || !rok || r.in != inText || r.typ != rX86_64_PC32 || len(e) < 13 {
 			throwFmt("unsupported FDE at %#x", start)
@@ -360,7 +380,7 @@ func readEhFrame(data []byte, relocs map[uint32]objReloc, obj *Object) []Region 
 		regions = append(regions, Region{start: pc, end: pc + size, sp: sp})
 	}
 
-	sort.Slice(regions, func(i, j int) bool { return regions[i].start < regions[j].start })
+	slices.SortFunc(regions, func(a, b Region) int { return int(a.start) - int(b.start) })
 	names := map[uint32]string{}
 
 	for name, at := range obj.defined {
