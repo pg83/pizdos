@@ -151,7 +151,7 @@ aot_native = command(
     name="aot_native",
     inputs=["$(S)/bin/aot/aot.cpp"],
     outputs=["$(B)/bin/aot/aot"],
-    cmd=[CLANG, *build.cppflags, *build.cxxflags, *AOT_FLAGS, "$(S)/bin/aot/aot.cpp", "-o", "$(B)/bin/aot/aot", *build.ldflags],
+    cmd=[CLANG, *build.cppflags, *build.cxxflags, *AOT_FLAGS, "-O3", "$(S)/bin/aot/aot.cpp", "-o", "$(B)/bin/aot/aot", *build.ldflags],
     descr="CC", color="green",
 )
 
