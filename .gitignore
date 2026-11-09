@@ -27,3 +27,7 @@ __pycache__/
 /doomgeneric_tarball
 /test_*
 /stand_*
+/python
+/python_core
+/python_o
+/python_tarball

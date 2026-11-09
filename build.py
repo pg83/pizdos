@@ -32,6 +32,7 @@ GO = tool("go")
 MUSL = "1.2.5"
 BUSYBOX = "1.36.1"
 DOOMGENERIC = "e257a09527062bfb986b6e5e0780839b6cbd5b71"
+PYTHON = "3.14.10"
 
 
 def fetch(name, url, sha256, output):
@@ -65,6 +66,13 @@ doomgeneric_tarball = fetch(
     f"https://github.com/ozkl/doomgeneric/archive/{DOOMGENERIC}.tar.gz",
     "26f8f60daa6c6e4d3c01e5eac9fb700d592dede803d13ac848154ff356b2a2e7",
     f"$(B)/ext/doomgeneric-{DOOMGENERIC}.tar.gz",
+)
+
+python_tarball = fetch(
+    "python_tarball",
+    f"https://www.python.org/ftp/python/{PYTHON}/Python-{PYTHON}.tgz",
+    "9e4996c19ae5a3df31f10c37723661f71d3455d73bd005f79df7098e5cc13192",
+    f"$(B)/ext/Python-{PYTHON}.tgz",
 )
 
 # doom1.wad of the shareware 1.9, the last one id released
@@ -155,6 +163,27 @@ doom = command(
     ],
     descr="DM",
     color="light-magenta",
+)
+
+# CPython's interpreter and built-in modules, and its freezer: nothing of
+# wasm2o, so a change of the compiler rebuilds none of it.
+python_core = command(
+    name="python_core",
+    inputs=[*LIBC_HEADERS, "$(S)/bin/python/pyconfig.h", "$(S)/bin/python/make.py", "$(S)/dev/wasm.py"],
+    outputs=["$(B)/bin/python/libpython.a", "$(B)/bin/python/freeze.wasm"],
+    deps=[python_tarball, libc],
+    cmd=[
+        "python3", "$(S)/bin/python/make.py", "core",
+        CLANG, LLVM_AR, WASM_LD,
+        python_tarball.outputs[0],
+        "$(S)/bin/python/pyconfig.h",
+        "$(S)/lib/c/include",
+        libc.outputs[0],
+        "$(B)/bin/python/libpython.a",
+        "$(B)/bin/python/freeze.wasm",
+    ],
+    descr="PY",
+    color="yellow",
 )
 
 # bin/aot is a single freestanding C++ translation unit. The WASI reactor
@@ -256,6 +285,37 @@ doom_o = command(
     outputs=["$(B)/bin/doom/doom.o"],
     deps=[wasm2o, doom],
     cmd=[wasm2o.outputs[0], "-o", "$(B)/bin/doom/doom.o", doom.outputs[0]],
+    descr="AO",
+    color="light-cyan",
+)
+
+# python.wasm, its modules frozen by the freezer running in the kernel, and
+# the standard library it imports from a zip.
+python = command(
+    name="python",
+    inputs=[*LIBC_HEADERS, "$(S)/bin/python/pyconfig.h", "$(S)/bin/python/make.py", "$(S)/dev/wasm.py"],
+    outputs=["$(B)/bin/python/python.wasm", "$(B)/bin/python/python314.zip"],
+    deps=[python_tarball, libc, python_core, wasm2o],
+    cmd=[
+        "python3", "$(S)/bin/python/make.py", "python",
+        CLANG, WASM_LD, wasm2o.outputs[0],
+        python_tarball.outputs[0],
+        "$(S)/bin/python/pyconfig.h",
+        "$(S)/lib/c/include",
+        libc.outputs[0],
+        *python_core.outputs,
+        "$(B)/bin/python/python.wasm",
+        "$(B)/bin/python/python314.zip",
+    ],
+    descr="PY",
+    color="yellow",
+)
+
+python_o = command(
+    name="python_o",
+    outputs=["$(B)/bin/python/python.o"],
+    deps=[wasm2o, python],
+    cmd=[wasm2o.outputs[0], "-o", "$(B)/bin/python/python.o", python.outputs[0]],
     descr="AO",
     color="light-cyan",
 )
@@ -396,6 +456,7 @@ TESTED = {
     "busybox_abi": [busybox],
     "busybox": [wasm2o, busybox_o, busybox],
     "doom": [wasm2o, doom_o, doom_wad],
+    "python": [wasm2o, python_o, python, python_tarball, busybox_o, busybox],
     "wasm2o": [wasm2o, aot_native, aot, aot_command, aot_command_aot, aot_relinked, wazero, busybox],
 }
 tests = []
@@ -418,6 +479,6 @@ for test in build.glob("$(S)/tst/test_*.py"):
         color="green",
     ))
 
-group("install", busybox, busybox_abi, busybox_o, doom, doom_o, wasm2o, aot_native, aot, aot_aot, wazero)
+group("install", busybox, busybox_abi, busybox_o, doom, doom_o, python, python_o, wasm2o, aot_native, aot, aot_aot, wazero)
 group("test", *tests, wasm2o_go_test, wasm2o_spec_test)
 group("stand", wasm2o, aot_native, aot, aot_aot, busybox, stand_corpus, *decode_stand)

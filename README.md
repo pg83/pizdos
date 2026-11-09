@@ -12,6 +12,7 @@ bin/wasm2o/   Go loader and kernel; invokes its embedded aot.aot to compile wasm
 bin/aot/      wasm to x86-64 compiler in one freestanding C++ file, targeting WASI preview1
 bin/busybox/  busybox for the system: our config and the generator that replaces kconfig
 bin/doom/     doom (doomgeneric) for the system: our terminal backend and the build of doom.wasm from the tarball
+bin/python/   CPython for the system: its pyconfig.h and the build of python.wasm and its standard library
 bin/kernel/   the kernel (Go), not yet
 bin/rootfs/   the root filesystem service (Go, wasm), not yet
 lib/c/        the C library processes link: headers, the in-process part, the musl subset
@@ -170,10 +171,22 @@ pinned release; `doom.o` is its wasm2o object, which plays the shareware
 (`DG_HEADLESS=1`) it runs the wad's demo and hashes every second of frames,
 which the test demands to come out the same twice.
 
+## python
+
+`bin/python` builds CPython 3.14 against lib/c from its release tarball
+and our `pyconfig.h`: the interpreter and the standard library's modules
+that need nothing but libc, all built in, threads CPython's stubs, no
+dynamic loading, no sockets. Its freezer runs in the kernel to freeze the
+modules the Makefile freezes. `python.o` is `/usr/bin/python3` of a root
+whose standard library is `/usr/lib/python314.zip`, stored, with the
+build's sysconfig data; `/usr/lib/python3.14/lib-dynload` marks its
+platform directory. The test runs a script on the kernel's processes,
+terminals, signals and files, and a set of CPython's own tests.
+
 ## building
 
 ```
-./build          # libc.a, busybox, doom, native aot, aot.wasm, aot.aot, wasm2o, wazero
+./build          # libc.a, busybox, doom, python, native aot, aot.wasm, aot.aot, wasm2o, wazero
 ./build test     # the tests in tst/, the spec testsuite included
 sh dev/stand/build.sh
                  # the full stand, with its pinned ix toolchain and libraries
@@ -185,8 +198,8 @@ dev/stand.py --only im,pdf,djvu,svg,magic
 
 Needs `clang` with the wasm32 target, `wasm-ld`, `llvm-ar`, Go 1.25 and
 `python3` on `PATH`, and `wast2json` for the spec testsuite;
-`ix run bld/compiler bld/wabt` provides them. The musl, busybox and
-doomgeneric tarballs and doom1.wad are fetched by the graph and checked
+`ix run bld/compiler bld/wabt` provides them. The musl, busybox,
+doomgeneric and CPython tarballs and doom1.wad are fetched by the graph and checked
 against their sha256; the wazero runner's Go modules come from
 `go mod download`, checked against `tst/wazero/go.sum`.
 

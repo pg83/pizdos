@@ -168,6 +168,23 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   `dev/go.py download` fetches them in a node of its own and the build runs
   offline.
 
+## bin/python
+
+- `make.py core` compiles CPython 3.14 from its tarball into libpython.a,
+  the Makefile's objects and the built-in modules (Setup.bootstrap's and
+  MODULES), and links the freezer: no wasm2o, so a compiler change rebuilds
+  none of it. `make.py python` compiles the freezer with wasm2o, runs it in
+  the kernel on every module the Makefile freezes, links python.wasm and
+  writes python314.zip: Lib without tests, stored, with
+  `_sysconfigdata__pizdos_.py` made from pyconfig.h.
+- `pyconfig.h` is the configuration: a HAVE_ line names what lib/c has.
+  Threads are CPython's stubs; nothing needs more than lib/c (no sockets,
+  zlib or ctypes); sys.platform is `pizdos`.
+- `test_python` runs a script of the kernel's features and CPython's
+  regrtest on TESTS; tests that need sockets, threads or the C API's test
+  modules stay out, as do those relying on the C stack's depth, which the
+  shadow stack does not measure (CPython skips them on WASI).
+
 ## bin/busybox
 
 - `config` is the whole configuration: a bool not listed is off, ints and
