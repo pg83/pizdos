@@ -97,19 +97,19 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   compiling busybox.wasm and aot.wasm, natively and as aot.aot in wasm2o,
   and the scalar modules of decode release 16 on their file corpora against
   the same wrappers compiled with the pinned ix libraries.
-- An import named setjmp, _setjmp, sigsetjmp, vfork or fork returns twice:
-  its direct calls go through an adapter that writes the caller's frame to
-  the instance header (`abi.go`), and the caller keeps an invocation token
-  below its saved RBP. `jump.go` returns from such a call again through the
-  `w2o.land` stub, which checks the frame on the RBP chain and switches
-  stacks with a `ret`, dropping the frames between, Go's too. For fork,
-  `w2o.frames` copies the frames up to the entry thunk (they hold no stack
-  address but the saved RBPs) and `w2o.resume` places them on another
-  goroutine's stack; it writes below its stack pointer, so the loader marks
-  it assembly, which Go never preempts, and the header's base keeps jump
-  frames valid in the child. The register allocator needs nothing for it:
-  values living across a call are in R10-R12, which the frame keeps, or in
-  their vreg's own spill slot.
+- An import named setjmp, _setjmp, sigsetjmp, vfork, fork or forkpty returns
+  twice: its direct calls go through an adapter that writes the caller's
+  frame to the instance header (`abi.go`), and the caller keeps an
+  invocation token below its saved RBP. `jump.go` returns from such a call
+  again through the `w2o.land` stub, which checks the frame on the RBP chain
+  and switches stacks with a `ret`, dropping the frames between, Go's too.
+  For fork, `w2o.frames` copies the frames up to the entry thunk (they hold
+  no stack address but the saved RBPs) and `w2o.resume` places them on
+  another goroutine's stack; it writes below its stack pointer, so the
+  loader marks it assembly, which Go never preempts, and the header's base
+  keeps jump frames valid in the child. The register allocator needs nothing
+  for it: values living across a call are in R10-R12, which the frame keeps,
+  or in their vreg's own spill slot.
 - The loader (`load.go`, `gort.go`, `wasi.go`, `run.go`, `jump.go`) is linux/amd64
   only and pinned to Go 1.25's moduledata. The C++ compiler targets WASI
   preview1. Code and its registration live as long as the process.

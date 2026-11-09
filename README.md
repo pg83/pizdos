@@ -41,7 +41,7 @@ build.py      the build graph
 - Memory: the stack comes first (1 MiB, overflow traps), the heap starts at
   the exported `__heap_base` and is the kernel's to manage. `__stack_pointer`
   is exported too: `longjmp` restores it.
-- `setjmp` and its kin, `vfork` and `fork` are imports that return twice;
+- `setjmp` and its kin, `vfork`, `fork` and `forkpty` are imports that return twice;
   `wasm2o` recognizes them by name, and `longjmp` returns from them again,
   out of a signal handler too. `fork` copies memory from the stack pointer
   to the top of the heap, so the stack must come first.

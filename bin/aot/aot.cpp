@@ -21547,7 +21547,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // compilers do.
     static bool returnsTwice(String name) {
         auto switch1608 = name;
-        if (switch1608 == String("setjmp") || switch1608 == String("_setjmp") || switch1608 == String("sigsetjmp") || switch1608 == String("vfork") || switch1608 == String("fork")) {
+        if (switch1608 == String("setjmp") || switch1608 == String("_setjmp") || switch1608 == String("sigsetjmp") || switch1608 == String("vfork") || switch1608 == String("fork") || switch1608 == String("forkpty")) {
             return true;
         }
         return false;
