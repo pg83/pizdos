@@ -2953,8 +2953,13 @@ namespace {
 
     struct BitNode {
         u64 occupied = 0;
-        BitChunk* chunks[64]{};
     };
+
+    // The pointer table follows the header in the same pool allocation.
+    // The last directory node only stores slots within the bitset's bounds.
+    static BitChunk** bitNodeChunks(BitNode* node) {
+        return reinterpret_cast<BitChunk**>(node + 1);
+    }
 
     struct BitsetData {
         ObjPool* pool = nullptr;
@@ -2977,7 +2982,7 @@ namespace {
         if (!node) {
             return 0;
         }
-        BitChunk* chunk = node->chunks[index / 4 % 64];
+        BitChunk* chunk = bitNodeChunks(node)[index / 4 % 64];
         return chunk ? chunk->words[index % 4] : 0;
     }
 
@@ -3006,9 +3011,14 @@ namespace {
         }
         BitNode*& node = static_cast<BitNode**>(data->storage)[index / 256];
         if (!node) {
-            node = data->pool->make<BitNode>();
+            const usize available = (usize(data->bits) + 255) / 256 - (index / 256) * 64;
+            const usize count = available < 64 ? available : 64;
+            const usize bytes = sizeof(BitNode) + count * sizeof(BitChunk*);
+            void* storage = data->pool->allocate(bytes, alignof(BitNode));
+            zeroBytes(storage, bytes);
+            node = new (storage) BitNode;
         }
-        BitChunk*& chunk = node->chunks[index / 4 % 64];
+        BitChunk*& chunk = bitNodeChunks(node)[index / 4 % 64];
         if (!chunk) {
             chunk = data->pool->make<BitChunk>();
             node->occupied |= u64(1) << (index / 4 % 64);
@@ -3056,7 +3066,7 @@ namespace {
             }
             for (u64 occupied = node->occupied; occupied; occupied &= occupied - 1) {
                 usize c = usize(bitsTrailingZeros64(occupied));
-                BitChunk* chunk = node->chunks[c];
+                BitChunk* chunk = bitNodeChunks(node)[c];
                 for (usize w = 0; w < 4; ++w) {
                     if (chunk->words[w]) {
                         visitor(n * 256 + c * 4 + w, chunk->words[w]);
@@ -10113,7 +10123,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                                 return;
                             }
                         }
-                        if ((role & roleUse) != 0 && role != roleTemp && !bitsetHas(k, x)) {
+                        if ((role & roleUse) != 0 && role != roleTemp) {
+                            // A local use cannot add gen, and a use-def's
+                            // definition is already present in kill.
+                            if (bitsetHas(k, x)) {
+                                return;
+                            }
                             bitsetSet(g, x);
                         }
                         if ((role & roleDef) != 0 || role == roleTemp) {
@@ -23691,6 +23706,49 @@ namespace {
             require(function.blocks[0].insts[0].dst == firstVirtual && function.blocks[0].insts[2].dst == firstVirtual + 1, "coalescing preserves canonical register order");
             require(function.blocks[0].insts[1].op == mNop && function.blocks[0].insts[3].op == mNop, "coalescing removes renamed self copies");
         }
+        for (Int registers : {2, 2050}) {
+            ObjPool pool;
+            PoolScope scope(pool);
+            MFunc function;
+            function.blocks.pushBack(MBlock{});
+            function.blocks.pushBack(MBlock{});
+            for (Int i = 0; i < registers; ++i) {
+                mFuncNewReg(&function, classGPR);
+            }
+            const VReg local = firstVirtual;
+            const VReg input = firstVirtual + 1;
+            auto emit = [&](Int block, MOp op, VReg dst, VReg src) {
+                MInst in = inst(op);
+                in.dst = dst;
+                in.src = src;
+                in.size = 8;
+                function.blocks[block].insts.pushBack(in);
+            };
+            emit(0, mMovImm, input, noReg);
+            emit(1, mMov, local, input);
+            for (Int i = 0; i < 3; ++i) {
+                emit(1, mAluImm, local, noReg);
+                emit(1, mAluImm, input, noReg);
+            }
+            function.blocks[0].succs = sliceOf<i32>({1});
+            function.blocks[1].preds = sliceOf<i32>({0});
+            for (bool copiesOnly : {false, true}) {
+                Allocator allocation;
+                allocation.mf = &function;
+                allocatorLinearize(&allocation);
+                if (copiesOnly) {
+                    require(allocatorSelectCopies(&allocation), "liveness copy operand selection");
+                }
+                allocatorLiveness(&allocation, copiesOnly);
+                const Int x = copiesOnly ? allocation.copyIndex[0] : 0;
+                const Int y = copiesOnly ? allocation.copyIndex[1] : 1;
+                require(!bitsetHas(allocation.liveIn[1], x) && bitsetHas(allocation.liveIn[1], y), "local and incoming use-def liveness");
+                require(!bitsetHas(allocation.liveIn[0], y) && bitsetHas(allocation.liveOut[0], y), "use-def liveness across a predecessor");
+                bitsetEach(allocation.liveOut[1], [&](Int) {
+                    fail("unexpected outgoing liveness after local use-defs");
+                });
+            }
+        }
         {
             ObjPool pool;
             PoolScope scope(pool);
@@ -23986,6 +24044,25 @@ namespace {
                 fail("intersection with an empty filter");
             });
             require(seen == 2, "mixed intersection sizes");
+        }
+        for (Int size : {2049, 2304, 2305, 4096, 16383, 16384, 16385, 16641, 32769, 70001}) {
+            ObjPool pool;
+            PoolScope scope(pool);
+            Bitset bits = newBitset(size);
+            for (Int end = 256; end < size; end += 256) {
+                bitsetSet(bits, end - 1);
+            }
+            bitsetSet(bits, size - 1);
+            Bitset copy = newBitset(size);
+            require(bitsetUnion(copy, bits) && !bitsetUnion(copy, bits), "partial sparse directory union");
+            Int expected = 255;
+            Int seen = 0;
+            bitsetEach(copy, [&](Int bit) {
+                require(bit == expected, "partial sparse directory iteration");
+                expected = minimum(expected + 256, size - 1);
+                ++seen;
+            });
+            require(seen == (size + 255) / 256 && bitsetHas(copy, size - 1) && bitsetWord(copy, usize(size + 63) / 64) == 0, "partial sparse directory final bit");
         }
         int count = 0;
         int order[3]{};

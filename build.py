@@ -119,7 +119,9 @@ busybox_abi = command(
 # bin/aot is a single freestanding C++ translation unit. The WASI reactor
 # exports compile(), reading fd 0 and writing fd 1; the command adds _start.
 AOT_FLAGS = ["-x", "c++", "-std=c++20", "-O2", "-fno-exceptions", "-fno-rtti", "-fno-builtin", "-fwrapv", "-ffp-contract=off", "-Wno-parentheses-equality"]
-AOT_WASM_FLAGS = [*AOT_FLAGS, "--target=wasm32-unknown-unknown", "-ffreestanding", "-nostdlib", "-nostdinc", "-nostdinc++", "-mbulk-memory", "-Wl,--no-entry", "-Wl,--export-memory", "-Wl,-z,stack-size=4194304"]
+# Compiler debug names otherwise get duplicated in ELF symbols and Go's
+# runtime metadata when wasm2o embeds the compiled reactor.
+AOT_WASM_FLAGS = [*AOT_FLAGS, "--target=wasm32-unknown-unknown", "-ffreestanding", "-nostdlib", "-nostdinc", "-nostdinc++", "-mbulk-memory", "-Wl,--strip-all", "-Wl,--no-entry", "-Wl,--export-memory", "-Wl,-z,stack-size=4194304"]
 
 aot = command(
     name="aot",
