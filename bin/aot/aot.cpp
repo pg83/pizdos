@@ -14859,7 +14859,23 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     (in).size = size;
                     if (((val)->op != OpFSqrt)) {
                         (in).aux = fRound;
-                        (in).imm = mapOf<Op, i64>({{OpFNearest, i64(0LL)}, {OpFFloor, i64(1LL)}, {OpFCeil, i64(2LL)}, {OpFTrunc, i64(3LL)}})[(val)->op];
+                        switch (val->op) {
+                            case OpFFloor: {
+                                in.imm = 1;
+                                break;
+                            }
+                            case OpFCeil: {
+                                in.imm = 2;
+                                break;
+                            }
+                            case OpFTrunc: {
+                                in.imm = 3;
+                                break;
+                            }
+                            default: {
+                                break;
+                            }
+                        }
                     }
                     lowererEmit(l, in);
                     break;
@@ -15587,7 +15603,24 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void lowererShift(Lowerer* l, i32 v, Op op, i32 a, i32 b, u8 size) {
         VReg d = lowererDef(l, v);
-        u8 kind = mapOf<Op, u8>({{OpShl, shiftShl}, {OpShrS, shiftSar}, {OpShrU, shiftShr}})[op];
+        u8 kind = 0;
+        switch (op) {
+            case OpShl: {
+                kind = shiftShl;
+                break;
+            }
+            case OpShrS: {
+                kind = shiftSar;
+                break;
+            }
+            case OpShrU: {
+                kind = shiftShr;
+                break;
+            }
+            default: {
+                break;
+            }
+        }
         if (lowererIsConst(l, b)) {
             i64 n = (lowererConstBits(l, b) & convert<i64>(u8(u8(size * u8(8LL)) - u8(1LL))));
             lowererMov(l, d, lowererUse(l, a), size);
