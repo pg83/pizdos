@@ -3334,12 +3334,16 @@ namespace {
         Interval* parent{};
         Slice<Interval*> children{};
         VReg hint{};
-        bool fixed{};
+        // Fixed intervals already have physical vreg IDs. Reuse their flag's
+        // storage for the upper bound, valid after finish and maintained by split.
+        i32 end{};
         Int cursor{};
         i32 locationFrom{};
         i32 locationTo{};
         VReg locationReg{};
     };
+
+    static_assert(sizeof(Interval) == (sizeof(void*) == 8 ? 136 : 88));
 
     struct Anonymous50 {
         i32 begin{};
@@ -3923,6 +3927,8 @@ namespace {
         Vec<i32> blockTo{};
         Vec<Bitset> liveIn{};
         Vec<Bitset> liveOut{};
+        Vec<i32> copyIndex{};
+        Vec<VReg> copyRegs{};
         Vec<Interval*> intervals{};
         Array<Interval*, 32> fixed{};
         IntervalQueue unhandled{};
@@ -5289,7 +5295,7 @@ namespace {
 
     static void allocatorAllocateBlocked(Allocator* a, Interval* cur);
 
-    static void allocatorBuildIntervals(Allocator* a);
+    static void allocatorBuildIntervals(Allocator* a, bool copiesOnly = false);
 
     static Slice<VReg> allocatorCalleeSavedUsed(Allocator* a);
 
@@ -5298,6 +5304,8 @@ namespace {
     static Slice<VReg> allocatorCandidates(Allocator* a, u8 classValue);
 
     static bool allocatorCoalesce(Allocator* a);
+
+    static bool allocatorSelectCopies(Allocator* a);
 
     static void allocatorEvict(Allocator* a, Interval* it, i32 pos);
 
@@ -5309,7 +5317,7 @@ namespace {
 
     static void allocatorLinearize(Allocator* a);
 
-    static void allocatorLiveness(Allocator* a);
+    static void allocatorLiveness(Allocator* a, bool copiesOnly = false);
 
     static VReg allocatorLoc(Allocator* a, Interval* it);
 
@@ -6068,7 +6076,7 @@ namespace {
 
     static Int memX(Amem m);
 
-    static Slice<Lrange> mergeRanges(Span<Lrange> x, Span<Lrange> y);
+    static void mergeRanges(Vec<Lrange>& x, Vec<Lrange>& y, Vec<Lrange>& scratch);
 
     static Bitset newBitset(Int n);
 
@@ -9022,7 +9030,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             auto range387 = (a)->active.view();
             for (Int index388 = 0, rangeEnd389 = length(range387); index388 < rangeEnd389; ++index388) {
                 Interval* it = range387[index388];
-                if ((it)->fixed) {
+                if (vRegIsPhys(it->vreg)) {
                     nextUse[(it)->reg] = i32(0LL);
                     blockPos[(it)->reg] = i32(0LL);
                     continue;
@@ -9044,7 +9052,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 if ((x == maxPos)) {
                     continue;
                 }
-                if ((it)->fixed) {
+                if (vRegIsPhys(it->vreg)) {
                     if ((x < blockPos[(it)->reg])) {
                         blockPos[(it)->reg] = x;
                     }
@@ -9097,7 +9105,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             auto range396 = (a)->active.view();
             for (Int index397 = 0, rangeEnd398 = length(range396); index397 < rangeEnd398; ++index397) {
                 Interval* it = range396[index397];
-                if ((((it)->reg != reg) || (it)->fixed)) {
+                if (it->reg != reg || vRegIsPhys(it->vreg)) {
                     active[active.count++] = it;
                     continue;
                 }
@@ -9110,7 +9118,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             auto range399 = (a)->inactive.view();
             for (Int index400 = 0, rangeEnd401 = length(range399); index400 < rangeEnd401; ++index400) {
                 Interval* it = range399[index400];
-                if ((((it)->reg != reg) || (it)->fixed)) {
+                if (it->reg != reg || vRegIsPhys(it->vreg)) {
                     inactive[inactive.count++] = it;
                     continue;
                 }
@@ -9147,97 +9155,97 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         a->inactive.resize(inactive.count);
     }
 
-    static void allocatorBuildIntervals(Allocator* a) {
-        MFunc* mf = (a)->mf;
+    // The coalescing pass only needs ranges of virtual copy operands. Liveness
+    // is independent for each register, so projecting its sets gives the same
+    // ranges without building physical intervals, uses or allocation hints.
+    static void allocatorBuildIntervals(Allocator* a, bool copiesOnly) {
+        MFunc* mf = a->mf;
         a->intervals.resize(usize(mf->nregs));
         a->intervals.fill(nullptr);
-        {
-            Int i = (length((a)->order) - Int(1LL));
-            for (; (i >= Int(0LL)); i--) {
-                i32 b = (a)->order[i];
-                auto temporary402 = (a)->blockFrom[b];
-                auto temporary403 = (a)->blockTo[b];
-                i32 from = temporary402;
-                i32 to = temporary403;
-                bitsetEach((a)->liveOut[b], [&](Int x) mutable -> void {
-                    intervalAddRange(allocatorInterval(a, (convert<VReg>(x) + firstVirtual)), from, to);
+        const auto copyIndex = a->copyIndex.view();
+        const auto copyRegs = a->copyRegs.view();
+        auto accepts = [&](VReg r) {
+            if (r == noReg) {
+                return false;
+            }
+            if (copiesOnly) {
+                return !vRegIsPhys(r) && copyIndex[allocatorVindex(a, r)] >= 0;
+            }
+            return !vRegIsPhys(r) || allocatable(r);
+        };
+        for (Int i = length(a->order) - 1; i >= 0; --i) {
+            const i32 b = a->order[i];
+            const i32 from = a->blockFrom[b];
+            const i32 to = a->blockTo[b];
+            bitsetEach(a->liveOut[b], [&](Int x) {
+                const VReg r = copiesOnly ? copyRegs[x] : firstVirtual + VReg(x);
+                intervalAddRange(allocatorInterval(a, r), from, to);
+            });
+            auto instructions = mf->blocks[b].insts.view();
+            for (Int j = length(instructions) - 1; j >= 0; --j) {
+                MInst* in = &instructions[j];
+                const i32 p = from + 2 + 2 * j;
+                if (!copiesOnly) {
+                    auto clobbers = mInstClobberSet(in);
+                    for (Int k = 0; k < length(clobbers); ++k) {
+                        intervalAddRange(allocatorInterval(a, clobbers[k]), p + 1, p + 2);
+                    }
+                }
+                const bool needReg = in->op != mParMove;
+                mInstForEachOperand(in, [&](VReg* r, Int role) {
+                    if ((!(role & roleDef) && role != roleTemp) || !accepts(*r)) {
+                        return;
+                    }
+                    Interval* it = allocatorInterval(a, *r);
+                    if (role == roleTemp) {
+                        intervalAddRange(it, p, p + 2);
+                        if (!copiesOnly) {
+                            intervalRecordUse(it, p + 1);
+                            intervalRecordUse(it, p);
+                        }
+                    } else if (role & roleDef) {
+                        if (!intervalCutAt(it, p + 1)) {
+                            intervalAddRange(it, p + 1, p + 2);
+                        }
+                        if (!copiesOnly) {
+                            if (needReg || vRegIsPhys(*r)) {
+                                intervalRecordUse(it, p + 1);
+                            }
+                        }
+                    }
                 });
-                Span<MInst> insts = ((mf)->blocks[b]).insts.view();
-                {
-                    Int j = (length(insts) - Int(1LL));
-                    for (; (j >= Int(0LL)); j--) {
-                        MInst* in = (&(insts[j]));
-                        i32 p = from + 2 + 2 * j;
-                        {
-                            auto range404 = mInstClobberSet(in);
-                            for (Int index405 = 0, rangeEnd406 = length(range404); index405 < rangeEnd406; ++index405) {
-                                VReg r = range404[index405];
-                                intervalAddRange(allocatorInterval(a, r), (p + i32(1LL)), (p + i32(2LL)));
-                            }
+                mInstForEachOperand(in, [&](VReg* r, Int role) {
+                    if (!(role & roleUse) || role == roleTemp || !accepts(*r)) {
+                        return;
+                    }
+                    Interval* it = allocatorInterval(a, *r);
+                    intervalAddRange(it, from, p + 1);
+                    if (!copiesOnly) {
+                        if (needReg || vRegIsPhys(*r)) {
+                            intervalRecordUse(it, p);
                         }
-                        bool needReg = ((in)->op != mParMove);
-                        mInstForEachOperand(in, [&](VReg* r, Int role) mutable -> void {
-                            if ((((*(r)) == noReg) || ((vRegIsPhys(*(r)) && (!(allocatable((*(r))))))))) {
-                                return;
-                            }
-                            Interval* it = allocatorInterval(a, (*(r)));
-                            {
-                                if ((role == roleTemp)) {
-                                    intervalAddRange(it, p, (p + i32(2LL)));
-                                    intervalRecordUse(it, p + 1);
-                                    intervalRecordUse(it, p);
-                                } else if (((role & roleDef) != Int(0LL))) {
-                                    if ((!(intervalCutAt(it, (p + i32(1LL)))))) {
-                                        intervalAddRange(it, (p + i32(1LL)), (p + i32(2LL)));
-                                    }
-                                    if ((needReg || vRegIsPhys(*(r)))) {
-                                        intervalRecordUse(it, p + 1);
-                                    }
-                                }
-                            switchEnd408:;
-                            }
-                        });
-                        mInstForEachOperand(in, [&](VReg* r, Int role) mutable -> void {
-                            if ((((*(r)) == noReg) || ((vRegIsPhys(*(r)) && (!(allocatable((*(r))))))))) {
-                                return;
-                            }
-                            if ((((role & roleUse) != Int(0LL)) && (role != roleTemp))) {
-                                Interval* it = allocatorInterval(a, (*(r)));
-                                intervalAddRange(it, from, (p + i32(1LL)));
-                                if ((needReg || vRegIsPhys(*(r)))) {
-                                    intervalRecordUse(it, p);
-                                }
-                            }
-                        });
-                        if ((((in)->op == mMov) || ((in)->op == mFMov))) {
-                            allocatorHint(a, (in)->dst, (in)->src);
-                        }
-                        {
-                            auto range409 = mInstMoves(in);
-                            for (Int index410 = 0, rangeEnd411 = length(range409); index410 < rangeEnd411; ++index410) {
-                                Move m = range409[index410];
-                                allocatorHint(a, (m).dst, (m).src);
-                            }
-                        }
+                    }
+                });
+                if (!copiesOnly) {
+                    if (in->op == mMov || in->op == mFMov) {
+                        allocatorHint(a, in->dst, in->src);
+                    }
+                    auto moves = mInstMoves(in);
+                    for (Int k = 0; k < length(moves); ++k) {
+                        allocatorHint(a, moves[k].dst, moves[k].src);
                     }
                 }
             }
         }
-        {
-            auto range412 = (a)->intervals.view();
-            for (Int index413 = 0, rangeEnd414 = length(range412); index413 < rangeEnd414; ++index413) {
-                Interval* it = range412[index413];
-                if ((!isNil(it))) {
-                    intervalFinish(it);
-                }
+        a->intervals.visit([](Interval* it) {
+            if (it) {
+                intervalFinish(it);
             }
-        }
-        {
-            auto range415 = (a)->fixed;
-            for (Int index416 = 0, rangeEnd417 = length(range415); index416 < rangeEnd417; ++index416) {
-                Interval* it = range415[index416];
-                if ((!isNil(it))) {
-                    intervalFinish(it);
+        });
+        if (!copiesOnly) {
+            for (Int r = 0; r < 32; ++r) {
+                if (a->fixed[r]) {
+                    intervalFinish(a->fixed[r]);
                 }
             }
         }
@@ -9300,19 +9308,61 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return allocGPRs;
     }
 
+    static bool allocatorSelectCopies(Allocator* a) {
+        MFunc* mf = a->mf;
+        auto select = [&](VReg dst, VReg src) {
+            if (dst == noReg || src == noReg || dst == src || vRegIsPhys(dst) || vRegIsPhys(src)) {
+                return;
+            }
+            const usize x = usize(allocatorVindex(a, dst));
+            const usize y = usize(allocatorVindex(a, src));
+            if (mf->classValue[Int(x)] != mf->classValue[Int(y)]) {
+                return;
+            }
+            if (!a->copyIndex.size()) {
+                a->copyIndex.resize(usize(mf->nregs));
+                a->copyIndex.fill(-1);
+            }
+            a->copyIndex[x] = 0;
+            a->copyIndex[y] = 0;
+        };
+        for (Int b = 0; b < length(mf->blocks); ++b) {
+            auto instructions = mf->blocks[b].insts.view();
+            for (Int i = 0; i < length(instructions); ++i) {
+                MInst* in = &instructions[i];
+                if (in->op == mParMove) {
+                    auto moves = mInstMoves(in);
+                    for (Int j = 0; j < length(moves); ++j) {
+                        select(moves[j].dst, moves[j].src);
+                    }
+                } else if (in->op == mMov || in->op == mFMov) {
+                    select(in->dst, in->src);
+                }
+            }
+        }
+        if (!a->copyIndex.size()) {
+            return false;
+        }
+        for (usize x = 0; x < a->copyIndex.size(); ++x) {
+            if (a->copyIndex[x] >= 0) {
+                a->copyIndex[x] = i32(a->copyRegs.size());
+                a->copyRegs.pushBack(firstVirtual + VReg(x));
+            }
+        }
+        return true;
+    }
+
     // coalesce renames the operands of the copies whose registers it joins
     // and reports whether it joined any: the allocator then starts again on
     // the renamed code.
     static bool allocatorCoalesce(Allocator* a) {
         MFunc* mf = a->mf;
-        Vec<i32> parent;
-        Vec<Span<Lrange>> ranges;
+        // The projection map has no remaining users after range construction.
+        Vec<i32> parent(move(a->copyIndex));
+        Vec<Lrange> scratch;
         parent.resize(usize(mf->nregs));
-        ranges.resize(usize(mf->nregs));
         for (Int x = 0; x < mf->nregs; ++x) {
             parent[usize(x)] = i32(x);
-            Interval* it = a->intervals[usize(x)];
-            ranges[usize(x)] = it ? it->ranges.view() : Span<Lrange>{};
         }
         auto find = [&](i32 x) {
             while (parent[usize(x)] != x) {
@@ -9333,11 +9383,20 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             const i32 x = find(i32(dx));
             const i32 y = find(i32(sx));
-            if (x == y || !length(ranges[usize(x)]) || !length(ranges[usize(y)]) || overlap(ranges[usize(x)], ranges[usize(y)])) {
+            if (x == y) {
+                return;
+            }
+            Interval* left = a->intervals[usize(x)];
+            Interval* right = a->intervals[usize(y)];
+            if (!left || !right || !left->ranges.size() || !right->ranges.size() || overlap(left->ranges.view(), right->ranges.view())) {
                 return;
             }
             parent[usize(y)] = x;
-            ranges[usize(x)] = mergeRanges(ranges[usize(x)], ranges[usize(y)]);
+            // Only root ranges are read from here. The whole allocator is
+            // discarded after a join, so merged buffers can be reused now.
+            mergeRanges(left->ranges, right->ranges, scratch);
+            left->end = maximum(left->end, right->end);
+            right->end = 0;
             joined = true;
         };
         // Copies were stably sorted by their block's loop depth. Bucketing
@@ -9517,13 +9576,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static Interval* allocatorInterval(Allocator* a, VReg r) {
         if (vRegIsPhys(r)) {
             if (isNil((a)->fixed[r])) {
-                (a)->fixed[r] = activePool->make<Interval>(Interval{r, {}, {}, {}, r, {}, {}, {}, true, {}});
+                (a)->fixed[r] = activePool->make<Interval>(Interval{.vreg = r, .reg = r});
             }
             return (a)->fixed[r];
         }
         Int x = allocatorVindex(a, r);
         if (isNil((a)->intervals[x])) {
-            (a)->intervals[x] = activePool->make<Interval>(Interval{r, ((a)->mf)->classValue[x], {}, {}, noReg, {}, {}, noReg, {}, {}});
+            (a)->intervals[x] = activePool->make<Interval>(Interval{.vreg = r, .classValue = a->mf->classValue[x], .reg = noReg, .hint = noReg});
         }
         return (a)->intervals[x];
     }
@@ -9581,10 +9640,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
     }
 
-    static void allocatorLiveness(Allocator* a) {
+    static void allocatorLiveness(Allocator* a, bool copiesOnly) {
         MFunc* mf = a->mf;
         const Int n = length(mf->blocks);
-        const Int nv = mf->nregs;
+        const Int nv = copiesOnly ? Int(a->copyRegs.size()) : mf->nregs;
+        const auto copyIndex = a->copyIndex.view();
         // Gen/kill sets and operand callbacks have no users after dataflow.
         ObjPool temporary;
         Vec<Bitset> kill;
@@ -9606,7 +9666,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         if (vRegIsPhys(*r) || *r == noReg) {
                             return;
                         }
-                        const Int x = allocatorVindex(a, *r);
+                        Int x = allocatorVindex(a, *r);
+                        if (copiesOnly) {
+                            x = copyIndex[x];
+                            if (x < 0) {
+                                return;
+                            }
+                        }
                         if ((role & roleUse) != 0 && role != roleTemp && !bitsetHas(k, x)) {
                             bitsetSet(g, x);
                         }
@@ -13442,7 +13508,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (!length(it->ranges)) {
             return false;
         }
-        if (p < it->ranges[0].from || p >= it->ranges[length(it->ranges) - 1].to) {
+        if (p < it->ranges[0].from || p >= it->end) {
             return false;
         }
         if (length(it->ranges) == 1) {
@@ -13477,7 +13543,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static i32 intervalEnd(Interval* it) {
-        return ((it)->ranges[(length((it)->ranges) - Int(1LL))]).to;
+        return it->end;
     }
 
     static bool intervalEndsBefore(Interval* it, i32 p) {
@@ -13520,6 +13586,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 r[j] = temporary735;
             }
         }
+        it->end = length(r) ? r[length(r) - 1].to : 0;
         const usize count = it->uses.size();
         for (usize i = 0; i < count / 2; ++i) {
             const i32 use = it->uses[i];
@@ -13584,7 +13651,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // split cuts the interval at p: the returned child covers p and later.
     static Interval* intervalSplit(Interval* it, i32 p) {
-        Interval* child = activePool->make<Interval>(Interval{(it)->vreg, (it)->classValue, {}, {}, noReg, {}, {}, (it)->hint, {}, {}});
+        Interval* child = activePool->make<Interval>(Interval{.vreg = it->vreg, .classValue = it->classValue, .reg = noReg, .hint = it->hint});
         Int k = Int(0LL);
         {
             for (; ((k < length((it)->ranges)) && (((it)->ranges[k]).to <= p));) {
@@ -13600,6 +13667,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             child->ranges.assign(subslice(it->ranges.view(), k, length(it->ranges)));
             it->ranges.resize(usize(k));
         }
+        child->end = child->ranges.size() ? child->ranges[child->ranges.size() - 1].to : 0;
+        it->end = it->ranges.size() ? it->ranges[it->ranges.size() - 1].to : 0;
         if (((it)->cursor > length((it)->ranges))) {
             (it)->cursor = length((it)->ranges);
         }
@@ -19529,9 +19598,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Allocator* a = arena->make<Allocator>();
         a->mf = mf;
         allocatorLinearize(a);
-        allocatorLiveness(a);
-        allocatorBuildIntervals(a);
-        if (allocatorCoalesce(a)) {
+        if (allocatorSelectCopies(a)) {
+            allocatorLiveness(a, true);
+            allocatorBuildIntervals(a, true);
+            allocatorCoalesce(a);
             // Coalescing only rewrites operands and replaces copies with
             // no-ops; block order and instruction positions stay valid.
             Vec<i32> order(move(a->order));
@@ -19547,9 +19617,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             a->blockFrom = move(blockFrom);
             a->blockTo = move(blockTo);
             a->posBlock = move(posBlock);
-            allocatorLiveness(a);
-            allocatorBuildIntervals(a);
         }
+        allocatorLiveness(a);
+        allocatorBuildIntervals(a);
         allocatorScan(a);
         allocatorResolve(a);
         return a;
@@ -21207,35 +21277,57 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return (m).index;
     }
 
-    // mergeRanges is the sorted union of two lists of ranges that do not
-    // overlap.
-    static Slice<Lrange> mergeRanges(Span<Lrange> x, Span<Lrange> y) {
-        Slice<Lrange> out = makeSlice<Lrange>(Int(0LL), (length(x) + length(y)));
-        auto temporary1575 = Int(0LL);
-        auto temporary1576 = Int(0LL);
-        Int i = temporary1575;
-        Int j = temporary1576;
-        {
-            for (; ((i < length(x)) || (j < length(y)));) {
-                Lrange r = {};
-                if (((j == length(y)) || ((i < length(x)) && ((x[i]).from < (y[j]).from)))) {
-                    r = x[i];
-                    i++;
-                } else {
-                    r = y[j];
-                    j++;
-                }
-                {
-                    Int n = length(out);
-                    if (((n > Int(0LL)) && ((out[(n - Int(1LL))]).to == (r).from))) {
-                        (out[(n - Int(1LL))]).to = (r).to;
-                    } else {
-                        out = appendValues(out, r);
-                    }
-                }
+    // Merge two disjoint normalized sets. Their buffers are temporary coalescing
+    // state: y is consumed, while x keeps the same canonical register ID.
+    static void mergeRanges(Vec<Lrange>& x, Vec<Lrange>& y, Vec<Lrange>& scratch) {
+        if (!y.size()) {
+            return;
+        }
+        if (!x.size()) {
+            x = move(y);
+            return;
+        }
+        const usize nx = x.size();
+        const usize ny = y.size();
+        if (x[nx - 1].to <= y[0].from) {
+            usize first = 0;
+            if (x[nx - 1].to == y[0].from) {
+                x[nx - 1].to = y[0].to;
+                first = 1;
+            }
+            x.append(subslice(y.view(), Int(first), Int(ny)));
+            y = Vec<Lrange>{};
+            return;
+        }
+        if (y[ny - 1].to <= x[0].from) {
+            usize first = 0;
+            if (y[ny - 1].to == x[0].from) {
+                y[ny - 1].to = x[0].to;
+                first = 1;
+            }
+            y.append(subslice(x.view(), Int(first), Int(nx)));
+            x = move(y);
+            return;
+        }
+        scratch.clear();
+        scratch.reserve(nx + ny);
+        const auto left = x.view();
+        const auto right = y.view();
+        usize i = 0;
+        usize j = 0;
+        while (i < nx || j < ny) {
+            const Lrange range = j == ny || (i < nx && left[Int(i)].from < right[Int(j)].from) ? left[Int(i++)] : right[Int(j++)];
+            const usize count = scratch.size();
+            if (count && scratch[count - 1].to == range.from) {
+                scratch[count - 1].to = range.to;
+            } else {
+                scratch.pushBack(range);
             }
         }
-        return out;
+        Vec<Lrange> previous(move(x));
+        x = move(scratch);
+        scratch = move(previous);
+        y = Vec<Lrange>{};
     }
 
     static Bitset newBitset(Int n) {
@@ -22898,6 +22990,45 @@ namespace {
         }
         static_assert(sizeof(MInst) <= 72);
         {
+            Vec<Lrange> x({{10, 20}});
+            Vec<Lrange> y({{0, 5}});
+            Vec<Lrange> scratch;
+            mergeRanges(x, y, scratch);
+            require(!y.size() && x.size() == 2 && x[0].from == 0 && x[1].to == 20, "range union preserves a gap");
+            y = Vec<Lrange>({{5, 10}});
+            mergeRanges(x, y, scratch);
+            require(!y.size() && x.size() == 1 && x[0].from == 0 && x[0].to == 20, "range union closes a gap");
+            y = Vec<Lrange>({{20, 25}, {40, 45}});
+            mergeRanges(x, y, scratch);
+            require(x.size() == 2 && x[0].to == 25 && x[1].from == 40 && x[1].to == 45, "range union appends after a touching range");
+            y = Vec<Lrange>({{30, 35}});
+            mergeRanges(x, y, scratch);
+            require(x.size() == 3 && x[0].to == 25 && x[1].from == 30 && x[1].to == 35 && x[2].from == 40, "range union reuses merge storage");
+        }
+        {
+            Vec<Lrange> x;
+            Vec<Lrange> y;
+            Vec<Lrange> scratch;
+            for (i32 i = 0; i < 12000; ++i) {
+                (i & 1 ? y : x).pushBack({4 * i, 4 * i + 2});
+            }
+            mergeRanges(x, y, scratch);
+            require(!y.size() && x.size() == 12000, "paged range union size");
+            usize at = 0;
+            for (i32 p = 0; p < 48000; ++p) {
+                while (at < x.size() && x[at].to <= p) {
+                    ++at;
+                }
+                const bool covered = at < x.size() && x[at].from <= p;
+                require(covered == (p % 4 < 2), "paged range union coverage");
+            }
+            for (i32 i = 0; i < 12000; ++i) {
+                y.pushBack({4 * i + 2, 4 * i + 4});
+            }
+            mergeRanges(x, y, scratch);
+            require(!y.size() && x.size() == 1 && x[0].from == 0 && x[0].to == 48000, "range union coalesces page-spanning gaps");
+        }
+        {
             ObjPool pool;
             PoolScope scope(pool);
             MFunc function;
@@ -22920,13 +23051,117 @@ namespace {
             Allocator allocation;
             allocation.mf = &function;
             allocatorLinearize(&allocation);
-            allocatorLiveness(&allocation);
-            allocatorBuildIntervals(&allocation);
+            require(allocatorSelectCopies(&allocation), "selecting virtual register copies");
+            allocatorLiveness(&allocation, true);
+            allocatorBuildIntervals(&allocation, true);
             require(allocatorCoalesce(&allocation), "coalescing virtual register copies");
             require(function.nregs == 2 && length(function.classValue) == 2, "coalescing compacts virtual register IDs");
             require(function.classValue[0] == classGPR && function.classValue[1] == classXMM, "coalescing preserves register classes");
             require(function.blocks[0].insts[0].dst == firstVirtual && function.blocks[0].insts[2].dst == firstVirtual + 1, "coalescing preserves canonical register order");
             require(function.blocks[0].insts[1].op == mNop && function.blocks[0].insts[3].op == mNop, "coalescing removes renamed self copies");
+        }
+        {
+            ObjPool pool;
+            PoolScope scope(pool);
+            MFunc function;
+            for (Int b = 0; b < 5; ++b) {
+                function.blocks.pushBack(MBlock{});
+            }
+            const VReg a = mFuncNewReg(&function, classGPR);
+            const VReg untracked = mFuncNewReg(&function, classGPR);
+            const VReg b = mFuncNewReg(&function, classGPR);
+            const VReg temporary = mFuncNewReg(&function, classGPR);
+            const VReg c = mFuncNewReg(&function, classGPR);
+            const VReg d = mFuncNewReg(&function, classGPR);
+            auto emit = [&](Int block, MOp op, VReg dst, VReg src) {
+                MInst in = inst(op);
+                in.dst = dst;
+                in.src = src;
+                in.size = 8;
+                function.blocks[block].insts.pushBack(in);
+            };
+            emit(0, mMovImm, a, noReg);
+            emit(0, mMovImm, untracked, noReg);
+            emit(1, mMov, b, a);
+            emit(1, mMovImm, temporary, noReg);
+            emit(2, mAlu, b, untracked);
+            MInst compare = inst(mCmp);
+            compare.src = a;
+            compare.src2 = b;
+            function.blocks[2].insts.pushBack(compare);
+            emit(3, mMov, RAX, b);
+            function.blocks[3].insts.pushBack(inst(mCall));
+            emit(4, mMov, c, d);
+            function.blocks[0].succs = sliceOf<i32>({1});
+            function.blocks[1].succs = sliceOf<i32>({2});
+            function.blocks[2].succs = sliceOf<i32>({1, 3});
+            function.blocks[1].preds = sliceOf<i32>({0, 2});
+            function.blocks[2].preds = sliceOf<i32>({1});
+            function.blocks[3].preds = sliceOf<i32>({2});
+            Allocator full;
+            full.mf = &function;
+            allocatorLinearize(&full);
+            allocatorLiveness(&full);
+            allocatorBuildIntervals(&full);
+            Allocator projected;
+            projected.mf = &function;
+            allocatorLinearize(&projected);
+            require(allocatorSelectCopies(&projected) && projected.copyRegs.size() == 4, "selecting copies with gaps in register IDs");
+            allocatorLiveness(&projected, true);
+            allocatorBuildIntervals(&projected, true);
+            for (Int x = 0; x < function.nregs; ++x) {
+                if (projected.copyIndex[usize(x)] < 0) {
+                    require(!projected.intervals[usize(x)], "unselected registers have no projected intervals");
+                    continue;
+                }
+                const Int selected = projected.copyIndex[usize(x)];
+                for (usize i = 0; i < full.order.size(); ++i) {
+                    const i32 block = full.order[i];
+                    require(bitsetHas(full.liveIn[block], x) == bitsetHas(projected.liveIn[block], selected), "projected live-in equals full analysis");
+                    require(bitsetHas(full.liveOut[block], x) == bitsetHas(projected.liveOut[block], selected), "projected live-out equals full analysis");
+                }
+                Interval* expected = full.intervals[usize(x)];
+                Interval* actual = projected.intervals[usize(x)];
+                require(bool(expected) == bool(actual), "projected reachable intervals");
+                if (!expected) {
+                    continue;
+                }
+                require(expected->ranges.size() == actual->ranges.size() && intervalEnd(expected) == intervalEnd(actual), "projected interval bounds");
+                for (usize i = 0; i < expected->ranges.size(); ++i) {
+                    require(expected->ranges[i].from == actual->ranges[i].from && expected->ranges[i].to == actual->ranges[i].to, "projected interval equals full analysis");
+                }
+                require(!actual->uses.size() && actual->hint == noReg, "coalescing does not build uses or hints");
+            }
+            for (Int r = 0; r < 32; ++r) {
+                require(!projected.fixed[r], "coalescing does not build physical intervals");
+            }
+            require(!allocatorCoalesce(&projected) && function.nregs == 6, "coalescing preserves overlapping copies and unreachable registers");
+            MFunc noCopies;
+            noCopies.blocks.pushBack(MBlock{});
+            const VReg value = mFuncNewReg(&noCopies, classGPR);
+            MInst physical = inst(mMov);
+            physical.dst = RAX;
+            physical.src = value;
+            noCopies.blocks[0].insts.pushBack(physical);
+            Allocator skipped;
+            skipped.mf = &noCopies;
+            require(!allocatorSelectCopies(&skipped) && !skipped.copyIndex.size(), "physical copies need no coalescing analysis");
+        }
+        {
+            ObjPool pool;
+            PoolScope scope(pool);
+            Interval root{.vreg = firstVirtual, .reg = noReg, .hint = noReg};
+            intervalAddRange(&root, 30, 40);
+            intervalAddRange(&root, 10, 20);
+            intervalFinish(&root);
+            require(intervalEnd(&root) == 40 && !intervalEndsBefore(&root, 39), "interval upper bound after finishing");
+            Interval* middle = intervalSplit(&root, 15);
+            Interval* tail = intervalSplit(middle, 25);
+            require(intervalEnd(&root) == 15 && intervalEndsBefore(&root, 15), "interval upper bound after splitting a range");
+            require(intervalEnd(middle) == 20 && intervalEndsBefore(middle, 20), "interval upper bound after splitting in a gap");
+            require(intervalEnd(tail) == 40 && !intervalEndsBefore(tail, 39), "nested interval upper bound");
+            require(intervalCovers(&root, 14) && !intervalCovers(&root, 15), "split interval coverage");
+            require(!intervalCovers(middle, 25) && !intervalCovers(tail, 25) && intervalCovers(tail, 30), "split gap coverage");
         }
         {
             Interval interval;
