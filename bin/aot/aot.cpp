@@ -4502,6 +4502,9 @@ namespace {
         NodeVec<Block> blocks;
         // Only Wasm loops make cycles; the frontend notes whether it saw one.
         bool hasLoops = false;
+        // An analysis of the current graph, with up-to-date predecessors, or
+        // null once a pass may have changed edges since it was made.
+        CfgInfo* cfg = nullptr;
 
         Function();
     };
@@ -17752,6 +17755,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         if (changed || merged) {
             o->counted = false;
+            f->cfg = nullptr;
         }
         return changed || merged;
     }
@@ -17760,6 +17764,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Function* f = o->f;
         optimizerApply(o);
         CfgInfo* ci = functionAnalyze(f);
+        f->cfg = ci;
         auto children = cfgInfoChildren(ci);
 
         struct Entry {
@@ -18521,6 +18526,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     *body = Block{{}, {}, {}, {}, true};
                     functionComputePreds(f);
                     o->counted = false;
+                    f->cfg = nullptr;
                     changed = true;
                     break;
                 }
@@ -18777,6 +18783,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (changed) {
             functionComputePreds(f);
             o->counted = false;
+            f->cfg = nullptr;
         }
         return changed;
     }
@@ -20702,7 +20709,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static MFunc* lowerFunction(Module* m, Layout* lay, Function* f) {
         Lowerer* l = activePool->make<Lowerer>(Lowerer{m, f, lay, {}, activePool->make<MFunc>(MFunc{}), {}, {}, {}, {}, {}, mapOf<Array<i32, 2>, i32>({}), mapOf<i32, i64>({}), {}, {}, {}, {}});
-        l->ci = functionAnalyze(f);
+        l->ci = f->cfg ? f->cfg : functionAnalyze(f);
         l->vregs.resize(f->values.size());
         l->vregs.fill(noReg);
         lowererCountUses(l);
@@ -21773,7 +21780,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         // No pass before this one adds a cycle. Without loops there is nothing
         // to version, and the analysis would only have refreshed preds.
         if (!f->hasLoops) {
-            functionComputePreds(f);
+            if (!f->cfg) {
+                functionComputePreds(f);
+            }
             return false;
         }
         LoopBodyUses bodyUses(f);
@@ -21783,14 +21792,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         CfgInfo* ci;
         {
             ObjPool analysisPool;
-            CfgInfo* full;
-            {
+            CfgInfo* full = f->cfg;
+            if (!full) {
                 PoolScope analysisScope(analysisPool);
                 full = functionAnalyze(f);
-                cfgInfoPreorder(full, f);
             }
             PoolScope cfgScope(cfgPool);
-            ci = activePool->make<CfgInfo>(CfgInfo{appendSlice(Slice<i32>{}, full->order), appendSlice(Slice<i32>{}, full->rpoIndex), appendSlice(Slice<i32>{}, full->idom), {}, appendSlice(Slice<bool>{}, full->header), appendSlice(Slice<i32>{}, full->preorder), appendSlice(Slice<i32>{}, full->enter), appendSlice(Slice<i32>{}, full->leave), {}});
+            ci = activePool->make<CfgInfo>(CfgInfo{appendSlice(Slice<i32>{}, full->order), appendSlice(Slice<i32>{}, full->rpoIndex), appendSlice(Slice<i32>{}, full->idom), {}, appendSlice(Slice<bool>{}, full->header), {}, {}, {}, {}});
+            cfgInfoPreorder(ci, f);
         }
         // Versioning sends the preheader's edge to blocks of its own, which
         // enter the original loop first, and adds no other edge between
@@ -21828,6 +21837,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             if (fast >= 0) {
                 versionedPreds(f, loop->preheader, loop->header, before);
+                f->cfg = nullptr;
                 versioned++;
             }
         }
