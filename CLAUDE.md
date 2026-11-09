@@ -68,11 +68,14 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   pointer, X15 untouched, and the stack pointer table is exact at every
   instruction. `W2O_PERFMAP=<dir>` makes the loader write perf-<pid>.map.
 - Compilation enables a physical 64 KiB readable and writable tail beyond
-  the logical memory size by default, with machine-code range versioning:
-  one address guard covers related accesses within 64 KiB on the fast path,
-  with exact checks and side-effect order on the fallback path. Versioning
-  precedes register allocation; emission places fallback blocks after hot
-  code and uses multi-byte NOPs for loop alignment.
+  the logical memory size by default: a check that an address is within
+  the logical size admits every access reaching up to 64 KiB past it, so
+  later accesses from the same address need no check; an address past the
+  logical size traps. Machine-code range versioning lets one address guard
+  cover related addresses within 64 KiB on the fast path, with each access
+  checked in order on the fallback path. Versioning precedes register
+  allocation; emission places fallback blocks after hot code and uses
+  multi-byte NOPs for loop alignment.
   `memory.size`, growth limits and the zero initialization of newly grown
   pages retain their logical meaning. The object records the extension;
   running it needs this loader but no environment setting.

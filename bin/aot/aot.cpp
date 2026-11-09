@@ -13271,6 +13271,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         auto temporary692 = (in)->imm;
         VReg src = temporary691;
         i64 end = temporary692;
+        if (e->oc->m->memoryTail) {
+            // The accessible tail reaches boundSlack past the logical size, so
+            // a base within the logical size covers the access; a base past it
+            // traps, even where its access would still end inside the tail.
+            asmAluRM(a, aluCmp, u8(8LL), src, baseAt(ctxReg, offMemBound));
+            funcEmitterTrapJcc(e, ccG, trapMemoryOOB);
+            return;
+        }
         if ((e)->cold) {
             funcEmitterExactCheck(e, src, end);
             return;
@@ -14258,9 +14266,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if ((checked && (offset < i64(2147483647LL)))) {
             return memIndexed(memReg, ra, convert<i32>(offset));
         }
-        if (((!(had)) || (end > prior))) {
+        // With the accessible tail, the check of a base within the logical size
+        // admits every access ending at most boundSlack past that base.
+        const i64 admitted = l->m->memoryTail && end <= boundSlack ? i64(boundSlack) : end;
+        if (((!(had)) || (admitted > prior))) {
             (l)->checkUndo = appendValues((l)->checkUndo, CheckUndo{addr, prior, had});
-            setMap((l)->checked, addr, end);
+            setMap((l)->checked, addr, admitted);
         }
         if ((end <= boundSlack)) {
             MInst in = inst(mCheck);

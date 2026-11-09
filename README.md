@@ -130,12 +130,14 @@ with the same loader and runtime settings.
   description in a `.note.wasm2o`. `ld.lld -r` relinks it and the loader
   runs the result. Memory accesses use explicit range guards and a trap
   calls Go. Linear memory is reserved at its maximum and grows in place.
-  The default AOT semantics allow reads and writes into an additional
-  64 KiB tail beyond the logical size. `memory.size` and growth limits
-  remain logical; newly grown pages are zeroed. Generic range versioning
-  before register allocation shares one guard across related accesses;
-  checked fallbacks live at the end of the function. No compiler flag is
-  needed. `W2X_MEMORY_TAIL=strict` selects exact Wasm bounds for diagnostics,
+  The default AOT semantics add an accessible 64 KiB tail beyond the
+  logical size: an access whose address is within the logical size may
+  reach into it, and an address past the logical size traps. One check of
+  an address covers every access up to 64 KiB past it. `memory.size` and
+  growth limits remain logical; newly grown pages are zeroed. Generic range
+  versioning before register allocation shares one guard across related
+  addresses; checked fallbacks live at the end of the function. No compiler
+  flag is needed. `W2X_MEMORY_TAIL=strict` selects exact Wasm bounds for diagnostics,
   and the spec runner always uses those bounds.
 - The code runs on a goroutine's stack under Go 1.25 amd64 ABIInternal
   (the ABI in `bin/aot/aot.cpp`): exports are functions Go calls, imports are Go

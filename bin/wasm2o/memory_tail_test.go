@@ -62,15 +62,15 @@ func TestMemoryTailDefault(t *testing.T) {
 
 	for _, r := range i.tailProfile().Functions {
 		if r.Function == 6 {
-			if r.Guards != 1 || r.Omitted != 3 || r.Checks != 0 || r.Fallbacks != 0 {
-				t.Fatalf("default compilation did not optimize the range: %+v", r)
+			if r.Checks != 1 || r.Guards != 0 || r.Omitted != 0 || r.Fallbacks != 0 {
+				t.Fatalf("one check of the base did not cover its chain of accesses: %+v", r)
 			}
 
 			return
 		}
 	}
 
-	t.Fatal("default compilation did not produce range guards")
+	t.Fatal("default compilation did not count the chain's check")
 }
 
 func TestMemoryTail(t *testing.T) {
@@ -93,7 +93,7 @@ func TestMemoryTail(t *testing.T) {
 			t.Fatalf("optimized %t: logical and accessible sizes disagree", optimized)
 		}
 
-		for _, p := range []uint32{pageSize - 2, pageSize, 2*pageSize - 4} {
+		for _, p := range []uint32{pageSize - 2, pageSize} {
 			store(i.ctx(), p, 0x12345678)
 
 			if got := read(i.ctx(), p); got != 0x12345678 {
@@ -101,14 +101,22 @@ func TestMemoryTail(t *testing.T) {
 			}
 		}
 
-		before := binary.LittleEndian.Uint32(i.memoryBytes()[2*pageSize-4:])
+		// The tail extends accesses whose base is within the logical size;
+		// a base past it traps without touching memory.
+		for _, p := range []uint32{pageSize + 1, 2*pageSize - 4, 2*pageSize - 2} {
+			before := string(i.memoryBytes()[pageSize:])
 
-		if trap := trapOf(func() { store(i.ctx(), 2*pageSize-2, 99) }); trap != trapMemoryOOB {
-			t.Fatalf("store across physical end: trap %d", trap)
-		}
+			if trap := trapOf(func() { store(i.ctx(), p, 99) }); trap != trapMemoryOOB {
+				t.Fatalf("optimized %t, store based at %d past the logical end: trap %d", optimized, p, trap)
+			}
 
-		if got := binary.LittleEndian.Uint32(i.memoryBytes()[2*pageSize-4:]); got != before {
-			t.Fatal("trapping store changed its in-range prefix")
+			if trap := trapOf(func() { read(i.ctx(), p) }); trap != trapMemoryOOB {
+				t.Fatalf("optimized %t, load based at %d past the logical end: trap %d", optimized, p, trap)
+			}
+
+			if string(i.memoryBytes()[pageSize:]) != before {
+				t.Fatal("trapping store changed the tail")
+			}
 		}
 
 		fill(i.ctx(), pageSize, 0x7b, pageSize)
@@ -132,19 +140,21 @@ func TestMemoryTail(t *testing.T) {
 			}
 		}
 
-		store(i.ctx(), 3*pageSize-4, 81)
+		// A store across the logical end leaves its upper half in the tail,
+		// which growth turns into zeroed memory.
+		store(i.ctx(), 2*pageSize-2, 0x51515151)
 
-		if read(i.ctx(), 3*pageSize-4) != 81 || grow(i.ctx(), 1) != 2 || size(i.ctx()) != 3 {
+		if read(i.ctx(), 2*pageSize-2) != 0x51515151 || grow(i.ctx(), 1) != 2 || size(i.ctx()) != 3 {
 			t.Fatal("tail did not move with growth")
 		}
 
-		if read(i.ctx(), 3*pageSize-4) != 0 {
+		if read(i.ctx(), 2*pageSize-2) != 0x5151 {
 			t.Fatal("second growth exposed a dirty tail")
 		}
 
-		store(i.ctx(), 4*pageSize-4, 83)
+		store(i.ctx(), 3*pageSize-2, 83<<16)
 
-		if read(i.ctx(), 4*pageSize-4) != 83 || grow(i.ctx(), 1) != math.MaxUint32 {
+		if read(i.ctx(), 3*pageSize-2) != 83<<16 || grow(i.ctx(), 1) != math.MaxUint32 {
 			t.Fatal("maximum memory did not retain its tail")
 		}
 	}
@@ -162,33 +172,42 @@ func TestMemoryTailRanges(t *testing.T) {
 	p := uint32(2*pageSize - 12)
 
 	if trap := trapOf(func() { chain(i.ctx(), p, 33) }); trap != trapMemoryOOB {
-		t.Fatalf("cold region: trap %d", trap)
+		t.Fatalf("chain based past the logical end: trap %d", trap)
 	}
 
-	if binary.LittleEndian.Uint32(i.memoryBytes()[p:]) != 33 || binary.LittleEndian.Uint32(i.memoryBytes()[p+8:]) != 33 {
-		t.Fatal("cold region lost stores preceding a later trap")
+	if binary.LittleEndian.Uint32(i.memoryBytes()[p:]) != 0 || binary.LittleEndian.Uint32(i.memoryBytes()[p+8:]) != 0 {
+		t.Fatal("a trapping base stored into the tail")
 	}
 
 	f, _ = i.export("mixed")
 	mixed := f.Interface().(func(uintptr, uint32, uint32, uint32) uint32)
 
-	for _, q := range []uint32{pageSize - 4, pageSize + 32} {
+	for _, q := range []uint32{pageSize - 4, pageSize} {
 		clear(i.memoryBytes()[256:264])
 		clear(i.memoryBytes()[q : q+8])
 
 		if got := mixed(i.ctx(), 256, q, 55); got != 0 || binary.LittleEndian.Uint32(i.memoryBytes()[q:]) != 55 {
-			t.Fatal("transition from a fast region to a cold region changed values")
+			t.Fatal("a second base changed values")
 		}
+	}
+
+	clear(i.memoryBytes()[256:264])
+
+	if trap := trapOf(func() { mixed(i.ctx(), 256, pageSize+32, 57) }); trap != trapMemoryOOB {
+		t.Fatalf("second base past the logical end: trap %d", trap)
+	}
+
+	if binary.LittleEndian.Uint32(i.memoryBytes()[256:]) != 57 {
+		t.Fatal("a trap lost the store preceding it")
 	}
 
 	f, _ = i.export("wide")
 	wide := f.Interface().(func(uintptr, uint64, uint32) uint32)
-	clear(i.memoryBytes()[pageSize : pageSize+32])
+	clear(i.memoryBytes()[pageSize-16 : pageSize+16])
 
-	if got := wide(i.ctx(), 0xabcdef0100010000, 59); got != 0 || binary.LittleEndian.Uint32(i.memoryBytes()[pageSize+8:]) != 59 {
+	if got := wide(i.ctx(), 0xabcdef010000fff0, 59); got != 0 || binary.LittleEndian.Uint32(i.memoryBytes()[pageSize-8:]) != 59 {
 		t.Fatal("i64 address normalization changed wrapped addresses")
 	}
-
 }
 
 func TestMemoryTailClone(t *testing.T) {
@@ -242,19 +261,34 @@ func TestMemoryTailProfile(t *testing.T) {
 	chain := f.Interface().(func(uintptr, uint32, uint32) uint32)
 	chain(i.ctx(), 256, 1)
 	trapOf(func() { chain(i.ctx(), 2*pageSize-12, 2) })
-	profile := i.tailProfile()
+	f, _ = i.export("wide")
+	wide := f.Interface().(func(uintptr, uint64, uint32) uint32)
+	wide(i.ctx(), 256, 3)
+	trapOf(func() { wide(i.ctx(), 2*pageSize-12, 4) })
+	found := 0
 
-	for _, r := range profile.Functions {
-		if r.Function == 6 {
-			if r.Guards != 2 || r.Fallbacks != 1 || r.Omitted != 3 || r.Checks != 3 {
-				t.Fatalf("unexpected exact counters: %+v", r)
+	for _, r := range i.tailProfile().Functions {
+		switch r.Function {
+		case 6:
+			// One check of the base covers the chain, and the second call traps there.
+			if r.Checks != 2 || r.Guards != 0 || r.Fallbacks != 0 || r.Omitted != 0 {
+				t.Fatalf("unexpected chain counters: %+v", r)
 			}
 
-			return
+			found++
+		case 8:
+			// Separately computed addresses share a range guard.
+			if r.Guards != 2 || r.Fallbacks != 1 || r.Omitted != 3 || r.Checks != 1 {
+				t.Fatalf("unexpected range counters: %+v", r)
+			}
+
+			found++
 		}
 	}
 
-	t.Fatal("missing chain profile")
+	if found != 2 {
+		t.Fatal("missing chain or range profile")
+	}
 }
 
 func TestMemoryTailSharedContinuation(t *testing.T) {
@@ -270,10 +304,9 @@ func TestMemoryTailSharedContinuation(t *testing.T) {
 	f, _ := i.export("islands")
 	islands := f.Interface().(func(uintptr, uint32, uint32) uint32)
 
-	for _, p := range []uint32{256, pageSize + 32} {
+	for _, p := range []uint32{256, pageSize - 16} {
 		if got := islands(i.ctx(), p, 19); got != 1 {
 			t.Fatalf("shared continuation at %d: %d", p, got)
 		}
 	}
-
 }
