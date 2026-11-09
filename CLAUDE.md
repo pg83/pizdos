@@ -68,7 +68,11 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   `abi.go` and `format.go` hold the loader's shared ABI constants and types.
   Generated code follows Go 1.25 amd64 ABIInternal: R14 is g, RBP the frame
   pointer, X15 untouched, and the stack pointer table is exact at every
-  instruction. `W2O_PERFMAP=<dir>` makes the loader write perf-<pid>.map.
+  instruction. A stack check calls the `w2o.morestack` stub with what it
+  compared on the stack; the loader marks the stub assembly, which Go
+  never preempts, and the stub compares that with `g.stackguard0` again
+  before Go's morestack, so a preemption that completed after the check
+  does not grow the stack. `W2O_PERFMAP=<dir>` makes the loader write perf-<pid>.map.
 - Compilation enables a physical 64 KiB readable and writable tail beyond
   the logical memory size by default: a check that an address is within
   the logical size admits every access reaching up to 64 KiB past it, so

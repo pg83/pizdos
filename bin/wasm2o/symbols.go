@@ -14,6 +14,7 @@ import (
 //	w2o.init                                       the thunk that starts an instance
 //	w2o.land                                       the stub longjmp calls (goabi.go)
 //	w2o.frames, w2o.resume                         the stubs fork calls, which Go must not preempt in resume
+//	w2o.morestack                                  the stub stack checks call, which Go must not preempt
 //
 // Names are spelled by symbolPart, types by a letter each: i i32, I i64,
 // f f32, F f64, v v128, r funcref, e externref. The code also calls Go's
@@ -25,6 +26,7 @@ const (
 	symLand          = "w2o.land"
 	symFrames        = "w2o.frames"
 	symResume        = "w2o.resume"
+	symMorestackStub = "w2o.morestack"
 	symImport        = "w2o.import."
 	symExport        = "w2o.export."
 	symMorestack     = "runtime.morestack_noctxt"

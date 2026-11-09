@@ -5585,6 +5585,8 @@ namespace {
 
     static const String symResume = String("w2o.resume");
 
+    static const String symMorestackStub = String("w2o.morestack");
+
     static const String symImport = String("w2o.import.");
 
     static const String symExport = String("w2o.export.");
@@ -6235,7 +6237,9 @@ namespace {
 
     static void objCodeResumeStub(ObjCode* oc);
 
-    static void objCodeSlowPath(ObjCode* oc, i32 at, i32 entry);
+    static void objCodeSlowPath(ObjCode* oc, i32 at, i32 entry, i32 total, VReg temp);
+
+    static void objCodeDropWord(ObjCode* oc);
 
     static i32 objCodeStackCheck(ObjCode* oc, i32 total, VReg temp);
 
@@ -16838,7 +16842,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         if (slow >= 0) {
             asmSetSP(a, 0);
-            objCodeSlowPath(oc, slow, start);
+            objCodeSlowPath(oc, slow, start, e->body, RAX);
         }
         Map<Array<i64, 2>, i32> stubs = mapOf<Array<i64, 2>, i32>({});
         auto traps = e->traps;
@@ -17116,7 +17120,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         asmPop(a, RBP);
         asmRet(a);
         asmSetSP(a, 0);
-        objCodeSlowPath(oc, slow, start);
+        objCodeSlowPath(oc, slow, start, total, RAX);
         objCodeEndRegion(oc, start);
         return start;
     }
@@ -17569,17 +17573,31 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         asmRet(a);
         asmSetSP(a, 0);
         asmPatch32(a, grow, asmPos(a));
+        asmPush(a, RDX);
         objCodeCallStub(oc, stubMorestack);
+        objCodeDropWord(oc);
         asmPatch32(a, asmJmpRel(a), start);
         objCodeEndRegion(oc, start);
     }
 
-    // slowPath grows the stack and starts the region again at entry.
-    static void objCodeSlowPath(ObjCode* oc, i32 at, i32 entry) {
+    // slowPath grows the stack and starts the region again at entry. It
+    // passes the morestack stub what stackCheck compared, on the stack.
+    static void objCodeSlowPath(ObjCode* oc, i32 at, i32 entry, i32 total, VReg temp) {
         Asm* a = &oc->a;
         asmPatch32(a, at, asmPos(a));
+        asmPush(a, total <= stackSmall ? RSP : temp);
         objCodeCallStub(oc, stubMorestack);
+        objCodeDropWord(oc);
         asmPatch32(a, asmJmpRel(a), entry);
+    }
+
+    // dropWord takes a word off the stack without touching a register or
+    // the flags. The SP delta at a call's return address must still count
+    // what the caller pushed for the callee, so the callee cannot pop it.
+    static void objCodeDropWord(ObjCode* oc) {
+        Asm* a = &oc->a;
+        asmLea(a, 8, RSP, rspAt(8));
+        asmMoveSP(a, -8);
     }
 
     // stackCheck compares the stack pointer, less total-stackSmall for a large
@@ -17599,9 +17617,18 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // stubs emits the morestack and bulk memory stubs and the Go calls of
     // memory.grow and table.grow.
+    //
+    // A stack check that found g.stackguard0 at stackPreempt calls the
+    // morestack stub, but the preemption can complete before Go's morestack
+    // reads the guard again, from a signal at the call or from Go code an
+    // interruption runs; newstack would then grow the stack for a frame
+    // that fits. The loader marks the stub assembly, which Go never
+    // preempts or interrupts, and the stub compares what the check
+    // compared, which its caller pushed, with the guard once more: above
+    // it, it returns to the check without calling morestack.
     static void objCodeStubs(ObjCode* oc) {
         Asm* a = &oc->a;
-        i32 start = objCodeBeginRegion(oc, String("w2o.morestack"));
+        i32 start = objCodeBeginRegion(oc, symMorestackStub);
         oc->stubAt[stubMorestack] = start;
         Slice<VReg> saved = sliceOf<VReg>({RAX, RBX, RCX, RDX, RSI, RDI, R8, R9, R10, R11, R12, R13, R15});
         asmPush(a, RBP);
@@ -17616,11 +17643,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             VReg x = goFloatRegs[i];
             asmFstore(a, 8, x, rspAt(convert<i32>(8 * i)));
         }
+        asmLoad(a, 8, 8, false, RAX, baseAt(RBP, 16));
+        asmAluRM(a, aluCmp, 8, RAX, baseAt(R14, gStackguard0));
+        i32 fits = asmJccRel(a, ccA);
         asmLoad(a, 8, 8, false, RAX, baseAt(R14, gStackHi));
         asmAluRR(a, aluSub, 8, RAX, RSP);
         asmAluRM(a, aluCmp, 8, RAX, baseAt(ctxReg, offStackLimit));
         i32 overflow = asmJccRel(a, ccA);
         asmCallMem(a, objCodeGotMem(oc, symMorestack));
+        asmPatch32(a, fits, asmPos(a));
         for (Int i = 0; i < length(goFloatRegs); ++i) {
             VReg x = goFloatRegs[i];
             asmFload(a, 8, x, rspAt(convert<i32>(8 * i)));
@@ -17751,7 +17782,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         asmPop(a, RBP);
         asmRet(a);
         asmSetSP(a, 0);
-        objCodeSlowPath(oc, slow, start);
+        objCodeSlowPath(oc, slow, start, total, R12);
         objCodeEndRegion(oc, start);
         return start;
     }

@@ -21,8 +21,9 @@ import (
 // and the instance stays alive in its Go caller. The stack pointer table is
 // exact at every instruction and there is no unsafe-point table, so Go may
 // preempt the code anywhere by a signal, as it does its own; but for the
-// resume stub of fork, which writes below its stack pointer: it is marked
-// assembly, which Go never preempts.
+// resume stub of fork, which writes below its stack pointer, and the
+// morestack stub, which must find g.stackguard0 as it compares it: they
+// are marked assembly, which Go never preempts.
 
 type goPCHeader struct {
 	magic                                                            uint32
@@ -233,7 +234,7 @@ func registerCode(name string, base uintptr, size uintptr, regions []Region) {
 		line := uint32(index + 1)
 		flag := uint32(0)
 
-		if r.name == symResume {
+		if r.name == symResume || r.name == symMorestackStub {
 			flag = funcFlagAsm
 		}
 
