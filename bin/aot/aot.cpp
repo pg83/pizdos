@@ -2953,9 +2953,9 @@ namespace {
 
     struct TrapFixup;
 
-    struct UnsignedRange;
+    struct ValueRange;
 
-    struct UnsignedRanges;
+    struct ValueRanges;
 
     struct Value;
 
@@ -3689,7 +3689,7 @@ namespace {
         Map<i32, LoopSpan> induction{};
         Map<i32, LoopSpan> cache{};
         Map<i32, bool> noWrap{};
-        UnsignedRanges* unsignedValue{};
+        ValueRanges* valueRanges{};
         bool allowLoads{};
         Map<i32, bool> invariantCache{};
         Slice<i32> invariantNodes{};
@@ -3902,7 +3902,7 @@ namespace {
         Slice<CheckUndo> checkUndo{};
         Slice<Slice<i32>> floatHomes{};
         Vec<bool> rawTrunc{};
-        UnsignedRanges* addresses{};
+        ValueRanges* addresses{};
     };
 
     struct AddressExpressions {
@@ -4093,16 +4093,16 @@ namespace {
         return result;
     }
 
-    struct UnsignedRange {
-        u64 lo{};
-        u64 hi{};
+    struct ValueRange {
+        i64 lo{};
+        i64 hi{};
     };
 
-    static bool operator==(const UnsignedRange& a, const UnsignedRange& b) {
+    static bool operator==(const ValueRange& a, const ValueRange& b) {
         return a.lo == b.lo && a.hi == b.hi;
     }
 
-    static u64 hashValue(const UnsignedRange& value) {
+    static u64 hashValue(const ValueRange& value) {
         u64 result = 0;
         result = combineHash(result, hashValue(value.lo));
         result = combineHash(result, hashValue(value.hi));
@@ -4289,9 +4289,9 @@ namespace {
         return result;
     }
 
-    struct UnsignedRanges {
+    struct ValueRanges {
         Function* f{};
-        Slice<UnsignedRange> cache{};
+        Slice<ValueRange> cache{};
         Slice<bool> seen{};
     };
 
@@ -5680,7 +5680,7 @@ namespace {
 
     static void moduleTypeSection(Module* m, Reader* r);
 
-    static UnsignedRange unsignedRangesOf(UnsignedRanges* r, i32 v, Int depth);
+    static ValueRange valueRangesOf(ValueRanges* r, i32 v, Int depth);
 
     static void allocatorAddUnhandled(Allocator* a, Interval* it);
 
@@ -8371,16 +8371,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             out = LoopSpan{-1, {}, {}, convert<u64>(convert<u32>(val->aux)), {}, {}, convert<u64>(convert<u32>(val->aux)), {}, true};
         } else if (memoryLoopInvariant(l, v, 0)) {
             out = LoopSpan{v, u64(1LL), {}, {}, {}, {}, {}, {}, true};
-            out.signedTerms = unsignedRangesOf(l->unsignedValue, v, 0).hi >= u64(2147483648LL);
+            const ValueRange range = valueRangesOf(l->valueRanges, v, 0);
+            out.signedTerms = range.lo < 0 || range.hi >= i64(2147483648LL);
         } else {
-            UnsignedRange bound = unsignedRangesOf(l->unsignedValue, v, 0);
+            ValueRange bound = valueRangesOf(l->valueRanges, v, 0);
             // A bounded value spans its range; one reaching far past the
             // memory the module starts with would hardly ever pass a guard.
-            const u64 reach = maximum(l->f->module->mems[0].limits.min * u64(65536), u64(67108864LL));
-            if (bound.hi <= reach) {
-                out = LoopSpan{-1, {}, {}, bound.hi, {}, {}, bound.lo, {}, true};
-            } else if (bound.hi < u64(4294967295LL)) {
-                out = bad;
+            const i64 reach = maximum(i64(l->f->module->mems[0].limits.min * u64(65536)), i64(67108864LL));
+            if (bound.lo >= 0 && bound.hi < i64(4294967295LL)) {
+                if (bound.hi <= reach) {
+                    out = LoopSpan{-1, {}, {}, u64(bound.hi), {}, {}, u64(bound.lo), {}, true};
+                }
             } else {
                 Span<i32> args = functionArgs(l->f, v);
                 switch (val->op) {
@@ -8561,7 +8562,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         unboundedWrite = true;
                     }
                 }
-                if (unsignedRangesOf(l->unsignedValue, addr, 0).hi + end <= f->module->mems[0].limits.min * 65536 && !f->module->mems[0].imported) {
+                const ValueRange range = valueRangesOf(l->valueRanges, addr, 0);
+                if (range.lo >= 0 && range.hi + i64(end) <= i64(f->module->mems[0].limits.min * 65536) && !f->module->mems[0].imported) {
                     continue;
                 }
                 if (!bound.valid) {
@@ -8599,20 +8601,25 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             minimum = 16;
         }
         u64 minimumCount = (minimum - 1) * l->countStep + l->countStop + 1;
-        if (l->count >= 0 && l->countBias < 0 && unsignedRangesOf(l->unsignedValue, l->count, 0).hi < minimumCount) {
-            return -1;
+        if (l->count >= 0 && l->countBias < 0) {
+            const ValueRange range = valueRangesOf(l->valueRanges, l->count, 0);
+            if (range.lo >= 0 && range.hi < i64(minimumCount)) {
+                return -1;
+            }
         }
         if (l->limit >= 0) {
             // What the ranges of the start and the limit say about the
             // iterations: a loop known to be short is not worth a guard.
-            const u64 lo = unsignedRangesOf(l->unsignedValue, l->start, 0).lo;
-            const u64 hi = unsignedRangesOf(l->unsignedValue, l->limit, 0).hi;
+            const ValueRange startRange = valueRangesOf(l->valueRanges, l->start, 0);
+            const ValueRange limitRange = valueRangesOf(l->valueRanges, l->limit, 0);
+            const i64 lo = startRange.lo < 0 ? 0 : startRange.lo;
+            const i64 hi = limitRange.hi > i64(4294967295LL) ? i64(4294967295LL) : limitRange.hi;
             if (hi < lo) {
                 return -1;
             }
-            const u64 distance = hi - lo + (l->inclusive ? 1 : 0);
-            const u64 step = convert<u64>(l->startStep);
-            if ((distance + step - 1) / step < minimum) {
+            const i64 distance = hi - lo + (l->inclusive ? 1 : 0);
+            const i64 step = l->startStep;
+            if ((distance + step - 1) / step < i64(minimum)) {
                 return -1;
             }
         }
@@ -9124,29 +9131,38 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // unknown; a mask, a narrow load or a shift can bound it again. A cyclic
     // dependency starts at the full range, so loop parameters never assume an
     // unproved bound from their back edge.
-    static UnsignedRange unsignedRangesOf(UnsignedRanges* r, i32 v, Int depth) {
+    // valueRangesOf bounds an i32 value by an interval of exact integers:
+    // the value is one of them modulo 2^32, and when the interval lies in
+    // [0, 2^32) the value itself. A subtraction may go negative, and an
+    // address adding such a difference to a base is still in bounds when
+    // the whole interval is.
+    static ValueRange valueRangesOf(ValueRanges* r, i32 v, Int depth) {
         if (r->seen[v]) {
             return r->cache[v];
         }
-        UnsignedRange unknown = UnsignedRange{u64(0LL), u64(4294967295LL)};
+        const ValueRange unknown = ValueRange{0, i64(4294967295LL)};
         r->seen[v] = true;
         r->cache[v] = unknown;
         Value* val = &r->f->values[v];
         if (val->typ != I32 || depth > 32) {
             return unknown;
         }
-        UnsignedRange out = unknown;
+        constexpr i64 reach = i64(1LL) << 40;
+        auto within = [&](i64 lo, i64 hi) {
+            return lo > -reach && hi < reach && lo <= hi;
+        };
+        ValueRange out = unknown;
         Span<i32> args = functionArgs(r->f, v);
         switch (val->op) {
             case OpConst: {
-                u64 k = convert<u64>(convert<u32>(val->aux));
-                out = UnsignedRange{k, k};
+                const i64 k = i64(convert<u32>(val->aux));
+                out = ValueRange{k, k};
                 break;
             }
             case OpLoad: {
                 MemKind kind = convert<MemKind>(val->aux2);
                 if (!memKindSigned(kind) && memKindWidth(kind) < 4) {
-                    out.hi = shiftLeft(u64(1LL), convert<Uint>(memKindWidth(kind) * 8)) - 1;
+                    out.hi = (i64(1LL) << (memKindWidth(kind) * 8)) - 1;
                 }
                 break;
             }
@@ -9177,43 +9193,50 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             case OpMul:
             case OpShrU:
             case OpShl: {
-                UnsignedRange a = unsignedRangesOf(r, args[0], depth + 1);
-                UnsignedRange b = unsignedRangesOf(r, args[1], depth + 1);
+                ValueRange a = valueRangesOf(r, args[0], depth + 1);
+                ValueRange b = valueRangesOf(r, args[1], depth + 1);
                 switch (val->op) {
                     case OpAnd: {
-                        out.hi = minimum(a.hi, b.hi);
+                        // A mask bounds any bit pattern.
+                        if (a.lo >= 0 && b.lo >= 0) {
+                            out = ValueRange{0, minimum(a.hi, b.hi)};
+                        } else if (b.lo == b.hi && b.lo >= 0) {
+                            out = ValueRange{0, b.hi};
+                        } else if (a.lo == a.hi && a.lo >= 0) {
+                            out = ValueRange{0, a.hi};
+                        }
                         break;
                     }
                     case OpAdd: {
-                        if (a.hi + b.hi <= u64(4294967295LL)) {
-                            out = UnsignedRange{a.lo + b.lo, a.hi + b.hi};
+                        if (within(a.lo + b.lo, a.hi + b.hi)) {
+                            out = ValueRange{a.lo + b.lo, a.hi + b.hi};
                         }
                         break;
                     }
                     case OpSub: {
-                        if (a.lo >= b.hi) {
-                            out = UnsignedRange{a.lo - b.hi, a.hi - b.lo};
+                        if (within(a.lo - b.hi, a.hi - b.lo)) {
+                            out = ValueRange{a.lo - b.hi, a.hi - b.lo};
                         }
                         break;
                     }
                     case OpMul: {
-                        if (a.hi * b.hi <= u64(4294967295LL)) {
-                            out = UnsignedRange{a.lo * b.lo, a.hi * b.hi};
+                        if (a.lo >= 0 && b.lo >= 0 && a.hi * b.hi <= i64(4294967295LL)) {
+                            out = ValueRange{a.lo * b.lo, a.hi * b.hi};
                         }
                         break;
                     }
                     case OpShrU: {
-                        if (b.lo == b.hi) {
-                            u64 shift = b.lo & 31;
-                            out = UnsignedRange{shiftRight(a.lo, shift), shiftRight(a.hi, shift)};
+                        if (b.lo == b.hi && a.lo >= 0 && a.hi <= i64(4294967295LL)) {
+                            const i64 shift = b.lo & 31;
+                            out = ValueRange{a.lo >> shift, a.hi >> shift};
                         }
                         break;
                     }
                     case OpShl: {
                         if (b.lo == b.hi) {
-                            u64 shift = b.lo & 31;
-                            if (a.hi <= shiftRight(u64(4294967295LL), shift)) {
-                                out = UnsignedRange{shiftLeft(a.lo, shift), shiftLeft(a.hi, shift)};
+                            const i64 factor = i64(1LL) << (b.lo & 31);
+                            if (within(a.lo * factor, a.hi * factor)) {
+                                out = ValueRange{a.lo * factor, a.hi * factor};
                             }
                         }
                         break;
@@ -9222,9 +9245,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 break;
             }
             case OpSelect: {
-                UnsignedRange a = unsignedRangesOf(r, args[1], depth + 1);
-                UnsignedRange b = unsignedRangesOf(r, args[2], depth + 1);
-                out = UnsignedRange{minimum(a.lo, b.lo), maximum(a.hi, b.hi)};
+                ValueRange a = valueRangesOf(r, args[1], depth + 1);
+                ValueRange b = valueRangesOf(r, args[2], depth + 1);
+                out = ValueRange{minimum(a.lo, b.lo), maximum(a.hi, b.hi)};
                 break;
             }
             case OpParam: {
@@ -9238,12 +9261,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         if (e.block != val->block) {
                             continue;
                         }
-                        UnsignedRange bound = unsignedRangesOf(r, e.args[val->aux], depth + 1);
+                        ValueRange bound = valueRangesOf(r, e.args[val->aux], depth + 1);
                         if (first) {
                             out = bound;
                             first = false;
                         } else {
-                            out = UnsignedRange{minimum(out.lo, bound.lo), maximum(out.hi, bound.hi)};
+                            out = ValueRange{minimum(out.lo, bound.lo), maximum(out.hi, bound.hi)};
                         }
                     }
                 }
@@ -9251,7 +9274,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             case OpWrap: {
                 if (r->f->values[args[0]].op == OpExtendU) {
-                    out = unsignedRangesOf(r, functionArgs(r->f, args[0])[0], depth + 1);
+                    out = valueRangesOf(r, functionArgs(r->f, args[0])[0], depth + 1);
                 }
                 break;
             }
@@ -13588,11 +13611,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         u8 fsize = in->dsize;
         VReg dst = in->dst;
         VReg src = in->src;
-        bool unsignedValue = u8(in->aux & truncUnsigned) != 0;
+        bool valueRanges = u8(in->aux & truncUnsigned) != 0;
         bool sat = u8(in->aux & truncSat) != 0;
         auto temporary726 = truncBounds(isize, fsize);
         u64 high = temporary726.v1;
-        if (!unsignedValue) {
+        if (!valueRanges) {
             asmCvtFI(a, isize, fsize, dst, src);
             asmAluRI(a, aluCmp, isize, dst, 1);
             i32 at = asmJccRel(a, ccO);
@@ -13916,9 +13939,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         bool checked = proven;
         if (length(l->m->mems) > 0 && !l->m->mems[0].imported) {
             if (isNil(l->addresses)) {
-                l->addresses = activePool->make<UnsignedRanges>(UnsignedRanges{l->f, makeSlice<UnsignedRange>(length(l->f->values)), makeSlice<bool>(length(l->f->values))});
+                l->addresses = activePool->make<ValueRanges>(ValueRanges{l->f, makeSlice<ValueRange>(length(l->f->values)), makeSlice<bool>(length(l->f->values))});
             }
-            checked = checked || unsignedRangesOf(l->addresses, addr, 0).hi + convert<u64>(end) <= l->m->mems[0].limits.min * 65536 + l->m->memoryTail;
+            const ValueRange range = valueRangesOf(l->addresses, addr, 0);
+            checked = checked || (range.lo >= 0 && range.hi + end <= i64(l->m->mems[0].limits.min * 65536 + l->m->memoryTail));
         }
         auto temporary740 = lookupMap(l->checked, addr);
         i64 prior = temporary740.v0;
@@ -14305,9 +14329,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (op == OpConvertU) {
             in.size = 8;
             if (isNil(l->addresses)) {
-                l->addresses = activePool->make<UnsignedRanges>(UnsignedRanges{l->f, makeSlice<UnsignedRange>(length(l->f->values)), makeSlice<bool>(length(l->f->values))});
+                l->addresses = activePool->make<ValueRanges>(ValueRanges{l->f, makeSlice<ValueRange>(length(l->f->values)), makeSlice<bool>(length(l->f->values))});
             }
-            if (unsignedRangesOf(l->addresses, a, 0).hi <= 2147483647) {
+            const ValueRange range = valueRangesOf(l->addresses, a, 0);
+            if (range.lo >= 0 && range.hi <= 2147483647) {
                 in.size = 4;
             }
         }
@@ -20437,7 +20462,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if ((multipleExits || outsidePred) && memoryLoopHasLiveOut(l)) {
             return {};
         }
-        l->unsignedValue = activePool->make<UnsignedRanges>(UnsignedRanges{f, makeSlice<UnsignedRange>(length(f->values)), makeSlice<bool>(length(f->values))});
+        l->valueRanges = activePool->make<ValueRanges>(ValueRanges{f, makeSlice<ValueRange>(length(f->values)), makeSlice<bool>(length(f->values))});
         return l;
     }
 
