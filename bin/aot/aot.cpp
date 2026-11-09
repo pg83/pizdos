@@ -9346,6 +9346,18 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if ((!(joined))) {
             return false;
         }
+        // Close the gaps left by joined registers while preserving the
+        // order of the canonical representatives. Liveness and allocation
+        // then visit the same values with smaller index tables and sets.
+        Vec<i32> canonical;
+        canonical.resize(usize(mf->nregs));
+        i32 count = 0;
+        for (i32 x = 0; x < mf->nregs; ++x) {
+            if (find(x) == x) {
+                canonical[usize(x)] = count;
+                mf->classValue[count++] = mf->classValue[x];
+            }
+        }
         {
             auto& range441 = (mf)->blocks;
             for (Int index442 = 0, rangeEnd443 = length(range441); index442 < rangeEnd443; ++index442) {
@@ -9357,7 +9369,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         MInst* in = (&(((mf)->blocks[b]).insts[i]));
                         mInstForEachOperand(in, [&](VReg* r, Int role) mutable -> void {
                             if ((((*(r)) != noReg) && (!(vRegIsPhys(*(r)))))) {
-                                (*(r)) = (convert<VReg>(find(convert<i32>(allocatorVindex(a, (*(r)))))) + firstVirtual);
+                                *r = firstVirtual + canonical[usize(find(i32(allocatorVindex(a, *r))))];
                             }
                         });
                         {
@@ -9372,6 +9384,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
             }
         }
+        mf->nregs = count;
+        mf->classValue = subslice(mf->classValue, 0, count);
         return true;
     }
 
@@ -19410,12 +19424,21 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         allocatorLiveness(a);
         allocatorBuildIntervals(a);
         if (allocatorCoalesce(a)) {
+            // Coalescing only rewrites operands and replaces copies with
+            // no-ops; block order and instruction positions stay valid.
+            Vec<i32> order(move(a->order));
+            Vec<i32> blockFrom(move(a->blockFrom));
+            Vec<i32> blockTo(move(a->blockTo));
+            Vec<i32> posBlock(move(a->posBlock));
             // Coalescing stores register numbers and views of the original
             // move arrays in mf; none of this arena's objects escape to it.
             arena->clear();
             a = arena->make<Allocator>();
             a->mf = mf;
-            allocatorLinearize(a);
+            a->order = move(order);
+            a->blockFrom = move(blockFrom);
+            a->blockTo = move(blockTo);
+            a->posBlock = move(posBlock);
             allocatorLiveness(a);
             allocatorBuildIntervals(a);
         }
@@ -22765,6 +22788,37 @@ namespace {
             require(values.size() == count + 3 && values[count - 1] == 19 && values[count + 2] == 19, "self append promotes vector storage");
         }
         static_assert(sizeof(MInst) <= 72);
+        {
+            ObjPool pool;
+            PoolScope scope(pool);
+            MFunc function;
+            function.blocks.pushBack(MBlock{});
+            const VReg integer = mFuncNewReg(&function, classGPR);
+            const VReg floating = mFuncNewReg(&function, classXMM);
+            const VReg integerCopy = mFuncNewReg(&function, classGPR);
+            const VReg floatingCopy = mFuncNewReg(&function, classXMM);
+            auto emit = [&](MOp op, VReg dst, VReg src) {
+                MInst in = inst(op);
+                in.dst = dst;
+                in.src = src;
+                in.size = 8;
+                function.blocks[0].insts.pushBack(in);
+            };
+            emit(mMovImm, integer, noReg);
+            emit(mMov, integerCopy, integer);
+            emit(mFConst, floating, noReg);
+            emit(mFMov, floatingCopy, floating);
+            Allocator allocation;
+            allocation.mf = &function;
+            allocatorLinearize(&allocation);
+            allocatorLiveness(&allocation);
+            allocatorBuildIntervals(&allocation);
+            require(allocatorCoalesce(&allocation), "coalescing virtual register copies");
+            require(function.nregs == 2 && length(function.classValue) == 2, "coalescing compacts virtual register IDs");
+            require(function.classValue[0] == classGPR && function.classValue[1] == classXMM, "coalescing preserves register classes");
+            require(function.blocks[0].insts[0].dst == firstVirtual && function.blocks[0].insts[2].dst == firstVirtual + 1, "coalescing preserves canonical register order");
+            require(function.blocks[0].insts[1].op == mNop && function.blocks[0].insts[3].op == mNop, "coalescing removes renamed self copies");
+        }
         {
             Interval interval;
             const i32 visits[] = {11, 10, 11, 7, 6, 7, 2, 3, 2, 0, 1, 1, 0};
