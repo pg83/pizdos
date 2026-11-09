@@ -3948,7 +3948,7 @@ namespace {
         Slice<bool> sealed{};
         Slice<Slice<PendingPhi>> incomplete{};
         Slice<Slice<PredRef>> preds{};
-        Slice<i32> alias{};
+        Vec<i32> alias{};
         Map<ConstKey, i32> consts{};
         Map<i32, Slice<i32>> phiOps{};
         Slice<Int> explicitValue{};
@@ -12592,7 +12592,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static i32 frontendParamSlot(Frontend* fe, i32 v) {
         {
             for (; (convert<i64>(v) >= length((fe)->alias));) {
-                (fe)->alias = appendValues((fe)->alias, i32(-1LL));
+                fe->alias.pushBack(-1);
             }
         }
         return v;
@@ -12778,6 +12778,89 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return v;
     }
 
+    // Alias state is consumed here: only the finished function escapes the frontend.
+    static __attribute__((noinline)) void frontendCompactValues(Frontend* fe) {
+        Function* f = fe->f;
+        // Reuse the frontend's alias table as an old-to-new map. Retained
+        // IDs are complemented so alias chains still end at a negative
+        // entry while the original IDs are being resolved.
+        while (length(fe->alias) < length(f->values)) {
+            fe->alias.pushBack(-1);
+        }
+        const Span<i32> aliases = fe->alias.view();
+        i32 count = 0;
+        for (u32 v = 0; v < aliases.count; ++v) {
+            i32 source = aliases[v];
+            if (source < 0) {
+                aliases[v] = ~count++;
+            } else {
+                while (aliases[source] >= 0) {
+                    source = aliases[source];
+                }
+                aliases[v] = source;
+            }
+        }
+        for (u32 v = 0; v < aliases.count; ++v) {
+            if (aliases[v] >= 0) {
+                aliases[v] = ~aliases[aliases[v]];
+            }
+        }
+        for (u32 v = 0; v < aliases.count; ++v) {
+            const i32 entry = aliases[v];
+            if (entry < 0) {
+                aliases[v] = ~entry;
+                f->values[usize(~entry)] = f->values[v];
+            }
+        }
+        // Edge argument slices may share storage. Tag new IDs until every
+        // old reference has been visited, then decode in a second walk.
+        auto rewriteIds = [&]<bool decode>() {
+            auto rewrite = [&](i32& v) {
+                if constexpr (!decode) {
+                    if (v >= 0) {
+                        v = i32(u32(aliases[v]) | 0x80000000u);
+                    }
+                } else if (u32(v) - 0x80000000u < u32(count)) {
+                    v = i32(u32(v) & 0x7fffffffu);
+                }
+            };
+            auto rewriteSpan = [&](Span<i32> ids) {
+                for (u32 i = 0; i < ids.count; ++i) {
+                    rewrite(ids[i]);
+                }
+            };
+            usize remaining = f->pool.size();
+            for (usize page = 0; remaining; ++page) {
+                const usize take = remaining < PageVec<i32>::itemsPerPage ? remaining : PageVec<i32>::itemsPerPage;
+                i32* operands = f->pool.pages.data()[page];
+                for (usize i = 0; i < take; ++i) {
+                    rewrite(operands[i]);
+                }
+                remaining -= take;
+            }
+            for (usize b = 0; b < f->blocks.size(); ++b) {
+                auto& block = f->blocks[b];
+                rewriteSpan(block.params);
+                rewriteSpan(block.instrs.view());
+                auto& term = block.term;
+                if (term.kind == TermIf || term.kind == TermSwitch) {
+                    rewrite(term.value);
+                }
+                rewriteSpan(term.values);
+                for (Int i = 0; i < length(term.edges); ++i) {
+                    rewriteSpan(term.edges[i].args);
+                }
+            }
+        };
+        rewriteIds.template operator()<false>();
+        rewriteIds.template operator()<true>();
+        f->values.resize(usize(count));
+        const usize pages = (usize(count) + PageVec<Value>::itemsPerPage - 1) / PageVec<Value>::itemsPerPage;
+        while (f->values.pages.size() > pages) {
+            freePage(f->values.pages.popBack());
+        }
+    }
+
     // resolveAliases rewrites every use of a removed phi to its replacement,
     // keeps the remaining phis after the explicit parameters and appends their
     // operands to the incoming edges.
@@ -12815,48 +12898,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 (blk)->params = params;
             }
         }
-        {
-            auto& range657 = (f)->values;
-            for (Int index658 = 0, rangeEnd659 = length(range657); index658 < rangeEnd659; ++index658) {
-                Int v = index658;
-                Value* val = (&((f)->values[v]));
-                {
-                    i32 i = i32(0LL);
-                    for (; (i < convert<i32>((val)->nargs)); i++) {
-                        (f)->pool[((val)->args + i)] = frontendResolve(fe, (f)->pool[((val)->args + i)]);
-                    }
-                }
-            }
-        }
-        {
-            auto& range660 = (f)->blocks;
-            for (Int index661 = 0, rangeEnd662 = length(range660); index661 < rangeEnd662; ++index661) {
-                Int b = index661;
-                Term* t = (&(((f)->blocks[b]).term));
-                if ((((t)->kind == TermIf) || ((t)->kind == TermSwitch))) {
-                    (t)->value = frontendResolve(fe, (t)->value);
-                }
-                {
-                    auto range663 = (t)->values;
-                    for (Int index664 = 0, rangeEnd665 = length(range663); index664 < rangeEnd665; ++index664) {
-                        Int i = index664;
-                        (t)->values[i] = frontendResolve(fe, (t)->values[i]);
-                    }
-                }
-                {
-                    auto range666 = (t)->edges;
-                    for (Int index667 = 0, rangeEnd668 = length(range666); index667 < rangeEnd668; ++index667) {
-                        Int i = index667;
-                        {
-                            auto range669 = ((t)->edges[i]).args;
-                            for (Int index670 = 0, rangeEnd671 = length(range669); index670 < rangeEnd671; ++index670) {
-                                Int j = index670;
-                                ((t)->edges[i]).args[j] = frontendResolve(fe, ((t)->edges[i]).args[j]);
-                            }
-                        }
-                    }
-                }
-            }
+        if (fe->alias.size()) {
+            frontendCompactValues(fe);
+            fe->alias = Vec<i32>{};
         }
         functionComputePreds(f);
     }
@@ -24157,6 +24201,69 @@ namespace {
             f->values[user].op = OpAdd;
             optimizerApply(o);
             require(functionArgs(f, user)[0] == input && functionArgs(f, user)[1] == zero, "aliases after growing a shortened operand list");
+        }
+        for (i32 removed : {0, 1, 2047, 2048, 2049, 16385}) {
+            for (bool crossPage : {false, true}) {
+                ObjPool pool;
+                PoolScope scope(pool);
+                auto* f = pool.make<Function>();
+                auto* fe = pool.make<Frontend>();
+                fe->f = f;
+                for (i32 b = 0; b < 2; ++b) {
+                    functionNewBlock(f);
+                }
+                fe->explicitValue = sliceOf<Int>({1, 2});
+                fe->preds = makeSlice<Slice<PredRef>>(2);
+                const i32 input = functionNewValue(f, OpParam, I32, 0, 0, {});
+                functionNewValue(f, OpConst, I32, -1, 0, {});
+                const i32 first = functionNewValue(f, OpParam, I32, 1, 0, {});
+                const i32 second = functionNewValue(f, OpParam, I32, 1, 1, {});
+                f->blocks[0].params = sliceOf<i32>({input});
+                f->blocks[1].params = sliceOf<i32>({first, second});
+                for (i32 i = 0; i < removed; ++i) {
+                    const i32 phi = functionNewValue(f, OpParam, I32, 1, i + 2, {});
+                    f->blocks[1].params = appendValues(f->blocks[1].params, phi);
+                }
+                const i32 constant = functionNewValue(f, OpConst, I32, -1, 17, {});
+                if (removed) {
+                    fe->alias.resize(4 + removed);
+                    for (Int i = 0; i < length(fe->alias); ++i) {
+                        fe->alias[i] = i < 4 ? -1 : constant;
+                    }
+                    if (removed > 1) {
+                        fe->alias[4] = 5;
+                    }
+                    if (removed > 2) {
+                        fe->alias[3 + removed] = 4;
+                    }
+                }
+                if (crossPage) {
+                    f->pool.resize(PageVec<i32>::itemsPerPage - 1);
+                    for (usize i = 0; i < f->pool.size(); ++i) {
+                        f->pool[i] = input;
+                    }
+                }
+                const i32 source = removed ? 4 : constant;
+                const i32 user = functionNewValue(f, OpAdd, I32, 0, 0, Span<const i32>({source, input}));
+                const i32 consumer = functionNewValue(f, OpAdd, I32, 0, 0, Span<const i32>({user, source}));
+                f->blocks[0].instrs = {user, consumer};
+                // Two edges and a return share the same cells; in the first
+                // case those cells are also the instruction's pool operands.
+                Slice<i32> shared = crossPage ? sliceOf<i32>({user, source}) : borrowSlice(&f->pool[usize(f->values[consumer].args)], 2);
+                f->blocks[0].term = Term{TermIf, user, sliceOf<Edge>({Edge{1, shared}, Edge{1, shared}}), {}, {}};
+                f->blocks[1].term = Term{TermReturn, {}, {}, shared, {}};
+                frontendResolveAliases(fe);
+                require(fe->alias.size() == 0, "frontend alias scratch released before optimization");
+                require(f->values.size() == 7 && f->values.pages.size() == 1, "frontend phi records release excess pages");
+                require(f->values[1].op == OpConst && f->values[1].aux == 0 && f->values[4].aux == 17, "frontend phi compaction keeps non-phi record order");
+                require(f->blocks[0].instrs[0] == 5 && f->blocks[0].instrs[1] == 6 && f->blocks[1].params.count == 2 && f->blocks[1].params[0] == 2 && f->blocks[1].params[1] == 3, "frontend phi compaction rewrites definitions");
+                const auto args = functionArgs(f, 5);
+                require(args.count == 2 && args[0] == 4 && args[1] == 0, "frontend phi aliases map operands across pages");
+                const auto sharedOperands = functionArgs(f, 6);
+                require(sharedOperands.count == 2 && sharedOperands[0] == 5 && sharedOperands[1] == 4, "frontend phi compaction keeps shared pool references");
+                require(f->blocks[0].term.value == 5 && f->blocks[0].term.edges[0].args[0] == 5 && f->blocks[0].term.edges[1].args[0] == 5 && f->blocks[1].term.values[0] == 5, "frontend phi compaction rewrites shared operand storage once");
+                require(f->blocks[1].preds.count == 2 && f->blocks[1].preds[0] == 0 && f->blocks[1].preds[1] == 0, "frontend phi compaction retains parallel predecessors");
+            }
         }
         {
             ObjPool pool;
