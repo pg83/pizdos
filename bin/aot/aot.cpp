@@ -4643,7 +4643,7 @@ namespace {
         Layout* lay{};
         Asm a{};
         Slice<i32> funcAt{};
-        Array<i32, 4> stubAt{};
+        Array<i32, 7> stubAt{};
         Slice<CallFixup> calls{};
         Slice<CallFixup> stubCalls{};
         Map<i32, i32> jumpAt{};
@@ -4971,11 +4971,13 @@ namespace {
 
     static constexpr Int stubInterrupt = 3;
 
-    static constexpr Int stubCount = 4;
+    static constexpr Int stubMemoryCopy = 4;
 
-    static constexpr Int externMemmove = 0;
+    static constexpr Int stubMemoryFill = 5;
 
-    static constexpr Int externMemset = 1;
+    static constexpr Int stubMemoryInit = 6;
+
+    static constexpr Int stubCount = 7;
 
     static constexpr Int gStackHi = 8;
 
@@ -5260,8 +5262,6 @@ namespace {
     static constexpr Int calleeStub = 1;
 
     static constexpr Int calleeJump = 2;
-
-    static constexpr Int calleeExtern = 3;
 
     static constexpr Int constF32Sign = 0;
 
@@ -5605,9 +5605,11 @@ namespace {
 
     static const String symInterruptCall = String("w2o.interrupt_call");
 
-    static const String symMemmove = String("memmove");
+    static const String symMemoryCopy = String("w2o.memory_copy");
 
-    static const String symMemset = String("memset");
+    static const String symMemoryFill = String("w2o.memory_fill");
+
+    static const String symMemoryInit = String("w2o.memory_init");
 
     static constexpr SortedHint unknownHint = SortedHint(0LL);
 
@@ -6140,8 +6142,6 @@ namespace {
     static void lowererMemFill(Lowerer* l, Span<const i32> args);
 
     static void lowererMemInit(Lowerer* l, Int seg, Span<const i32> args);
-
-    static void lowererMemCall(Lowerer* l, Int fn, VReg a, VReg b, VReg c);
 
     static void lowererMov(Lowerer* l, VReg dst, VReg src, u8 size);
 
@@ -6772,18 +6772,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
     }
 
-    static Slice<VReg> memmoveClobbers{};
-
-    static Slice<VReg> memmoveGprs{};
-
-    static Slice<VReg> memmoveXmms{};
-
-    static Slice<VReg> memsetClobbers{};
-
-    static Slice<VReg> memsetGprs{};
-
-    static Slice<VReg> memsetXmms{};
-
     static Array<Slice<u8>, 10> nopBytes{};
 
     static Slice<VReg> resultGPRs{};
@@ -6833,16 +6821,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         goIntRegs = sliceOf<VReg>({RAX, RBX, RCX, RDI, RSI, R8, R9, R10, R11});
 
         intCC = Array<u8, 10>{{ccE, ccNE, ccL, ccB, ccG, ccA, ccLE, ccBE, ccGE, ccAE}};
-
-        // What the externs write: Go 1.25's runtime.memmove, which the
-        // loader binds to memmove, and the loader's memset (mem_amd64.s).
-        memmoveGprs = sliceOf<VReg>({RAX, RBX, RCX, RDX, RSI, RDI, R8, R10, R11});
-        memmoveXmms = xmmRange(15);
-        memmoveClobbers = appendSlice(memmoveGprs, memmoveXmms);
-
-        memsetGprs = sliceOf<VReg>({RAX, RBX, RCX, RDI});
-        memsetXmms = sliceOf<VReg>({XMM0});
-        memsetClobbers = appendSlice(memsetGprs, memsetXmms);
 
         nopBytes = Array<Slice<u8>, 10>{{{}, sliceOf<u8>({u8(144LL)}), sliceOf<u8>({u8(102LL), u8(144LL)}), sliceOf<u8>({u8(15LL), u8(31LL), u8(0LL)}), sliceOf<u8>({u8(15LL), u8(31LL), u8(64LL), u8(0LL)}), sliceOf<u8>({u8(15LL), u8(31LL), u8(68LL), u8(0LL), u8(0LL)}), sliceOf<u8>({u8(102LL), u8(15LL), u8(31LL), u8(68LL), u8(0LL), u8(0LL)}), sliceOf<u8>({u8(15LL), u8(31LL), u8(128LL), u8(0LL), u8(0LL), u8(0LL), u8(0LL)}), sliceOf<u8>({u8(15LL), u8(31LL), u8(132LL), u8(0LL), u8(0LL), u8(0LL), u8(0LL), u8(0LL)}), sliceOf<u8>({u8(102LL), u8(15LL), u8(31LL), u8(132LL), u8(0LL), u8(0LL), u8(0LL), u8(0LL), u8(0LL)})}};
 
@@ -7400,23 +7378,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // class. Calls need no XMM clobbers in an integer-only function, or GPR
     // clobbers in a function with only virtual XMM registers.
     static Slice<VReg> mInstClobberSet(MInst* in, u8 registerClasses) {
-        auto inClasses = [&](Slice<VReg> gprs, Slice<VReg> xmms, Slice<VReg> all) -> Slice<VReg> {
+        if (in->op == mCall || in->op == mCallInd || in->op == mGrowMem) {
             if (registerClasses == (1u << classGPR)) {
-                return gprs;
+                return callerSavedGprs;
             }
             if (registerClasses == (1u << classXMM)) {
-                return xmms;
+                return callerSavedXmms;
             }
-            return registerClasses ? all : Slice<VReg>{};
-        };
-        if (in->op == mCall && in->aux == calleeExtern) {
-            if (in->imm == externMemmove) {
-                return inClasses(memmoveGprs, memmoveXmms, memmoveClobbers);
-            }
-            return inClasses(memsetGprs, memsetXmms, memsetClobbers);
-        }
-        if (in->op == mCall || in->op == mCallInd || in->op == mGrowMem) {
-            return inClasses(callerSavedGprs, callerSavedXmms, callerSaved);
+            return registerClasses ? callerSaved : Slice<VReg>{};
         }
         return {};
     }
@@ -9527,14 +9496,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     auto clobbers = mInstClobberSet(in, mf->registerClasses);
                     for (Int k = 0; k < length(clobbers); ++k) {
                         intervalAddRange(interval(clobbers[k]), p + 1, p + 2);
-                    }
-                    if (in->op == mCall && in->aux == calleeExtern) {
-                        // The function saves the callee-saved registers an
-                        // extern writes, as it saves those it allocates.
-                        auto written = mInstClobberSet(in, (1u << classGPR) | (1u << classXMM));
-                        for (Int k = 0; k < length(written); ++k) {
-                            a->used[written[k]] = true;
-                        }
                     }
                 }
                 const bool needReg = in->op != mParMove;
@@ -13335,10 +13296,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         e->oc->jumpCalls = appendValues(e->oc->jumpCalls, CallFixup{asmCallRel(a), convert<i32>(in->imm)});
                         break;
                     }
-                    case calleeExtern: {
-                        asmCallMem(a, objCodeGotMem(e->oc, in->imm == externMemset ? symMemset : symMemmove));
-                        break;
-                    }
                     default: {
                         objCodeCallFunc(e->oc, convert<i64>(in->imm));
                         break;
@@ -15530,17 +15487,18 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         lowererEmit(l, in);
     }
 
+    // The bulk memory instructions check their ranges and call the VM's Go
+    // functions, as memory.grow does: memory.copy and memory.fill with the
+    // destination, the source or byte and the length, memory.init with the
+    // destination, the address of the segment's bytes at the source and the
+    // length.
     static void lowererMemCopy(Lowerer* l, Span<const i32> args) {
         VReg d = lowererUse(l, args[0]);
         VReg s = lowererUse(l, args[1]);
         VReg n = lowererUse(l, args[2]);
         lowererCheckRange(l, d, n, memAt(ctxReg, l->lay->memoryEnd), 8, trapMemoryOOB);
         lowererCheckRange(l, s, n, memAt(ctxReg, l->lay->memoryEnd), 8, trapMemoryOOB);
-        VReg dst = mFuncNewReg(l->mf, classGPR);
-        lowererMemAddr(l, dst, d);
-        VReg src = mFuncNewReg(l->mf, classGPR);
-        lowererMemAddr(l, src, s);
-        lowererMemCall(l, externMemmove, dst, src, n);
+        lowererStubCall(l, stubMemoryCopy, sliceOf<VReg>({d, s, n}), sliceOf<ValType>({I32, I32, I32}), -1);
     }
 
     static void lowererMemFill(Lowerer* l, Span<const i32> args) {
@@ -15548,9 +15506,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         VReg val = lowererUse(l, args[1]);
         VReg n = lowererUse(l, args[2]);
         lowererCheckRange(l, d, n, memAt(ctxReg, l->lay->memoryEnd), 8, trapMemoryOOB);
-        VReg dst = mFuncNewReg(l->mf, classGPR);
-        lowererMemAddr(l, dst, d);
-        lowererMemCall(l, externMemset, dst, val, n);
+        lowererStubCall(l, stubMemoryFill, sliceOf<VReg>({d, val, n}), sliceOf<ValType>({I32, I32, I32}), -1);
     }
 
     static void lowererMemInit(Lowerer* l, Int seg, Span<const i32> args) {
@@ -15592,8 +15548,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         lowererEmit(l, c);
         lowererTrapIf(l, ccA, trapMemoryOOB);
         lowererCheckRange(l, d, n, memAt(ctxReg, l->lay->memoryEnd), 8, trapMemoryOOB);
-        VReg dst = mFuncNewReg(l->mf, classGPR);
-        lowererMemAddr(l, dst, d);
         VReg src = mFuncNewReg(l->mf, classGPR);
         MInst lea = inst(mLea);
         lea.dst = src;
@@ -15606,22 +15560,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         addS.size = 8;
         addS.aux = 0;
         lowererEmit(l, addS);
-        lowererMemCall(l, externMemmove, dst, src, n);
-    }
-
-    // memCall calls the extern memmove with the destination, source and
-    // length, or memset with the destination, byte and length, in RAX, RBX
-    // and RCX: functions the loader binds by name, which do the work.
-    static void lowererMemCall(Lowerer* l, Int fn, VReg a, VReg b, VReg c) {
-        MInst pm = inst(mParMove);
-        mInstExtra(&pm)->moves.assign(Span<const Move>({Move{RAX, a}, Move{RBX, b}, Move{RCX, c}}));
-        lowererEmit(l, pm);
-        MInst in = inst(mCall);
-        in.aux = calleeExtern;
-        in.imm = convert<i64>(fn);
-        mInstExtra(&in)->uses.assign(Span<const VReg>({RAX, RBX, RCX}));
-        l->mf->hasCalls = true;
-        lowererEmit(l, in);
+        lowererStubCall(l, stubMemoryInit, sliceOf<VReg>({d, src, n}), sliceOf<ValType>({I32, I64, I32}), -1);
     }
 
     static void lowererMov(Lowerer* l, VReg dst, VReg src, u8 size) {
@@ -17641,8 +17580,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return asmJccRel(a, ccBE);
     }
 
-    // stubs emits the morestack stub and the Go calls of memory.grow and
-    // table.grow.
+    // stubs emits the morestack stub and the Go calls of memory.grow,
+    // table.grow and the bulk memory instructions.
     //
     // A stack check that found g.stackguard0 at stackPreempt calls the
     // morestack stub, but the preemption can complete before Go's morestack
@@ -17695,6 +17634,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         objCodeEndRegion(oc, start);
         oc->stubAt[stubMemoryGrow] = objCodeGoCall(oc, String("w2o.memory_grow_call"), sliceOf<ValType>({I32}), sliceOf<ValType>({I32}), symMemoryGrow, false);
         oc->stubAt[stubTableGrow] = objCodeGoCall(oc, String("w2o.table_grow_call"), sliceOf<ValType>({I32, I32, FuncRef}), sliceOf<ValType>({I32}), symTableGrow, false);
+        oc->stubAt[stubMemoryCopy] = objCodeGoCall(oc, String("w2o.memory_copy_call"), sliceOf<ValType>({I32, I32, I32}), Slice<ValType>{}, symMemoryCopy, false);
+        oc->stubAt[stubMemoryFill] = objCodeGoCall(oc, String("w2o.memory_fill_call"), sliceOf<ValType>({I32, I32, I32}), Slice<ValType>{}, symMemoryFill, false);
+        oc->stubAt[stubMemoryInit] = objCodeGoCall(oc, String("w2o.memory_init_call"), sliceOf<ValType>({I32, I64, I32}), Slice<ValType>{}, symMemoryInit, false);
         oc->stubAt[stubInterrupt] = objCodeInterruptStub(oc);
     }
 

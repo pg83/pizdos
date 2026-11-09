@@ -323,6 +323,23 @@ func (k *Kernel) stringFunctions() map[string]any {
 
 			return d
 		},
+		"memcpy": func(ctx uintptr, d, s, n uint32) uint32 {
+			p := proc(ctx)
+			copy(p.span(d, n), p.span(s, n))
+
+			return d
+		},
+		"memmove": func(ctx uintptr, d, s, n uint32) uint32 {
+			p := proc(ctx)
+			copy(p.span(d, n), p.span(s, n))
+
+			return d
+		},
+		"memset": func(ctx uintptr, d, c, n uint32) uint32 {
+			fill(proc(ctx).span(d, n), byte(c))
+
+			return d
+		},
 		"mempcpy": func(ctx uintptr, d, s, n uint32) uint32 {
 			p := proc(ctx)
 			copy(p.span(d, n), p.span(s, n))

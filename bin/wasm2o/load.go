@@ -176,6 +176,40 @@ func helperMemoryGrow(ctx uintptr, delta uint32) uint32 {
 	return instanceAt(ctx).memory.grow(delta)
 }
 
+// The bulk memory instructions, whose ranges the code checked: memory.init
+// copies from the segment's bytes in the object.
+func helperMemoryCopy(ctx uintptr, d, s, n uint32) {
+	m := instanceAt(ctx).memoryBytes()
+	copy(m[d:][:n], m[s:][:n])
+}
+
+func helperMemoryFill(ctx uintptr, d, v, n uint32) {
+	fill(instanceAt(ctx).memoryBytes()[d:][:n], byte(v))
+}
+
+func helperMemoryInit(ctx uintptr, d uint32, src uint64, n uint32) {
+	copy(instanceAt(ctx).memoryBytes()[d:][:n], unsafe.Slice((*byte)(unsafe.Pointer(uintptr(src))), n))
+}
+
+// fill sets every byte of b to c.
+func fill(b []byte, c byte) {
+	if c == 0 {
+		clear(b)
+
+		return
+	}
+
+	if len(b) == 0 {
+		return
+	}
+
+	b[0] = c
+
+	for k := 1; k < len(b); k *= 2 {
+		copy(b[k:], b[:k])
+	}
+}
+
 // interruptible is a host whose code Go interrupts (lib/goruntime).
 type interruptible interface {
 	interrupt()
@@ -248,9 +282,6 @@ func (c *Code) keepFunc(f any) uintptr {
 	return funcval(f)
 }
 
-// memsetCode returns the address of memset (mem_amd64.s).
-func memsetCode() uintptr
-
 func (c *Code) resolve(sym string, imports Imports) uintptr {
 	switch sym {
 	case symMorestack:
@@ -263,10 +294,12 @@ func (c *Code) resolve(sym string, imports Imports) uintptr {
 		return c.keepFunc(helperTableGrow)
 	case symInterrupt:
 		return c.keepFunc(helperInterrupt)
-	case symMemmove:
-		return goSymbol("runtime.memmove")
-	case symMemset:
-		return memsetCode()
+	case symMemoryCopy:
+		return c.keepFunc(helperMemoryCopy)
+	case symMemoryFill:
+		return c.keepFunc(helperMemoryFill)
+	case symMemoryInit:
+		return c.keepFunc(helperMemoryInit)
 	}
 
 	for k := range c.obj.meta.imports {

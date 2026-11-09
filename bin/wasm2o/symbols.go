@@ -20,10 +20,9 @@ import (
 // f f32, F f64, v v128, r funcref, e externref. The code also calls Go's
 // runtime.morestack_noctxt and the Go function values w2o.trap,
 // w2o.memory_grow, w2o.table_grow and w2o.interrupt, through the GOT;
-// Go's runtime injects calls of w2o.interrupt_call (goabi.go). memory.copy
-// and memory.fill call memmove and memset, functions the loader binds that
-// do the work: the destination, then the source or byte, then the length
-// in AX, BX and CX.
+// Go's runtime injects calls of w2o.interrupt_call (goabi.go). The bulk
+// memory instructions call the Go function values w2o.memory_copy,
+// w2o.memory_fill and w2o.memory_init the same way.
 const (
 	symInit          = "w2o.init"
 	symLand          = "w2o.land"
@@ -38,8 +37,9 @@ const (
 	symTableGrow     = "w2o.table_grow"
 	symInterrupt     = "w2o.interrupt"
 	symInterruptCall = "w2o.interrupt_call"
-	symMemmove       = "memmove"
-	symMemset        = "memset"
+	symMemoryCopy    = "w2o.memory_copy"
+	symMemoryFill    = "w2o.memory_fill"
+	symMemoryInit    = "w2o.memory_init"
 )
 
 var typeLetters = map[ValType]byte{I32: 'i', I64: 'I', F32: 'f', F64: 'F', V128: 'v', FuncRef: 'r', ExternRef: 'e'}

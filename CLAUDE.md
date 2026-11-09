@@ -77,14 +77,13 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   never preempts, and the stub compares that with `g.stackguard0` again
   before Go's morestack, so a preemption that completed after the check
   does not grow the stack. `W2O_PERFMAP=<dir>` makes the loader write perf-<pid>.map.
-- What the object needs beside its own code are its imports, functions the
-  loader binds by name that do the work, called directly: memory.copy and
-  memory.fill, after their bounds checks, call `memmove` and `memset` with
-  the destination, the source or byte and the length in AX, BX and CX.
-  The loader binds Go's `runtime.memmove` and its own `memset`
-  (`mem_amd64.s`); aot.cpp lists the registers each writes, and a function
-  saves the callee-saved ones among them. Other implementations, such as
-  pg83/str's, can take their place under the same names and registers.
+- What the code needs of the VM it gets through imports. lib/c's mem* and
+  str* functions are kernel imports (`__KERNEL`), so a program calls lib/c
+  and lib/c the kernel, which implements them; the bulk memory instructions
+  check their ranges and call the VM's Go functions `w2o.memory_copy`,
+  `w2o.memory_fill` and `w2o.memory_init` through adapters, as memory.grow
+  calls `w2o.memory_grow`. Implementations, such as pg83/str's later, change
+  behind those names.
 - Compilation enables a physical 64 KiB readable and writable tail beyond
   the logical memory size by default: a check that an address is within
   the logical size admits every access reaching up to 64 KiB past it, so
