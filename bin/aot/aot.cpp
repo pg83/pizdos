@@ -3652,6 +3652,12 @@ namespace {
         Vec<i32> alias{};
         Map<ConstKey, i32> consts{};
         Vec<i32> uses{};
+        // counted reports that uses matches the function; changes to operands,
+        // live blocks or instruction lists clear it.
+        bool counted = false;
+        // Replacements made and replacements applied to the operands.
+        u32 replaced = 0;
+        u32 applied = 0;
         Vec<u32> incomingSeen;
         u32 incomingEpoch = 0;
         Vec<ParamIndex> repairIndex;
@@ -6550,7 +6556,7 @@ namespace {
 
     static u64 valTypeCode(ValType t);
 
-    static void versionMemoryLoops(Function* f);
+    static bool versionMemoryLoops(Function* f);
 
     static void writeELF(ObjCode* oc, Slice<u8> note);
 
@@ -17541,9 +17547,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // apply rewrites every operand through the aliases.
     static void optimizerApply(Optimizer* o) {
         Function* f = o->f;
-        if (length(o->alias) == 0) {
+        // Every pass applies its replacements before it returns, and operands
+        // written since copy resolved ones.
+        if (o->applied == o->replaced) {
             return;
         }
+        o->applied = o->replaced;
+        o->counted = false;
         const Span<const i32> aliases = o->alias.view();
         auto resolve = [&](i32 v) {
             while (u32(v) < aliases.count) {
@@ -17659,6 +17669,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (merged) {
             optimizerApply(o);
             functionComputePreds(f);
+        }
+        if (changed || merged) {
+            o->counted = false;
         }
         return changed || merged;
     }
@@ -17787,6 +17800,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void optimizerCountUses(Optimizer* o) {
         Function* f = o->f;
+        if (o->counted && o->uses.size() == f->values.size()) {
+            return;
+        }
+        o->counted = true;
         o->uses.resize(usize(length(f->values)));
         o->uses.fill(0);
         for (Int b = 0, end = length(f->blocks); b < end; ++b) {
@@ -17888,6 +17905,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // arguments on every incoming edge.
     static void optimizerDropParams(Optimizer* o, i32 b, Slice<bool> keep) {
         Function* f = o->f;
+        o->counted = false;
         Block* blk = &f->blocks[b];
         Slice<i32> params = {};
         auto range1203 = blk->params;
@@ -18312,6 +18330,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         if (v != w) {
             o->alias[v] = w;
+            o->replaced++;
         }
     }
 
@@ -18421,6 +18440,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     blk->term = Term{TermJump, {}, sliceOf<Edge>({Edge{merge.block, args}}), {}, {}};
                     *body = Block{{}, {}, {}, {}, true};
                     functionComputePreds(f);
+                    o->counted = false;
                     changed = true;
                     break;
                 }
@@ -18434,6 +18454,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // setArgs replaces the operands of v.
     static void optimizerSetArgs(Optimizer* o, i32 v, Span<const i32> args) {
         Function* f = o->f;
+        o->counted = false;
         Value* val = &f->values[v];
         if (convert<i64>(val->nargs) >= length(args)) {
             copySlice(subslice(f->pool, val->args, length(f->pool)), args);
@@ -18467,6 +18488,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         optimizerApply(o);
+        if (changed) {
+            o->counted = false;
+        }
         return changed;
     }
 
@@ -18666,11 +18690,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             if (length(bypasses) > 0) {
                 functionComputePreds(f);
                 optimizerRepair(o, h, bypasses);
+                o->counted = false;
                 optimizerCountUses(o);
             }
         }
         if (changed) {
             functionComputePreds(f);
+            o->counted = false;
         }
         return changed;
     }
@@ -20862,7 +20888,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             optimizerDeadCode(o);
         }
         optimizerSelectTriangles(o);
-        versionMemoryLoops(f);
+        if (versionMemoryLoops(f)) {
+            o->counted = false;
+        }
         Int round = 0;
         for (; round < 4; round++) {
             bool changed = optimizerCleanup(o);
@@ -21569,18 +21597,20 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return u64(7LL);
     }
 
-    static void versionMemoryLoops(Function* f) {
+    // versionMemoryLoops reports whether it may have changed the function.
+    static bool versionMemoryLoops(Function* f) {
         if (length(f->module->mems) == 0) {
-            return;
+            return false;
         }
         // No pass before this one adds a cycle. Without loops there is nothing
         // to version, and the analysis would only have refreshed preds.
         if (!f->hasLoops) {
             functionComputePreds(f);
-            return;
+            return false;
         }
         LoopBodyUses bodyUses(f);
         Map<i32, bool> done = mapOf<i32, bool>({});
+        bool tried = false;
         Int round = 0;
         for (; round < 64; round++) {
             ObjPool cfgPool;
@@ -21611,6 +21641,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 if (isNil(loop)) {
                     continue;
                 }
+                tried = true;
                 i32 fast = memoryLoopVersion(loop);
                 if (fast >= 0) {
                     auto copies = loop->copies;
@@ -21626,6 +21657,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 break;
             }
         }
+        return tried;
     }
 
     static void writeELF(ObjCode* oc, Slice<u8> note) {
@@ -22959,7 +22991,9 @@ namespace {
             require(functionArgs(f, user)[0] == input && f->values[user].nargs == 1, "aliases in shortened operand lists");
             require(functionArgs(f, last)[0] == input, "aliases across operand pages");
             require(f->blocks[0].term.value == input && f->blocks[0].term.edges[0].args[0] == input && f->blocks[2].term.values[0] == input, "aliases in terminators and edges");
-            optimizerSetArgs(o, user, Span<const i32>({second, zero}));
+            const i32 third = functionNewValue(f, OpAdd, I32, 0, 0, Span<const i32>({input, zero}));
+            optimizerReplace(o, third, input);
+            optimizerSetArgs(o, user, Span<const i32>({third, zero}));
             f->values[user].op = OpAdd;
             optimizerApply(o);
             require(functionArgs(f, user)[0] == input && functionArgs(f, user)[1] == zero, "aliases after growing a shortened operand list");
