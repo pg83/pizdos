@@ -3882,6 +3882,9 @@ namespace {
         Vec<VReg> vregs{};
         Vec<i32> uses{};
         Vec<bool> deferred{};
+        // foldable marks a deferred load its only user may read as a memory
+        // operand (lowererFoldedLoad).
+        Vec<bool> foldable{};
         Vec<i32> mblk{};
         i32 cur{};
         Map<Array<i32, 2>, i32> split{};
@@ -6098,6 +6101,12 @@ namespace {
     static void lowererLowerValue(Lowerer* l, i32 v);
 
     static void lowererMarkDeferred(Lowerer* l);
+
+    static void lowererMarkFoldable(Lowerer* l);
+
+    static Tuple2<Mem, bool> lowererFoldedLoad(Lowerer* l, i32 v);
+
+    static bool lowererTransparent(Op op);
 
     static void lowererMemAddr(Lowerer* l, VReg dst, VReg a);
 
@@ -10674,9 +10683,22 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void asmAluMI(Asm* a, AluOp op, u8 size, Amem m, i64 x) {
+        if (size == 1) {
+            asmOpRM(a, false, Span<const u8>({u8(128LL)}), convert<i64>(op), m, 1, false);
+            asmBytes(a, {u8(convert<u8>(x))});
+            return;
+        }
+        if (size == 2) {
+            asmBytes(a, {u8(u8(102LL))});
+        }
         if (x == convert<i64>(convert<i8>(x))) {
             asmOpRM(a, size == 8, Span<const u8>({u8(131LL)}), convert<i64>(op), m, 1, false);
             asmBytes(a, {u8(convert<u8>(x))});
+            return;
+        }
+        if (size == 2) {
+            asmOpRM(a, false, Span<const u8>({u8(129LL)}), convert<i64>(op), m, 2, false);
+            asmBytes(a, {u8(convert<u8>(x)), u8(convert<u8>(shiftRight(x, 8)))});
             return;
         }
         asmOpRM(a, size == 8, Span<const u8>({u8(129LL)}), convert<i64>(op), m, 4, false);
@@ -14243,6 +14265,24 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void lowererAlu(Lowerer* l, i32 v, Op op, i32 a, i32 b, u8 size) {
+        if (op != OpSub && op != OpMul && l->foldable[a] && l->deferred[a] && !(l->foldable[b] && l->deferred[b])) {
+            auto swapped = a;
+            a = b;
+            b = swapped;
+        }
+        if (op != OpMul && l->foldable[b] && l->deferred[b]) {
+            VReg ra = lowererUse(l, a);
+            Mem m = lowererFoldedLoad(l, b).v0;
+            VReg d = lowererDef(l, v);
+            lowererMov(l, d, ra, size);
+            MInst in = inst(mAluMem);
+            in.dst = d;
+            in.mem = m;
+            in.size = size;
+            in.aux = convert<u8>(aluOpcode(op));
+            lowererEmit(l, in);
+            return;
+        }
         if (op == OpAdd && lowererLeaAdd(l, v, a, b, size)) {
             return;
         }
@@ -14558,6 +14598,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 lowererTestBits(l, bits[0], bits[1]);
                 return {ccE, 0};
             }
+            auto folded = lowererFoldedLoad(l, v);
+            if (folded.v1) {
+                MInst in = inst(mCmpMemImm);
+                in.mem = folded.v0;
+                in.imm = 0;
+                in.size = convert<u8>(memKindWidth(convert<MemKind>(f->values[v].aux2)));
+                lowererEmit(l, in);
+                return {ccE, 0};
+            }
             VReg a = lowererUse(l, args[0]);
             MInst in = inst(mTest);
             in.src = a;
@@ -14608,6 +14657,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         i64 x = temporary754.v0;
         bool ok = temporary754.v1;
         if (ok) {
+            auto folded = lowererFoldedLoad(l, a);
+            if (folded.v1) {
+                MInst in = inst(mCmpMemImm);
+                in.mem = folded.v0;
+                in.imm = x;
+                in.size = convert<u8>(memKindWidth(convert<MemKind>(f->values[a].aux2)));
+                lowererEmit(l, in);
+                return {cc, 0};
+            }
             MInst in = inst(mCmpImm);
             in.src = lowererUse(l, a);
             in.imm = x;
@@ -14616,6 +14674,20 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 in.op = mTest;
                 in.src2 = in.src;
             }
+            lowererEmit(l, in);
+            return {cc, 0};
+        }
+        if (l->foldable[a] && l->deferred[a] && !(l->foldable[b] && l->deferred[b])) {
+            auto swapped = a;
+            a = b;
+            b = swapped;
+            cc = swapCC(cc);
+        }
+        if (l->foldable[b] && l->deferred[b]) {
+            MInst in = inst(mCmpMem);
+            in.src = lowererUse(l, a);
+            in.mem = lowererFoldedLoad(l, b).v0;
+            in.size = size;
             lowererEmit(l, in);
             return {cc, 0};
         }
@@ -15489,10 +15561,26 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             case OpFSub:
             case OpFMul:
             case OpFDiv: {
+                i32 x = args[0];
+                i32 y = args[1];
+                if ((val->op == OpFAdd || val->op == OpFMul) && l->foldable[x] && l->deferred[x] && !(l->foldable[y] && l->deferred[y])) {
+                    x = args[1];
+                    y = args[0];
+                }
+                if (l->foldable[y] && l->deferred[y]) {
+                    MInst in = inst(mFAluMem);
+                    in.src = lowererUse(l, x);
+                    in.mem = lowererFoldedLoad(l, y).v0;
+                    in.dst = lowererDef(l, v);
+                    in.size = size;
+                    in.aux = convert<u8>(Op(val->op - OpFAdd));
+                    lowererEmit(l, in);
+                    break;
+                }
                 MInst in = inst(mFAlu);
                 in.dst = lowererDef(l, v);
-                in.src = lowererUse(l, args[0]);
-                in.src2 = lowererUse(l, args[1]);
+                in.src = lowererUse(l, x);
+                in.src2 = lowererUse(l, y);
                 in.size = size;
                 in.aux = convert<u8>(Op(val->op - OpFAdd));
                 lowererEmit(l, in);
@@ -15782,6 +15870,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Function* f = l->f;
         l->deferred.resize(f->values.size());
         l->deferred.fill(false);
+        l->foldable.resize(f->values.size());
+        l->foldable.fill(false);
         auto order = l->ci->order;
         // An i32 sum of a base and a constant that only loads and stores of
         // its block address is lowered where one of them uses it, if any
@@ -15854,6 +15944,184 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
             }
         }
+        lowererMarkFoldable(l);
+    }
+
+    // transparent tells whether a load may move past a value of op: it
+    // writes no memory and traps, if at all, as a load does.
+    static bool lowererTransparent(Op op) {
+        switch (op) {
+            case OpDivS:
+            case OpDivU:
+            case OpRemS:
+            case OpRemU:
+            case OpTruncS:
+            case OpTruncU:
+            case OpStore:
+            case OpMemGrow:
+            case OpMemCopy:
+            case OpMemFill:
+            case OpMemInit:
+            case OpDataDrop:
+            case OpGlobalSet:
+            case OpCall:
+            case OpCallIndirect:
+            case OpTableGet:
+            case OpTableSet:
+            case OpTableGrow:
+            case OpTableFill:
+            case OpTableCopy:
+            case OpTableInit:
+            case OpElemDrop:
+            case OpCopyForward:
+            case OpInvalid: {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // markFoldable defers a load whose only use reads it once as an operand
+    // an x86 instruction can take from memory: the second of a two-operand
+    // integer or float operation, either of a commutative one, a compared
+    // value, at the width it is used with, or a value compared with zero at
+    // any width. Between the load and where its user is lowered, which for
+    // a deferred user is the block's end, no value may write memory or trap
+    // otherwise than a load: the load and its check move to the user.
+    static void lowererMarkFoldable(Lowerer* l) {
+        Function* f = l->f;
+        auto order = l->ci->order;
+        for (Int o = 0; o < length(order); ++o) {
+            const i32 b = order[o];
+            auto instrs = f->blocks[b].instrs.view();
+            // A loaded value the block branches on is compared with zero
+            // in memory, at any width.
+            const Term* t = &f->blocks[b].term;
+            if (t->kind == TermIf && f->values[t->value].op == OpLoad && f->values[t->value].block == b && l->uses[t->value] == 1 && !l->deferred[t->value]) {
+                Int at = 0;
+                while (at < length(instrs) && instrs[at] != t->value) {
+                    ++at;
+                }
+                bool ok = at < length(instrs);
+                for (Int i = at + 1; ok && i < length(instrs); ++i) {
+                    ok = lowererTransparent(f->values[instrs[i]].op);
+                }
+                if (ok) {
+                    l->deferred[t->value] = true;
+                    l->foldable[t->value] = true;
+                }
+            }
+            for (Int j = 0; j < length(instrs); ++j) {
+                const i32 v = instrs[j];
+                const Value* val = &f->values[v];
+                if (val->op != OpLoad || l->uses[v] != 1) {
+                    continue;
+                }
+                const Int width = memKindWidth(convert<MemKind>(val->aux2));
+                if (width != 4 && width != 8) {
+                    continue;
+                }
+                Int k = j + 1;
+                bool clear = true;
+                for (; k < length(instrs); ++k) {
+                    const i32 u = instrs[k];
+                    Span<i32> args = functionArgs(f, u);
+                    bool uses = false;
+                    for (Int i = 0; i < length(args); ++i) {
+                        uses = uses || args[i] == v;
+                    }
+                    if (uses) {
+                        break;
+                    }
+                    if (!lowererTransparent(f->values[u].op)) {
+                        clear = false;
+                        break;
+                    }
+                }
+                if (!clear || k == length(instrs)) {
+                    continue;
+                }
+                const i32 u = instrs[k];
+                const Value* user = &f->values[u];
+                Span<i32> args = functionArgs(f, u);
+                if (length(args) < 1 || length(args) > 2) {
+                    continue;
+                }
+                const bool second = length(args) == 2 && args[1] == v && args[0] != v;
+                const bool first = args[0] == v && (length(args) == 1 || args[1] != v);
+                const i32 other = length(args) == 2 ? args[second ? 0 : 1] : -1;
+                const bool full = width == Int(typeSize(val->typ));
+                const bool zero = other >= 0 && lowererIsConst(l, other) && lowererConstBits(l, other) == 0;
+                bool ok = false;
+                switch (user->op) {
+                    case OpAdd:
+                    case OpAnd:
+                    case OpOr:
+                    case OpXor: {
+                        ok = full && !isFloat(val->typ) && (first || second) && !lowererIsConst(l, other);
+                        break;
+                    }
+                    case OpSub: {
+                        ok = full && !isFloat(val->typ) && second && !lowererIsConst(l, other);
+                        break;
+                    }
+                    case OpEqz: {
+                        ok = first;
+                        break;
+                    }
+                    case OpEq:
+                    case OpNe: {
+                        ok = (first || second) && (full || zero);
+                        break;
+                    }
+                    case OpLtS:
+                    case OpLtU:
+                    case OpGtS:
+                    case OpGtU:
+                    case OpLeS:
+                    case OpLeU:
+                    case OpGeS:
+                    case OpGeU: {
+                        ok = (first || second) && full;
+                        break;
+                    }
+                    case OpFAdd:
+                    case OpFMul: {
+                        ok = full && (first || second) && !lowererIsConst(l, other);
+                        break;
+                    }
+                    case OpFSub:
+                    case OpFDiv: {
+                        ok = full && second && !lowererIsConst(l, other);
+                        break;
+                    }
+                }
+                if (!ok) {
+                    continue;
+                }
+                if (l->deferred[u]) {
+                    for (Int i = k + 1; ok && i < length(instrs); ++i) {
+                        ok = lowererTransparent(f->values[instrs[i]].op);
+                    }
+                }
+                if (ok) {
+                    l->deferred[v] = true;
+                    l->foldable[v] = true;
+                }
+            }
+        }
+    }
+
+    // foldedLoad returns the memory operand of a foldable load not yet
+    // lowered, checking its address, and whether there is one.
+    static Tuple2<Mem, bool> lowererFoldedLoad(Lowerer* l, i32 v) {
+        if (!l->foldable[v] || !l->deferred[v]) {
+            return {Mem{}, false};
+        }
+        l->deferred[v] = false;
+        Value* val = &l->f->values[v];
+        MemKind kind = convert<MemKind>(val->aux2);
+        return {lowererAddress(l, functionArgs(l->f, v)[0], val->aux, memKindWidth(kind), MemKind(kind & memProven) != MemKind(0LL)), true};
     }
 
     static void lowererMemAddr(Lowerer* l, VReg dst, VReg a) {
@@ -16607,7 +16875,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 i32 els = lowererEdgeBlock(l, b, 1);
                 u8 cc = {};
                 Int parity = 0;
-                if (l->deferred[t->value]) {
+                if (l->foldable[t->value] && l->deferred[t->value] && l->f->values[t->value].op == OpLoad) {
+                    MInst in = inst(mCmpMemImm);
+                    in.size = convert<u8>(memKindWidth(convert<MemKind>(l->f->values[t->value].aux2)));
+                    in.mem = lowererFoldedLoad(l, t->value).v0;
+                    in.imm = 0;
+                    lowererEmit(l, in);
+                    cc = ccNE;
+                } else if (l->deferred[t->value]) {
                     auto temporary899 = lowererCompare(l, t->value);
                     cc = temporary899.v0;
                     parity = temporary899.v1;
@@ -21105,7 +21380,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static MFunc* lowerFunction(ObjCode* oc, Function* f) {
-        Lowerer* l = activePool->make<Lowerer>(Lowerer{oc->m, f, oc->lay, {}, activePool->make<MFunc>(MFunc{}), {}, {}, {}, {}, {}, mapOf<Array<i32, 2>, i32>({}), mapOf<i32, i64>({}), {}, {}, {}, {}});
+        Lowerer* l = activePool->make<Lowerer>(Lowerer{oc->m, f, oc->lay, {}, activePool->make<MFunc>(MFunc{}), {}, {}, {}, {}, {}, {}, mapOf<Array<i32, 2>, i32>({}), mapOf<i32, i64>({}), {}, {}, {}, {}});
         l->oc = oc;
         l->ci = f->cfg ? f->cfg : functionAnalyze(f);
         l->vregs.resize(f->values.size());

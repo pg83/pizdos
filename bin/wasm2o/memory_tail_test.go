@@ -11,6 +11,78 @@ import (
 	"testing"
 )
 
+// A load whose only use reads it as an operand is folded into the use:
+// it keeps its trap ahead of a division's, reads memory before a store
+// between them, compares at its width and, branched on, at the width of a
+// narrow load.
+func TestFoldedLoads(t *testing.T) {
+	const (
+		i32LoadByte = 0x2d
+		i32DivS     = 0x6d
+		i32LtS      = 0x48
+	)
+	m := &testModule{memMin: 1, memMax: 1, funcs: []testFunc{
+		{params: []ValType{I32, I32, I32}, results: i32, export: "loadDivide", code: cat(get(0), []byte{opI32Load, 2, 0}, get(1), get(2), []byte{i32DivS, opI32Add})},
+		{params: []ValType{I32, I32}, results: i32, export: "loadStore", code: cat(get(0), []byte{opI32Load, 2, 0}, get(0), get(1), []byte{opI32Store, 2, 0}, get(1), []byte{opI32Add})},
+		{params: i32, results: i32, export: "less", code: cat(get(0), []byte{opI32Load, 2, 0}, i32c(10), []byte{i32LtS})},
+		{params: i32, results: i32, export: "branchByte", code: cat(get(0), []byte{i32LoadByte, 0, 0, opIf, byte(I32)}, i32c(1), []byte{opElse}, i32c(2), []byte{0x0b})},
+		{params: []ValType{I32, I32}, results: i32, export: "sum", code: cat(get(1), get(0), []byte{opI32Load, 2, 0, opI32Add})},
+	}}
+
+	for _, options := range []CompileOptions{{}, {memoryTail: true, tailRanges: true}} {
+		i := instantiate(t.Name(), readObject(compileModuleWithOptions(m.encode(), options)), nil, 8<<20)
+		i.start()
+		mem := i.memory.bytes()
+		fn := func(name string) any {
+			f, _ := i.export(name)
+			return f.Interface()
+		}
+		loadDivide := fn("loadDivide").(func(uintptr, uint32, uint32, uint32) uint32)
+		loadStore := fn("loadStore").(func(uintptr, uint32, uint32) uint32)
+		less := fn("less").(func(uintptr, uint32) uint32)
+		branchByte := fn("branchByte").(func(uintptr, uint32) uint32)
+		sum := fn("sum").(func(uintptr, uint32, uint32) uint32)
+
+		if trap := trapOf(func() { loadDivide(i.ctx(), 2*pageSize, 1, 0) }); trap != trapMemoryOOB {
+			t.Fatalf("tail %t: a load out of bounds before a division by zero: trap %d", options.memoryTail, trap)
+		}
+
+		binary.LittleEndian.PutUint32(mem[2048:], 5)
+
+		if got := loadStore(i.ctx(), 2048, 7); got != 12 || binary.LittleEndian.Uint32(mem[2048:]) != 7 {
+			t.Fatalf("tail %t: load before a store: %d", options.memoryTail, got)
+		}
+
+		for _, c := range []struct{ value, want uint32 }{{9, 1}, {10, 0}, {0xffffffff, 1}, {11, 0}} {
+			binary.LittleEndian.PutUint32(mem[2052:], c.value)
+
+			if got := less(i.ctx(), 2052); got != c.want {
+				t.Fatalf("tail %t: %d < 10 is %d", options.memoryTail, int32(c.value), got)
+			}
+		}
+
+		binary.LittleEndian.PutUint32(mem[2056:], 0x0100)
+
+		if got := branchByte(i.ctx(), 2056); got != 2 {
+			t.Fatalf("tail %t: branch on a zero byte with a nonzero byte after it: %d", options.memoryTail, got)
+		}
+
+		mem[2056] = 3
+
+		if got := branchByte(i.ctx(), 2056); got != 1 {
+			t.Fatalf("tail %t: branch on a nonzero byte: %d", options.memoryTail, got)
+		}
+
+		binary.LittleEndian.PutUint32(mem[2060:], 40)
+
+		if got := sum(i.ctx(), 2060, 2); got != 42 {
+			t.Fatalf("tail %t: sum with a loaded operand: %d", options.memoryTail, got)
+		}
+
+		i.release()
+	}
+}
+
 // An access at a negative constant offset from a base is covered by the
 // base's check and addressed from the base: with the tail it reaches the
 // slack before the memory where the sum wrapped, and traps only for a base
