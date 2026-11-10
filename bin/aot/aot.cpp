@@ -10853,6 +10853,52 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void allocatorSpillAtJoins(Allocator* a) {
         MFunc* mf = a->mf;
         auto order = a->order.view();
+        // A loop's header keeps in its slot a value every block returning
+        // to it has there: the value is reloaded at its first use in the
+        // loop instead of on each back edge, which then needs no move and
+        // takes the loop's conditional branch itself.
+        for (Int j = 0; j < length(order); ++j) {
+            const i32 b = order[j];
+            const auto preds = mf->blocks[b].preds;
+            const i32 from = a->blockFrom[b];
+            bool loop = false;
+            for (Int i = 0; i < length(preds); ++i) {
+                loop = loop || a->blockFrom[preds[i]] >= from;
+            }
+            if (!loop) {
+                continue;
+            }
+            bitsetEach(a->liveIn[b], [&](Int x) {
+                Interval* root = a->intervals[x];
+                if (isNil(root) || a->slots[x] < 0) {
+                    return;
+                }
+                Interval* part = allocatorPartAt(root, from);
+                if (isNil(part) || part->reg == noReg) {
+                    return;
+                }
+                const VReg r = firstVirtual + VReg(x);
+                for (Int i = 0; i < length(preds); ++i) {
+                    const i32 p = preds[i];
+                    if (a->blockFrom[p] >= from && !isSlot(allocatorLocation(a, r, a->blockTo[p] - 1))) {
+                        return;
+                    }
+                }
+                const i32 use = intervalNextUse(part, from);
+                const i32 at = use < maxPos ? allocatorSplitPos(a, from + 1, use) : -1;
+                if (use < maxPos && (at <= from || at >= intervalEnd(part))) {
+                    return;
+                }
+                const VReg reg = part->reg;
+                Interval* head = intervalStart(part) < from ? intervalSplit(part, from) : part;
+                if (at > intervalStart(head)) {
+                    intervalSplit(head, at)->reg = reg;
+                }
+                allocatorSpill(a, head);
+                root->locationFrom = 0;
+                root->locationTo = 0;
+            });
+        }
         for (Int j = 0; j < length(order); ++j) {
             const i32 b = order[j];
             const auto preds = mf->blocks[b].preds;
