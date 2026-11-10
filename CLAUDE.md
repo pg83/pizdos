@@ -1,7 +1,9 @@
 # CLAUDE.md
 
 pizdos: an OS whose kernel is a Go program running wasm processes. Read
-README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
+README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style,
+doc/ for designs: `doc/fs.md`, file systems (no Linux namespace, the
+kernel's `/sys`, file systems as processes speaking FUSE's protocol).
 
 ## Build and test
 
