@@ -57,10 +57,12 @@ func TestStrLibrary(t *testing.T) {
 	}
 }
 
-// Every configuration of lib/str the host runs copies and fills as copy and
-// a loop do: memmove and memcpy at random lengths up to 5000 and some up to
-// 2 MiB, from random alignments, memmove overlapping either way, memset with
-// random bytes.
+// Every configuration of lib/str the host runs copies, fills, compares and
+// searches as Go does, at random lengths up to 5000 and some up to 2 MiB,
+// from random alignments: memmove overlapping either way, memcpy, memset
+// with random bytes, memcmp of equal ranges with a byte changed or not (its
+// sign), memchr of a byte placed or not, strlen of a string ended within
+// the length.
 func TestStrConfigurations(t *testing.T) {
 	lib := strLib()
 	random := rand.New(rand.NewSource(2))
@@ -87,7 +89,7 @@ func TestStrConfigurations(t *testing.T) {
 			s := random.Intn(len(buf) - n)
 			d := random.Intn(len(buf) - n)
 
-			switch k % 3 {
+			switch k % 6 {
 			case 0:
 				if k%2 == 0 {
 					d = max(0, min(len(buf)-n, s+random.Intn(130)-65))
@@ -108,6 +110,43 @@ func TestStrConfigurations(t *testing.T) {
 
 				for j := d; j < d+n; j++ {
 					want[j] = byte(c)
+				}
+			case 3:
+				copy(buf[d:d+n], buf[s:s+n])
+				copy(want[d:d+n], want[s:s+n])
+
+				if n > 0 && random.Intn(3) != 0 {
+					j, v := d+random.Intn(n), byte(random.Intn(256))
+					buf[j], want[j] = v, v
+				}
+
+				got := int32(strCall3(slots["memcmp"], at+uintptr(s), at+uintptr(d), uintptr(n)))
+
+				if sign := bytes.Compare(buf[s:s+n], buf[d:d+n]); min(max(got, -1), 1) != int32(sign) {
+					t.Fatalf("%s, step %d: memcmp of %d bytes at %d and %d is %d, want the sign of %d", name, k, n, s, d, got, sign)
+				}
+			case 4:
+				c := random.Intn(1 << 16)
+
+				if n > 0 && random.Intn(2) == 0 {
+					j := s + random.Intn(n)
+					buf[j], want[j] = byte(c), byte(c)
+				}
+
+				found := uintptr(0)
+
+				if j := bytes.IndexByte(buf[s:s+n], byte(c)); j >= 0 {
+					found = at + uintptr(s+j)
+				}
+
+				if got := strCall3(slots["memchr"], at+uintptr(s), uintptr(c), uintptr(n)); got != found {
+					t.Fatalf("%s, step %d: memchr of %#x in %d bytes at %d is %#x, want %#x", name, k, c, n, s, got, found)
+				}
+			case 5:
+				buf[s+n], want[s+n] = 0, 0
+
+				if got, length := strCall3(slots["strlen"], at+uintptr(s), 0, 0), bytes.IndexByte(buf[s:], 0); got != uintptr(length) {
+					t.Fatalf("%s, step %d: strlen at %d is %d, want %d", name, k, s, got, length)
 				}
 			}
 

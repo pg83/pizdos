@@ -111,13 +111,23 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   may and keeps the instance, the memory base and the callee-saved
   registers; a constant length of 32 bytes or less is loads and stores, as
   a native compiler makes them, since programs compile with
-  `-fno-builtin`. The loader links lib/str's object once (`str.go`),
-  registered with Go as assembly, never preempted asynchronously, calls
-  its `str_choose()` and binds each `str.<slot>` to the function of that
-  slot in the configuration it returns: the GOT holds the host's function
-  itself, no table between. The stand copies its inputs into a module
-  with the same memmove. A call through a pointer still reaches the
-  kernel's `libcMemcpy`.
+  `-fno-builtin`. The imports of memcmp, memchr, strlen, strcpy, strcat,
+  strcmp, strspn and strcspn it compiles as the kernel has them, with
+  lib/str's functions: memcmp checks both ranges and makes the result -1,
+  0 or 1; memchr searches up to the length or the memory's end, whichever
+  is nearer, and traps when the end cut a search that found nothing;
+  strlen checks the string's start before the call and its NUL after it,
+  and needs the zero byte the loader keeps past the accessible end
+  (`newMemory`) to stop a string that runs to it; strcpy and strcat are
+  strlen and a memmove of the string and its NUL, the destination's range
+  checked first; strcmp, strspn and strcspn take both strings' strlen
+  before lib/str's function, strcmp's result -1, 0 or 1. The loader links
+  lib/str's object once (`str.go`), registered with Go as assembly, never
+  preempted asynchronously, calls its `str_choose()` and binds each
+  `str.<slot>` to the function of that slot in the configuration it
+  returns: the GOT holds the host's function itself, no table between. The
+  stand copies its inputs into a module with the same memmove. A call
+  through a pointer still reaches the kernel's `libcMemcpy`.
 - A call of an import, or of a function of the VM, is a call of a Go
   function as Go makes it: the instance in AX, the arguments in Go's
   registers and stack slots, `call *GOT[symbol]`, the GOT holding the
@@ -219,7 +229,9 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   copied stack, through Go frames and under collection, and refuses a frame
   that returned; fork copies 10000 frames and memory, and the child's
   longjmp to the parent's setjmp lands; a call-free loop interrupted
-  thousands of times under collection keeps its registers and flags.
+  thousands of times under collection keeps its registers and flags; the
+  string functions compiled to lib/str's agree with the kernel's on
+  results, traps and memory, up to and past the memory's end.
 - `test_wasm2o_spec` runs the spec testsuite (pinned in build.py) through
   `wasm2o spec`, which loads every module in its own process; wast2json
   comes from `ix run bld/wabt`. `KNOWN` in `tst/wasm2o_spec.py` lists the

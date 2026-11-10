@@ -138,8 +138,12 @@ func newMemory(least, most uint64) *LinearMemory {
 
 	// boundSlack accessible bytes before the memory and past its maximum: an
 	// access derived from a checked address reaches at most that far either
-	// way (aot.cpp lowererAddress).
-	mapping := mmap(int(boundSlack+most*pageSize+boundSlack), syscall.PROT_READ|syscall.PROT_WRITE)
+	// way (aot.cpp lowererAddress). Then a byte that stays zero: past the
+	// accessible end the memory is zero at every size, as nothing writes
+	// there and growth clears the old tail, and lib/str's strlen, which the
+	// code calls before it checks where a string ended (lowererStrLength),
+	// stops there at the latest.
+	mapping := mmap(int(boundSlack+most*pageSize+boundSlack+1), syscall.PROT_READ|syscall.PROT_WRITE)
 	m := &LinearMemory{mapping: mapping, data: mapping[boundSlack:], max: most}
 	m.grow(uint32(least))
 
