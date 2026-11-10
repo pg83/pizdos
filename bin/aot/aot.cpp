@@ -5773,6 +5773,8 @@ namespace {
 
     static void allocatorDeadMoves(Allocator* a);
 
+    static void allocatorCopies(Allocator* a);
+
     static void allocatorDuplicateDispatch(Allocator* a);
 
     static void allocatorNarrowMasks(Allocator* a);
@@ -10762,6 +10764,70 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     p->insts.pushBack(mf->blocks[h].insts[i]);
                 }
                 p->succs = mf->blocks[h].succs;
+            }
+        }
+    }
+
+    // copies makes a move of a register that copies another, earlier in the
+    // block and unchanged since, read that other one: a chain of moves at a
+    // block's end reads the values where they are, and the moves left with
+    // no reader go with the dead ones.
+    static void allocatorCopies(Allocator* a) {
+        MFunc* mf = a->mf;
+        auto order = a->order.view();
+        for (Int j = 0; j < length(order); ++j) {
+            // copy[r] is the register r holds a copy of, or noReg.
+            Array<VReg, 32> copy{};
+            for (Int r = 0; r < 32; ++r) {
+                copy[r] = noReg;
+            }
+            auto forget = [&](VReg d) {
+                if (!vRegIsPhys(d)) {
+                    return;
+                }
+                copy[d] = noReg;
+                for (Int r = 0; r < 32; ++r) {
+                    if (copy[r] == d) {
+                        copy[r] = noReg;
+                    }
+                }
+            };
+            auto insts = mf->blocks[order[j]].insts.view();
+            for (Int i = 0; i < length(insts); ++i) {
+                MInst* in = &insts[i];
+                if (in->op == mParMove) {
+                    auto& moves = mInstExtra(in)->moves;
+                    for (usize k = 0; k < moves.size(); ++k) {
+                        const VReg src = moves[k].src;
+                        if (vRegIsPhys(src) && copy[src] != noReg && vRegIsXMM(copy[src]) == vRegIsXMM(moves[k].dst)) {
+                            moves[k].src = copy[src];
+                        }
+                    }
+                    for (usize k = 0; k < moves.size(); ++k) {
+                        forget(moves[k].dst);
+                    }
+                    for (usize k = 0; k < moves.size(); ++k) {
+                        const VReg src = moves[k].src;
+                        const VReg dst = moves[k].dst;
+                        bool written = false;
+                        for (usize m = 0; m < moves.size(); ++m) {
+                            written = written || moves[m].dst == src;
+                        }
+                        if (vRegIsPhys(src) && vRegIsPhys(dst) && src != dst && !written) {
+                            copy[dst] = src;
+                        }
+                    }
+                    continue;
+                }
+                mInstForEachOperand(in, [&](VReg* r, Int role) {
+                    if (role == roleTemp || (role & roleDef) != 0) {
+                        forget(*r);
+                    }
+                });
+                auto clobbers = mInstClobberSet(in, mf->registerClasses);
+                for (Int c = 0; c < length(clobbers); ++c) {
+                    forget(clobbers[c]);
+                }
             }
         }
     }
@@ -21042,6 +21108,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         allocatorConstantDefinitions(a);
         allocatorResolve(a);
         allocatorOrderSlots(a);
+        allocatorCopies(a);
         allocatorDeadMoves(a);
         allocatorDuplicateDispatch(a);
         allocatorNarrowMasks(a);
