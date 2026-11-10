@@ -5773,6 +5773,8 @@ namespace {
 
     static void allocatorDeadMoves(Allocator* a);
 
+    static void allocatorDuplicateDispatch(Allocator* a);
+
     static Interval* allocatorPartAt(Interval* root, i32 p);
 
     static void allocatorScan(Allocator* a);
@@ -10717,6 +10719,48 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 live = transfer(in, live);
             }
         }
+        }
+    }
+
+    // duplicateDispatch copies a dispatch, a block of a few instructions
+    // ending in a switch that many blocks jump to, over the jump at the end
+    // of each of them: each block takes its own indirect jump, through the
+    // one table, instead of a jump to the shared one. The blocks' moves
+    // have put every value where the dispatch reads it.
+    static void allocatorDuplicateDispatch(Allocator* a) {
+        MFunc* mf = a->mf;
+        auto order = a->order.view();
+        for (Int j = 0; j < length(order); ++j) {
+            const i32 h = order[j];
+            auto& insts = mf->blocks[h].insts;
+            const usize n = insts.size();
+            if (n == 0 || n > 3 || insts[n - 1].op != mSwitch) {
+                continue;
+            }
+            bool plain = true;
+            for (usize i = 0; i + 1 < n; ++i) {
+                plain = plain && (insts[i].op == mAluImm || insts[i].op == mMov || insts[i].op == mLea || insts[i].op == mNop);
+            }
+            const auto preds = mf->blocks[h].preds;
+            Int jumping = 0;
+            for (Int k = 0; k < length(preds); ++k) {
+                const auto& pi = mf->blocks[preds[k]].insts;
+                jumping += pi.size() && pi[pi.size() - 1].op == mJmp && pi[pi.size() - 1].target == h;
+            }
+            if (!plain || jumping < 16) {
+                continue;
+            }
+            for (Int k = 0; k < length(preds); ++k) {
+                MBlock* p = &mf->blocks[preds[k]];
+                if (!p->insts.size() || p->insts[p->insts.size() - 1].op != mJmp || p->insts[p->insts.size() - 1].target != h) {
+                    continue;
+                }
+                p->insts.popBack();
+                for (usize i = 0; i < n; ++i) {
+                    p->insts.pushBack(mf->blocks[h].insts[i]);
+                }
+                p->succs = mf->blocks[h].succs;
+            }
         }
     }
 
@@ -18545,12 +18589,21 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         auto tables = e->tables;
+        // Copies of one dispatch share its table.
+        Map<uptr, i32> bases = makeMap<uptr, i32>();
         for (Int i = 0; i < length(tables); ++i) {
             TableFixup t = tables[i];
+            const uptr key = t.table.contiguous ? reinterpret_cast<uptr>(t.table.contiguous) : reinterpret_cast<uptr>(t.table.pages) + t.table.offset;
+            auto known = lookupMap(bases, key);
+            if (known.v1) {
+                asmPatch32(a, t.lea, known.v0);
+                continue;
+            }
             while (length(a->buf) % Int(8LL) != Int(0LL)) {
                 asmBytes(a, {u8(u8(204LL))});
             }
             i32 base = asmPos(a);
+            setMap(bases, key, base);
             asmPatch32(a, t.lea, base);
             auto table = t.table;
             for (Int i = 0; i < length(table); ++i) {
@@ -20924,6 +20977,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         allocatorResolve(a);
         allocatorOrderSlots(a);
         allocatorDeadMoves(a);
+        allocatorDuplicateDispatch(a);
         return a;
     }
 
