@@ -14508,6 +14508,40 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         return memIndexed(memReg, rb, convert<i32>(offset + c));
                     }
                 }
+                // So is a sum of a base and an index whose range keeps it
+                // within boundSlack, a byte-indexed table's entry, say: the
+                // sum, which does not wrap from a base within the size, is
+                // addressed itself.
+                if (!checked && !lowererIsConst(l, args[0]) && !lowererIsConst(l, args[1])) {
+                    if (isNil(l->addresses)) {
+                        l->addresses = activePool->make<ValueRanges>(ValueRanges{l->f, makeSlice<ValueRange>(length(l->f->values)), makeSlice<bool>(length(l->f->values))});
+                    }
+                    for (Int i = 0; i < 2; ++i) {
+                        const i32 index = args[i];
+                        const i32 base2 = args[1 - i];
+                        const ValueRange range = valueRangesOf(l->addresses, index, 0);
+                        const i64 top = range.hi + end;
+                        // A load the sum folds has no register of its own.
+                        if (range.lo < 0 || top > boundSlack || l->foldable[usize(base2)]) {
+                            continue;
+                        }
+                        auto known = lookupMap(l->checked, base2);
+                        if (!known.v1 || known.v0 < top) {
+                            l->checkUndo = appendValues(l->checkUndo, CheckUndo{base2, known.v0, known.v1});
+                            setMap(l->checked, base2, i64(boundSlack));
+                            MInst in = inst(mCheck);
+                            in.src = lowererUse(l, base2);
+                            in.imm = maximum(top, convert<i64>(width));
+                            in.addressValue = base2;
+                            lowererEmit(l, in);
+                        }
+                        if (!had || prior < boundSlack - range.hi) {
+                            l->checkUndo = appendValues(l->checkUndo, CheckUndo{addr, prior, had});
+                            setMap(l->checked, addr, boundSlack - range.hi);
+                        }
+                        return memIndexed(memReg, lowererUse(l, addr), convert<i32>(offset));
+                    }
+                }
             }
         }
         if (checked && lowererIsConst(l, addr)) {

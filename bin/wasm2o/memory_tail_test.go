@@ -155,6 +155,43 @@ func TestUpdatedLoads(t *testing.T) {
 	}
 }
 
+// A table indexed by a byte from a base the code does not know is checked
+// at the base: the index's range keeps every entry within boundSlack of it.
+func TestByteIndexedTable(t *testing.T) {
+	const opI32And, opI32Shl = 0x71, 0x74
+	m := &testModule{memMin: 1, memMax: 1, funcs: []testFunc{
+		{params: []ValType{I32, I32}, results: i32, export: "entry", code: cat(
+			get(0), get(1), i32c(255), []byte{opI32And}, i32c(2), []byte{opI32Shl, opI32Add, opI32Load, 2, 0},
+			get(0), get(1), i32c(3), []byte{opI32Add}, i32c(255), []byte{opI32And}, i32c(2), []byte{opI32Shl, opI32Add, opI32Load, 2, 0, opI32Add})},
+	}}
+
+	for _, options := range []CompileOptions{{}, {memoryTail: true, tailRanges: true}} {
+		i := instantiate(t.Name(), readObject(compileModuleWithOptions(m.encode(), options)), nil, 8<<20)
+		i.start()
+		mem := i.memory.bytes()
+		f, _ := i.export("entry")
+		entry := f.Interface().(func(uintptr, uint32, uint32) uint32)
+
+		for k := uint32(0); k < 256; k++ {
+			binary.LittleEndian.PutUint32(mem[4096+4*k:], k*k)
+		}
+
+		for _, x := range []uint32{0, 1, 200, 252, 253, 255, 256, 1000, ^uint32(0)} {
+			a, b := x&255, (x+3)&255
+
+			if got := entry(i.ctx(), 4096, x); got != a*a+b*b {
+				t.Fatalf("tail %t: entries %d and %d: %d", options.memoryTail, a, b, got)
+			}
+		}
+
+		if trap := trapOf(func() { entry(i.ctx(), pageSize+8, 0) }); trap != trapMemoryOOB {
+			t.Fatalf("tail %t: table past the end: trap %d", options.memoryTail, trap)
+		}
+
+		i.release()
+	}
+}
+
 // An address that is the product of two loaded values is not proven in
 // bounds: the bounds of the factors' product do not fit in 64 bits.
 func TestRangeProduct(t *testing.T) {
