@@ -3458,6 +3458,11 @@ namespace {
         Slice<Int> positions{};
         Vec<Int> reach;
         Vec<i32> forward;
+        // shorts tells, in the order of the jumps to blocks, which take the
+        // short form: the first emission of a function finds them, a second
+        // uses them. aligned are the starts of the aligned loop headers.
+        Slice<u8> shorts{};
+        Vec<i32> aligned;
     };
 
     struct Amem {
@@ -4054,6 +4059,8 @@ namespace {
     struct JumpFixup {
         i32 at{};
         i32 block{};
+        // small jumps have an 8-bit displacement at at, others 32 bits.
+        bool small{};
     };
 
     static bool operator==(const JumpFixup& a, const JumpFixup& b) {
@@ -6220,6 +6227,8 @@ namespace {
     static Meta* objCodeDescription(ObjCode* oc);
 
     static void objCodeEmitFunction(ObjCode* oc, Int index, MFunc* mf, Allocator* al);
+
+    static FuncEmitter* objCodeEmitBody(ObjCode* oc, Int index, MFunc* mf, Allocator* al, Slice<u8> shorts);
 
     static void objCodeEndRegion(ObjCode* oc, i32 start);
 
@@ -13768,13 +13777,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void funcEmitterJumpTo(FuncEmitter* e, Int cc, i32 block) {
+        const Int k = length(e->jumps);
+        const bool small = k < length(e->shorts) && e->shorts[k] != 0;
         i32 at = {};
         if (cc < 0) {
-            at = asmJmpRel(e->a);
+            at = small ? asmJmp8(e->a) : asmJmpRel(e->a);
         } else {
-            at = asmJccRel(e->a, convert<u8>(cc));
+            at = small ? asmJcc8(e->a, convert<u8>(cc)) : asmJccRel(e->a, convert<u8>(cc));
         }
-        e->jumps = appendValues(e->jumps, JumpFixup{at, funcEmitterTarget(e, block)});
+        e->jumps = appendValues(e->jumps, JumpFixup{at, funcEmitterTarget(e, block), small});
     }
 
     static Amem funcEmitterMem(FuncEmitter* e, Mem m) {
@@ -17839,11 +17850,62 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return meta;
     }
 
+    // emitFunction emits a function with every jump to a block in the long
+    // form, then, when some can be short, again with those short. A jump is
+    // short when it fits with room for the padding of each aligned loop
+    // header it crosses to grow by 31 bytes: everything else only shrinks.
     static void objCodeEmitFunction(ObjCode* oc, Int index, MFunc* mf, Allocator* al) {
         Asm* a = &oc->a;
         i32 start = objCodeBeginRegion(oc, objCodeFuncName(oc, index));
         oc->funcAt[index] = start;
+        const Int fixups = length(a->fixups);
+        const Int sps = length(a->sps);
+        const SpEntry lastSp = sps ? a->sps[sps - 1] : SpEntry{};
+        const i32 sp = a->sp;
+        const Int calls = length(oc->calls);
+        const Int jumpCalls = length(oc->jumpCalls);
+        const Int addresses = length(oc->addresses);
+        FuncEmitter* e = objCodeEmitBody(oc, index, mf, al, {});
+        Slice<u8> shorts = makeSlice<u8>(length(e->jumps));
+        bool any = false;
+        for (Int k = 0; k < length(e->jumps); ++k) {
+            const JumpFixup j = e->jumps[k];
+            const bool conditional = a->buf[usize(j.at - 1)] != 233;
+            const i32 from = j.at - (conditional ? 2 : 1);
+            const i32 to = e->blockAt[j.block];
+            const i32 lo = minimum(from, to);
+            const i32 hi = maximum(from, to);
+            Int crossed = 0;
+            for (Int h = 0; h < length(e->aligned); ++h) {
+                crossed += e->aligned[usize(h)] > lo && e->aligned[usize(h)] <= hi;
+            }
+            const i64 d = i64(to) - i64(from + 2);
+            const i64 room = 31 * crossed;
+            if (d + room <= 127 && d - room >= -128) {
+                shorts[k] = 1;
+                any = true;
+            }
+        }
+        if (any) {
+            a->buf.resize(usize(start));
+            a->fixups = subslice(a->fixups, 0, fixups);
+            a->sps = subslice(a->sps, 0, sps);
+            if (sps) {
+                a->sps[sps - 1] = lastSp;
+            }
+            a->sp = sp;
+            oc->calls = subslice(oc->calls, 0, calls);
+            oc->jumpCalls = subslice(oc->jumpCalls, 0, jumpCalls);
+            oc->addresses = subslice(oc->addresses, 0, addresses);
+            objCodeEmitBody(oc, index, mf, al, shorts);
+        }
+        objCodeEndRegion(oc, start);
+    }
+
+    static FuncEmitter* objCodeEmitBody(ObjCode* oc, Int index, MFunc* mf, Allocator* al, Slice<u8> shorts) {
+        Asm* a = &oc->a;
         FuncEmitter* e = activePool->make<FuncEmitter>(FuncEmitter{oc, a, mf, al, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}});
+        e->shorts = shorts;
         if (oc->m->tailProfile) {
             e->profile = oc->lay->tailProfile + convert<i32>(index) * tailCounterBytes;
         }
@@ -17964,6 +18026,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             if (header[usize(b)]) {
                 asmNops(a, -asmPos(a) & 31);
+                e->aligned.pushBack(asmPos(a));
             }
             e->blockAt[b] = asmPos(a);
             funcEmitterBlock(e, &mf->blocks[b], i);
@@ -17996,7 +18059,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         auto range1011 = e->jumps;
         for (Int index1012 = 0, rangeEnd1013 = length(range1011); index1012 < rangeEnd1013; ++index1012) {
             JumpFixup j = range1011[index1012];
-            asmPatch32(a, j.at, e->blockAt[j.block]);
+            if (j.small) {
+                asmPatch8(a, j.at, e->blockAt[j.block]);
+            } else {
+                asmPatch32(a, j.at, e->blockAt[j.block]);
+            }
         }
         auto tables = e->tables;
         for (Int i = 0; i < length(tables); ++i) {
@@ -18013,7 +18080,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 asmU64(a, 0);
             }
         }
-        objCodeEndRegion(oc, start);
+        return e;
     }
 
     static void objCodeEndRegion(ObjCode* oc, i32 start) {
