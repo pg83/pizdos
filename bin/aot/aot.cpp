@@ -6443,7 +6443,6 @@ namespace {
 
     static Amem baseAt(VReg base, i32 disp);
 
-    static bool belowBase(Function* f, i32 addr, i64 end);
 
     template <typename Data>
     static void breakPatterns_func(Data data, Int a, Int b);
@@ -6653,6 +6652,8 @@ namespace {
     static bool versionMemoryLoops(Function* f);
 
     static void versionedPreds(Function* f, i32 preheader, i32 header, Int first);
+
+    static bool windowBase(Function* f, i32 addr, i64 end, i32* base, i64* c);
 
     static void writeELF(ObjCode* oc, Slice<u8> note);
 
@@ -14814,6 +14815,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             const ValueRange range = valueRangesOf(l->addresses, addr, 0);
             checked = checked || (range.lo >= 0 && range.hi + end <= i64(l->m->mems[0].limits.min * 65536 + l->m->memoryTail));
         }
+        const bool provenAccess = checked;
         auto temporary740 = lookupMap(l->checked, addr);
         i64 prior = temporary740.v0;
         bool had = temporary740.v1;
@@ -14832,7 +14834,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             // either side (moduleLowFree), where the base's trap, or the
             // slack, is right. A sum with c >= 0 is itself within the base's
             // check; one with c < 0 may have wrapped, so its own register
-            // is never taken as checked.
+            // is never taken as checked. Unless proven, the access is
+            // addressed so even where the sum is known: checkedValues takes
+            // it as reaching c + end past the base.
             Value* av = &l->f->values[addr];
             if (av->op == OpAdd) {
                 Span<i32> args = functionArgs(l->f, addr);
@@ -14850,7 +14854,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     // A proven access at a sum of a bounded base and a
                     // constant is the base's: the sum does not wrap.
                     const bool boundedBase = proven && l->bounded[usize(base)] == l->block && l->block >= 0;
-                    if (c >= -boundSlack && top <= boundSlack && (baseChecked || !checked || boundedBase)) {
+                    if (c >= -boundSlack && top <= boundSlack && (baseChecked || !provenAccess || boundedBase)) {
                         VReg rb = lowererUse(l, base);
                         // The sum reaches as far past itself as the base
                         // does past the base, less c: the whole slack
@@ -21206,37 +21210,18 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return f;
     }
 
-    // belowBase reports whether the lowering addresses an access ending end
-    // bytes past addr from a base, addr being the sum of the base and a
-    // negative constant within the slack: the access then says nothing of
-    // the sum, which may have wrapped around to far past the size.
-    static bool belowBase(Function* f, i32 addr, i64 end) {
-        if (!f->module->memoryTail || end > boundSlack || f->values[addr].op != OpAdd) {
-            return false;
-        }
-        auto constant = [&](i32 v) {
-            const Op op = f->values[v].op;
-            return op == OpConst || op == OpUndef || op == OpRefNull;
-        };
-        Span<i32> args = functionArgs(f, addr);
-        i32 base = args[0];
-        i32 k = args[1];
-        if (constant(base)) {
-            base = args[1];
-            k = args[0];
-        }
-        if (!constant(k) || constant(base)) {
-            return false;
-        }
-        const i64 c = f->values[k].op == OpConst ? convert<i64>(convert<i32>(convert<u32>(f->values[k].aux))) : 0;
-        return c < 0 && c >= -boundSlack && c + end <= boundSlack;
-    }
-
     // Carry successful memory checks through SSA edges and parameters. A
-    // parameter is checked only as far as every incoming argument has already
-    // been checked. Starting with no facts keeps cyclic proofs conservative.
+    // value is checked at a block's entry as far as it is at the end of
+    // every predecessor, a parameter as far as every incoming argument is,
+    // and an argument that is the sum of a value and a constant c >= 0 as
+    // far as that value is, less c. A predecessor not yet reached admits
+    // everything: the facts only shrink from there to the greatest fixed
+    // point, which every reachable block's entry bounds; a parameter that
+    // shrinks again after the first full round is dropped, so the rounds
+    // end. A value's facts start at the block that defines it, and every
+    // fact comes from an access done there or later.
     static Slice<Slice<CheckedValue>> checkedValues(Function* f, CfgInfo* ci) {
-        Int limit = minimum(1024, 1048576 / length(f->blocks));
+        Int limit = minimum(16384, 16777216 / length(f->blocks));
         if (limit == 0) {
             return {};
         }
@@ -21254,6 +21239,22 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 incoming[e->block] = appendValues(incoming[e->block], CheckedEdge{b, e});
             }
         }
+        // sum gives the value and the constant c >= 0 a sum adds to it.
+        auto sum = [&](i32 v, i32* base, i64* c) {
+            if (f->values[v].op != OpAdd) {
+                return false;
+            }
+            Span<i32> args = functionArgs(f, v);
+            for (Int i = 0; i < 2; ++i) {
+                const Value* k = &f->values[args[1 - i]];
+                if (k->op == OpConst && f->values[args[i]].op != OpConst) {
+                    *base = args[i];
+                    *c = convert<i64>(convert<i32>(convert<u32>(k->aux)));
+                    return *c >= 0;
+                }
+            }
+            return false;
+        };
         Slice<i32> tracked = makeSlice<i32>(length(f->values));
         for (Int j = 0, end = length(tracked); j < end; ++j) {
             tracked[j] = -1;
@@ -21274,6 +21275,23 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     add(e.edge->args[val->aux]);
                 }
             }
+            i32 base = -1;
+            i64 c = 0;
+            if (sum(v, &base, &c)) {
+                add(base);
+            }
+        };
+        // An access the lowering proves from the ranges of its address
+        // checks nothing, its base least of all: a base whose range dips
+        // below zero may have wrapped around while the sum did not.
+        const bool own = length(f->module->mems) > 0 && !f->module->mems[0].imported;
+        ValueRanges* ranges = own ? activePool->make<ValueRanges>(ValueRanges{f, makeSlice<ValueRange>(length(f->values)), makeSlice<bool>(length(f->values))}) : nullptr;
+        auto inRange = [&](i32 addr, i64 end) {
+            if (!own) {
+                return false;
+            }
+            const ValueRange range = valueRangesOf(ranges, addr, 0);
+            return range.lo >= 0 && range.hi + end <= i64(f->module->mems[0].limits.min * 65536 + f->module->memoryTail);
         };
         // The accesses of the blocks in order, each with its address and the
         // end it checks; from blocks[i] on are those of the block order[i].
@@ -21289,8 +21307,21 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 Value* val = &f->values[v];
                 if (val->op == OpLoad || val->op == OpStore) {
                     i32 addr = functionArgs(f, v)[0];
-                    const i64 end = val->aux + convert<i64>(memKindWidth(convert<MemKind>(val->aux2)));
-                    if (!belowBase(f, addr, end)) {
+                    const MemKind kind = convert<MemKind>(val->aux2);
+                    const i64 end = val->aux + convert<i64>(memKindWidth(kind));
+                    i32 base = -1;
+                    i64 c = 0;
+                    if (windowBase(f, addr, end, &base, &c)) {
+                        if (MemKind(kind & memProven) == MemKind(0LL) && c + end > 0 && !inRange(addr, end)) {
+                            accesses.pushBack(CheckedValue{base, c + end});
+                            if (f->values[base].op == OpParam) {
+                                add(base);
+                            }
+                        }
+                        if (c >= 0) {
+                            accesses.pushBack(CheckedValue{addr, end});
+                        }
+                    } else {
                         accesses.pushBack(CheckedValue{addr, end});
                     }
                     if (f->values[addr].op == OpParam) {
@@ -21327,11 +21358,22 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 defs[b] = appendValues(defs[b], j);
             }
         }
+        // Each tracked argument that is a sum: the tracked index of its value
+        // and the constant, or -1.
+        Slice<i32> sumBase = makeSlice<i32>(n);
+        Slice<i64> sumConst = makeSlice<i64>(n);
+        for (Int j = 0; j < n; ++j) {
+            i32 base = -1;
+            i64 c = 0;
+            sumBase[j] = sum(values[j], &base, &c) ? tracked[base] : -1;
+            sumConst[j] = c;
+        }
         // A block's row lists the tracked values checked at its end, by index
         // in increasing order, with how far each is checked. Few values are
         // checked in any one block, so rows hold only those. The current
         // block's ends are kept by index, with the indices it has set.
         Slice<Slice<CheckedValue>> rows = makeSlice<Slice<CheckedValue>>(length(f->blocks));
+        Slice<bool> reached = makeSlice<bool>(length(f->blocks));
         Slice<i64> ends = makeSlice<i64>(n);
         Slice<u32> marks = makeSlice<u32>(n);
         u32 epoch = 0;
@@ -21339,6 +21381,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Int touchedCount = 0;
         Slice<CheckedValue> row = makeSlice<CheckedValue>(n);
         Int rowCount = 0;
+        // How far each parameter was checked the round before, or -1.
+        Slice<i64> before = makeSlice<i64>(n);
+        for (Int j = 0; j < n; ++j) {
+            before[j] = -1;
+        }
+        Int round = 0;
         auto set = [&](i32 j, i64 end) {
             ends[j] = end;
             if (marks[j] != epoch) {
@@ -21359,7 +21407,18 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             return low < length(checked) && checked[low].value == j ? checked[low].end : 0;
         };
-        auto entry = [&](i32 b) {
+        // reach is how far argument j is checked at the end of block p.
+        auto reach = [&](i32 p, i32 j) -> i64 {
+            if (j < 0) {
+                return 0;
+            }
+            i64 end = lookup(rows[p], j);
+            if (sumBase[j] >= 0) {
+                end = maximum(end, lookup(rows[p], sumBase[j]) - sumConst[j]);
+            }
+            return end;
+        };
+        auto entry = [&](i32 b, bool widen) {
             for (Int t = 0; t < touchedCount; ++t) {
                 ends[touched[t]] = 0;
             }
@@ -21370,7 +21429,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 const auto preds = f->blocks[b].preds;
                 for (Int k = 0; k < length(preds); ++k) {
                     const i32 p = preds[k];
-                    if (ci->rpoIndex[p] < 0) {
+                    if (ci->rpoIndex[p] < 0 || !reached[p]) {
                         continue;
                     }
                     const Slice<CheckedValue> checked = rows[p];
@@ -21409,8 +21468,19 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 auto range1433 = incoming[b];
                 for (Int index1434 = 0, rangeEnd1435 = length(range1433); index1434 < rangeEnd1435; ++index1434) {
                     CheckedEdge e = range1433[index1434];
-                    i32 arg = tracked[e.edge->args[f->values[p].aux]];
-                    end = minimum(end, lookup(rows[e.pred], arg));
+                    if (ci->rpoIndex[e.pred] < 0 || !reached[e.pred]) {
+                        continue;
+                    }
+                    end = minimum(end, reach(e.pred, tracked[e.edge->args[f->values[p].aux]]));
+                }
+                if (end == i64(4611686018427387904LL)) {
+                    end = 0;
+                }
+                if (widen) {
+                    if (round >= 2 && before[j] >= 0 && end < before[j]) {
+                        end = 0;
+                    }
+                    before[j] = end;
                 }
                 set(j, end);
             }
@@ -21435,38 +21505,40 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 row[at] = item;
             }
         };
-        Int round = 0;
-        for (; round < 16; round++) {
-            bool changed = false;
+        bool stable = false;
+        for (; round < 64 && !stable; round++) {
+            stable = true;
             auto order = ci->order;
             for (Int i = 0; i < length(order); ++i) {
                 i32 b = order[i];
-                entry(b);
+                entry(b, true);
                 for (usize k = usize(blocks[usize(i)]), end = usize(blocks[usize(i + 1)]); k < end; ++k) {
                     const CheckedValue access = accesses[k];
                     set(access.value, maximum(ends[access.value], access.end));
                 }
                 collect();
                 const Slice<CheckedValue> old = rows[b];
-                bool same = length(old) == rowCount;
+                bool same = reached[b] && length(old) == rowCount;
                 for (Int k = 0; same && k < rowCount; ++k) {
                     same = old[k].value == row[k].value && old[k].end == row[k].end;
                 }
                 if (!same) {
-                    changed = true;
+                    stable = false;
                     rows[b] = appendSlice(Slice<CheckedValue>{}, subslice(row, 0, rowCount));
                 }
+                reached[b] = true;
             }
-            if (!changed) {
-                break;
-            }
+        }
+        // Facts that still shrink may not hold.
+        if (!stable) {
+            return {};
         }
         PoolScope results(*caller);
         Slice<Slice<CheckedValue>> proofs = makeSlice<Slice<CheckedValue>>(length(f->blocks));
         auto range1445 = ci->order;
         for (Int index1446 = 0, rangeEnd1447 = length(range1445); index1446 < rangeEnd1447; ++index1446) {
             i32 b = range1445[index1446];
-            entry(b);
+            entry(b, false);
             collect();
             for (Int k = 0; k < rowCount; ++k) {
                 const i64 end = row[k].end;
@@ -23705,6 +23777,35 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         return tried;
+    }
+
+    // windowBase reports whether the lowering addresses an access ending end
+    // bytes past addr from a base, addr being the sum of the base and a
+    // constant c within the slack, and gives the base and c. Unless proven,
+    // such an access checks the base as far as c + end past it; it checks
+    // the sum only for c >= 0, as one below its base may have wrapped around
+    // to far past the size.
+    static bool windowBase(Function* f, i32 addr, i64 end, i32* base, i64* c) {
+        if (!f->module->memoryTail || end > boundSlack || f->values[addr].op != OpAdd) {
+            return false;
+        }
+        auto constant = [&](i32 v) {
+            const Op op = f->values[v].op;
+            return op == OpConst || op == OpUndef || op == OpRefNull;
+        };
+        Span<i32> args = functionArgs(f, addr);
+        i32 b = args[0];
+        i32 k = args[1];
+        if (constant(b)) {
+            b = args[1];
+            k = args[0];
+        }
+        if (!constant(k) || constant(b)) {
+            return false;
+        }
+        *base = b;
+        *c = f->values[k].op == OpConst ? convert<i64>(convert<i32>(convert<u32>(f->values[k].aux))) : 0;
+        return *c >= -boundSlack && *c + end <= boundSlack;
     }
 
     static void writeELF(ObjCode* oc, Slice<u8> note) {
