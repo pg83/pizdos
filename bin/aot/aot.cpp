@@ -16272,6 +16272,21 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (isFloat(t)) {
             if (l->deferred[cond] && f->values[cond].op >= OpFEq && f->values[cond].op <= OpFGe) {
                 Span<i32> cmp = functionArgs(f, cond);
+                const Op cop = f->values[cond].op;
+                const bool direct = cmp[0] == x && cmp[1] == y;
+                if ((cop == OpFLt || cop == OpFGt) && (direct || (cmp[0] == y && cmp[1] == x)) && typeSize(f->values[cmp[0]].typ) == size) {
+                    // x < y ? x : y is minss x, y, and x > y ? x : y maxss
+                    // x, y, exactly: a false comparison, with a NaN or
+                    // equal operands, gives y in both.
+                    MInst in = inst(mFAlu);
+                    in.dst = lowererDef(l, v);
+                    in.src = lowererUse(l, x);
+                    in.src2 = lowererUse(l, y);
+                    in.size = size;
+                    in.aux = convert<u8>((cop == OpFLt) == direct ? fMin : fMax);
+                    lowererEmit(l, in);
+                    return;
+                }
                 MInst in = inst(mFSelect);
                 in.dst = lowererDef(l, v);
                 in.src = lowererUse(l, x);
