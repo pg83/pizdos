@@ -3397,6 +3397,10 @@ namespace {
         u64 memoryTail{};
         bool tailRanges{};
         bool tailProfile{};
+        // lowFree: the module keeps nothing in the first 64 KiB of its
+        // memory, so an address that wrapped around 2^32 is out of bounds
+        // and a sum's base may be checked for it (lowererAddress).
+        bool lowFree{};
         Slice<FuncType> types{};
         Slice<Import> imports{};
         Slice<Func> funcs{};
@@ -6436,6 +6440,8 @@ namespace {
     static Tuple2<Int, SortedHint> choosePivot_func(Data data, Int a, Int b);
 
     static Tuple2<i64, bool> constOffset(Slice<u8> expr);
+
+    static bool moduleLowFree(Module* m);
 
     static MInst copyMachineInst(MInst in);
 
@@ -14085,7 +14091,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // address returns the memory operand of an access of width bytes at addr
     // plus the static offset, emitting its bounds check.
     static Mem lowererAddress(Lowerer* l, i32 addr, i64 offset, Int width, bool proven) {
-        VReg ra = lowererUse(l, addr);
         i64 end = offset + convert<i64>(width);
         bool checked = proven;
         if (length(l->m->mems) > 0 && !l->m->mems[0].imported) {
@@ -14100,8 +14105,51 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         bool had = temporary740.v1;
         checked = checked || (had && prior >= end);
         if (checked && offset < 2147483647) {
-            return memIndexed(memReg, ra, convert<i32>(offset));
+            return memIndexed(memReg, lowererUse(l, addr), convert<i32>(offset));
         }
+        if (!checked && l->m->memoryTail && end <= boundSlack) {
+            // An address base + c with c >= 0 is covered by the check of the
+            // base: the sum reaches at most c + end past it. The base is
+            // checked instead, once for every address derived from it in
+            // its scope, and the sum is addressed from the base, so a sum
+            // used for addresses alone is never computed (markDeferred). A
+            // base not yet checked is checked only in a module whose low
+            // memory is free: a sum that wrapped around 2^32 lands there, and
+            // the base's check traps where the sum's would not.
+            Value* av = &l->f->values[addr];
+            if (av->op == OpAdd) {
+                Span<i32> args = functionArgs(l->f, addr);
+                i32 base = args[0];
+                i32 k = args[1];
+                if (lowererIsConst(l, base) && !lowererIsConst(l, k)) {
+                    base = args[1];
+                    k = args[0];
+                }
+                if (lowererIsConst(l, k) && !lowererIsConst(l, base)) {
+                    i64 c = convert<i64>(convert<u32>(lowererConstBits(l, k)));
+                    auto temporary741 = lookupMap(l->checked, base);
+                    const bool baseChecked = temporary741.v1 && temporary741.v0 >= c + end;
+                    if ((baseChecked || l->m->lowFree) && c + end <= boundSlack && offset + c < 2147483647) {
+                        VReg rb = lowererUse(l, base);
+                        if (!baseChecked) {
+                            l->checkUndo = appendValues(l->checkUndo, CheckUndo{base, temporary741.v0, temporary741.v1});
+                            setMap(l->checked, base, i64(boundSlack));
+                            MInst in = inst(mCheck);
+                            in.src = rb;
+                            in.imm = c + end;
+                            in.addressValue = base;
+                            lowererEmit(l, in);
+                        }
+                        if (!had || prior < boundSlack - c) {
+                            l->checkUndo = appendValues(l->checkUndo, CheckUndo{addr, prior, had});
+                            setMap(l->checked, addr, boundSlack - c);
+                        }
+                        return memIndexed(memReg, rb, convert<i32>(offset + c));
+                    }
+                }
+            }
+        }
+        VReg ra = lowererUse(l, addr);
         // With the accessible tail, the check of a base within the logical size
         // admits every access ending at most boundSlack past that base.
         const i64 admitted = l->m->memoryTail && end <= boundSlack ? i64(boundSlack) : end;
@@ -15694,6 +15742,37 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         l->deferred.resize(f->values.size());
         l->deferred.fill(false);
         auto order = l->ci->order;
+        // An i32 sum of a base and a constant that only loads and stores of
+        // its block address is lowered where one of them uses it, if any
+        // does: lowererAddress addresses from the base when the base's check
+        // covers the sum.
+        if (l->m->memoryTail) {
+            Slice<i32> addressUses = makeSlice<i32>(length(f->values));
+            for (Int j = 0; j < length(order); ++j) {
+                i32 b = order[j];
+                auto instrs = f->blocks[b].instrs.view();
+                for (Int i = 0; i < length(instrs); ++i) {
+                    i32 v = instrs[i];
+                    if (f->values[v].op != OpLoad && f->values[v].op != OpStore) {
+                        continue;
+                    }
+                    i32 a = functionArgs(f, v)[0];
+                    Value* av = &f->values[a];
+                    if (av->op != OpAdd || av->typ != I32 || av->block != b) {
+                        continue;
+                    }
+                    Span<i32> sum = functionArgs(f, a);
+                    if (lowererIsConst(l, sum[0]) != lowererIsConst(l, sum[1])) {
+                        addressUses[a]++;
+                    }
+                }
+            }
+            for (Int v = 0, end = length(f->values); v < end; ++v) {
+                if (addressUses[v] > 0 && addressUses[v] == l->uses[v]) {
+                    l->deferred[v] = true;
+                }
+            }
+        }
         for (Int j = 0; j < length(order); ++j) {
             i32 b = order[j];
             Block* blk = &f->blocks[b];
@@ -20195,6 +20274,33 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // constOffset evaluates a constant offset expression: i32.const or
     // i64.const.
+    // lowFree tells whether the module keeps nothing in the first 64 KiB of
+    // its memory: its own, every data segment active at a constant address
+    // of 64 KiB or more, and its stack pointer, the first global, starting
+    // at 64 KiB or more. Our toolchain links the stack first, its lowest
+    // 64 KiB a red zone past the program's budget.
+    static bool moduleLowFree(Module* m) {
+        if (length(m->mems) == 0 || m->mems[0].imported || length(m->globals) == 0) {
+            return false;
+        }
+        for (Int i = 0; i < length(m->datas); ++i) {
+            Data d = m->datas[i];
+            if (d.mode != segmentActive) {
+                return false;
+            }
+            auto offset = constOffset(d.offset);
+            if (!offset.v1 || offset.v0 < 65536) {
+                return false;
+            }
+        }
+        Global g = m->globals[0];
+        if (g.imported || g.typ != I32 || !g.mutableValue) {
+            return false;
+        }
+        auto stack = constOffset(g.init);
+        return stack.v1 && stack.v0 >= 65536;
+    }
+
     static Tuple2<i64, bool> constOffset(Slice<u8> expr) {
         Reader reader{expr, {}};
         Reader* r = &reader;
@@ -20235,7 +20341,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static Module* decodeModule(Slice<u8> data) {
         Reader* r = activePool->make<Reader>(Reader{data, {}});
-        Module* m = activePool->make<Module>(Module{{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, i64(-1LL), {}, {}, i64(-1LL), {}, {}, {}, {}});
+        Module* m = activePool->make<Module>(Module{{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, i64(-1LL), {}, {}, i64(-1LL), {}, {}, {}, {}});
         if ((asString(readerBytes(r, 4)) != String("\000asm"))) {
             compilerError(String("magic header not detected"));
         }
@@ -22657,6 +22763,7 @@ namespace {
             module->memoryTail = 65536;
             module->tailRanges = options.tailRanges;
             module->tailProfile = options.tailProfile && options.tailRanges;
+            module->lowFree = moduleLowFree(module);
         }
         ObjCode* code = modulePool.make<ObjCode>();
         code->pool = &modulePool;
