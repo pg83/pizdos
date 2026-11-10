@@ -155,6 +155,38 @@ func TestUpdatedLoads(t *testing.T) {
 	}
 }
 
+// An address that is the product of two loaded values is not proven in
+// bounds: the bounds of the factors' product do not fit in 64 bits.
+func TestRangeProduct(t *testing.T) {
+	const opI32Mul = 0x6c
+	m := &testModule{memMin: 1, memMax: 1, funcs: []testFunc{
+		{params: i32, results: i32, export: "product", code: cat(get(0), []byte{opI32Load, 2, 0}, get(0), []byte{opI32Load, 2, 4, opI32Mul, opI32Load, 2, 0})},
+	}}
+
+	for _, options := range []CompileOptions{{}, {memoryTail: true, tailRanges: true}} {
+		i := instantiate(t.Name(), readObject(compileModuleWithOptions(m.encode(), options)), nil, 8<<20)
+		i.start()
+		mem := i.memory.bytes()
+		f, _ := i.export("product")
+		product := f.Interface().(func(uintptr, uint32) uint32)
+		binary.LittleEndian.PutUint32(mem[100:], 3)
+		binary.LittleEndian.PutUint32(mem[104:], 1000)
+		binary.LittleEndian.PutUint32(mem[3000:], 77)
+
+		if got := product(i.ctx(), 100); got != 77 {
+			t.Fatalf("tail %t: load at a product in bounds: %d", options.memoryTail, got)
+		}
+
+		binary.LittleEndian.PutUint32(mem[104:], pageSize/3+10)
+
+		if trap := trapOf(func() { product(i.ctx(), 100) }); trap != trapMemoryOOB {
+			t.Fatalf("tail %t: load at a product past the end: trap %d", options.memoryTail, trap)
+		}
+
+		i.release()
+	}
+}
+
 // An access at a negative constant offset from a base is covered by the
 // base's check and addressed from the base: with the tail it reaches the
 // slack before the memory where the sum wrapped, and traps only for a base

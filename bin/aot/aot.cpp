@@ -9278,7 +9278,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         break;
                     }
                     case OpMul: {
-                        if (a.lo >= 0 && b.lo >= 0 && a.hi * b.hi <= i64(4294967295LL)) {
+                        // Bounds of an unknown value are 2^32 - 1: their
+                        // product would wrap in 64 bits.
+                        if (a.lo >= 0 && b.lo >= 0 && (b.hi == 0 || a.hi <= i64(4294967295LL) / b.hi)) {
                             out = ValueRange{a.lo * b.lo, a.hi * b.hi};
                         }
                         break;
@@ -9293,7 +9295,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     case OpShl: {
                         if (b.lo == b.hi) {
                             const i64 factor = i64(1LL) << (b.lo & 31);
-                            if (within(a.lo * factor, a.hi * factor)) {
+                            if (a.lo > -reach / factor && a.hi < reach / factor && within(a.lo * factor, a.hi * factor)) {
                                 out = ValueRange{a.lo * factor, a.hi * factor};
                             }
                         }
@@ -9336,6 +9338,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
                 break;
             }
+        }
+        if (out.lo > out.hi) {
+            out = unknown;
         }
         r->cache[v] = out;
         return out;
