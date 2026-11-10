@@ -5687,6 +5687,10 @@ namespace {
 
     static void allocatorSpillAtJoins(Allocator* a);
 
+    static void allocatorSplitAtJoins(Allocator* a);
+
+    static Interval* allocatorPartAt(Interval* root, i32 p);
+
     static void allocatorScan(Allocator* a);
 
     static void allocatorSpill(Allocator* a, Interval* it);
@@ -10393,6 +10397,71 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         });
     }
 
+    // partAt returns the part of root's value covering p, or null.
+    static Interval* allocatorPartAt(Interval* root, i32 p) {
+        if (intervalCovers(root, p)) {
+            return root;
+        }
+        const Int k = sortSearch(length(root->children), [&](Int i) {
+            return intervalStart(root->children[i]) > p;
+        });
+        if (k && intervalCovers(root->children[k - 1], p)) {
+            return root->children[k - 1];
+        }
+        return nullptr;
+    }
+
+    // splitAtJoins starts afresh, at a loop header that many of the loop's
+    // blocks return to, every value live there: the scan chooses their
+    // registers at the header, those with the most uses after it first,
+    // instead of keeping what each got where it began. A dispatch loop's
+    // hottest values then take the registers its handlers' calls keep, for
+    // the whole loop.
+    static void allocatorSplitAtJoins(Allocator* a) {
+        MFunc* mf = a->mf;
+        struct Part {
+            Interval* interval;
+            Int uses;
+        };
+        auto order = a->order.view();
+        for (Int j = 0; j < length(order); ++j) {
+            const i32 b = order[j];
+            const i32 from = a->blockFrom[b];
+            const auto preds = mf->blocks[b].preds;
+            Int back = 0;
+            for (Int i = 0; i < length(preds); ++i) {
+                if (a->blockFrom[preds[i]] >= from) {
+                    back++;
+                }
+            }
+            if (back < 16) {
+                continue;
+            }
+            Slice<Part> parts = {};
+            bitsetEach(a->liveIn[b], [&](Int x) {
+                Interval* root = a->intervals[x];
+                if (isNil(root) || !length(root->ranges)) {
+                    return;
+                }
+                Interval* part = root;
+                if (length(root->children)) {
+                    part = root->children[length(root->children) - 1];
+                }
+                if (intervalStart(part) >= from || !intervalCovers(part, from)) {
+                    return;
+                }
+                Interval* child = intervalSplit(part, from);
+                parts = appendValues(parts, Part{child, length(child->uses)});
+            });
+            sortValuesStable(parts, [&](Int x, Int y) {
+                return parts[x].uses > parts[y].uses;
+            });
+            for (Int i = 0; i < length(parts); ++i) {
+                a->unhandled.push(parts[i].interval, from);
+            }
+        }
+    }
+
     // spillAtJoins keeps a value in its slot from the start of a block that
     // many blocks enter, when most of them would restore its register
     // there: a dispatch loop's handlers spill such a value around their
@@ -10415,17 +10484,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 if (isNil(root)) {
                     return;
                 }
-                Interval* part = root;
-                if (!intervalCovers(root, from)) {
-                    const Int k = sortSearch(length(root->children), [&](Int i) {
-                        return intervalStart(root->children[i]) > from;
-                    });
-                    if (!k || !intervalCovers(root->children[k - 1], from)) {
-                        return;
-                    }
-                    part = root->children[k - 1];
-                }
-                if (part->reg == noReg || intervalNextUse(part, from) < intervalEnd(part)) {
+                Interval* part = allocatorPartAt(root, from);
+                if (isNil(part) || part->reg == noReg || intervalNextUse(part, from) < intervalEnd(part)) {
                     return;
                 }
                 const VReg r = firstVirtual + VReg(x);
@@ -10467,6 +10527,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             a->unhandled.initial[i].order = u32(i);
         }
         a->unhandled.nextOrder = u32(a->unhandled.initial.size());
+        allocatorSplitAtJoins(a);
         for (Int r = 0, end = length(a->fixed); r < end; ++r) {
             if (!isNil(a->fixed[r]) && length(a->fixed[r]->ranges) > 0) {
                 a->inactive.pushBack(a->fixed[r]);
