@@ -85,6 +85,70 @@ func TestUnrolledLoopFallback(t *testing.T) {
 	}
 }
 
+// An unrolled loop addresses its bytes as sums of a base and a constant,
+// as clang does for wasm: in the guarded copy each sum is addressed from
+// its base, which an access of the same block proves within bounds.
+func TestUnrolledSums(t *testing.T) {
+	const opI32LtU = 0x49
+	inc := cat([]byte{0x2d, 0, 0}, i32c(1), []byte{opI32Add, 0x3a, 0, 0})
+	body := cat(get(0), get(3), []byte{opI32Add, opLocalTee, 4}, get(1), get(3), []byte{opI32Add, opLocalTee, 5}, inc)
+
+	for k := int32(1); k < 4; k++ {
+		body = cat(body, get(4), i32c(k), []byte{opI32Add}, get(5), i32c(k), []byte{opI32Add}, inc)
+	}
+
+	m := &testModule{memMin: 1, memMax: 1, funcs: []testFunc{
+		{params: []ValType{I32, I32, I32}, locals: []ValType{I32, I32, I32}, export: "copy",
+			code: cat([]byte{opLoop, blockEmpty}, body, get(3), i32c(4), []byte{opI32Add, opLocalTee, 3},
+				get(2), []byte{opI32LtU, opBrIf, 0, 0x0b})},
+	}}
+	for _, options := range []CompileOptions{{}, {memoryTail: true, tailRanges: true}} {
+		i := instantiate(t.Name(), readObject(compileModuleWithOptions(m.encode(), options)), nil, 8<<20)
+		i.start()
+		fn, _ := i.export("copy")
+		copyBytes := fn.Interface().(func(uintptr, uint32, uint32, uint32))
+		fill := func() []byte {
+			for j := range i.memory.bytes() {
+				i.memory.bytes()[j] = byte(j*37 + 11)
+			}
+
+			return append([]byte(nil), i.memory.bytes()...)
+		}
+		add := func(want []byte, dst, n uint32) {
+			for j := uint32(0); j < n && dst+j < pageSize; j++ {
+				want[dst+j] = want[2048+j] + 1
+			}
+		}
+
+		for _, n := range []uint32{4, 16, 64, 256} {
+			for _, dst := range []uint32{1024, 1025, 3000, pageSize - 256} {
+				want := fill()
+				add(want, dst, n)
+				copyBytes(i.ctx(), dst, 2048, n)
+
+				if !bytes.Equal(i.memory.bytes(), want) {
+					t.Fatalf("tail %t: copy(%d, %d) wrote different bytes", options.memoryTail, dst, n)
+				}
+			}
+		}
+
+		// Past the end the guarded copy falls back: the bytes within the
+		// memory are written before the trap.
+		want := fill()
+		add(want, pageSize-8, 64)
+
+		if code := trapOf(func() { copyBytes(i.ctx(), pageSize-8, 2048, 64) }); code != trapMemoryOOB {
+			t.Fatalf("tail %t: copy past the end: trap %d", options.memoryTail, code)
+		}
+
+		if !bytes.Equal(i.memory.bytes(), want) {
+			t.Fatalf("tail %t: copy past the end wrote different bytes", options.memoryTail)
+		}
+
+		i.release()
+	}
+}
+
 // hitHost counts the calls of countHit.
 type hitHost struct {
 	hits int

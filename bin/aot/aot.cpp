@@ -3468,7 +3468,23 @@ namespace {
         Vec<i32> aligned;
         Vec<i32> padded;
         Vec<i32> trapTo;
+        // spans are the sizes of the aligned loops of the first emission,
+        // from the header to the end of the last block that returns to it,
+        // in the order of their headers; plan is those the second uses.
+        Vec<i32> spans;
+        Slice<i32> plan{};
     };
+
+    // alignPad is the padding before a loop header at pos: to 32 bytes, and
+    // to 64 when the loop, of span bytes, fits in 64 but would cross a
+    // 64-byte boundary: the front end fetches 64-byte blocks.
+    static i32 alignPad(i32 pos, i32 span) {
+        i32 pad = -pos & 31;
+        if (span > 0 && span <= 64 && ((pos + pad) & 63) + span > 64) {
+            pad += 32;
+        }
+        return pad;
+    }
 
     struct Amem {
         Int base{};
@@ -3905,6 +3921,12 @@ namespace {
         // rmwFlags marks a block's branch condition that tests a value an
         // update in place stored: the update's flags decide the branch.
         Vec<bool> rmwFlags{};
+        // bounded is, for the address of an access proven in bounds in the
+        // block being lowered, that block: the guard that proved it covers
+        // the block's other accesses too, so there a sum of the address and
+        // a constant within boundSlack does not wrap.
+        Vec<i32> bounded{};
+        i32 block = -1;
         Vec<i32> mblk{};
         i32 cur{};
         Map<Array<i32, 2>, i32> split{};
@@ -6234,7 +6256,7 @@ namespace {
 
     static void objCodeEmitFunction(ObjCode* oc, Int index, MFunc* mf, Allocator* al);
 
-    static FuncEmitter* objCodeEmitBody(ObjCode* oc, Int index, MFunc* mf, Allocator* al, Slice<u8> shorts, Slice<u8> trapShorts);
+    static FuncEmitter* objCodeEmitBody(ObjCode* oc, Int index, MFunc* mf, Allocator* al, Slice<u8> shorts, Slice<u8> trapShorts, Slice<i32> plan);
 
     static void objCodeEndRegion(ObjCode* oc, i32 start);
 
@@ -14465,9 +14487,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     i64 top = c + end;
                     auto temporary741 = lookupMap(l->checked, base);
                     const bool baseChecked = temporary741.v1 && temporary741.v0 >= top;
-                    if (c >= -boundSlack && top <= boundSlack && (baseChecked || !checked)) {
+                    // A proven access at a sum of a bounded base and a
+                    // constant is the base's: the sum does not wrap.
+                    const bool boundedBase = proven && l->bounded[usize(base)] == l->block && l->block >= 0;
+                    if (c >= -boundSlack && top <= boundSlack && (baseChecked || !checked || boundedBase)) {
                         VReg rb = lowererUse(l, base);
-                        if (!baseChecked) {
+                        if (!baseChecked && !boundedBase) {
                             l->checkUndo = appendValues(l->checkUndo, CheckUndo{base, temporary741.v0, temporary741.v1});
                             setMap(l->checked, base, i64(boundSlack));
                             MInst in = inst(mCheck);
@@ -16177,6 +16202,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         l->rmw.fill(-1);
         l->rmwFlags.resize(f->values.size());
         l->rmwFlags.fill(false);
+        l->bounded.resize(f->values.size());
+        l->bounded.fill(-1);
         auto order = l->ci->order;
         // An i32 sum of a base and a constant that only loads and stores of
         // its block address is lowered where one of them uses it, if any
@@ -17987,7 +18014,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 const i32 next = k < length(sites) ? sites[k].from : i32(2147483647);
                 for (; h < e->aligned.size() && e->aligned[h] - e->padded[h] <= next; ++h) {
                     const i32 before = e->aligned[h] - e->padded[h] + delta;
-                    delta += (-before & 31) - e->padded[h];
+                    delta += alignPad(before, e->spans[h]) - e->padded[h];
                     at = appendValues(at, e->aligned[h]);
                     shift = appendValues(shift, delta);
                 }
@@ -18038,10 +18065,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         const Int calls = length(oc->calls);
         const Int jumpCalls = length(oc->jumpCalls);
         const Int addresses = length(oc->addresses);
-        FuncEmitter* e = objCodeEmitBody(oc, index, mf, al, {}, {});
+        FuncEmitter* e = objCodeEmitBody(oc, index, mf, al, {}, {}, {});
         Slice<u8> shorts = makeSlice<u8>(length(e->jumps));
         Slice<u8> trapShorts = makeSlice<u8>(length(e->traps));
-        if (objCodeShortJumps(e, shorts, trapShorts)) {
+        Slice<i32> plan = makeSlice<i32>(i64(e->spans.size()));
+        bool realign = false;
+        for (usize k = 0; k < e->spans.size(); ++k) {
+            plan[i64(k)] = e->spans[k];
+            realign = realign || alignPad(e->aligned[k] - e->padded[k], e->spans[k]) != e->padded[k];
+        }
+        if (objCodeShortJumps(e, shorts, trapShorts) || realign) {
             a->buf.resize(usize(start));
             a->fixups = subslice(a->fixups, 0, fixups);
             a->sps = subslice(a->sps, 0, sps);
@@ -18052,16 +18085,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             oc->calls = subslice(oc->calls, 0, calls);
             oc->jumpCalls = subslice(oc->jumpCalls, 0, jumpCalls);
             oc->addresses = subslice(oc->addresses, 0, addresses);
-            objCodeEmitBody(oc, index, mf, al, shorts, trapShorts);
+            objCodeEmitBody(oc, index, mf, al, shorts, trapShorts, plan);
         }
         objCodeEndRegion(oc, start);
     }
 
-    static FuncEmitter* objCodeEmitBody(ObjCode* oc, Int index, MFunc* mf, Allocator* al, Slice<u8> shorts, Slice<u8> trapShorts) {
+    static FuncEmitter* objCodeEmitBody(ObjCode* oc, Int index, MFunc* mf, Allocator* al, Slice<u8> shorts, Slice<u8> trapShorts, Slice<i32> plan) {
         Asm* a = &oc->a;
         FuncEmitter* e = activePool->make<FuncEmitter>(FuncEmitter{oc, a, mf, al, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}});
         e->shorts = shorts;
         e->trapShorts = trapShorts;
+        e->plan = plan;
         if (oc->m->tailProfile) {
             e->profile = oc->lay->tailProfile + convert<i32>(index) * tailCounterBytes;
         }
@@ -18163,6 +18197,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Vec<u8> header;
         header.resize(mf->blocks.size());
         header.fill(0);
+        Vec<i32> latch;
+        latch.resize(mf->blocks.size());
+        latch.fill(-1);
         for (Int j = 0; j < length(order); ++j) {
             const i32 b = order[j];
             const auto preds = mf->blocks[b].preds;
@@ -18171,9 +18208,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 const i32 to = funcEmitterTarget(e, b);
                 if (!mf->blocks[to].cold && !mf->blocks[p].cold && positions[p] >= positions[to]) {
                     header[usize(to)] = 1;
+                    if (latch[usize(to)] < 0 || positions[p] > positions[latch[usize(to)]]) {
+                        latch[usize(to)] = p;
+                    }
                 }
             }
         }
+        Vec<i32> blockEnd;
+        blockEnd.resize(mf->blocks.size());
+        blockEnd.fill(-1);
+        Vec<i32> headers;
         for (Int i = 0; i < length(order); ++i) {
             i32 b = order[i];
             asmSetSP(a, e->body);
@@ -18181,13 +18225,21 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 continue;
             }
             if (header[usize(b)]) {
-                const i32 pad = -asmPos(a) & 31;
+                const usize k = e->aligned.size();
+                const i32 pad = alignPad(asmPos(a), k < usize(length(e->plan)) ? e->plan[k] : 0);
                 asmNops(a, pad);
                 e->aligned.pushBack(asmPos(a));
                 e->padded.pushBack(pad);
+                headers.pushBack(b);
             }
             e->blockAt[b] = asmPos(a);
             funcEmitterBlock(e, &mf->blocks[b], i);
+            blockEnd[usize(b)] = asmPos(a);
+        }
+        for (usize k = 0; k < headers.size(); ++k) {
+            const i32 l = latch[usize(headers[k])];
+            const i32 end = l >= 0 ? blockEnd[usize(l)] : -1;
+            e->spans.pushBack(end > e->aligned[k] ? end - e->aligned[k] : 0);
         }
         Int i = 0;
         for (; i < length(e->late); i++) {
@@ -21988,7 +22040,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static MFunc* lowerFunction(ObjCode* oc, Function* f) {
-        Lowerer* l = activePool->make<Lowerer>(Lowerer{oc->m, f, oc->lay, {}, activePool->make<MFunc>(MFunc{}), {}, {}, {}, {}, {}, {}, {}, {}, mapOf<Array<i32, 2>, i32>({}), mapOf<i32, i64>({}), {}, {}, {}, {}});
+        Lowerer* l = activePool->make<Lowerer>(Lowerer{oc->m, f, oc->lay, {}, activePool->make<MFunc>(MFunc{}), {}, {}, {}, {}, {}, {}, {}, -1, {}, {}, mapOf<Array<i32, 2>, i32>({}), mapOf<i32, i64>({}), {}, {}, {}, {}});
         l->oc = oc;
         l->ci = f->cfg ? f->cfg : functionAnalyze(f);
         l->vregs.resize(f->values.size());
@@ -22062,6 +22114,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 lowererEmit(l, in);
             }
             auto instrs = f->blocks[b].instrs.view();
+            l->block = b;
+            for (Int i = 0; i < length(instrs); ++i) {
+                const Value* val = &f->values[instrs[i]];
+                if ((val->op == OpLoad || val->op == OpStore) && MemKind(convert<MemKind>(val->aux2) & memProven) != MemKind(0LL)) {
+                    l->bounded[usize(functionArgs(f, instrs[i])[0])] = b;
+                }
+            }
             for (Int i = 0; i < length(instrs); ++i) {
                 i32 v = instrs[i];
                 if (!l->deferred[v]) {
