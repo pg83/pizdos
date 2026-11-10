@@ -5773,6 +5773,8 @@ namespace {
 
     static void allocatorDeadMoves(Allocator* a);
 
+    static void allocatorDeadSpills(Allocator* a);
+
     static void allocatorCopies(Allocator* a);
 
     static void allocatorDuplicateDispatch(Allocator* a);
@@ -10736,6 +10738,125 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 live = transfer(in, live);
             }
         }
+        }
+    }
+
+    // deadSpills drops the stores into spill slots that nothing reads before
+    // they are written again: the spill at a definition of a value whose
+    // slot the next definition fills too, say. The liveness of the slots
+    // runs backward over the blocks to a fixed point, as deadMoves's of the
+    // registers does. A function that calls an import returning twice keeps
+    // every store: the second return reads the slots wherever a call left
+    // them.
+    static void allocatorDeadSpills(Allocator* a) {
+        MFunc* mf = a->mf;
+        if (mf->returnsTwice || a->nslots <= 0) {
+            return;
+        }
+        const usize words = (usize(a->nslots) + 63) / 64;
+        const usize n = mf->blocks.size();
+        auto slot = [](VReg r) -> i32 {
+            return isSlot(r) && slotOf(r) < constantSlot ? slotOf(r) : -1;
+        };
+        Vec<u64> liveIn;
+        liveIn.resize(n * words);
+        liveIn.fill(0);
+        Vec<u64> gen;
+        gen.resize(n * words);
+        gen.fill(0);
+        Vec<u64> kill;
+        kill.resize(n * words);
+        kill.fill(0);
+        auto order = a->order.view();
+        // Through an instruction the slots it writes die, those it reads live.
+        auto transfer = [&](MInst* in, u64* live) {
+            mInstForEachOperand(in, [&](VReg* r, Int role) {
+                const i32 k = slot(*r);
+                if (k >= 0 && role == roleDef) {
+                    live[usize(k) / 64] &= ~(u64(1) << (u64(k) % 64));
+                }
+            });
+            mInstForEachOperand(in, [&](VReg* r, Int role) {
+                const i32 k = slot(*r);
+                if (k >= 0 && role != roleDef) {
+                    live[usize(k) / 64] |= u64(1) << (u64(k) % 64);
+                }
+            });
+        };
+        for (Int j = 0; j < length(order); ++j) {
+            const usize b = usize(order[j]);
+            u64* g = &gen[b * words];
+            u64* k = &kill[b * words];
+            auto instructions = mf->blocks[b].insts.view();
+            for (Int i = length(instructions) - 1; i >= 0; --i) {
+                mInstForEachOperand(&instructions[i], [&](VReg* r, Int role) {
+                    const i32 x = slot(*r);
+                    if (x >= 0 && role == roleDef) {
+                        g[usize(x) / 64] &= ~(u64(1) << (u64(x) % 64));
+                        k[usize(x) / 64] |= u64(1) << (u64(x) % 64);
+                    }
+                });
+                mInstForEachOperand(&instructions[i], [&](VReg* r, Int role) {
+                    const i32 x = slot(*r);
+                    if (x >= 0 && role != roleDef) {
+                        g[usize(x) / 64] |= u64(1) << (u64(x) % 64);
+                        k[usize(x) / 64] &= ~(u64(1) << (u64(x) % 64));
+                    }
+                });
+            }
+            for (usize w = 0; w < words; ++w) {
+                liveIn[b * words + w] = g[w];
+            }
+        }
+        Vec<u64> out;
+        out.resize(words);
+        auto liveOut = [&](usize b) {
+            out.fill(0);
+            const auto succs = mf->blocks[b].succs;
+            for (Int k = 0; k < length(succs); ++k) {
+                const u64* in = &liveIn[usize(succs[k]) * words];
+                for (usize w = 0; w < words; ++w) {
+                    out[w] |= in[w];
+                }
+            }
+        };
+        for (bool changed = true; changed;) {
+            changed = false;
+            for (Int j = length(order) - 1; j >= 0; --j) {
+                const usize b = usize(order[j]);
+                liveOut(b);
+                for (usize w = 0; w < words; ++w) {
+                    const u64 x = gen[b * words + w] | (out[w] & ~kill[b * words + w]);
+                    if (x != liveIn[b * words + w]) {
+                        liveIn[b * words + w] = x;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        for (Int j = 0; j < length(order); ++j) {
+            const usize b = usize(order[j]);
+            liveOut(b);
+            u64* live = &out[0];
+            auto instructions = mf->blocks[b].insts.view();
+            for (Int i = length(instructions) - 1; i >= 0; --i) {
+                MInst* in = &instructions[i];
+                const i32 k = slot(in->dst);
+                if (in->op == mParMove) {
+                    auto& moves = mInstExtra(in)->moves;
+                    usize kept = 0;
+                    for (usize m = 0; m < moves.size(); ++m) {
+                        const i32 x = slot(moves[m].dst);
+                        if (x < 0 || (live[usize(x) / 64] >> (u64(x) % 64)) & 1) {
+                            moves[kept++] = moves[m];
+                        }
+                    }
+                    moves.resize(kept);
+                } else if ((in->op == mMov || in->op == mFMov) && k >= 0 && !((live[usize(k) / 64] >> (u64(k) % 64)) & 1)) {
+                    *in = inst(mNop);
+                }
+                transfer(in, live);
+            }
         }
     }
 
@@ -21841,6 +21962,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         allocatorOrderSlots(a);
         allocatorCopies(a);
         allocatorDeadMoves(a);
+        allocatorDeadSpills(a);
         allocatorDuplicateDispatch(a);
         allocatorNarrowMasks(a);
         return a;
