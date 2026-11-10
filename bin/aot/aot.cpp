@@ -10840,7 +10840,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // narrowMasks loads only the low bytes of an unsigned load that a mask
     // of them is the only reader of in its register: a byte or a half
     // instead of a word and an and. The load's check, of its own width,
-    // stays where it was.
+    // stays where it was. A mask of a load no wider than it goes alone.
     static void allocatorNarrowMasks(Allocator* a) {
         MFunc* mf = a->mf;
         auto order = a->order.view();
@@ -10872,8 +10872,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             continue;
                         }
                         if (prior->op == mLoad && prior->dst == r) {
-                            if (prior->aux == 0 && prior->dsize == 4 && prior->size > width) {
-                                prior->size = width;
+                            if (prior->aux == 0 && prior->dsize == 4) {
+                                if (prior->size > width) {
+                                    prior->size = width;
+                                }
                                 *in = inst(mNop);
                             }
                             done = true;
