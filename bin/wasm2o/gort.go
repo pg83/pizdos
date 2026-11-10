@@ -223,8 +223,13 @@ func (m *goModule) pcTable(values []spEntry, size uint32) uint32 {
 	return offset
 }
 
-// registerCode tells Go about the regions of code at base.
-func registerCode(name string, base uintptr, size uintptr, regions []Region) {
+// funcFlagAsm is Go's abi.FuncFlagAsm: the function is assembly, where Go
+// never preempts asynchronously.
+const funcFlagAsm = 4
+
+// registerCode tells Go about the regions of code at base; code registered
+// as assembly is never preempted asynchronously.
+func registerCode(name string, base uintptr, size uintptr, regions []Region, assembly bool) {
 	checkGo()
 
 	if len(regions) == 0 {
@@ -253,6 +258,10 @@ func registerCode(name string, base uintptr, size uintptr, regions []Region) {
 
 		line := uint32(index + 1)
 		flag := uint32(0)
+
+		if assembly {
+			flag = funcFlagAsm
+		}
 		pcsp := m.pcTable(r.sp, size)
 		pcfile := m.pcTable([]spEntry{{0, 0}}, size)
 		pcln := m.pcTable([]spEntry{{0, int32(line)}}, size)

@@ -5269,14 +5269,15 @@ namespace {
     static constexpr Int calleeJump = 2;
 
     // calleeGo calls a Go function of the VM, imm the index of its extern
-    // symbol: an import's. calleeNative calls a native memory function,
-    // imm its symbol's index, with host addresses in Go's registers.
+    // symbol: an import's. calleeStr calls a function of lib/str, imm its
+    // symbol's index, as the module's functions call each other, with host
+    // addresses.
     static constexpr Int calleeGo = 3;
 
-    static constexpr Int calleeNative = 4;
+    static constexpr Int calleeStr = 4;
 
     // The imports of lib/c's memory functions the code compiles itself: it
-    // checks their ranges and calls the native functions.
+    // checks their ranges and calls lib/str's.
     static constexpr Int intrinsicNone = 0;
 
     static constexpr Int intrinsicMemcpy = 1;
@@ -5623,15 +5624,15 @@ namespace {
 
     static const String symInterruptCall = String("w2o.interrupt_call");
 
-    // The native memory functions the loader binds: memcpy and memmove take
-    // the destination, the source and the length, memset the destination,
-    // the byte and the length, in AX, BX and CX, as Go passes them, and keep
-    // RBP, R14 and X15 as Go's functions do.
-    static const String symMemcpy = String("w2o.memcpy");
+    // lib/str's functions the loader binds, those of the host's
+    // configuration: memcpy and memmove take the destination, the source and
+    // the length, memset the destination, the byte and the length, as the
+    // module's functions take arguments, and keep what they keep.
+    static const String symMemcpy = String("str.memcpy");
 
-    static const String symMemmove = String("w2o.memmove");
+    static const String symMemmove = String("str.memmove");
 
-    static const String symMemset = String("w2o.memset");
+    static const String symMemset = String("str.memset");
 
     static constexpr SortedHint unknownHint = SortedHint(0LL);
 
@@ -6079,8 +6080,6 @@ namespace {
 
     static void funcEmitterGoCall(FuncEmitter* e, i32 index);
 
-    static void funcEmitterNativeCall(FuncEmitter* e, i32 index);
-
     static void funcEmitterSwap(FuncEmitter* e, VReg x, VReg y);
 
     static void funcEmitterSwitchTable(FuncEmitter* e, MInst* in);
@@ -6133,7 +6132,7 @@ namespace {
 
     static void lowererIntrinsic(Lowerer* l, i32 v, Int intrinsic, Span<const i32> args);
 
-    static void lowererNativeCall(Lowerer* l, String sym, VReg a, VReg b, VReg c);
+    static void lowererStrCall(Lowerer* l, String sym, VReg a, VReg b, VReg c);
 
     static void lowererCallIndirect(Lowerer* l, i32 v, Int typeIndex, Int table, Span<const i32> args);
 
@@ -7466,7 +7465,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // class. Calls need no XMM clobbers in an integer-only function, or GPR
     // clobbers in a function with only virtual XMM registers.
     static Slice<VReg> mInstClobberSet(MInst* in, u8 registerClasses) {
-        if (in->op == mCall && (in->aux == calleeGo || in->aux == calleeNative)) {
+        if (in->op == mCall && in->aux == calleeGo) {
             if (registerClasses == (1u << classGPR)) {
                 return goClobberGprs;
             }
@@ -9631,7 +9630,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     for (Int k = 0; k < length(clobbers); ++k) {
                         intervalAddRange(interval(clobbers[k]), p + 1, p + 2);
                     }
-                    if (in->op == mCall && (in->aux == calleeGo || in->aux == calleeNative)) {
+                    if (in->op == mCall && in->aux == calleeGo) {
                         // The function's callers keep the callee-saved
                         // registers across their call of it: it saves them,
                         // as Go writes them.
@@ -14251,8 +14250,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         funcEmitterGoCall(e, convert<i32>(in->imm));
                         break;
                     }
-                    case calleeNative: {
-                        funcEmitterNativeCall(e, convert<i32>(in->imm));
+                    case calleeStr: {
+                        asmCallMem(a, Amem{-1, -1, {}, {}, convert<i32>(in->imm), labelGot});
                         break;
                     }
                     default: {
@@ -14494,16 +14493,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return objCodeFloatConst(e->oc, e->al->constantSlots[usize(slot - constantSlot)], 8);
         }
         return rspAt(convert<i32>(e->mf->stackArgs) + 8 * slot);
-    }
-
-    // nativeCall calls the native memory function of extern symbol index,
-    // its arguments placed: it writes what Go writes, so the instance and
-    // the memory base come back as after a call of Go.
-    static void funcEmitterNativeCall(FuncEmitter* e, i32 index) {
-        Asm* a = e->a;
-        asmCallMem(a, Amem{-1, -1, {}, {}, index, labelGot});
-        asmLoad(a, 8, 8, false, ctxReg, baseAt(R14, gInstance));
-        asmLoad(a, 8, 8, false, memReg, baseAt(ctxReg, offMem));
     }
 
     // goCall calls the function of extern symbol index as Go calls one, with
@@ -17204,10 +17193,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     // The bulk memory instructions and the imports of lib/c's memcpy,
-    // memmove and memset check their ranges and call the native memory
-    // functions with host addresses: memory.init's source is the segment's
-    // bytes in the object. A constant length of inlineCopyMax bytes or less
-    // is loads and stores instead, as a native compiler makes them.
+    // memmove and memset check their ranges and call lib/str's functions
+    // with host addresses: memory.init's source is the segment's bytes in
+    // the object. A constant length of inlineCopyMax bytes or less is loads
+    // and stores instead, as a native compiler makes them.
     static constexpr i64 inlineCopyMax = 32;
 
     struct MemChunk {
@@ -17325,7 +17314,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         lowererMemAddr(l, dst, d);
         VReg src = mFuncNewReg(l->mf, classGPR);
         lowererMemAddr(l, src, s);
-        lowererNativeCall(l, sym, dst, src, n);
+        lowererStrCall(l, sym, dst, src, n);
     }
 
     static void lowererMemFill(Lowerer* l, Span<const i32> args) {
@@ -17338,7 +17327,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         lowererCheckRange(l, d, n, memAt(ctxReg, l->lay->memoryEnd), 8, trapMemoryOOB);
         VReg dst = mFuncNewReg(l->mf, classGPR);
         lowererMemAddr(l, dst, d);
-        lowererNativeCall(l, symMemset, dst, val, n);
+        lowererStrCall(l, symMemset, dst, val, n);
     }
 
     // intrinsic compiles a call of lib/c's memcpy, memmove or memset: its
@@ -17354,21 +17343,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
     }
 
-    // nativeCall calls the native memory function sym names with a, b and c
-    // in AX, BX and CX, the room Go's convention gives a function to spill
-    // them reserved: a Go function may be bound.
-    static void lowererNativeCall(Lowerer* l, String sym, VReg a, VReg b, VReg c) {
-        GoFrame g = goAssign(sliceOf<ValType>({I64, I64, I64}), {});
-        if (Int(g.size) > l->mf->stackArgs) {
-            l->mf->stackArgs = g.size;
-        }
+    // strCall calls the function of lib/str sym names with a, b and c in
+    // AX, CX and DX, as the module's functions call each other: it changes
+    // what such a call may, and the instance and the memory base stay.
+    static void lowererStrCall(Lowerer* l, String sym, VReg a, VReg b, VReg c) {
         MInst pm = inst(mParMove);
-        mInstExtra(&pm)->moves.assign(Span<const Move>({Move{RAX, a}, Move{RBX, b}, Move{RCX, c}}));
+        mInstExtra(&pm)->moves.assign(Span<const Move>({Move{RAX, a}, Move{RCX, b}, Move{RDX, c}}));
         lowererEmit(l, pm);
         MInst in = inst(mCall);
-        in.aux = calleeNative;
+        in.aux = calleeStr;
         in.imm = convert<i64>(objCodeExtern(l->oc, sym));
-        mInstExtra(&in)->uses.assign(Span<const VReg>({RAX, RBX, RCX}));
+        mInstExtra(&in)->uses.assign(Span<const VReg>({RAX, RCX, RDX}));
         l->mf->hasCalls = true;
         lowererEmit(l, in);
     }
@@ -17426,7 +17411,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         addS.size = 8;
         addS.aux = 0;
         lowererEmit(l, addS);
-        lowererNativeCall(l, symMemmove, dst, src, n);
+        lowererStrCall(l, symMemmove, dst, src, n);
     }
 
     static void lowererMov(Lowerer* l, VReg dst, VReg src, u8 size) {

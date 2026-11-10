@@ -85,7 +85,17 @@ type elfSymbol struct {
 	info    byte
 }
 
-func readObject(data []byte) *Object {
+// elfFile is what readObject and readLibrary read of a relocatable object:
+// its sections, its symbols and which sections hold the text, the read-only
+// data and the symbol table.
+type elfFile struct {
+	sections      []elfSection
+	symbols       []elfSymbol
+	names, symtab int
+	text, rodata  int
+}
+
+func parseELF(data []byte) *elfFile {
 	le := binary.LittleEndian
 
 	if len(data) < 64 || string(data[:4]) != "\x7fELF" || data[4] != 2 || le.Uint16(data[16:]) != 1 || le.Uint16(data[18:]) != 62 {
@@ -98,9 +108,9 @@ func readObject(data []byte) *Object {
 		throwFmt("malformed section headers")
 	}
 
-	sections := make([]elfSection, count)
+	f := &elfFile{sections: make([]elfSection, count), names: names}
 
-	for i := range sections {
+	for i := range f.sections {
 		h := data[shoff+uint64(64*i):]
 		offset, size := le.Uint64(h[24:]), le.Uint64(h[32:])
 		s := elfSection{name: le.Uint32(h), typ: le.Uint32(h[4:]), flags: le.Uint64(h[8:]), link: le.Uint32(h[40:]), info: le.Uint32(h[44:])}
@@ -113,144 +123,156 @@ func readObject(data []byte) *Object {
 			s.data = data[offset : offset+size]
 		}
 
-		sections[i] = s
+		f.sections[i] = s
 	}
 
-	cstr := func(table []byte, at uint32) string {
-		if uint64(at) >= uint64(len(table)) {
-			throwFmt("string out of its table")
-		}
+	f.text, f.symtab, f.rodata = f.find(".text"), f.find(".symtab"), f.find(".rodata")
 
-		end := at
-
-		for end < uint32(len(table)) && table[end] != 0 {
-			end++
-		}
-
-		return string(table[at:end])
-	}
-
-	sectionName := func(i int) string {
-		return cstr(sections[names].data, sections[i].name)
-	}
-
-	find := func(name string) int {
-		for i := range sections {
-			if sectionName(i) == name {
-				return i
-			}
-		}
-
-		return -1
-	}
-
-	text, symtab := find(".text"), find(".symtab")
-
-	if text < 0 || symtab < 0 || sections[symtab].link >= uint32(count) || len(sections[symtab].data)%24 != 0 {
+	if f.text < 0 || f.symtab < 0 || f.sections[f.symtab].link >= uint32(count) || len(f.sections[f.symtab].data)%24 != 0 {
 		throwFmt("no text or symbol table")
 	}
 
-	rodata := find(".rodata")
-	obj := &Object{text: sections[text].data, defined: map[string]uint32{}}
+	strtab := f.sections[f.sections[f.symtab].link].data
 
-	if rodata >= 0 {
-		obj.rodata = sections[rodata].data
+	for at := 0; at < len(f.sections[f.symtab].data); at += 24 {
+		e := f.sections[f.symtab].data[at:]
+		f.symbols = append(f.symbols, elfSymbol{name: cstr(strtab, le.Uint32(e)), info: e[4], section: int(le.Uint16(e[6:])), value: le.Uint64(e[8:])})
 	}
 
-	strtab := sections[sections[symtab].link].data
-	var symbols []elfSymbol
+	return f
+}
 
-	for at := 0; at < len(sections[symtab].data); at += 24 {
-		e := sections[symtab].data[at:]
-		s := elfSymbol{name: cstr(strtab, le.Uint32(e)), info: e[4], section: int(le.Uint16(e[6:])), value: le.Uint64(e[8:])}
-		symbols = append(symbols, s)
+func cstr(table []byte, at uint32) string {
+	if uint64(at) >= uint64(len(table)) {
+		throwFmt("string out of its table")
+	}
 
-		if s.section == text && s.info&0xf == 2 {
-			if s.value > uint64(len(obj.text)) {
+	end := at
+
+	for end < uint32(len(table)) && table[end] != 0 {
+		end++
+	}
+
+	return string(table[at:end])
+}
+
+func (f *elfFile) sectionName(i int) string {
+	return cstr(f.sections[f.names].data, f.sections[i].name)
+}
+
+func (f *elfFile) find(name string) int {
+	for i := range f.sections {
+		if f.sectionName(i) == name {
+			return i
+		}
+	}
+
+	return -1
+}
+
+// functions maps the function symbols of the text to their offsets.
+func (f *elfFile) functions() map[string]uint32 {
+	defined := map[string]uint32{}
+
+	for _, s := range f.symbols {
+		if s.section == f.text && s.info&0xf == 2 {
+			if s.value > uint64(len(f.sections[f.text].data)) {
 				throwFmt("symbol %s out of the text", s.name)
 			}
 
-			obj.defined[s.name] = uint32(s.value)
+			defined[s.name] = uint32(s.value)
 		}
 	}
 
-	// relocations of a section by offset, what each points at; a later
-	// entry at an offset replaces an earlier one
-	relocations := func(of int) []objReloc {
-		var out []objReloc
-		byOffset := func(a, b objReloc) int { return int(a.at) - int(b.at) }
+	return defined
+}
 
-		for i, s := range sections {
-			if s.typ != shtRela || int(s.info) != of {
-				continue
-			}
+// relocations of a section by offset, what each points at; a later entry at
+// an offset replaces an earlier one
+func (f *elfFile) relocations(of int) []objReloc {
+	le := binary.LittleEndian
+	var out []objReloc
+	byOffset := func(a, b objReloc) int { return int(a.at) - int(b.at) }
 
-			if int(s.link) != symtab || len(s.data)%24 != 0 {
-				throwFmt("malformed relocations in section %d", i)
-			}
-
-			out = slices.Grow(out, len(s.data)/24)
-
-			for at := 0; at < len(s.data); at += 24 {
-				e := s.data[at:]
-				info := le.Uint64(e[8:])
-
-				if info>>32 >= uint64(len(symbols)) {
-					throwFmt("relocation to symbol %d", info>>32)
-				}
-
-				target := symbols[info>>32]
-				r := objReloc{at: uint32(le.Uint64(e)), typ: uint32(info), addend: int64(le.Uint64(e[16:])), value: target.value}
-
-				switch target.section {
-				case 0:
-					r.in, r.sym = inExternal, target.name
-				case text:
-					r.in = inText
-				case rodata:
-					r.in = inRodata
-				default:
-					throwFmt("relocation into section %s", sectionName(target.section))
-				}
-
-				out = append(out, r)
-			}
+	for i, s := range f.sections {
+		if s.typ != shtRela || int(s.info) != of {
+			continue
 		}
 
-		if !slices.IsSortedFunc(out, byOffset) {
-			slices.SortStableFunc(out, byOffset)
+		if int(s.link) != f.symtab || len(s.data)%24 != 0 {
+			throwFmt("malformed relocations in section %d", i)
 		}
 
-		n := 0
+		out = slices.Grow(out, len(s.data)/24)
 
-		for _, r := range out {
-			if n > 0 && out[n-1].at == r.at {
-				n--
+		for at := 0; at < len(s.data); at += 24 {
+			e := s.data[at:]
+			info := le.Uint64(e[8:])
+
+			if info>>32 >= uint64(len(f.symbols)) {
+				throwFmt("relocation to symbol %d", info>>32)
 			}
 
-			out[n] = r
-			n++
-		}
+			target := f.symbols[info>>32]
+			r := objReloc{at: uint32(le.Uint64(e)), typ: uint32(info), addend: int64(le.Uint64(e[16:])), value: target.value}
 
-		return out[:n]
+			switch target.section {
+			case 0:
+				r.in, r.sym = inExternal, target.name
+			case f.text:
+				r.in = inText
+			case f.rodata:
+				r.in = inRodata
+			default:
+				throwFmt("relocation into section %s", f.sectionName(target.section))
+			}
+
+			out = append(out, r)
+		}
 	}
 
-	obj.relocs = relocations(text)
-	note := find(".note.wasm2o")
+	if !slices.IsSortedFunc(out, byOffset) {
+		slices.SortStableFunc(out, byOffset)
+	}
+
+	n := 0
+
+	for _, r := range out {
+		if n > 0 && out[n-1].at == r.at {
+			n--
+		}
+
+		out[n] = r
+		n++
+	}
+
+	return out[:n]
+}
+
+func readObject(data []byte) *Object {
+	f := parseELF(data)
+	obj := &Object{text: f.sections[f.text].data, defined: f.functions()}
+
+	if f.rodata >= 0 {
+		obj.rodata = f.sections[f.rodata].data
+	}
+
+	obj.relocs = f.relocations(f.text)
+	note := f.find(".note.wasm2o")
 
 	if note < 0 {
 		throwFmt("no .note.wasm2o: not an object of wasm2o")
 	}
 
-	obj.meta = decodeNote(readNote(sections[note].data))
-	eh := find(".eh_frame")
+	obj.meta = decodeNote(readNote(f.sections[note].data))
+	eh := f.find(".eh_frame")
 
 	if eh < 0 {
 		throwFmt("no .eh_frame")
 	}
 
-	obj.meta.regions = readEhFrame(sections[eh].data, relocations(eh), obj)
-	obj.describeSymbols(symbols, text)
+	obj.meta.regions = readEhFrame(f.sections[eh].data, f.relocations(eh), obj.defined)
+	obj.describeSymbols(f.symbols, f.text)
 
 	return obj
 }
@@ -281,7 +303,7 @@ func readNote(data []byte) []byte {
 
 // readEhFrame takes the regions from the FDEs: their ranges, and the stack
 // pointer, CFA less 8, along each.
-func readEhFrame(data []byte, relocs []objReloc, obj *Object) []Region {
+func readEhFrame(data []byte, relocs []objReloc, defined map[string]uint32) []Region {
 	le := binary.LittleEndian
 	type cie struct {
 		code uint64
@@ -383,7 +405,7 @@ func readEhFrame(data []byte, relocs []objReloc, obj *Object) []Region {
 	slices.SortFunc(regions, func(a, b Region) int { return int(a.start) - int(b.start) })
 	names := map[uint32]string{}
 
-	for name, at := range obj.defined {
+	for name, at := range defined {
 		if old, ok := names[at]; !ok || name < old {
 			names[at] = name
 		}

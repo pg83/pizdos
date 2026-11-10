@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"strings"
 	"syscall"
 	"unsafe"
 )
@@ -212,13 +213,6 @@ func helperMemoryGrow(ctx uintptr, delta uint32) uint32 {
 	return instanceAt(ctx).memory.grow(delta)
 }
 
-// hostMemset is the native memset the code calls (symbols.go) until a
-// faster one takes its place: the destination is a host address, whose
-// range the code checked.
-func hostMemset(dst, c, n uintptr) {
-	setBytes(unsafe.Slice((*byte)(unsafe.Pointer(dst)), n), 0, uint32(c), uint32(n))
-}
-
 // moveBytes copies the n bytes of m at s to d, overlapping or not: up to
 // 16, loaded before they are stored, by hand, more by memmove.
 func moveBytes(m []byte, d, s, n uint32) {
@@ -382,20 +376,10 @@ func (c *Code) resolve(sym string, imports Imports) uintptr {
 		return c.keepFunc(helperMemoryGrow)
 	case symTableGrow:
 		return c.keepFunc(helperTableGrow)
-	case symMemcpy, symMemmove:
-		if useAVX2 {
-			findMemmove()
+	}
 
-			return memmoveStub()
-		}
-
-		return goSymbol("runtime.memmove")
-	case symMemset:
-		if useAVX2 {
-			return memsetStub()
-		}
-
-		return c.keepFunc(hostMemset)
+	if strings.HasPrefix(sym, symStr) {
+		return strFunction(sym)
 	}
 
 	for k := range c.obj.meta.imports {
@@ -495,7 +479,7 @@ func link(name string, obj *Object, imports Imports) *Code {
 
 	throw(syscall.Mprotect(c.text[:textSize], syscall.PROT_READ|syscall.PROT_EXEC))
 	throw(syscall.Mprotect(c.text[textSize:], syscall.PROT_READ))
-	registerCode(name, c.base, uintptr(len(obj.text)), obj.meta.regions)
+	registerCode(name, c.base, uintptr(len(obj.text)), obj.meta.regions, false)
 
 	return c
 }

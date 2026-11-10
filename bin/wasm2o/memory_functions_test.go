@@ -6,13 +6,12 @@ import (
 	"bytes"
 	"math/rand"
 	"testing"
-	"unsafe"
 )
 
-// memory.copy and memory.fill of a length known only at run time call the
-// native memory functions: every length up to 300 and some far longer,
-// from every alignment, overlapping either way, and a copy past 16 MiB that
-// w2oMemmove leaves to Go's memmove, all as copy and a loop write them.
+// memory.copy and memory.fill of a length known only at run time call
+// lib/str's functions: every length up to 300 and some far longer, from
+// every alignment, overlapping either way, and copies past 16 MiB, all as
+// copy and a loop write them.
 func TestMemoryFunctions(t *testing.T) {
 	const pages = 600
 	m := &testModule{memMin: pages, memMax: pages, funcs: []testFunc{
@@ -93,11 +92,5 @@ func TestMemoryFunctions(t *testing.T) {
 		moveMemory(mem[12345:], src)
 		copy(want[12345:], src)
 		check("moveMemory", 12345, 0, uint32(n), false)
-	}
-
-	if useAVX2 {
-		copyMemory(unsafe.Pointer(&mem[5000]), unsafe.Pointer(&mem[5001]), 200)
-		copy(want[5000:5200], want[5001:5201])
-		check("copyMemory", 5000, 5001, 200, true)
 	}
 }

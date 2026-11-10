@@ -61,7 +61,7 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   8 bytes only; an `.eh_frame` with the CFA at every instruction. The
   functions take host addresses and check nothing: the caller checks the
   ranges. `str_choose()` gives the host's configuration, whose table holds
-  the functions to call.
+  the functions to call. `bin/wasm2o/str.go` links it.
 - Changes to the functions or the convention are made in str and the
   revision moved here; the library is never edited in place.
 
@@ -104,18 +104,20 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   str* functions are kernel imports (`__KERNEL`), so a program calls lib/c
   and lib/c the kernel, which implements them. The imports of memcpy,
   memmove and memset the compiler compiles itself, as it does the bulk
-  memory instructions: it checks the ranges and calls the native memory
-  functions `w2o.memcpy`, `w2o.memmove` and `w2o.memset` with host
-  addresses, the destination, the source or byte and the length in AX, BX
-  and CX, as Go passes them, Go's spill room reserved; a constant length
-  of 32 bytes or less is loads and stores, as a native compiler makes
-  them, since programs compile with `-fno-builtin`. The loader binds its
-  own to them (`stubs_amd64.s`): AVX2 vectors with ordinary stores, `REP
-  STOSB` for fills from 1 MiB, Go's `runtime.memmove` for a destination
-  inside the source and copies past 16 MiB, and without AVX2 Go's
-  `runtime.memmove` and `hostMemset`; the stand copies its inputs into a
-  module with the same function. pg83/str's functions take their place
-  later. A call through a pointer still reaches the kernel's `libcMemcpy`.
+  memory instructions: it checks the ranges and calls lib/str's functions
+  `str.memcpy`, `str.memmove` and `str.memset` with host addresses, the
+  destination, the source or byte and the length in AX, CX and DX, as the
+  module's functions call each other: the call changes what such a call
+  may and keeps the instance, the memory base and the callee-saved
+  registers; a constant length of 32 bytes or less is loads and stores, as
+  a native compiler makes them, since programs compile with
+  `-fno-builtin`. The loader links lib/str's object once (`str.go`),
+  registered with Go as assembly, never preempted asynchronously, calls
+  its `str_choose()` and binds each `str.<slot>` to the function of that
+  slot in the configuration it returns: the GOT holds the host's function
+  itself, no table between. The stand copies its inputs into a module
+  with the same memmove. A call through a pointer still reaches the
+  kernel's `libcMemcpy`.
 - A call of an import, or of a function of the VM, is a call of a Go
   function as Go makes it: the instance in AX, the arguments in Go's
   registers and stack slots, `call *GOT[symbol]`, the GOT holding the

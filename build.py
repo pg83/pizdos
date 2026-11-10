@@ -33,7 +33,7 @@ MUSL = "1.2.5"
 BUSYBOX = "1.36.1"
 DOOMGENERIC = "e257a09527062bfb986b6e5e0780839b6cbd5b71"
 PYTHON = "3.14.10"
-STR = "a1c43d5e3f88f547a7df78e5b66412388adceb85"
+STR = "1318a0f603c8d23839f02840cc1d9129c82f0839"
 
 
 def fetch(name, url, sha256, output):
@@ -79,7 +79,7 @@ python_tarball = fetch(
 str_tarball = fetch(
     "str_tarball",
     f"https://github.com/pg83/str/archive/{STR}.tar.gz",
-    "c723d5c19767872bfd18d44bc9fcde361eacb89481cadceafd16d8a072dc0ee2",
+    "750a476204f93a453825afe23143e44c6f54bfda944cbd55fd22b6c0f1c7ee6b",
     f"$(B)/ext/str-{STR}.tar.gz",
 )
 
@@ -284,8 +284,9 @@ wasm2o = command(
     name="wasm2o",
     inputs=[*WASM2O_SOURCES, *GO_RUNTIME],
     outputs=["$(B)/bin/wasm2o/wasm2o"],
-    deps=[aot_aot],
-    cmd=["python3", "$(S)/dev/go.py", "build", GO, "$(S)/bin/wasm2o", "$(B)/bin/wasm2o/wasm2o", "--runtime", "$(S)/lib/goruntime", "--embed", aot_aot.outputs[0]],
+    deps=[aot_aot, libstr],
+    cmd=["python3", "$(S)/dev/go.py", "build", GO, "$(S)/bin/wasm2o", "$(B)/bin/wasm2o/wasm2o", "--runtime", "$(S)/lib/goruntime", "--embed", aot_aot.outputs[0],
+         "--embed", libstr.outputs[0]],
     descr="GO", color="light-blue",
 )
 
@@ -374,8 +375,9 @@ wasm2o_go_test = command(
     name="test_wasm2o_go",
     inputs=[*build.glob("$(S)/bin/wasm2o/*.go"), *build.glob("$(S)/bin/wasm2o/*.s"), "$(S)/bin/wasm2o/go.mod", "$(S)/dev/go.py", *GO_RUNTIME],
     outputs=["$(B)/tst/wasm2o_go.stamp"],
-    deps=[aot_aot],
-    cmd=["python3", "$(S)/dev/go.py", "test", GO, "$(S)/bin/wasm2o", "$(B)/tst/wasm2o_go.stamp", "--runtime", "$(S)/lib/goruntime", "--embed", aot_aot.outputs[0]],
+    deps=[aot_aot, libstr],
+    cmd=["python3", "$(S)/dev/go.py", "test", GO, "$(S)/bin/wasm2o", "$(B)/tst/wasm2o_go.stamp", "--runtime", "$(S)/lib/goruntime", "--embed", aot_aot.outputs[0],
+         "--embed", libstr.outputs[0]],
     descr="TS",
     color="green",
 )

@@ -18,12 +18,12 @@ import (
 // the GOT, the Go functions w2o.trap, w2o.memory_grow and w2o.table_grow,
 // the loader's stubs w2o.morestack, which stack checks call, and
 // w2o.interrupt_call, which a return from an import calls and Go's runtime
-// injects (stubs_amd64.s), and the native memory functions w2o.memcpy,
-// w2o.memmove and w2o.memset, which the bulk memory instructions and the
-// imports of lib/c's memcpy, memmove and memset call with host addresses
-// after checking the ranges themselves: the destination, the source or
-// byte and the length in AX, BX and CX, as Go passes them; they write what
-// Go's functions write.
+// injects (stubs_amd64.s), and lib/str's functions str.memcpy,
+// str.memmove and str.memset (str.go), which the bulk memory instructions
+// and the imports of lib/c's memcpy, memmove and memset call with host
+// addresses after checking the ranges themselves: the destination, the
+// source or byte and the length in AX, CX and DX, as the module's
+// functions call each other.
 const (
 	symInit          = "w2o.init"
 	symMorestackStub = "w2o.morestack"
@@ -33,9 +33,7 @@ const (
 	symMemoryGrow    = "w2o.memory_grow"
 	symTableGrow     = "w2o.table_grow"
 	symInterruptCall = "w2o.interrupt_call"
-	symMemcpy        = "w2o.memcpy"
-	symMemmove       = "w2o.memmove"
-	symMemset        = "w2o.memset"
+	symStr           = "str."
 )
 
 var typeLetters = map[ValType]byte{I32: 'i', I64: 'I', F32: 'f', F64: 'F', V128: 'v', FuncRef: 'r', ExternRef: 'e'}
