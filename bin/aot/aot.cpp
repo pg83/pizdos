@@ -5771,6 +5771,8 @@ namespace {
 
     static void allocatorOrderSlots(Allocator* a);
 
+    static void allocatorDeadMoves(Allocator* a);
+
     static Interval* allocatorPartAt(Interval* root, i32 p);
 
     static void allocatorScan(Allocator* a);
@@ -10608,6 +10610,113 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             if (defs[x] != 1) {
                 a->constant[x] = false;
             }
+        }
+    }
+
+    // deadMoves drops the moves into registers that nothing reads before
+    // they are written again: a reload at the start of a block that does
+    // not use the value and leaves it in its slot, say. The liveness of the
+    // physical registers runs backward over the blocks to a fixed point;
+    // every instruction names the registers it reads and writes, or its
+    // clobbers do, as the allocation itself relies on.
+    static void allocatorDeadMoves(Allocator* a) {
+        MFunc* mf = a->mf;
+        const usize n = mf->blocks.size();
+        auto bit = [](VReg r) -> u32 {
+            return vRegIsPhys(r) ? u32(1) << u32(r) : 0;
+        };
+        // masks are the registers an instruction reads and those it writes.
+        auto masks = [&](MInst* in) -> Tuple2<u32, u32> {
+            u32 defs = 0;
+            u32 uses = 0;
+            auto clobbers = mInstClobberSet(in, mf->registerClasses);
+            for (Int i = 0; i < length(clobbers); ++i) {
+                defs |= bit(clobbers[i]);
+            }
+            mInstForEachOperand(in, [&](VReg* r, Int role) {
+                if (role == roleTemp || (role & roleDef) != 0) {
+                    defs |= bit(*r);
+                }
+                if ((role & roleUse) != 0) {
+                    uses |= bit(*r);
+                }
+            });
+            return {uses, defs};
+        };
+        auto transfer = [&](MInst* in, u32 live) -> u32 {
+            const auto m = masks(in);
+            return (live & ~m.v1) | m.v0;
+        };
+        Vec<u32> liveIn;
+        liveIn.resize(n);
+        // gen are the registers a block reads before it writes them, kill
+        // those it writes.
+        Vec<u32> gen;
+        gen.resize(n);
+        Vec<u32> kill;
+        kill.resize(n);
+        auto liveOut = [&](i32 b) {
+            u32 out = 0;
+            const auto succs = mf->blocks[b].succs;
+            for (Int k = 0; k < length(succs); ++k) {
+                out |= liveIn[usize(succs[k])];
+            }
+            return out;
+        };
+        auto order = a->order.view();
+        // A dropped move can leave the one that fed it dead in turn.
+        for (Int round = 0, dropped = 1; round < 4 && dropped; ++round) {
+        dropped = 0;
+        for (Int j = 0; j < length(order); ++j) {
+            const i32 b = order[j];
+            u32 g = 0;
+            u32 k = 0;
+            auto instructions = mf->blocks[b].insts.view();
+            for (Int i = length(instructions) - 1; i >= 0; --i) {
+                // Through an instruction a register written and not read
+                // is killed, one read is generated.
+                const auto m = masks(&instructions[i]);
+                g = (g & ~m.v1) | m.v0;
+                k = (k | m.v1) & ~m.v0;
+            }
+            gen[usize(b)] = g;
+            kill[usize(b)] = k;
+            liveIn[usize(b)] = g;
+        }
+        for (bool changed = true; changed;) {
+            changed = false;
+            for (Int j = length(order) - 1; j >= 0; --j) {
+                const i32 b = order[j];
+                const u32 live = gen[usize(b)] | (liveOut(b) & ~kill[usize(b)]);
+                if (live != liveIn[usize(b)]) {
+                    liveIn[usize(b)] = live;
+                    changed = true;
+                }
+            }
+        }
+        for (Int j = 0; j < length(order); ++j) {
+            const i32 b = order[j];
+            u32 live = liveOut(b);
+            auto instructions = mf->blocks[b].insts.view();
+            for (Int i = length(instructions) - 1; i >= 0; --i) {
+                MInst* in = &instructions[i];
+                if (in->op == mParMove) {
+                    auto& moves = mInstExtra(in)->moves;
+                    usize kept = 0;
+                    for (usize k = 0; k < moves.size(); ++k) {
+                        if (!vRegIsPhys(moves[k].dst) || (live & bit(moves[k].dst)) != 0) {
+                            moves[kept++] = moves[k];
+                        }
+                    }
+                    dropped += Int(moves.size() - kept);
+                    moves.resize(kept);
+                } else if ((in->op == mMov || in->op == mFMov || in->op == mMovImm || in->op == mFConst) && vRegIsPhys(in->dst) && (live & bit(in->dst)) == 0) {
+                    *in = inst(mNop);
+                    dropped++;
+                }
+                live = transfer(in, live);
+            }
+        }
         }
     }
 
@@ -20768,6 +20877,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         allocatorConstantDefinitions(a);
         allocatorResolve(a);
         allocatorOrderSlots(a);
+        allocatorDeadMoves(a);
         return a;
     }
 
