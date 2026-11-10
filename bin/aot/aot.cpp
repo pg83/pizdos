@@ -5685,6 +5685,8 @@ namespace {
 
     static void allocatorSaveSpillsAtDefinitions(Allocator* a, PositionedMoves& inner, Map<i32, Slice<Move>> atEnd, Map<i32, Slice<Move>> atStart);
 
+    static void allocatorSpillAtJoins(Allocator* a);
+
     static void allocatorScan(Allocator* a);
 
     static void allocatorSpill(Allocator* a, Interval* it);
@@ -10389,6 +10391,63 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 appendMove(inner, 2 * (p + 2), Move{dst, src});
             }
         });
+    }
+
+    // spillAtJoins keeps a value in its slot from the start of a block that
+    // many blocks enter, when most of them would restore its register
+    // there: a dispatch loop's handlers spill such a value around their
+    // calls and reload it at their ends, though few of them use it. The
+    // value's part at the block's start goes to the slot from there when it
+    // has no use left; an entering block that has the value in a register
+    // then saves it, unless the value is saved at its definitions.
+    static void allocatorSpillAtJoins(Allocator* a) {
+        MFunc* mf = a->mf;
+        auto order = a->order.view();
+        for (Int j = 0; j < length(order); ++j) {
+            const i32 b = order[j];
+            const auto preds = mf->blocks[b].preds;
+            if (length(preds) < 8) {
+                continue;
+            }
+            const i32 from = a->blockFrom[b];
+            bitsetEach(a->liveIn[b], [&](Int x) {
+                Interval* root = a->intervals[x];
+                if (isNil(root)) {
+                    return;
+                }
+                Interval* part = root;
+                if (!intervalCovers(root, from)) {
+                    const Int k = sortSearch(length(root->children), [&](Int i) {
+                        return intervalStart(root->children[i]) > from;
+                    });
+                    if (!k || !intervalCovers(root->children[k - 1], from)) {
+                        return;
+                    }
+                    part = root->children[k - 1];
+                }
+                if (part->reg == noReg || intervalNextUse(part, from) < intervalEnd(part)) {
+                    return;
+                }
+                const VReg r = firstVirtual + VReg(x);
+                Int restores = 0;
+                Int saves = 0;
+                for (Int i = 0; i < length(preds); ++i) {
+                    const VReg at = allocatorLocation(a, r, a->blockTo[preds[i]] - 1);
+                    if (at != part->reg) {
+                        restores++;
+                    }
+                    if (!isSlot(at)) {
+                        saves++;
+                    }
+                }
+                if (restores <= saves + 1) {
+                    return;
+                }
+                allocatorSpill(a, intervalStart(part) < from ? intervalSplit(part, from) : part);
+                root->locationFrom = 0;
+                root->locationTo = 0;
+            });
+        }
     }
 
     static void allocatorScan(Allocator* a) {
@@ -19579,6 +19638,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         allocatorLiveness(a);
         allocatorBuildIntervals(a);
         allocatorScan(a);
+        allocatorSpillAtJoins(a);
         allocatorResolve(a);
         return a;
     }
