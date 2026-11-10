@@ -5745,6 +5745,8 @@ namespace {
 
     static VReg allocatorHintReg(Allocator* a, Interval* cur);
 
+    static VReg allocatorSiblingReg(Allocator* a, Interval* cur);
+
     static Interval* allocatorInterval(Allocator* a, VReg r);
 
     static void allocatorLinearize(Allocator* a);
@@ -9932,6 +9934,32 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return noReg;
     }
 
+    // siblingReg returns the register another part of cur's value has: the
+    // part adjacent to cur, else the earliest allocated. Parts in one
+    // register need no move between them where blocks meet.
+    static VReg allocatorSiblingReg(Allocator* a, Interval* cur) {
+        Interval* root = isNil(cur->parent) ? cur : cur->parent;
+        if (root == cur && !length(root->children)) {
+            return noReg;
+        }
+        const i32 start = intervalStart(cur);
+        const i32 end = intervalEnd(cur);
+        VReg earliest = noReg;
+        for (Int i = -1; i < length(root->children); ++i) {
+            Interval* c = i < 0 ? root : root->children[i];
+            if (c == cur || c->reg == noReg) {
+                continue;
+            }
+            if (intervalEnd(c) == start || intervalStart(c) == end) {
+                return c->reg;
+            }
+            if (earliest == noReg) {
+                earliest = c->reg;
+            }
+        }
+        return earliest;
+    }
+
     static __attribute__((noinline)) Interval* newInterval(VReg vreg, VReg reg, u8 classValue = 0, VReg hint = 0) {
         Interval* it = activePool->make<Interval>();
         it->vreg = vreg;
@@ -10587,6 +10615,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         VReg h = allocatorHintReg(a, cur);
         if (h != noReg && allocatable(h) && allocatorRegClass(a, h) == cur->classValue && freeUntil[h] >= end) {
             reg = h;
+        }
+        if (reg == noReg) {
+            VReg s = allocatorSiblingReg(a, cur);
+            if (s != noReg && allocatable(s) && allocatorRegClass(a, s) == cur->classValue && freeUntil[s] >= end) {
+                reg = s;
+            }
         }
         if (reg == noReg) {
             VReg best = noReg;
