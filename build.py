@@ -33,6 +33,7 @@ MUSL = "1.2.5"
 BUSYBOX = "1.36.1"
 DOOMGENERIC = "e257a09527062bfb986b6e5e0780839b6cbd5b71"
 PYTHON = "3.14.10"
+STR = "a1c43d5e3f88f547a7df78e5b66412388adceb85"
 
 
 def fetch(name, url, sha256, output):
@@ -75,6 +76,13 @@ python_tarball = fetch(
     f"$(B)/ext/Python-{PYTHON}.tgz",
 )
 
+str_tarball = fetch(
+    "str_tarball",
+    f"https://github.com/pg83/str/archive/{STR}.tar.gz",
+    "c723d5c19767872bfd18d44bc9fcde361eacb89481cadceafd16d8a072dc0ee2",
+    f"$(B)/ext/str-{STR}.tar.gz",
+)
+
 # doom1.wad of the shareware 1.9, the last one id released
 doom_wad = fetch(
     "doom_wad",
@@ -100,6 +108,18 @@ libc = command(
     outputs=["$(B)/lib/c/libc.a"],
     deps=[musl_tarball],
     cmd=["python3", "$(S)/lib/c/make.py", CLANG, LLVM_AR, musl_tarball.outputs[0], "$(B)/lib/c/libc.a"],
+    descr="CC",
+    color="green",
+)
+
+# lib/str: pg83/str's string and memory functions, compiled by str's own
+# compiler in the convention of the code wasm2o compiles, for its loader.
+libstr = command(
+    name="libstr",
+    inputs=["$(S)/lib/str/make.py"],
+    outputs=["$(B)/lib/str/libstr.o"],
+    deps=[str_tarball],
+    cmd=["python3", "$(S)/lib/str/make.py", str_tarball.outputs[0], "$(B)/lib/str/libstr.o"],
     descr="CC",
     color="green",
 )

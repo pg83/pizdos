@@ -5,7 +5,7 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
 
 ## Build and test
 
-- `./build` builds `libc.a`, `busybox.wasm`, `busybox.links`,
+- `./build` builds `libc.a`, `libstr.o`, `busybox.wasm`, `busybox.links`,
   `bin/busybox/abi.txt` (every kernel import busybox uses), `doom.wasm`,
   `doom.o` (doomgeneric with our terminal backend, `bin/doom`), `wasm2o`,
   native `aot`, `aot.wasm`, `aot.aot` and the wazero runner.
@@ -47,6 +47,23 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   not a silent import.
 - `test_libc` runs tst/libc/check.c, built against lib/c, in the kernel:
   one line of results per area, compared with the test's expected text.
+
+## lib/str
+
+- pg83/str's string and memory functions, fetched at the revision `STR`
+  pins in build.py and compiled by str's own compiler (`dev/strcc.py`,
+  Python) with `--abi wasm2o` into `libstr.o`, the object wasm2o's loader
+  links (`lib/str/make.py`); str's check of that contract (`tst/wasm2o.py`)
+  passes before the object is kept.
+- The convention is the one between the module's functions: arguments in
+  RAX, RCX, RDX, RSI, RDI, R8, the result in RAX, RBX and R9-R12 kept;
+  RBP, R13-R15 and vector register 15 never touched; the stack aligned to
+  8 bytes only; an `.eh_frame` with the CFA at every instruction. The
+  functions take host addresses and check nothing: the caller checks the
+  ranges. `str_choose()` gives the host's configuration, whose table holds
+  the functions to call.
+- Changes to the functions or the convention are made in str and the
+  revision moved here; the library is never edited in place.
 
 ## bin/wasm2o
 

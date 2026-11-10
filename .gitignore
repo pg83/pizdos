@@ -10,6 +10,8 @@ __pycache__/
 /wasm2o
 /wazero
 /libc
+/libstr
+/str_tarball
 /aot
 /aot_command
 /aot_aot
