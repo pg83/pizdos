@@ -85,6 +85,15 @@ func TestUnrolledLoopFallback(t *testing.T) {
 	}
 }
 
+// hitHost counts the calls of countHit.
+type hitHost struct {
+	hits int
+}
+
+func countHit(ctx uintptr) {
+	instanceAt(ctx).host.(*hitHost).hits++
+}
+
 func TestLoopEarlyExit(t *testing.T) {
 	var tail []byte
 
@@ -98,8 +107,9 @@ func TestLoopEarlyExit(t *testing.T) {
 			tail, get(0), i32c(4), []byte{opI32Add, opLocalSet, 0}, get(1), i32c(4), []byte{opI32Add, opLocalSet, 1},
 			get(2), i32c(1), []byte{opI32Sub, opLocalTee, 2, opBrIf, 0, 0x0b}, i32c(0)),
 	}}}
-	hits := 0
-	i := load(t, m, testImports{"env.hit": func(uintptr) { hits++ }})
+	host := &hitHost{}
+	i := load(t, m, testImports{"env.hit": countHit})
+	i.host = host
 	fn, _ := i.export("copy")
 	copyBytes := fn.Interface().(func(uintptr, uint32, uint32, uint32) uint32)
 
@@ -107,14 +117,14 @@ func TestLoopEarlyExit(t *testing.T) {
 		i.memory.bytes()[j] = 1
 	}
 
-	if got := copyBytes(i.ctx(), 512, 256, 20); got != 0 || hits != 0 {
-		t.Fatalf("normal exit = %d, callbacks %d", got, hits)
+	if got := copyBytes(i.ctx(), 512, 256, 20); got != 0 || host.hits != 0 {
+		t.Fatalf("normal exit = %d, callbacks %d", got, host.hits)
 	}
 
 	i.memory.bytes()[256] = 42
 
-	if got := copyBytes(i.ctx(), pageSize-1, 256, 20); got != 1 || hits != 1 || i.memory.bytes()[pageSize-1] != 42 {
-		t.Fatalf("early exit = %d, callbacks %d, stored %d", got, hits, i.memory.bytes()[pageSize-1])
+	if got := copyBytes(i.ctx(), pageSize-1, 256, 20); got != 1 || host.hits != 1 || i.memory.bytes()[pageSize-1] != 42 {
+		t.Fatalf("early exit = %d, callbacks %d, stored %d", got, host.hits, i.memory.bytes()[pageSize-1])
 	}
 }
 

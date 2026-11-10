@@ -18,6 +18,13 @@ type gInterrupt struct {
 	wanted       atomic.Bool
 }
 
+// InstanceOffset is the offset in g of the instance of wasm2o's code the
+// goroutine runs, which the code reads after a call of Go; the entry
+// thunks set it.
+func InstanceOffset() uintptr {
+	return unsafe.Offsetof(g{}.instance)
+}
+
 // SetInterrupt makes the calling goroutine interruptible in the code
 // [lo, hi) by a call of stub, or not with stub 0, and returns its token
 // for Interrupt.

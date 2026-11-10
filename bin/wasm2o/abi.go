@@ -17,6 +17,11 @@ const (
 	headerSize    = offInterrupt + 8
 )
 
+// gInstance is the offset in g of the instance the goroutine runs, a field
+// our runtime adds (lib/goruntime): the code reads it after a call of Go,
+// the entry thunks set it. checkGo verifies it.
+const gInstance = 472
+
 // The jump frame is what the adapter of an import that returns twice
 // (goabi.go) writes before it calls Go: the caller's frame as a later
 // landing restores it. Stack addresses are offsets below g.stack.hi less

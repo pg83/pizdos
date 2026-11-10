@@ -3903,6 +3903,7 @@ namespace {
         Slice<Slice<i32>> floatHomes{};
         Vec<bool> rawTrunc{};
         ValueRanges* addresses{};
+        ObjCode* oc{};
     };
 
     struct AddressExpressions {
@@ -4643,7 +4644,7 @@ namespace {
         Layout* lay{};
         Asm a{};
         Slice<i32> funcAt{};
-        Array<i32, 7> stubAt{};
+        Array<i32, 2> stubAt{};
         Slice<CallFixup> calls{};
         Slice<CallFixup> stubCalls{};
         Map<i32, i32> jumpAt{};
@@ -4661,6 +4662,8 @@ namespace {
         Map<String, bool> globals{};
         Int initFn{};
         i32 dataInitTable = -1;
+        // importSyms are the imported functions' symbols by function index.
+        Slice<String> importSyms{};
     };
 
     struct Table {
@@ -4965,23 +4968,17 @@ namespace {
 
     static constexpr Int stubMorestack = 0;
 
-    static constexpr Int stubMemoryGrow = 1;
+    static constexpr Int stubInterrupt = 1;
 
-    static constexpr Int stubTableGrow = 2;
-
-    static constexpr Int stubInterrupt = 3;
-
-    static constexpr Int stubMemoryCopy = 4;
-
-    static constexpr Int stubMemoryFill = 5;
-
-    static constexpr Int stubMemoryInit = 6;
-
-    static constexpr Int stubCount = 7;
+    static constexpr Int stubCount = 2;
 
     static constexpr Int gStackHi = 8;
 
     static constexpr Int gStackguard0 = 16;
+
+    // gInstance is the field of g our runtime adds (lib/goruntime): the
+    // instance the goroutine runs, which the code reads after a call of Go.
+    static constexpr Int gInstance = 472;
 
     static constexpr Int stackSmall = 128;
 
@@ -5262,6 +5259,10 @@ namespace {
     static constexpr Int calleeStub = 1;
 
     static constexpr Int calleeJump = 2;
+
+    // calleeGo calls a Go function of the VM, imm the index of its extern
+    // symbol: an import's, or that of an instruction's function.
+    static constexpr Int calleeGo = 3;
 
     static constexpr Int constF32Sign = 0;
 
@@ -6029,6 +6030,8 @@ namespace {
 
     static Amem funcEmitterSlotMem(FuncEmitter* e, i32 slot);
 
+    static void funcEmitterGoCall(FuncEmitter* e, i32 index);
+
     static void funcEmitterSwap(FuncEmitter* e, VReg x, VReg y);
 
     static void funcEmitterSwitchTable(FuncEmitter* e, MInst* in);
@@ -6076,6 +6079,8 @@ namespace {
     static void lowererAlu(Lowerer* l, i32 v, Op op, i32 a, i32 b, u8 size);
 
     static void lowererCall(Lowerer* l, i32 v, Int index, Span<const i32> args);
+
+    static void lowererGoCall(Lowerer* l, i32 v, Slice<VReg> regs, Slice<ValType> params, Slice<ValType> results, String sym);
 
     static void lowererCallIndirect(Lowerer* l, i32 v, Int typeIndex, Int table, Span<const i32> args);
 
@@ -6164,8 +6169,6 @@ namespace {
     static void lowererShift(Lowerer* l, i32 v, Op op, i32 a, i32 b, u8 size);
 
     static void lowererStore(Lowerer* l, i32 v, i32 addr, i32 value);
-
-    static void lowererStubCall(Lowerer* l, Int stub, Slice<VReg> regs, Slice<ValType> types, i32 result);
 
     static void lowererTableGet(Lowerer* l, i32 v, Int table, i32 index);
 
@@ -6471,7 +6474,7 @@ namespace {
 
     static u8 lo3(Int r);
 
-    static MFunc* lowerFunction(Module* m, Layout* lay, Function* f);
+    static MFunc* lowerFunction(ObjCode* oc, Function* f);
 
     static MemKind makeMemKind(Int width, bool signedValue);
 
@@ -6710,6 +6713,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static Slice<VReg> callerSavedXmms{};
 
+    static Slice<VReg> goClobbers{};
+
+    static Slice<VReg> goClobberGprs{};
+
+    static Slice<VReg> goClobberXmms{};
+
     static u8 floatOpcode(FAluOp op) {
         switch (op) {
             case fAdd:
@@ -6813,6 +6822,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         callerSavedGprs = sliceOf<VReg>({RAX, RBX, RCX, RDX, RSI, RDI, R8, R9});
         callerSavedXmms = xmmRange(15);
         callerSaved = appendSlice(callerSavedGprs, callerSavedXmms);
+
+        // A call of Go writes every register the code allocates; R13 and R15
+        // come back from g and the instance.
+        goClobberGprs = sliceOf<VReg>({RAX, RBX, RCX, RDX, RSI, RDI, R8, R9, R10, R11, R12});
+        goClobberXmms = xmmRange(15);
+        goClobbers = appendSlice(goClobberGprs, goClobberXmms);
 
         floatUnary = Array<Op, 7>{{OpFAbs, OpFNeg, OpFCeil, OpFFloor, OpFTrunc, OpFNearest, OpFSqrt}};
 
@@ -7378,6 +7393,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // class. Calls need no XMM clobbers in an integer-only function, or GPR
     // clobbers in a function with only virtual XMM registers.
     static Slice<VReg> mInstClobberSet(MInst* in, u8 registerClasses) {
+        if (in->op == mCall && in->aux == calleeGo) {
+            if (registerClasses == (1u << classGPR)) {
+                return goClobberGprs;
+            }
+            if (registerClasses == (1u << classXMM)) {
+                return goClobberXmms;
+            }
+            return registerClasses ? goClobbers : Slice<VReg>{};
+        }
         if (in->op == mCall || in->op == mCallInd || in->op == mGrowMem) {
             if (registerClasses == (1u << classGPR)) {
                 return callerSavedGprs;
@@ -9496,6 +9520,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     auto clobbers = mInstClobberSet(in, mf->registerClasses);
                     for (Int k = 0; k < length(clobbers); ++k) {
                         intervalAddRange(interval(clobbers[k]), p + 1, p + 2);
+                    }
+                    if (in->op == mCall && in->aux == calleeGo) {
+                        // The function's callers keep R10-R12 across their
+                        // call of it: it saves them, as Go writes them.
+                        for (Int k = 0; k < length(calleeSaved); ++k) {
+                            a->used[calleeSaved[k]] = true;
+                        }
                     }
                 }
                 const bool needReg = in->op != mParMove;
@@ -13296,6 +13327,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         e->oc->jumpCalls = appendValues(e->oc->jumpCalls, CallFixup{asmCallRel(a), convert<i32>(in->imm)});
                         break;
                     }
+                    case calleeGo: {
+                        funcEmitterGoCall(e, convert<i32>(in->imm));
+                        break;
+                    }
                     default: {
                         objCodeCallFunc(e->oc, convert<i64>(in->imm));
                         break;
@@ -13342,10 +13377,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 break;
             }
             case mStackArg: {
+                // imm is a slot, or with aux the byte offset of a Go argument
+                // of size bytes.
+                i32 at = convert<i32>(in->aux ? in->imm : 8 * in->imm);
+                u8 size = in->aux ? in->size : 8;
                 if (vRegIsXMM(in->src)) {
-                    asmFstore(a, 8, in->src, rspAt(convert<i32>(8 * in->imm)));
+                    asmFstore(a, size, in->src, rspAt(at));
                 } else {
-                    asmStore(a, 8, in->src, rspAt(convert<i32>(8 * in->imm)));
+                    asmStore(a, size, in->src, rspAt(at));
                 }
                 break;
             }
@@ -13523,6 +13562,28 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static Amem funcEmitterSlotMem(FuncEmitter* e, i32 slot) {
         return rspAt(convert<i32>(e->mf->stackArgs) + 8 * slot);
+    }
+
+    // goCall calls the function of extern symbol index as Go calls one, with
+    // the instance in RAX. Go keeps none of the registers the code uses: the
+    // instance comes back from g, where the entry thunk put it, the memory
+    // base from the instance. While the instance's interrupt word is set,
+    // the interrupt stub runs on the way out, as Go's runtime would inject a
+    // call of it there.
+    static void funcEmitterGoCall(FuncEmitter* e, i32 index) {
+        Asm* a = e->a;
+        asmMovRR(a, 8, RAX, ctxReg);
+        asmCallMem(a, Amem{-1, -1, {}, {}, index, labelGot});
+        asmLoad(a, 8, 8, false, ctxReg, baseAt(R14, gInstance));
+        asmLoad(a, 8, 8, false, memReg, baseAt(ctxReg, offMem));
+        asmAluMI(a, aluCmp, 4, baseAt(ctxReg, offInterrupt), 0);
+        i32 at = asmJccRel(a, ccNE);
+        i32 resume = asmPos(a);
+        e->late = appendValues(e->late, [=]() mutable -> void {
+            asmPatch32(a, at, asmPos(a));
+            objCodeCallStub(e->oc, stubInterrupt);
+            asmPatch32(a, asmJmpRel(a), resume);
+        });
     }
 
     static void funcEmitterSwap(FuncEmitter* e, VReg x, VReg y) {
@@ -14065,11 +14126,19 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         lowererEmit(l, in);
     }
 
-    // call calls a function of the module; an imported one through its
-    // adapter, which keeps the internal convention, the memory register
-    // included.
+    // call calls a function of the module, an imported one as Go calls it;
+    // one that returns twice through its adapter, which writes the jump
+    // frame.
     static void lowererCall(Lowerer* l, i32 v, Int index, Span<const i32> args) {
         FuncType* t = moduleFuncType(l->m, convert<u32>(index));
+        if (index < l->m->importedFuncs && !l->m->funcs[index].returnsTwice) {
+            Slice<VReg> regs = makeSlice<VReg>(length(args));
+            for (Int i = 0; i < length(args); ++i) {
+                regs[i] = lowererUse(l, args[i]);
+            }
+            lowererGoCall(l, v, regs, t->params, t->results, l->oc->importSyms[index]);
+            return;
+        }
         auto temporary745 = lowererPlaceArgs(l, args);
         Slice<VReg> uses = temporary745.v0;
         Int stack = temporary745.v1;
@@ -14087,6 +14156,91 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         lowererEmit(l, in);
         lowererTakeResults(l, v, t->results, regs, stack);
+    }
+
+    // goCall calls the function sym names as Go calls a function: the
+    // instance goes first, in RAX, which the emitter sets; the arguments
+    // follow in Go's registers and stack slots, and so do the results. Go
+    // leaves the upper half of a 32-bit result alone: a move of 4 bytes
+    // clears it.
+    static void lowererGoCall(Lowerer* l, i32 v, Slice<VReg> regs, Slice<ValType> params, Slice<ValType> results, String sym) {
+        GoFrame g = goAssign(params, results);
+        Slice<VReg> uses = {};
+        MInst pm = inst(mParMove);
+        for (Int i = 0; i < length(params); ++i) {
+            GoLoc loc = g.params[i];
+            if (loc.reg != noReg) {
+                mInstExtra(&pm)->moves.pushBack(Move{loc.reg, regs[i]});
+                uses = appendValues(uses, loc.reg);
+                continue;
+            }
+            MInst in = inst(mStackArg);
+            in.src = regs[i];
+            in.imm = convert<i64>(loc.off);
+            in.size = convert<u8>(goSize(params[i]));
+            in.aux = 1;
+            lowererEmit(l, in);
+        }
+        if (length(mInstMoves(&pm)) > 0) {
+            lowererEmit(l, pm);
+        }
+        if (Int(g.size) > l->mf->stackArgs) {
+            l->mf->stackArgs = g.size;
+        }
+        Slice<VReg> defs = {};
+        for (Int i = 0; i < length(results); ++i) {
+            if (g.results[i].reg != noReg) {
+                defs = appendValues(defs, g.results[i].reg);
+            }
+        }
+        MInst in = inst(mCall);
+        in.aux = calleeGo;
+        in.imm = convert<i64>(objCodeExtern(l->oc, sym));
+        mInstExtra(&in)->uses.assign(uses);
+        mInstExtra(&in)->defs.assign(defs);
+        l->mf->hasCalls = true;
+        lowererEmit(l, in);
+        if (length(results) == 0 || v < 0) {
+            return;
+        }
+        Slice<VReg> dsts = {};
+        if (length(results) == 1) {
+            dsts = sliceOf<VReg>({lowererDef(l, v)});
+        } else {
+            dsts = makeSlice<VReg>(length(results));
+            for (Int i = 0, end = length(dsts); i < end; ++i) {
+                dsts[i] = noReg;
+            }
+            auto extracts = lowererExtracts(l, v);
+            for (Int i = 0; i < length(extracts); ++i) {
+                i32 user = extracts[i];
+                dsts[l->f->values[user].aux] = lowererDef(l, user);
+            }
+        }
+        for (Int i = 0; i < length(results); ++i) {
+            VReg d = dsts[i];
+            GoLoc loc = g.results[i];
+            if (d == noReg) {
+                continue;
+            }
+            if (loc.reg == noReg) {
+                MInst ld = inst(isFloat(results[i]) ? mFLoad : mLoad);
+                ld.dst = d;
+                ld.mem = memAt(RSP, loc.off);
+                ld.size = convert<u8>(goSize(results[i]));
+                ld.dsize = ld.size;
+                lowererEmit(l, ld);
+            } else if (results[i] == I32) {
+                MInst mv = inst(mMov);
+                mv.dst = d;
+                mv.src = loc.reg;
+                mv.size = 4;
+                mv.aux = 1;
+                lowererEmit(l, mv);
+            } else {
+                lowererMov(l, d, loc.reg, typeSize(results[i]));
+            }
+        }
     }
 
     static void lowererCallIndirect(Lowerer* l, i32 v, Int typeIndex, Int table, Span<const i32> args) {
@@ -15324,7 +15478,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 break;
             }
             case OpMemGrow: {
-                lowererStubCall(l, stubMemoryGrow, sliceOf<VReg>({lowererUse(l, args[0])}), sliceOf<ValType>({I32}), v);
+                lowererGoCall(l, v, sliceOf<VReg>({lowererUse(l, args[0])}), sliceOf<ValType>({I32}), sliceOf<ValType>({I32}), symMemoryGrow);
                 break;
             }
             case OpMemCopy: {
@@ -15420,7 +15574,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             case OpTableGrow: {
                 VReg table = lowererConstReg(l, val->aux, 4);
-                lowererStubCall(l, stubTableGrow, sliceOf<VReg>({table, lowererUse(l, args[1]), lowererUse(l, args[0])}), sliceOf<ValType>({I32, I32, FuncRef}), v);
+                lowererGoCall(l, v, sliceOf<VReg>({table, lowererUse(l, args[1]), lowererUse(l, args[0])}), sliceOf<ValType>({I32, I32, FuncRef}), sliceOf<ValType>({I32}), symTableGrow);
                 break;
             }
             default: {
@@ -15498,7 +15652,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         VReg n = lowererUse(l, args[2]);
         lowererCheckRange(l, d, n, memAt(ctxReg, l->lay->memoryEnd), 8, trapMemoryOOB);
         lowererCheckRange(l, s, n, memAt(ctxReg, l->lay->memoryEnd), 8, trapMemoryOOB);
-        lowererStubCall(l, stubMemoryCopy, sliceOf<VReg>({d, s, n}), sliceOf<ValType>({I32, I32, I32}), -1);
+        lowererGoCall(l, -1, sliceOf<VReg>({d, s, n}), sliceOf<ValType>({I32, I32, I32}), {}, symMemoryCopy);
     }
 
     static void lowererMemFill(Lowerer* l, Span<const i32> args) {
@@ -15506,7 +15660,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         VReg val = lowererUse(l, args[1]);
         VReg n = lowererUse(l, args[2]);
         lowererCheckRange(l, d, n, memAt(ctxReg, l->lay->memoryEnd), 8, trapMemoryOOB);
-        lowererStubCall(l, stubMemoryFill, sliceOf<VReg>({d, val, n}), sliceOf<ValType>({I32, I32, I32}), -1);
+        lowererGoCall(l, -1, sliceOf<VReg>({d, val, n}), sliceOf<ValType>({I32, I32, I32}), {}, symMemoryFill);
     }
 
     static void lowererMemInit(Lowerer* l, Int seg, Span<const i32> args) {
@@ -15560,7 +15714,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         addS.size = 8;
         addS.aux = 0;
         lowererEmit(l, addS);
-        lowererStubCall(l, stubMemoryInit, sliceOf<VReg>({d, src, n}), sliceOf<ValType>({I32, I64, I32}), -1);
+        lowererGoCall(l, -1, sliceOf<VReg>({d, src, n}), sliceOf<ValType>({I32, I64, I32}), {}, symMemoryInit);
     }
 
     static void lowererMov(Lowerer* l, VReg dst, VReg src, u8 size) {
@@ -15943,34 +16097,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         in.src = lowererUse(l, value);
         in.size = width;
         lowererEmit(l, in);
-    }
-
-    // stubCall calls a stub that goes into Go, in the internal convention;
-    // result, when not negative, receives the i32 result.
-    static void lowererStubCall(Lowerer* l, Int stub, Slice<VReg> regs, Slice<ValType> types, i32 result) {
-        auto temporary888 = lowererPlaceRegs(l, regs, types);
-        Slice<VReg> uses = temporary888.v0;
-        Int stack = temporary888.v1;
-        if (stack != 0) {
-            compilerError(String("internal error: stub %d takes stack arguments"));
-        }
-        MInst in = inst(mCall);
-        in.aux = calleeStub;
-        in.imm = convert<i64>(stub);
-        mInstExtra(&in)->uses.assign(uses);
-        if (result >= 0) {
-            mInstExtra(&in)->defs.assign(Span<const VReg>({RAX}));
-        }
-        l->mf->hasCalls = true;
-        lowererEmit(l, in);
-        if (result >= 0) {
-            MInst mv = inst(mMov);
-            mv.dst = lowererDef(l, result);
-            mv.src = RAX;
-            mv.size = 4;
-            mv.aux = 1;
-            lowererEmit(l, mv);
-        }
     }
 
     static void lowererTableGet(Lowerer* l, i32 v, Int table, i32 index) {
@@ -16616,11 +16742,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         oc->calls = appendValues(oc->calls, CallFixup{asmCallRel(&oc->a), convert<i32>(fn)});
     }
 
-    // callGo calls the Go function value sym names: the closure context goes in
-    // RDX, the code is its first word.
+    // callGo calls the Go function sym names, whose code address the loader
+    // puts in the GOT.
     static void objCodeCallGo(ObjCode* oc, String sym) {
-        asmLoad(&oc->a, 8, 8, false, RDX, objCodeGotMem(oc, sym));
-        asmCallMem(&oc->a, baseAt(RDX, 0));
+        asmCallMem(&oc->a, objCodeGotMem(oc, sym));
     }
 
     static void objCodeCallStub(ObjCode* oc, Int kind) {
@@ -17111,6 +17236,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             FuncType* t = moduleFuncType(m, imp.index);
             String sym = importSymbol(imp.module, imp.name, t);
+            oc->importSyms[imp.index] = sym;
             String name = String("w2o.adapter.") + symbolPart(imp.module) + String(".") + symbolPart(imp.name);
             oc->funcAt[imp.index] = objCodeGoCall(oc, name, t->params, t->results, sym, false);
             if (m->funcs[imp.index].returnsTwice) {
@@ -17338,6 +17464,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         asmAluRM(a, aluCmp, 8, R8, word(jumpToken));
         i32 other = asmJccRel(a, ccNE);
         asmMovRR(a, 8, ctxReg, RCX);
+        asmStore(a, 8, ctxReg, baseAt(R14, gInstance));
         asmLoad(a, 8, 8, false, memReg, baseAt(ctxReg, offMem));
         asmLoad(a, 8, 8, false, R10, word(jumpR10));
         asmLoad(a, 8, 8, false, R11, word(jumpR11));
@@ -17483,6 +17610,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         i32 start = objCodeBeginRegion(oc, symResume);
         setMap(oc->globals, symResume, true);
         asmLoad(a, 8, 8, false, ctxReg, word(resumeCtx));
+        asmStore(a, 8, ctxReg, baseAt(R14, gInstance));
         asmLea(a, 8, RDX, rspAt(-512));
         asmAluRM(a, aluSub, 8, RDX, word(resumeSize));
         asmAluRM(a, aluCmp, 8, RDX, baseAt(R14, gStackguard0));
@@ -17580,8 +17708,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return asmJccRel(a, ccBE);
     }
 
-    // stubs emits the morestack stub and the Go calls of memory.grow,
-    // table.grow and the bulk memory instructions.
+    // stubs emits the morestack stub and the interrupt stub.
     //
     // A stack check that found g.stackguard0 at stackPreempt calls the
     // morestack stub, but the preemption can complete before Go's morestack
@@ -17632,11 +17759,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         asmPatch32(a, overflow, asmPos(a));
         objCodeTrapCall(oc, trapStack);
         objCodeEndRegion(oc, start);
-        oc->stubAt[stubMemoryGrow] = objCodeGoCall(oc, String("w2o.memory_grow_call"), sliceOf<ValType>({I32}), sliceOf<ValType>({I32}), symMemoryGrow, false);
-        oc->stubAt[stubTableGrow] = objCodeGoCall(oc, String("w2o.table_grow_call"), sliceOf<ValType>({I32, I32, FuncRef}), sliceOf<ValType>({I32}), symTableGrow, false);
-        oc->stubAt[stubMemoryCopy] = objCodeGoCall(oc, String("w2o.memory_copy_call"), sliceOf<ValType>({I32, I32, I32}), Slice<ValType>{}, symMemoryCopy, false);
-        oc->stubAt[stubMemoryFill] = objCodeGoCall(oc, String("w2o.memory_fill_call"), sliceOf<ValType>({I32, I32, I32}), Slice<ValType>{}, symMemoryFill, false);
-        oc->stubAt[stubMemoryInit] = objCodeGoCall(oc, String("w2o.memory_init_call"), sliceOf<ValType>({I32, I64, I32}), Slice<ValType>{}, symMemoryInit, false);
         oc->stubAt[stubInterrupt] = objCodeInterruptStub(oc);
     }
 
@@ -17655,16 +17777,20 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Slice<VReg> rregs = temporary1103.v0;
         Slice<Int> rslots = temporary1103.v1;
         Int nall = temporary1103.v2;
-        i32 frame = convert<i32>(8 * nall);
+        // The frame's last word keeps the instance g had: the thunk's own
+        // takes its place while the code runs.
+        i32 saved = convert<i32>(8 * nall);
+        i32 frame = saved + 8;
         i32 total = 8 + frame;
         i32 start = objCodeBeginRegion(oc, name);
         asmMovRR(a, 8, ctxReg, RAX);
         i32 slow = objCodeStackCheck(oc, total, R12);
         asmPush(a, RBP);
         asmMovRR(a, 8, RBP, RSP);
-        if (frame > 0) {
-            asmAluRI(a, aluSub, 8, RSP, convert<i64>(frame));
-        }
+        asmAluRI(a, aluSub, 8, RSP, convert<i64>(frame));
+        asmLoad(a, 8, 8, false, RDX, baseAt(R14, gInstance));
+        asmStore(a, 8, RDX, rspAt(saved));
+        asmStore(a, 8, ctxReg, baseAt(R14, gInstance));
         asmLoad(a, 8, 8, false, memReg, baseAt(ctxReg, offMem));
         i32 goArgs = total + 8;
         for (Int i = 0; i < length(params); ++i) {
@@ -17704,9 +17830,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 compilerError(String("internal error: result %d of %s moves between registers"));
             }
         }
-        if (frame > 0) {
-            asmAluRI(a, aluAdd, 8, RSP, convert<i64>(frame));
-        }
+        asmLoad(a, 8, 8, false, RDX, rspAt(saved));
+        asmStore(a, 8, RDX, baseAt(R14, gInstance));
+        asmAluRI(a, aluAdd, 8, RSP, convert<i64>(frame));
         asmPop(a, RBP);
         asmRet(a);
         asmSetSP(a, 0);
@@ -20852,8 +20978,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return convert<u8>(r & 7);
     }
 
-    static MFunc* lowerFunction(Module* m, Layout* lay, Function* f) {
-        Lowerer* l = activePool->make<Lowerer>(Lowerer{m, f, lay, {}, activePool->make<MFunc>(MFunc{}), {}, {}, {}, {}, {}, mapOf<Array<i32, 2>, i32>({}), mapOf<i32, i64>({}), {}, {}, {}, {}});
+    static MFunc* lowerFunction(ObjCode* oc, Function* f) {
+        Lowerer* l = activePool->make<Lowerer>(Lowerer{oc->m, f, oc->lay, {}, activePool->make<MFunc>(MFunc{}), {}, {}, {}, {}, {}, mapOf<Array<i32, 2>, i32>({}), mapOf<i32, i64>({}), {}, {}, {}, {}});
+        l->oc = oc;
         l->ci = f->cfg ? f->cfg : functionAnalyze(f);
         l->vregs.resize(f->values.size());
         l->vregs.fill(noReg);
@@ -20939,7 +21066,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         lowererLinkBlocks(l);
-        if (m->tailRanges) {
+        if (l->m->tailRanges) {
             lowererVersionTailRanges(l);
         }
         return l->mf;
@@ -22333,6 +22460,7 @@ namespace {
         code->initFn = moduleAddInitFunction(module);
         code->lay = newLayout(module);
         code->funcAt = makeSlice<i32>(length(module->funcs));
+        code->importSyms = makeSlice<String>(module->importedFuncs);
         objCodeAddFixedBlobs(code);
         objCodeStubs(code);
         objCodeImportAdapters(code);
@@ -22344,7 +22472,7 @@ namespace {
                 optimize(function);
             }
             PoolScope machineScope(machinePool);
-            MFunc* machine = lowerFunction(module, code->lay, function);
+            MFunc* machine = lowerFunction(code, function);
             ssaPool.clear();
             Allocator* allocation = allocate(machine);
             objCodeEmitFunction(code, i, machine, allocation);

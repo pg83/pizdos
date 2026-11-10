@@ -25,9 +25,10 @@ const pageSize = 65536
 
 // Imports resolves what an instance imports.
 type Imports interface {
-	// function returns a Go function value of the import's type,
-	// func(uintptr, params...) (results...), the first argument the
-	// instance.
+	// function returns a Go function of the import's type,
+	// func(uintptr, params...) (results...), no closure, the first argument
+	// the instance; or the address of code of that convention, a stub of
+	// bindContext, say.
 	function(imp *ImportMeta) any
 	// global returns the address of an imported global's value.
 	global(imp *ImportMeta) uintptr
@@ -47,6 +48,24 @@ type Code struct {
 	base uintptr
 	// keep holds the Go function values the code calls.
 	keep []any
+}
+
+// bindContext returns code of Go's convention that calls code with ctx as
+// its first argument, the others as they are: an export thunk of another
+// instance with that instance, say. The stub lives as long as the process.
+//
+//	movabs $ctx, %rax
+//	jmp *target(%rip)
+//	target: .quad code
+func bindContext(code, ctx uintptr) uintptr {
+	stub := mmap(4096, syscall.PROT_READ|syscall.PROT_WRITE)
+	stub = append(stub[:0], 0x48, 0xb8)
+	stub = binary.LittleEndian.AppendUint64(stub, uint64(ctx))
+	stub = append(stub, 0xff, 0x25, 0, 0, 0, 0)
+	stub = binary.LittleEndian.AppendUint64(stub, uint64(code))
+	throw(syscall.Mprotect(stub[:4096], syscall.PROT_READ|syscall.PROT_EXEC))
+
+	return uintptr(unsafe.Pointer(unsafe.SliceData(stub)))
 }
 
 type Instance struct {
@@ -276,10 +295,13 @@ func goFuncType(params, results []ValType) reflect.Type {
 	return reflect.FuncOf(in, out, false)
 }
 
+// keepFunc returns the code address of a Go function, the GOT's entry
+// for it: the code calls it as Go does, with the instance in AX. A
+// closure would miss its context; none of the VM's functions is one.
 func (c *Code) keepFunc(f any) uintptr {
 	c.keep = append(c.keep, f)
 
-	return funcval(f)
+	return *(*uintptr)(unsafe.Pointer(funcval(f)))
 }
 
 func (c *Code) resolve(sym string, imports Imports) uintptr {
@@ -313,6 +335,10 @@ func (c *Code) resolve(sym string, imports Imports) uintptr {
 
 		if f == nil {
 			throwFmt("unresolved import %s.%s", imp.module, imp.name)
+		}
+
+		if code, ok := f.(uintptr); ok {
+			return code
 		}
 
 		if want := goFuncType(imp.params, imp.results); reflect.TypeOf(f) != want {

@@ -76,7 +76,6 @@ type specRunner struct {
 	testTable   []uintptr
 	testHeader  *[2]uint64
 	testGlobals map[string]*uint64
-	keep        []any
 }
 
 func specCommand(args []string) int {
@@ -153,22 +152,22 @@ func sameTypes(a, b []ValType) bool {
 	return reflect.DeepEqual(append([]ValType{}, a...), append([]ValType{}, b...))
 }
 
+// spectest's functions print nothing.
+var spectestFunctions = map[string]any{
+	"print":         func(ctx uintptr) {},
+	"print_i32":     func(ctx uintptr, x uint32) {},
+	"print_i64":     func(ctx uintptr, x uint64) {},
+	"print_f32":     func(ctx uintptr, x float32) {},
+	"print_f64":     func(ctx uintptr, x float64) {},
+	"print_i32_f32": func(ctx uintptr, x uint32, y float32) {},
+	"print_f64_f64": func(ctx uintptr, x, y float64) {},
+}
+
+// function binds an import of another module to that module's export
+// thunk with its instance, which the thunk takes as an import takes it.
 func (r *specRunner) function(imp *ImportMeta) any {
-	typ := goFuncType(imp.params, imp.results)
-
 	if imp.module == "spectest" {
-		f := reflect.MakeFunc(typ, func(args []reflect.Value) []reflect.Value {
-			out := make([]reflect.Value, typ.NumOut())
-
-			for k := range out {
-				out[k] = reflect.Zero(typ.Out(k))
-			}
-
-			return out
-		}).Interface()
-		r.keep = append(r.keep, f)
-
-		return f
+		return spectestFunctions[imp.name]
 	}
 
 	src := r.exporter(imp.module)
@@ -183,15 +182,7 @@ func (r *specRunner) function(imp *ImportMeta) any {
 		return nil
 	}
 
-	thunk, _ := src.export(e.name)
-	f := reflect.MakeFunc(typ, func(args []reflect.Value) []reflect.Value {
-		args[0] = reflect.ValueOf(src.ctx())
-
-		return thunk.Call(args)
-	}).Interface()
-	r.keep = append(r.keep, f)
-
-	return f
+	return bindContext(src.symbol(e.sym), src.ctx())
 }
 
 // globalAddr is where an instance keeps the value of one of its globals.

@@ -146,6 +146,10 @@ func checkGo() {
 	if !strings.HasPrefix(runtime.Version(), "go1.25.") {
 		throwFmt("the loader is written for Go 1.25, not %s", runtime.Version())
 	}
+
+	if runtime.InstanceOffset() != gInstance {
+		throwFmt("g.instance is at %d, the code reads %d", runtime.InstanceOffset(), gInstance)
+	}
 }
 
 // goSymbol returns the address of a function of the program.

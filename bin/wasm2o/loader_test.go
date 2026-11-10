@@ -389,6 +389,46 @@ var wide = func() []ValType {
 // the internal convention's seven
 var wideResults = []ValType{I64, I32, F64, I64, I64, I64, I64, I64, I64, I32, I64, F32}
 
+// wideImport is the import of TestWideSignatures: per kind of result, a
+// sum over the arguments of that kind and a fingerprint of their order.
+func wideImport(ctx uintptr, a0 uint32, a1 uint64, a2 float32, a3 float64, a4 uint32, a5 uint64, a6 float32, a7 float64, a8 uint32, a9 uint64, a10 float32, a11 float64, a12 uint32, a13 uint64, a14 float32, a15 float64, a16 uint32, a17 uint64, a18 float32, a19 float64) (uint64, uint32, float64, uint64, uint64, uint64, uint64, uint64, uint64, uint32, uint64, float32) {
+	var ints, order uint64
+	var floats float64
+
+	ints += uint64(a0)
+	order = order*31 + uint64(a0)
+	ints += a1
+	order = order*37 + a1
+	floats += float64(a2)
+	floats += a3 * 3
+	ints += uint64(a4)
+	order = order*31 + uint64(a4)
+	ints += a5
+	order = order*37 + a5
+	floats += float64(a6)
+	floats += a7 * 7
+	ints += uint64(a8)
+	order = order*31 + uint64(a8)
+	ints += a9
+	order = order*37 + a9
+	floats += float64(a10)
+	floats += a11 * 11
+	ints += uint64(a12)
+	order = order*31 + uint64(a12)
+	ints += a13
+	order = order*37 + a13
+	floats += float64(a14)
+	floats += a15 * 15
+	ints += uint64(a16)
+	order = order*31 + uint64(a16)
+	ints += a17
+	order = order*37 + a17
+	floats += float64(a18)
+	floats += a19 * 19
+
+	return order, uint32(order + 1*ints), floats + 2, order + 3*ints, order + 4*ints, order + 5*ints, order + 6*ints, order + 7*ints, order + 8*ints, uint32(order + 9*ints), order + 10*ints, float32(floats)
+}
+
 // The export takes 20 values and returns them through an import of the same
 // shape, Go to native to Go and back: stack arguments, spill space and
 // stack results on both sides of both boundaries.
@@ -403,61 +443,7 @@ func TestWideSignatures(t *testing.T) {
 		imports: []testImport{{"env", "wide", wide, wideResults}},
 		funcs:   []testFunc{{params: wide, results: wideResults, export: "wide", code: cat(body, call(0))}},
 	}
-	in := []reflect.Type{reflect.TypeFor[uintptr]()}
-
-	for _, v := range wide {
-		in = append(in, goType(v))
-	}
-
-	var out []reflect.Type
-
-	for _, v := range wideResults {
-		out = append(out, goType(v))
-	}
-
-	// The import's results: per kind, a sum over the arguments of that kind
-	// and a fingerprint of their order.
-	fold := func(args []reflect.Value) []reflect.Value {
-		var ints, order uint64
-		var floats float64
-
-		for k, a := range args[1:] {
-			switch v := a.Interface().(type) {
-			case uint32:
-				ints += uint64(v)
-				order = order*31 + uint64(v)
-			case uint64:
-				ints += v
-				order = order*37 + v
-			case float32:
-				floats += float64(v)
-			case float64:
-				floats += v * float64(k)
-			}
-		}
-
-		results := make([]reflect.Value, len(wideResults))
-
-		for k, v := range wideResults {
-			x := order + uint64(k)*ints
-
-			switch v {
-			case I32:
-				results[k] = reflect.ValueOf(uint32(x))
-			case I64:
-				results[k] = reflect.ValueOf(x)
-			case F32:
-				results[k] = reflect.ValueOf(float32(floats))
-			case F64:
-				results[k] = reflect.ValueOf(floats + float64(k))
-			}
-		}
-
-		return results
-	}
-
-	goWide := reflect.MakeFunc(reflect.FuncOf(in, out, false), fold)
-	i := load(t, m, testImports{"env.wide": goWide.Interface()})
+	i := load(t, m, testImports{"env.wide": wideImport})
 	f, _ := i.export("wide")
 	args := []reflect.Value{reflect.ValueOf(i.ctx())}
 
@@ -477,7 +463,7 @@ func TestWideSignatures(t *testing.T) {
 	}
 
 	got := f.Call(args)
-	want := fold(args)
+	want := reflect.ValueOf(wideImport).Call(args)
 
 	for k := range want {
 		if !reflect.DeepEqual(got[k].Interface(), want[k].Interface()) {
