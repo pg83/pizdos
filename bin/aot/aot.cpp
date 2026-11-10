@@ -3458,11 +3458,16 @@ namespace {
         Slice<Int> positions{};
         Vec<Int> reach;
         Vec<i32> forward;
-        // shorts tells, in the order of the jumps to blocks, which take the
-        // short form: the first emission of a function finds them, a second
-        // uses them. aligned are the starts of the aligned loop headers.
+        // shorts and trapShorts tell, in the order of the jumps to blocks
+        // and to traps, which take the short form: the first emission of a
+        // function finds them, a second uses them. aligned are the starts of
+        // the aligned loop headers and padded their padding; trapTo is where
+        // each trap jump goes.
         Slice<u8> shorts{};
+        Slice<u8> trapShorts{};
         Vec<i32> aligned;
+        Vec<i32> padded;
+        Vec<i32> trapTo;
     };
 
     struct Amem {
@@ -3851,6 +3856,7 @@ namespace {
         i32 at{};
         i64 code{};
         i32 sp{};
+        bool small{};
     };
 
     static bool operator==(const TrapFixup& a, const TrapFixup& b) {
@@ -5732,9 +5738,7 @@ namespace {
 
     static void allocatorSplitAtJoins(Allocator* a);
 
-    static void allocatorInvariants(Allocator* a);
-
-    static void allocatorConstants(Allocator* a);
+    static void allocatorDefinitions(Allocator* a, bool depths);
 
     static void allocatorConstantDefinitions(Allocator* a);
 
@@ -6228,7 +6232,7 @@ namespace {
 
     static void objCodeEmitFunction(ObjCode* oc, Int index, MFunc* mf, Allocator* al);
 
-    static FuncEmitter* objCodeEmitBody(ObjCode* oc, Int index, MFunc* mf, Allocator* al, Slice<u8> shorts);
+    static FuncEmitter* objCodeEmitBody(ObjCode* oc, Int index, MFunc* mf, Allocator* al, Slice<u8> shorts, Slice<u8> trapShorts);
 
     static void objCodeEndRegion(ObjCode* oc, i32 start);
 
@@ -9742,7 +9746,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         // A constant joins only a register its copy alone defines, so that
         // what they become is still a constant: joined into a register
         // defined otherwise too it would be saved and reloaded as a value.
-        allocatorConstants(a);
+        allocatorDefinitions(a, false);
         Vec<bool> constant(move(a->constant));
         Vec<bool> lone;
         lone.resize(usize(mf->nregs));
@@ -10515,10 +10519,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return nullptr;
     }
 
-    // invariants fills invariantDepth.
-    // constants finds the virtual registers defined only by a load of a
-    // float constant.
-    static void allocatorConstants(Allocator* a) {
+    // definitions counts the definitions of each virtual register and finds
+    // the constants, those defined only by a load of a float constant; with
+    // depths it fills invariantDepth as well.
+    static void allocatorDefinitions(Allocator* a, bool depths) {
         MFunc* mf = a->mf;
         Vec<i32>& defs = a->definitions;
         defs.resize(usize(mf->nregs));
@@ -10527,7 +10531,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         a->constant.fill(false);
         a->constantBits.resize(usize(mf->nregs));
         a->constantBits.fill(0);
-        for (Int b = 0; b < length(mf->blocks); ++b) {
+        if (depths) {
+            a->invariantDepth.resize(usize(mf->nregs));
+            a->invariantDepth.fill(-1);
+        }
+        auto order = a->order.view();
+        for (Int j = 0; j < length(order); ++j) {
+            const i32 b = order[j];
+            const i32 depth = i32(mf->blocks[b].depth);
             auto instructions = mf->blocks[b].insts.view();
             for (Int i = 0; i < length(instructions); ++i) {
                 MInst* in = &instructions[i];
@@ -10540,6 +10551,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     if (in->op == mFConst) {
                         a->constant[x] = true;
                         a->constantBits[x] = in->size == 4 ? u64(u32(in->imm)) : u64(in->imm);
+                    }
+                    if (depths) {
+                        i32& d = a->invariantDepth[x];
+                        d = d == -1 ? depth : 1 << 30;
                     }
                 });
             }
@@ -10559,27 +10574,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             Interval* root = a->intervals[x];
             if (a->constant[x] && root && root->reg != noReg && length(root->uses) == 1 && length(root->memUses) == 0) {
                 allocatorSpill(a, root);
-            }
-        }
-    }
-
-    static void allocatorInvariants(Allocator* a) {
-        MFunc* mf = a->mf;
-        a->invariantDepth.resize(usize(mf->nregs));
-        a->invariantDepth.fill(-1);
-        auto order = a->order.view();
-        for (Int j = 0; j < length(order); ++j) {
-            const i32 b = order[j];
-            const i32 depth = i32(mf->blocks[b].depth);
-            auto instructions = mf->blocks[b].insts.view();
-            for (Int i = 0; i < length(instructions); ++i) {
-                mInstForEachOperand(&instructions[i], [&](VReg* r, Int role) {
-                    if (*r == noReg || vRegIsPhys(*r) || (role & roleDef) == 0 || role == roleTemp) {
-                        return;
-                    }
-                    i32& d = a->invariantDepth[usize(allocatorVindex(a, *r))];
-                    d = d == -1 ? depth : 1 << 30;
-                });
             }
         }
     }
@@ -14014,11 +14008,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void funcEmitterTrapJcc(FuncEmitter* e, u8 cc, i64 code) {
-        e->traps = appendValues(e->traps, TrapFixup{asmJccRel(e->a, cc), code, e->a->sp});
+        const Int k = length(e->traps);
+        const bool small = k < length(e->trapShorts) && e->trapShorts[k] != 0;
+        e->traps = appendValues(e->traps, TrapFixup{small ? asmJcc8(e->a, cc) : asmJccRel(e->a, cc), code, e->a->sp, small});
     }
 
     static void funcEmitterTrapJmp(FuncEmitter* e, i64 code) {
-        e->traps = appendValues(e->traps, TrapFixup{asmJmpRel(e->a), code, e->a->sp});
+        const Int k = length(e->traps);
+        const bool small = k < length(e->trapShorts) && e->trapShorts[k] != 0;
+        e->traps = appendValues(e->traps, TrapFixup{small ? asmJmp8(e->a) : asmJmpRel(e->a), code, e->a->sp, small});
     }
 
     static void funcEmitterTruncF(FuncEmitter* e, MInst* in) {
@@ -17850,10 +17848,112 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return meta;
     }
 
-    // emitFunction emits a function with every jump to a block in the long
-    // form, then, when some can be short, again with those short. A jump is
-    // short when it fits with room for the padding of each aligned loop
-    // header it crosses to grow by 31 bytes: everything else only shrinks.
+    // shortJumps chooses the jumps of an emission with every jump long that
+    // can be short. Starting from all of them short, it drops those that
+    // do not fit where the others' sizes and the padding of the aligned
+    // loop headers put them, until all fit: the layout follows exactly
+    // from the jumps' sizes and the headers' alignment.
+    static bool objCodeShortJumps(FuncEmitter* e, Slice<u8> shorts, Slice<u8> trapShorts) {
+        Asm* a = e->a;
+        struct Site {
+            i32 from;
+            i32 size;
+            i32 to;
+            u8* plan;
+        };
+        Slice<Site> sites = makeSlice<Site>(0, length(e->jumps) + length(e->traps));
+        for (Int k = 0; k < length(e->jumps); ++k) {
+            const JumpFixup j = e->jumps[k];
+            const bool conditional = a->buf[usize(j.at - 1)] != 233;
+            sites = appendValues(sites, Site{j.at - (conditional ? 2 : 1), conditional ? 6 : 5, e->blockAt[j.block], &shorts[k]});
+        }
+        for (Int k = 0; k < length(e->traps); ++k) {
+            const TrapFixup t = e->traps[k];
+            const bool conditional = a->buf[usize(t.at - 1)] != 233;
+            sites = appendValues(sites, Site{t.at - (conditional ? 2 : 1), conditional ? 6 : 5, e->trapTo[usize(k)], &trapShorts[k]});
+        }
+        if (!length(sites)) {
+            return false;
+        }
+        sortValues(sites, [&](Int x, Int y) {
+            return sites[x].from < sites[y].from;
+        });
+        // A jump can be short only when it fits with every jump between
+        // its ends short and no padding there.
+        for (Int k = 0; k < length(sites); ++k) {
+            const i32 to = sites[k].to;
+            const i32 lo = minimum(sites[k].from, to);
+            const i32 hi = maximum(sites[k].from, to);
+            const Int first = sortSearch(length(sites), [&](Int i) {
+                return sites[i].from >= lo;
+            });
+            const Int last = sortSearch(length(sites), [&](Int i) {
+                return sites[i].from >= hi;
+            });
+            i64 pads = 0;
+            for (usize h = 0; h < e->aligned.size(); ++h) {
+                if (e->aligned[h] > lo && e->aligned[h] <= hi) {
+                    pads += e->padded[h];
+                }
+            }
+            const i64 d = i64(to) - i64(sites[k].from + 2);
+            const i64 room = 4 * (last - first) + pads;
+            *sites[k].plan = d >= -128 - room && d <= 127 + room;
+        }
+        // The positions where the shift of later code changes, and the
+        // shift from each on.
+        Slice<i32> at = makeSlice<i32>(0, length(sites) + i64(e->aligned.size()));
+        Slice<i32> shift = makeSlice<i32>(0, length(sites) + i64(e->aligned.size()));
+        Slice<i32> from = makeSlice<i32>(length(sites));
+        for (bool changed = true; changed;) {
+            at = subslice(at, 0, 0);
+            shift = subslice(shift, 0, 0);
+            i32 delta = 0;
+            usize h = 0;
+            for (Int k = 0; k <= length(sites); ++k) {
+                const i32 next = k < length(sites) ? sites[k].from : i32(2147483647);
+                for (; h < e->aligned.size() && e->aligned[h] - e->padded[h] <= next; ++h) {
+                    const i32 before = e->aligned[h] - e->padded[h] + delta;
+                    delta += (-before & 31) - e->padded[h];
+                    at = appendValues(at, e->aligned[h]);
+                    shift = appendValues(shift, delta);
+                }
+                if (k == length(sites)) {
+                    break;
+                }
+                from[k] = sites[k].from + delta;
+                if (*sites[k].plan) {
+                    delta -= sites[k].size - 2;
+                    at = appendValues(at, sites[k].from + sites[k].size);
+                    shift = appendValues(shift, delta);
+                }
+            }
+            changed = false;
+            for (Int k = 0; k < length(sites); ++k) {
+                if (!*sites[k].plan) {
+                    continue;
+                }
+                const i32 t = sites[k].to;
+                const Int i = sortSearch(length(at), [&](Int i) {
+                    return at[i] > t;
+                });
+                const i64 d = i64(t) + (i ? shift[i - 1] : 0) - i64(from[k] + 2);
+                if (d < -128 || d > 127) {
+                    *sites[k].plan = 0;
+                    changed = true;
+                }
+            }
+        }
+        for (Int k = 0; k < length(sites); ++k) {
+            if (*sites[k].plan) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // emitFunction emits a function with every jump long, then, when some
+    // can be short, again with those short.
     static void objCodeEmitFunction(ObjCode* oc, Int index, MFunc* mf, Allocator* al) {
         Asm* a = &oc->a;
         i32 start = objCodeBeginRegion(oc, objCodeFuncName(oc, index));
@@ -17865,28 +17965,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         const Int calls = length(oc->calls);
         const Int jumpCalls = length(oc->jumpCalls);
         const Int addresses = length(oc->addresses);
-        FuncEmitter* e = objCodeEmitBody(oc, index, mf, al, {});
+        FuncEmitter* e = objCodeEmitBody(oc, index, mf, al, {}, {});
         Slice<u8> shorts = makeSlice<u8>(length(e->jumps));
-        bool any = false;
-        for (Int k = 0; k < length(e->jumps); ++k) {
-            const JumpFixup j = e->jumps[k];
-            const bool conditional = a->buf[usize(j.at - 1)] != 233;
-            const i32 from = j.at - (conditional ? 2 : 1);
-            const i32 to = e->blockAt[j.block];
-            const i32 lo = minimum(from, to);
-            const i32 hi = maximum(from, to);
-            Int crossed = 0;
-            for (Int h = 0; h < length(e->aligned); ++h) {
-                crossed += e->aligned[usize(h)] > lo && e->aligned[usize(h)] <= hi;
-            }
-            const i64 d = i64(to) - i64(from + 2);
-            const i64 room = 31 * crossed;
-            if (d + room <= 127 && d - room >= -128) {
-                shorts[k] = 1;
-                any = true;
-            }
-        }
-        if (any) {
+        Slice<u8> trapShorts = makeSlice<u8>(length(e->traps));
+        if (objCodeShortJumps(e, shorts, trapShorts)) {
             a->buf.resize(usize(start));
             a->fixups = subslice(a->fixups, 0, fixups);
             a->sps = subslice(a->sps, 0, sps);
@@ -17897,15 +17979,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             oc->calls = subslice(oc->calls, 0, calls);
             oc->jumpCalls = subslice(oc->jumpCalls, 0, jumpCalls);
             oc->addresses = subslice(oc->addresses, 0, addresses);
-            objCodeEmitBody(oc, index, mf, al, shorts);
+            objCodeEmitBody(oc, index, mf, al, shorts, trapShorts);
         }
         objCodeEndRegion(oc, start);
     }
 
-    static FuncEmitter* objCodeEmitBody(ObjCode* oc, Int index, MFunc* mf, Allocator* al, Slice<u8> shorts) {
+    static FuncEmitter* objCodeEmitBody(ObjCode* oc, Int index, MFunc* mf, Allocator* al, Slice<u8> shorts, Slice<u8> trapShorts) {
         Asm* a = &oc->a;
         FuncEmitter* e = activePool->make<FuncEmitter>(FuncEmitter{oc, a, mf, al, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}});
         e->shorts = shorts;
+        e->trapShorts = trapShorts;
         if (oc->m->tailProfile) {
             e->profile = oc->lay->tailProfile + convert<i32>(index) * tailCounterBytes;
         }
@@ -18025,8 +18108,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 continue;
             }
             if (header[usize(b)]) {
-                asmNops(a, -asmPos(a) & 31);
+                const i32 pad = -asmPos(a) & 31;
+                asmNops(a, pad);
                 e->aligned.pushBack(asmPos(a));
+                e->padded.pushBack(pad);
             }
             e->blockAt[b] = asmPos(a);
             funcEmitterBlock(e, &mf->blocks[b], i);
@@ -18054,7 +18139,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 asmSetSP(a, t.sp);
                 objCodeTrapCall(oc, t.code);
             }
-            asmPatch32(a, t.at, at);
+            e->trapTo.pushBack(at);
+            if (t.small) {
+                asmPatch8(a, t.at, at);
+            } else {
+                asmPatch32(a, t.at, at);
+            }
         }
         auto range1011 = e->jumps;
         for (Int index1012 = 0, rangeEnd1013 = length(range1011); index1012 < rangeEnd1013; ++index1012) {
@@ -20437,8 +20527,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             a->posBlock = move(posBlock);
         }
         allocatorLiveness(a);
-        allocatorConstants(a);
-        allocatorInvariants(a);
+        allocatorDefinitions(a, true);
         allocatorBuildIntervals(a);
         allocatorScan(a);
         allocatorSpillAtJoins(a);
