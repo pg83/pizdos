@@ -6303,6 +6303,8 @@ namespace {
 
     static i32 objCodeStackCheck(ObjCode* oc, i32 total, VReg temp);
 
+    static Slice<i32> objCodeStackCheckBlocks(MFunc* mf);
+
     static i32 objCodeThunk(ObjCode* oc, String name, Slice<ValType> params, Slice<ValType> results, Int index, Fn<void()> body);
 
     static void objCodeTrapCall(ObjCode* oc, i64 code);
@@ -18570,7 +18572,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         // The stack check follows the pushes: the arguments fill the
         // caller-saved registers, so a large frame's check computes in a
         // callee-saved register the function saves, R12 when it saves none.
-        const bool checks = mf->hasCalls || e->frame > leafFrame;
+        // A function that a leaf's frame fits may check before its calls
+        // instead, against the stack pointer the body has.
+        Slice<i32> checkBlocks = {};
+        if (mf->hasCalls && e->frame <= leafFrame && !mf->returnsTwice) {
+            checkBlocks = objCodeStackCheckBlocks(mf);
+        }
+        Slice<bool> checksAt = makeSlice<bool>(length(mf->blocks));
+        for (Int i = 0; i < length(checkBlocks); ++i) {
+            checksAt[checkBlocks[i]] = true;
+        }
+        const bool checks = (mf->hasCalls && length(checkBlocks) == 0) || e->frame > leafFrame;
         if (checks && e->frame > stackSmall && length(e->pushes) == 0) {
             e->pushes = sliceOf<VReg>({R12});
         }
@@ -18635,8 +18647,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             while (k < length(insts) && mInstSilent(&insts[k])) {
                 ++k;
             }
-            empty[usize(order[j])] = k == length(insts);
-            if (k + 1 == length(insts) && insts[k].op == mJmp) {
+            empty[usize(order[j])] = k == length(insts) && !checksAt[order[j]];
+            if (k + 1 == length(insts) && insts[k].op == mJmp && !checksAt[order[j]]) {
                 jumps[usize(order[j])] = insts[k].target;
             }
         }
@@ -18684,6 +18696,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         blockEnd.resize(mf->blocks.size());
         blockEnd.fill(-1);
         Vec<i32> headers;
+        Vec<Array<i32, 2>> bodyChecks;
         for (Int i = 0; i < length(order); ++i) {
             i32 b = order[i];
             asmSetSP(a, e->body);
@@ -18699,6 +18712,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 headers.pushBack(b);
             }
             e->blockAt[b] = asmPos(a);
+            if (checksAt[b]) {
+                const i32 at = asmPos(a);
+                bodyChecks.pushBack(Array<i32, 2>{{objCodeStackCheck(oc, 0, noReg), at}});
+            }
             funcEmitterBlock(e, &mf->blocks[b], i);
             blockEnd[usize(b)] = asmPos(a);
         }
@@ -18715,6 +18732,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (slow >= 0) {
             asmSetSP(a, e->body - e->frame);
             objCodeSlowPath(oc, slow, retry, e->frame, checkTemp);
+        }
+        for (usize k = 0; k < bodyChecks.size(); ++k) {
+            asmSetSP(a, e->body);
+            objCodeSlowPath(oc, bodyChecks[k][0], bodyChecks[k][1], 0, noReg);
         }
         Map<Array<i64, 2>, i32> stubs = mapOf<Array<i64, 2>, i32>({});
         auto traps = e->traps;
@@ -19242,6 +19263,118 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             asmAluRM(a, aluCmp, 8, temp, baseAt(R14, gStackguard0));
         }
         return asmJccRel(a, ccBE);
+    }
+
+    // stackCheckBlocks gives the blocks that check the stack where they
+    // begin, in place of the prologue, of a function with calls whose frame
+    // a leaf could have: until its first call it runs as a leaf does. Every
+    // path to a call passes one of them, the nearest dominator of the
+    // call's block outside every loop, and none dominates another. There
+    // are none when the entry would be one, or when one would not do: each
+    // check takes the room of the prologue's.
+    static Slice<i32> objCodeStackCheckBlocks(MFunc* mf) {
+        const Int n = length(mf->blocks);
+        // The blocks in postorder from the entry, block 0.
+        Slice<i32> post = makeSlice<i32>(0);
+        Slice<bool> seen = makeSlice<bool>(n);
+        Vec<Array<i32, 2>> stack;
+        stack.pushBack(Array<i32, 2>{{0, 0}});
+        seen[0] = true;
+        while (stack.size()) {
+            const Array<i32, 2> top = stack[stack.size() - 1];
+            const auto succs = mf->blocks[top[0]].succs;
+            if (top[1] < length(succs)) {
+                stack[stack.size() - 1][1] = top[1] + 1;
+                const i32 next = succs[top[1]];
+                if (!seen[next]) {
+                    seen[next] = true;
+                    stack.pushBack(Array<i32, 2>{{next, 0}});
+                }
+                continue;
+            }
+            post = appendValues(post, top[0]);
+            stack.resize(stack.size() - 1);
+        }
+        Slice<i32> rank = makeSlice<i32>(n);
+        for (Int i = 0; i < length(post); ++i) {
+            rank[post[i]] = convert<i32>(i);
+        }
+        Slice<i32> idom = makeSlice<i32>(n);
+        for (Int b = 0; b < n; ++b) {
+            idom[b] = -1;
+        }
+        idom[0] = 0;
+        for (bool changed = true; changed;) {
+            changed = false;
+            for (Int i = length(post) - 2; i >= 0; --i) {
+                const i32 b = post[i];
+                i32 d = -1;
+                const auto preds = mf->blocks[b].preds;
+                for (Int k = 0; k < length(preds); ++k) {
+                    i32 x = preds[k];
+                    if (!seen[x] || idom[x] < 0) {
+                        continue;
+                    }
+                    if (d >= 0) {
+                        i32 y = d;
+                        while (x != y) {
+                            while (rank[x] < rank[y]) {
+                                x = idom[x];
+                            }
+                            while (rank[y] < rank[x]) {
+                                y = idom[y];
+                            }
+                        }
+                    }
+                    d = x;
+                }
+                if (d >= 0 && idom[b] != d) {
+                    idom[b] = d;
+                    changed = true;
+                }
+            }
+        }
+        Slice<bool> checks = makeSlice<bool>(n);
+        for (Int i = 0; i < length(post); ++i) {
+            const i32 b = post[i];
+            auto insts = mf->blocks[b].insts.view();
+            bool calls = false;
+            for (Int k = 0; k < length(insts) && !calls; ++k) {
+                calls = insts[k].op == mCall || insts[k].op == mCallInd;
+            }
+            if (!calls) {
+                continue;
+            }
+            i32 at = b;
+            while (at != 0 && mf->blocks[at].depth > 0) {
+                at = idom[at];
+            }
+            if (at == 0) {
+                return {};
+            }
+            checks[at] = true;
+        }
+        Slice<i32> blocks = {};
+        for (Int i = length(post) - 1; i >= 0; --i) {
+            const i32 b = post[i];
+            if (!checks[b]) {
+                continue;
+            }
+            bool covered = false;
+            for (i32 x = idom[b]; !covered; x = idom[x]) {
+                covered = checks[x];
+                if (x == 0) {
+                    break;
+                }
+            }
+            if (!covered) {
+                blocks = appendValues(blocks, b);
+            }
+        }
+        if (length(blocks) > 1) {
+            return {};
+        }
+        return blocks;
     }
 
     // thunk emits a function Go calls with ABIInternal, func(ctx uintptr,

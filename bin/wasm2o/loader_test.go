@@ -374,6 +374,51 @@ func TestExhaustion(t *testing.T) {
 	runtime.KeepAlive(i)
 }
 
+// A function whose calls are all on one path checks its stack where that
+// path begins rather than on entry: recursion through it grows the stack
+// there, the values the body holds in registers intact, and recursion
+// without end traps there.
+func TestCheckBeforeCalls(t *testing.T) {
+	m := &testModule{
+		funcs: []testFunc{
+			// rec(n, k) = n == 0 ? k : rec(n-1, 3k+1) + n
+			{params: []ValType{I32, I64}, results: []ValType{I64}, export: "rec",
+				code: cat(get(0), []byte{opI32Eqz, opIf, byte(I64)}, get(1), []byte{opElse},
+					get(0), i32c(1), []byte{opI32Sub}, get(1), i64c(3), []byte{opI64Mul}, i64c(1), []byte{opI64Add}, call(0),
+					get(0), []byte{opI64ExtendU, opI64Add, 0x0b})},
+			// inf(n) = n == -1 ? 0 : inf(n+1)
+			{params: i32, results: i32, export: "inf",
+				code: cat(get(0), i32c(1), []byte{opI32Add, opI32Eqz, opIf, byte(I32)}, i32c(0), []byte{opElse},
+					get(0), i32c(1), []byte{opI32Add}, call(1), []byte{0x0b})},
+		},
+	}
+	i := load(t, m, nil)
+	f, _ := i.export("rec")
+	rec := f.Interface().(func(uintptr, uint32, uint64) uint64)
+
+	for _, n := range []uint32{0, 1, 1000, 100000} {
+		want := uint64(5)
+
+		for range n {
+			want = want*3 + 1
+		}
+
+		want += uint64(n) * uint64(n+1) / 2
+
+		if got := rec(i.ctx(), n, 5); got != want {
+			t.Fatalf("rec(%d) = %d, want %d", n, got, want)
+		}
+	}
+
+	f, _ = i.export("inf")
+
+	if code := trapOf(func() { f.Interface().(func(uintptr, uint32) uint32)(i.ctx(), 0) }); code != trapStack {
+		t.Fatalf("trap %d", code)
+	}
+
+	runtime.KeepAlive(i)
+}
+
 // wide types: five rounds of i32, i64, f32, f64
 var wide = func() []ValType {
 	var out []ValType
