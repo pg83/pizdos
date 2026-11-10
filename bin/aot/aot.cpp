@@ -21285,10 +21285,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         // checks nothing, its base least of all: a base whose range dips
         // below zero may have wrapped around while the sum did not.
         const bool own = length(f->module->mems) > 0 && !f->module->mems[0].imported;
-        ValueRanges* ranges = own ? activePool->make<ValueRanges>(ValueRanges{f, makeSlice<ValueRange>(length(f->values)), makeSlice<bool>(length(f->values))}) : nullptr;
+        ValueRanges* ranges = nullptr;
         auto inRange = [&](i32 addr, i64 end) {
             if (!own) {
                 return false;
+            }
+            if (!ranges) {
+                ranges = activePool->make<ValueRanges>(ValueRanges{f, makeSlice<ValueRange>(length(f->values)), makeSlice<bool>(length(f->values))});
             }
             const ValueRange range = valueRangesOf(ranges, addr, 0);
             return range.lo >= 0 && range.hi + end <= i64(f->module->mems[0].limits.min * 65536 + f->module->memoryTail);
@@ -21418,7 +21421,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             return end;
         };
-        auto entry = [&](i32 b, bool widen) {
+        auto entry = [&](i32 b) {
             for (Int t = 0; t < touchedCount; ++t) {
                 ends[touched[t]] = 0;
             }
@@ -21476,12 +21479,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 if (end == i64(4611686018427387904LL)) {
                     end = 0;
                 }
-                if (widen) {
-                    if (round >= 2 && before[j] >= 0 && end < before[j]) {
-                        end = 0;
-                    }
-                    before[j] = end;
+                if (round >= 2 && before[j] >= 0 && end < before[j]) {
+                    end = 0;
                 }
+                before[j] = end;
                 set(j, end);
             }
         };
@@ -21505,13 +21506,31 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 row[at] = item;
             }
         };
+        // A round visits, in order, the blocks whose predecessors changed
+        // since they were visited, the first round all; a block keeps the
+        // facts of its entry from its last visit.
+        Slice<bool> dirty = makeSlice<bool>(length(f->blocks));
+        for (Int i = 0; i < length(order); ++i) {
+            dirty[order[i]] = true;
+        }
+        Slice<Slice<CheckedValue>> entries = makeSlice<Slice<CheckedValue>>(length(f->blocks));
         bool stable = false;
         for (; round < 64 && !stable; round++) {
             stable = true;
-            auto order = ci->order;
             for (Int i = 0; i < length(order); ++i) {
                 i32 b = order[i];
-                entry(b, true);
+                if (!dirty[b]) {
+                    continue;
+                }
+                dirty[b] = false;
+                entry(b);
+                Slice<CheckedValue> at = subslice(entries[b], 0, 0);
+                for (Int t = 0; t < touchedCount; ++t) {
+                    if (ends[touched[t]] > 0) {
+                        at = appendValues(at, CheckedValue{touched[t], ends[touched[t]]});
+                    }
+                }
+                entries[b] = at;
                 for (usize k = usize(blocks[usize(i)]), end = usize(blocks[usize(i + 1)]); k < end; ++k) {
                     const CheckedValue access = accesses[k];
                     set(access.value, maximum(ends[access.value], access.end));
@@ -21525,6 +21544,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 if (!same) {
                     stable = false;
                     rows[b] = appendSlice(Slice<CheckedValue>{}, subslice(row, 0, rowCount));
+                    auto edges = f->blocks[b].term.edges;
+                    for (Int k = 0; k < length(edges); ++k) {
+                        dirty[edges[k].block] = true;
+                    }
                 }
                 reached[b] = true;
             }
@@ -21533,18 +21556,40 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (!stable) {
             return {};
         }
+        // A block dominates those numbered from its own place in the
+        // dominator tree's preorder through its subtree.
+        DominatorChildren children = cfgInfoChildren(ci);
+        Slice<i32> enter = makeSlice<i32>(length(f->blocks));
+        Slice<i32> through = makeSlice<i32>(length(f->blocks));
+        Vec<i32> preorder;
+        Vec<i32> stack;
+        stack.pushBack(order[0]);
+        while (stack.size() > 0) {
+            const i32 b = stack.popBack();
+            enter[b] = convert<i32>(preorder.size());
+            preorder.pushBack(b);
+            for (i32 c = children.first[usize(b)]; c >= 0; c = children.next[usize(c)]) {
+                stack.pushBack(c);
+            }
+        }
+        for (usize i = 0; i < preorder.size(); ++i) {
+            through[preorder[i]] = enter[preorder[i]];
+        }
+        for (usize i = preorder.size(); i-- > 1;) {
+            const i32 b = preorder[i];
+            through[ci->idom[b]] = maximum(through[ci->idom[b]], through[b]);
+        }
         PoolScope results(*caller);
         Slice<Slice<CheckedValue>> proofs = makeSlice<Slice<CheckedValue>>(length(f->blocks));
         auto range1445 = ci->order;
         for (Int index1446 = 0, rangeEnd1447 = length(range1445); index1446 < rangeEnd1447; ++index1446) {
             i32 b = range1445[index1446];
-            entry(b, false);
-            collect();
-            for (Int k = 0; k < rowCount; ++k) {
-                const i64 end = row[k].end;
-                i32 v = values[row[k].value];
+            auto facts = entries[b];
+            for (Int k = 0; k < length(facts); ++k) {
+                const i64 end = facts[k].end;
+                i32 v = values[facts[k].value];
                 i32 owner = f->values[v].block;
-                if (owner < 0 || cfgInfoDominates(ci, owner, b)) {
+                if (owner < 0 || (enter[owner] <= enter[b] && enter[b] <= through[owner])) {
                     proofs[b] = appendValues(proofs[b], CheckedValue{v, end});
                 }
             }
