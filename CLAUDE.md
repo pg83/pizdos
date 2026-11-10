@@ -246,11 +246,17 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
   signals; paths resolve inside `--root` through openat2 `RESOLVE_IN_ROOT`,
   but for a few host devices (/dev/null and kin); exec runs only objects of
   wasm2o and `#!` scripts; wasm2o exits with the first process, which
-  adopts orphans. The heap, environ, DIRs and libc's static results live in
-  the guest's memory: fork copies it from the stack pointer to the heap's
-  top, the instance and the frames, into a goroutine of its own; a child of
-  vfork runs on its parent's goroutine and frames until it execs or exits,
-  then the parent returns from vfork again. A stopped process blocks its
+  adopts orphans. The heap's blocks, environ, DIRs and libc's static
+  results live in the guest's memory, and the guest's memory holds data
+  only: what the allocator knows of the heap is the kernel's, in Go
+  (`kernel_heap.go`, trustme's pages of size classes, 64 KiB pages in
+  segments of 32, runs of pages for more than 16 KiB), and every pointer
+  freed is checked against it, so a program can neither corrupt the
+  allocator nor free what is not its block. fork copies the memory from the
+  stack pointer to the heap's top, the heap's state, the instance and the
+  frames, into a goroutine of its own; a child of vfork shares its parent's
+  heap and runs on its parent's goroutine and frames until it execs or
+  exits, then the parent returns from vfork again. A stopped process blocks its
   goroutine until SIGCONT; the terminal's foreground group is the
   kernel's. A longjmp may leave a signal handler through the kernel's Go
   frames: the code that runs handlers holds no lock and defers nothing.

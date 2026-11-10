@@ -97,15 +97,15 @@ func (p *Process) fork(setup func(c *Process)) (int32, error) {
 	from := uint64(binary.LittleEndian.Uint32(p.inst.block[p.stackPointer():])) &^ 4095
 	to := p.inst.memory.pages * pageSize
 
-	if p.heap != 0 {
-		to = uint64(p.u32(p.heap + heapTop))
+	if p.heap != nil {
+		to = uint64(p.heap.top)
 	}
 
 	c := p.k.newProcess(p)
 	inst := p.inst.clone(p.k, runStack, from, to)
 	inst.attach(c)
 	c.image = p.image
-	c.heap, c.static, c.env, c.errnoAt, c.environAt, c.siginfo = p.heap, p.static, p.env, p.errnoAt, p.environAt, p.siginfo
+	c.heap, c.static, c.env, c.errnoAt, c.environAt, c.siginfo = p.heap.clone(), p.static, p.env, p.errnoAt, p.environAt, p.siginfo
 	c.nextRegex, c.stackAt, c.locale, c.tzAt, c.herrnoAt = p.nextRegex, p.stackAt, p.locale, p.tzAt, p.herrnoAt
 	c.regexes, c.constants, c.jumps = map[uint32]*posixRegex{}, map[string]uint32{}, map[uint32]*jump{}
 

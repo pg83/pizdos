@@ -83,10 +83,10 @@ type Process struct {
 	environAt uint32
 	tzAt      [3]uint32
 	herrnoAt  uint32
-	// heap is the allocator's header in memory, static the block of the
+	// heap is what the kernel knows of the heap, static the block of the
 	// results libc keeps in static storage, env the environ array the kernel
 	// allocated last.
-	heap      uint32
+	heap      *Heap
 	static    uint32
 	env       uint32
 	seed      uint64
@@ -318,7 +318,7 @@ func (p *Process) runImage(img *execImage, i *Instance, enter func()) (next *exe
 	if i == nil {
 		i = newInstance(img.code, p.k, runStack)
 		i.attach(p)
-		p.heap, p.static, p.env, p.errnoAt, p.environAt, p.siginfo = 0, 0, 0, 0, 0, 0
+		p.heap, p.static, p.env, p.errnoAt, p.environAt, p.siginfo = nil, 0, 0, 0, 0, 0
 		p.regexes, p.constants, p.locale = map[uint32]*posixRegex{}, map[string]uint32{}, [lcAll]string{}
 		p.envStrings, p.mappings = map[uint32]bool{}, map[uint32]mapping{}
 		p.jumps, p.stackAt = map[uint32]*jump{}, 0
