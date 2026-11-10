@@ -3592,6 +3592,9 @@ namespace {
         u8 classValue{};
         InlineVec<Lrange, 1> ranges{};
         InlineVec<i32, 2> uses{};
+        // memUses are the uses an instruction can read from memory: they
+        // need no register, but count as uses for weighing the value.
+        InlineVec<i32, 1> memUses{};
         VReg reg{};
         Interval* parent{};
         IntervalChildren children{};
@@ -3605,7 +3608,7 @@ namespace {
         VReg locationReg{};
     };
 
-    static_assert(sizeof(Interval) == (sizeof(void*) == 8 ? 104 : 84));
+    static_assert(sizeof(Interval) == (sizeof(void*) == 8 ? 128 : 100));
 
     struct Anonymous50 {
         i32 begin{};
@@ -4223,6 +4226,10 @@ namespace {
         i32 nslots{};
         Vec<i32> posBlock{};
         Array<bool, 32> used{};
+        // invariantDepth is, for a virtual register defined once, the loop
+        // depth of its definition's block, and for any other a depth no
+        // block exceeds.
+        Vec<i32> invariantDepth{};
     };
 
     struct Bypass {
@@ -5617,6 +5624,8 @@ namespace {
 
     static Slice<VReg> mInstClobberSet(MInst* in, u8 registerClasses);
 
+    static bool mInstMemoryOperand(MInst* in, VReg* r);
+
     template <typename F>
     static void mInstForEachOperand(MInst* in, F cb);
 
@@ -5700,6 +5709,8 @@ namespace {
     static void allocatorSpillAtJoins(Allocator* a);
 
     static void allocatorSplitAtJoins(Allocator* a);
+
+    static void allocatorInvariants(Allocator* a);
 
     static Interval* allocatorPartAt(Interval* root, i32 p);
 
@@ -7388,6 +7399,23 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return registerClasses ? callerSaved : Slice<VReg>{};
         }
         return {};
+    }
+
+    // memoryOperand tells whether r is an operand of in that x86 reads from
+    // memory as well: the second of an integer, compare or float operation.
+    // Its use needs no register; spilled there, the instruction reads it
+    // from its slot.
+    static bool mInstMemoryOperand(MInst* in, VReg* r) {
+        switch (in->op) {
+            case mAlu: {
+                return r == &in->src && in->src != in->dst;
+            }
+            case mCmp:
+            case mFAlu: {
+                return r == &in->src2 && in->src2 != in->src;
+            }
+        }
+        return false;
     }
 
     // forEachOperand calls cb for every register operand of an instruction with
@@ -9542,8 +9570,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     auto* it = interval(*r);
                     intervalAddRange(it, from, p + 1);
                     if constexpr (!copiesOnly) {
-                        if (needReg || vRegIsPhys(*r)) {
+                        // A value invariant in the loop of its use is read from
+                        // memory there rather than reloaded, when that can be.
+                        if (vRegIsPhys(*r) || (needReg && !(mInstMemoryOperand(in, r) && a->invariantDepth[usize(allocatorVindex(a, *r))] < i32(mf->blocks[b].depth)))) {
                             intervalRecordUse(it, p);
+                        } else if (needReg) {
+                            it->memUses.pushBack(p);
                         }
                     }
                 });
@@ -10264,7 +10296,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     }
                     const i32 at = role == roleDef ? p + 1 : p;
                     *r = allocatorLocation(a, *r, at);
-                    if (isSlot(*r) && in->op != mParMove) {
+                    if (isSlot(*r) && in->op != mParMove && !mInstMemoryOperand(in, r)) {
                         compilerError(String("internal error: operand of %s in a stack slot"));
                     }
                 });
@@ -10439,6 +10471,28 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return nullptr;
     }
 
+    // invariants fills invariantDepth.
+    static void allocatorInvariants(Allocator* a) {
+        MFunc* mf = a->mf;
+        a->invariantDepth.resize(usize(mf->nregs));
+        a->invariantDepth.fill(-1);
+        auto order = a->order.view();
+        for (Int j = 0; j < length(order); ++j) {
+            const i32 b = order[j];
+            const i32 depth = i32(mf->blocks[b].depth);
+            auto instructions = mf->blocks[b].insts.view();
+            for (Int i = 0; i < length(instructions); ++i) {
+                mInstForEachOperand(&instructions[i], [&](VReg* r, Int role) {
+                    if (*r == noReg || vRegIsPhys(*r) || (role & roleDef) == 0 || role == roleTemp) {
+                        return;
+                    }
+                    i32& d = a->invariantDepth[usize(allocatorVindex(a, *r))];
+                    d = d == -1 ? depth : 1 << 30;
+                });
+            }
+        }
+    }
+
     // splitAtJoins starts afresh, at a loop header that many of the loop's
     // blocks return to, every value live there: the scan chooses their
     // registers at the header, those with the most uses after it first,
@@ -10479,7 +10533,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     return;
                 }
                 Interval* child = intervalSplit(part, from);
-                parts = appendValues(parts, Part{child, length(child->uses)});
+                parts = appendValues(parts, Part{child, length(child->uses) + length(child->memUses)});
             });
             sortValuesStable(parts, [&](Int x, Int y) {
                 return parts[x].uses > parts[y].uses;
@@ -10513,7 +10567,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     return;
                 }
                 Interval* part = allocatorPartAt(root, from);
-                if (isNil(part) || part->reg == noReg || intervalNextUse(part, from) < intervalEnd(part)) {
+                if (isNil(part) || part->reg == noReg || intervalNextUse(part, from) < intervalEnd(part) || (length(part->memUses) && part->memUses[length(part->memUses) - 1] >= from)) {
                     return;
                 }
                 const VReg r = firstVirtual + VReg(x);
@@ -13327,7 +13381,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 break;
             }
             case mAlu: {
-                asmAluRR(a, convert<AluOp>(in->aux), in->size, in->dst, in->src);
+                if (isSlot(in->src)) {
+                    asmAluRM(a, convert<AluOp>(in->aux), in->size, in->dst, funcEmitterSlotMem(e, slotOf(in->src)));
+                } else {
+                    asmAluRR(a, convert<AluOp>(in->aux), in->size, in->dst, in->src);
+                }
                 break;
             }
             case mAluImm: {
@@ -13343,7 +13401,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 break;
             }
             case mCmp: {
-                asmAluRR(a, aluCmp, in->size, in->src, in->src2);
+                if (isSlot(in->src2)) {
+                    asmAluRM(a, aluCmp, in->size, in->src, funcEmitterSlotMem(e, slotOf(in->src2)));
+                } else {
+                    asmAluRR(a, aluCmp, in->size, in->src, in->src2);
+                }
                 break;
             }
             case mCmpImm: {
@@ -13446,7 +13508,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 break;
             }
             case mFAlu: {
-                asmFalu(a, convert<FAluOp>(in->aux), in->size, in->dst, in->src, in->src2);
+                if (isSlot(in->src2)) {
+                    asmFaluM(a, convert<FAluOp>(in->aux), in->size, in->dst, in->src, funcEmitterSlotMem(e, slotOf(in->src2)));
+                } else {
+                    asmFalu(a, convert<FAluOp>(in->aux), in->size, in->dst, in->src, in->src2);
+                }
                 break;
             }
             case mFSelect: {
@@ -14084,6 +14150,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             it->uses[i] = it->uses[count - 1 - i];
             it->uses[count - 1 - i] = use;
         }
+        const usize memCount = it->memUses.size();
+        for (usize i = 0; i < memCount / 2; ++i) {
+            const i32 use = it->memUses[i];
+            it->memUses[i] = it->memUses[memCount - 1 - i];
+            it->memUses[memCount - 1 - i] = use;
+        }
     }
 
     // intersection returns the first position both intervals cover, or maxPos;
@@ -14160,6 +14232,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         });
         child->uses.assign(subslice(it->uses.view(), u, length(it->uses)));
         it->uses.resize(usize(u));
+        Int mu = sortSearch(length(it->memUses), [&](Int i) mutable -> bool {
+            return it->memUses[i] >= p;
+        });
+        child->memUses.assign(subslice(it->memUses.view(), mu, length(it->memUses)));
+        it->memUses.resize(usize(mu));
         Interval* root = it;
         if (!isNil(it->parent)) {
             root = it->parent;
@@ -20145,6 +20222,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             a->posBlock = move(posBlock);
         }
         allocatorLiveness(a);
+        allocatorInvariants(a);
         allocatorBuildIntervals(a);
         allocatorScan(a);
         allocatorSpillAtJoins(a);
