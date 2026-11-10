@@ -3397,9 +3397,9 @@ namespace {
         u64 memoryTail{};
         bool tailRanges{};
         bool tailProfile{};
-        // lowFree: the module keeps nothing in the first 64 KiB of its
-        // memory, so an address that wrapped around 2^32 is out of bounds
-        // and a sum's base may be checked for it (lowererAddress).
+        // lowFree: the module keeps nothing in the first boundSlack bytes of
+        // its memory, so an address that wrapped around 2^32 is out of
+        // bounds and a sum's base may be checked for it (lowererAddress).
         bool lowFree{};
         Slice<FuncType> types{};
         Slice<Import> imports{};
@@ -4655,9 +4655,7 @@ namespace {
         Layout* lay{};
         Asm a{};
         Slice<i32> funcAt{};
-        Array<i32, 2> stubAt{};
         Slice<CallFixup> calls{};
-        Slice<CallFixup> stubCalls{};
         Map<i32, i32> jumpAt{};
         Slice<CallFixup> jumpCalls{};
         Slice<CodeBlob> blobs{};
@@ -4976,12 +4974,6 @@ namespace {
 
     static constexpr Int ctrlFunc = 4;
 
-    static constexpr Int stubMorestack = 0;
-
-    static constexpr Int stubInterrupt = 1;
-
-    static constexpr Int stubCount = 2;
-
     static constexpr Int gStackHi = 8;
 
     static constexpr Int gStackguard0 = 16;
@@ -4993,42 +4985,6 @@ namespace {
     static constexpr Int stackSmall = 128;
 
     static constexpr Int leafFrame = 512;
-
-    static constexpr Int framesCtx = 0;
-
-    static constexpr Int framesSP = 8;
-
-    static constexpr Int framesBP = 16;
-
-    static constexpr Int framesFuncs = 24;
-
-    static constexpr Int framesEntry = 40;
-
-    static constexpr Int framesResume = 56;
-
-    static constexpr Int framesBuf = 72;
-
-    static constexpr Int framesCap = 80;
-
-    static constexpr Int framesSize = 88;
-
-    static constexpr Int framesTop = 96;
-
-    static constexpr Int resumeCtx = 0;
-
-    static constexpr Int resumeBuf = 8;
-
-    static constexpr Int resumeSize = 16;
-
-    static constexpr Int resumeTop = 24;
-
-    static constexpr Int resumeBP = 32;
-
-    static constexpr Int resumeSP = 40;
-
-    static constexpr Int resumePC = 48;
-
-    static constexpr Int resumeRegs = 56;
 
     static constexpr Int resumeSlack = 512;
 
@@ -5265,8 +5221,6 @@ namespace {
     static constexpr Int trapNullRef = 11;
 
     static constexpr Int calleeFunc = 0;
-
-    static constexpr Int calleeStub = 1;
 
     static constexpr Int calleeJump = 2;
 
@@ -5605,27 +5559,17 @@ namespace {
 
     static const String symInit = String("w2o.init");
 
-    static const String symLand = String("w2o.land");
-
-    static const String symFrames = String("w2o.frames");
-
-    static const String symResume = String("w2o.resume");
-
     static const String symMorestackStub = String("w2o.morestack");
 
     static const String symImport = String("w2o.import.");
 
     static const String symExport = String("w2o.export.");
 
-    static const String symMorestack = String("runtime.morestack_noctxt");
-
     static const String symTrap = String("w2o.trap");
 
     static const String symMemoryGrow = String("w2o.memory_grow");
 
     static const String symTableGrow = String("w2o.table_grow");
-
-    static const String symInterrupt = String("w2o.interrupt");
 
     static const String symInterruptCall = String("w2o.interrupt_call");
 
@@ -5877,8 +5821,6 @@ namespace {
 
     static void asmPopMem(Asm* a, Amem m);
 
-    static void asmPopf(Asm* a);
-
     static i32 asmPos(Asm* a);
 
     static void asmPrefixed(Asm* a, u8 prefix, bool w, Span<const u8> op, Int reg, Int rm);
@@ -5888,10 +5830,6 @@ namespace {
     static void asmPushZero(Asm* a);
 
     static void asmPushMem(Asm* a, Amem m);
-
-    static void asmPushf(Asm* a);
-
-    static void asmRepMovsb(Asm* a);
 
     static void asmRet(Asm* a);
 
@@ -6245,8 +6183,6 @@ namespace {
 
     static void objCodeCallGo(ObjCode* oc, String sym);
 
-    static void objCodeCallStub(ObjCode* oc, Int kind);
-
     static Meta* objCodeDescription(ObjCode* oc);
 
     static void objCodeEmitFunction(ObjCode* oc, Int index, MFunc* mf, Allocator* al);
@@ -6259,8 +6195,6 @@ namespace {
 
     static Amem objCodeFloatConst(ObjCode* oc, u64 bits, u8 size);
 
-    static void objCodeFramesStub(ObjCode* oc);
-
     static String objCodeFuncName(ObjCode* oc, Int i);
 
     static i32 objCodeGoCall(ObjCode* oc, String name, Slice<ValType> params, Slice<ValType> results, String sym, bool record);
@@ -6271,25 +6205,17 @@ namespace {
 
     static void objCodeInitThunk(ObjCode* oc);
 
-    static i32 objCodeInterruptStub(ObjCode* oc);
-
-    static void objCodeLandStub(ObjCode* oc);
-
     static void objCodePlaceBlobs(ObjCode* oc);
 
     static void objCodeRecordFrame(ObjCode* oc);
 
     static void objCodeResolve(ObjCode* oc);
 
-    static void objCodeResumeStub(ObjCode* oc);
-
     static void objCodeSlowPath(ObjCode* oc, i32 at, i32 entry, i32 total, VReg temp);
 
     static void objCodeDropWord(ObjCode* oc);
 
     static i32 objCodeStackCheck(ObjCode* oc, i32 total, VReg temp);
-
-    static void objCodeStubs(ObjCode* oc);
 
     static i32 objCodeThunk(ObjCode* oc, String name, Slice<ValType> params, Slice<ValType> results, Int index, Fn<void()> body);
 
@@ -11108,11 +11034,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         asmMoveSP(a, -8);
     }
 
-    static void asmPopf(Asm* a) {
-        asmBytes(a, {u8(u8(157LL))});
-        asmMoveSP(a, -8);
-    }
-
     static i32 asmPos(Asm* a) {
         return convert<i32>(length(a->buf));
     }
@@ -11137,15 +11058,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void asmPushMem(Asm* a, Amem m) {
         asmOpRM(a, false, Span<const u8>({u8(255LL)}), 6, m, 0, false);
         asmMoveSP(a, 8);
-    }
-
-    static void asmPushf(Asm* a) {
-        asmBytes(a, {u8(u8(156LL))});
-        asmMoveSP(a, 8);
-    }
-
-    static void asmRepMovsb(Asm* a) {
-        asmBytes(a, {u8(u8(243LL)), u8(u8(164LL))});
     }
 
     static void asmRet(Asm* a) {
@@ -13444,10 +13356,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             case mCall: {
                 switch (in->aux) {
-                    case calleeStub: {
-                        objCodeCallStub(e->oc, convert<i64>(in->imm));
-                        break;
-                    }
                     case calleeJump: {
                         e->oc->jumpCalls = appendValues(e->oc->jumpCalls, CallFixup{asmCallRel(a), convert<i32>(in->imm)});
                         break;
@@ -13720,7 +13628,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         i32 resume = asmPos(a);
         e->late = appendValues(e->late, [=]() mutable -> void {
             asmPatch32(a, at, asmPos(a));
-            objCodeCallStub(e->oc, stubInterrupt);
+            asmCallMem(a, objCodeGotMem(e->oc, symInterruptCall));
             asmPatch32(a, asmJmpRel(a), resume);
         });
     }
@@ -16675,7 +16583,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return l->vregs[v];
     }
 
-    // In padded mode p <= memory.size guarantees the next 64 KiB physically.
+    // In padded mode p <= memory.size guarantees the next boundSlack bytes
+    // physically.
     // Clone only the overlapping spans from a group's first to last check.
     // The checked copy rejoins the shared continuation immediately after the
     // last check, before the final memory access. Calls and terminators outside
@@ -17003,10 +16912,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         asmCallMem(&oc->a, objCodeGotMem(oc, sym));
     }
 
-    static void objCodeCallStub(ObjCode* oc, Int kind) {
-        oc->stubCalls = appendValues(oc->stubCalls, CallFixup{asmCallRel(&oc->a), convert<i32>(kind)});
-    }
-
     // description is what the symbols do not tell a loader: the instance, its
     // memory, tables and globals, the imports and exports of those.
     static Meta* objCodeDescription(ObjCode* oc) {
@@ -17294,94 +17199,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return Amem{-1, -1, {}, {}, label, labelModule};
     }
 
-    // framesStub emits the stub fork calls first, func(request uintptr), on a
-    // framesRequest: it walks the frame pointers from the jump frame's caller up
-    // while each returns into a function of the module, to the frame that
-    // returns into the entry thunk or the resume stub, and copies those
-    // frames, from the caller's
-    // stack pointer to that return address, when they fit the buffer. In the
-    // copy each saved RBP is an offset from its start, the top one 0. A leaf
-    // that only reads the stack, it may be preempted anywhere.
-    static void objCodeFramesStub(ObjCode* oc) {
-        Asm* a = &oc->a;
-        auto word = [&](i32 k) mutable -> Amem {
-            return baseAt(RAX, k);
-        };
-        i32 start = objCodeBeginRegion(oc, symFrames);
-        setMap(oc->globals, symFrames, true);
-        asmLoad(a, 8, 8, false, RDX, baseAt(R14, gStackHi));
-        asmLoad(a, 8, 8, false, R10, word(framesCtx));
-        asmMovRR(a, 8, R9, RDX);
-        asmAluRM(a, aluSub, 8, R9, baseAt(R10, offBase));
-        asmMovRR(a, 8, RSI, R9);
-        asmAluRM(a, aluSub, 8, RSI, word(framesSP));
-        asmMovRR(a, 8, RDI, R9);
-        asmAluRM(a, aluSub, 8, RDI, word(framesBP));
-        i32 walk = asmPos(a);
-        asmLoad(a, 8, 8, false, R8, baseAt(RDI, 8));
-        Slice<i32> top = {};
-        Slice<i32> fail = {};
-        auto range1025 = Array<i32, 2>{{framesEntry, framesResume}};
-        for (Int index1026 = 0, rangeEnd1027 = length(range1025); index1026 < rangeEnd1027; ++index1026) {
-            i32 entry = range1025[index1026];
-            asmAluRM(a, aluCmp, 8, R8, word(entry));
-            i32 below = asmJcc8(a, ccB);
-            asmAluRM(a, aluCmp, 8, R8, word(entry + 8));
-            top = appendValues(top, asmJccRel(a, ccB));
-            asmHere8(a, below);
-        }
-        asmAluRM(a, aluCmp, 8, R8, word(framesFuncs));
-        fail = appendValues(fail, asmJccRel(a, ccB));
-        asmAluRM(a, aluCmp, 8, R8, word(32));
-        fail = appendValues(fail, asmJccRel(a, ccAE));
-        asmLoad(a, 8, 8, false, R8, baseAt(RDI, 0));
-        asmAluRR(a, aluCmp, 8, R8, RDI);
-        fail = appendValues(fail, asmJccRel(a, ccBE));
-        asmAluRR(a, aluCmp, 8, R8, RDX);
-        fail = appendValues(fail, asmJccRel(a, ccAE));
-        asmMovRR(a, 8, RDI, R8);
-        asmPatch32(a, asmJmpRel(a), walk);
-        auto range1028 = top;
-        for (Int index1029 = 0, rangeEnd1030 = length(range1028); index1029 < rangeEnd1030; ++index1029) {
-            i32 at = range1028[index1029];
-            asmPatch32(a, at, asmPos(a));
-        }
-        asmLea(a, 8, RCX, baseAt(RDI, 16));
-        asmAluRR(a, aluSub, 8, RCX, RSI);
-        asmStore(a, 8, RCX, word(framesSize));
-        asmMovRR(a, 8, R11, RDI);
-        asmAluRR(a, aluSub, 8, R11, RSI);
-        asmStore(a, 8, R11, word(framesTop));
-        asmAluRM(a, aluCmp, 8, RCX, word(framesCap));
-        i32 small = asmJccRel(a, ccA);
-        asmMovRR(a, 8, RBX, RSI);
-        asmLoad(a, 8, 8, false, R10, word(framesBuf));
-        asmMovRR(a, 8, RDI, R10);
-        asmRepMovsb(a);
-        asmLoad(a, 8, 8, false, R8, word(framesSP));
-        asmAluRM(a, aluSub, 8, R8, word(framesBP));
-        i32 relink = asmPos(a);
-        asmAluRR(a, aluCmp, 8, R8, R11);
-        i32 last = asmJcc8(a, ccE);
-        asmLoad(a, 8, 8, false, RCX, indexed(R10, R8));
-        asmAluRR(a, aluSub, 8, RCX, RBX);
-        asmStore(a, 8, RCX, indexed(R10, R8));
-        asmMovRR(a, 8, R8, RCX);
-        asmPatch8(a, asmJmp8(a), relink);
-        asmHere8(a, last);
-        asmStoreImm(a, 8, indexed(R10, R11), 0);
-        asmPatch32(a, small, asmPos(a));
-        asmRet(a);
-        auto range1031 = fail;
-        for (Int index1032 = 0, rangeEnd1033 = length(range1031); index1032 < rangeEnd1033; ++index1032) {
-            i32 at = range1031[index1032];
-            asmPatch32(a, at, asmPos(a));
-        }
-        asmStoreImm(a, 8, word(framesSize), 0);
-        asmRet(a);
-        objCodeEndRegion(oc, start);
-    }
-
     // funcName names a function's region, which Go shows in tracebacks.
     static String objCodeFuncName(ObjCode* oc, Int i) {
         String n = oc->m->funcs[i].name;
@@ -17498,7 +17315,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         asmRet(a);
         asmSetSP(a, framed);
         asmHere8(a, interrupt);
-        objCodeCallStub(oc, stubInterrupt);
+        asmCallMem(a, objCodeGotMem(oc, symInterruptCall));
         asmPop(a, RBP);
         asmRet(a);
         asmSetSP(a, 8 + 8 * convert<i32>(length(saved)));
@@ -17535,11 +17352,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             if (m->funcs[imp.index].returnsTwice) {
                 setMap(oc->jumpAt, convert<i32>(imp.index), objCodeGoCall(oc, name + String(".jump"), t->params, t->results, sym, true));
             }
-        }
-        if (length(oc->jumpAt) > 0) {
-            objCodeLandStub(oc);
-            objCodeFramesStub(oc);
-            objCodeResumeStub(oc);
         }
     }
 
@@ -17666,124 +17478,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         });
     }
 
-    // interruptStub emits what Go's runtime injects a call of, from a
-    // preemption signal, at an instruction of a function of the module when
-    // Go was asked to interrupt the code (lib/goruntime): it calls the Go
-    // function value of w2o.interrupt with the instance and returns to that
-    // instruction with every register and flag as it was, but the memory
-    // register, read again. The frame below its saved RBP is a frame of
-    // registers, which hold no stack address and no Go pointer of their own.
-    static i32 objCodeInterruptStub(ObjCode* oc) {
-        Asm* a = &oc->a;
-        Slice<VReg> saved = sliceOf<VReg>({RAX, RBX, RCX, RDX, RSI, RDI, R8, R9, R10, R11, R12, R13});
-        i32 xmms = 120;
-        i32 spill = goAssign({}, {}).size;
-        i32 start = objCodeBeginRegion(oc, symInterruptCall);
-        setMap(oc->globals, symInterruptCall, true);
-        asmPush(a, RBP);
-        asmMovRR(a, 8, RBP, RSP);
-        asmPushf(a);
-        for (Int i = 0; i < length(saved); ++i) {
-            VReg r = saved[i];
-            asmPush(a, r);
-        }
-        asmAluRI(a, aluSub, 8, RSP, convert<i64>(xmms + spill));
-        auto range1065 = 15;
-        for (Int index1066 = 0, rangeEnd1067 = range1065; index1066 < rangeEnd1067; ++index1066) {
-            Int i = index1066;
-            asmFstore(a, 8, XMM0 + convert<VReg>(i), rspAt(spill + convert<i32>(8 * i)));
-        }
-        asmMovRR(a, 8, RAX, ctxReg);
-        objCodeCallGo(oc, symInterrupt);
-        auto range1068 = 15;
-        for (Int index1069 = 0, rangeEnd1070 = range1068; index1069 < rangeEnd1070; ++index1069) {
-            Int i = index1069;
-            asmFload(a, 8, XMM0 + convert<VReg>(i), rspAt(spill + convert<i32>(8 * i)));
-        }
-        asmAluRI(a, aluAdd, 8, RSP, convert<i64>(xmms + spill));
-        Int i = length(saved) - 1;
-        for (; i >= 0; i--) {
-            asmPop(a, saved[i]);
-        }
-        asmLoad(a, 8, 8, false, memReg, baseAt(ctxReg, offMem));
-        asmPopf(a);
-        asmPop(a, RBP);
-        asmRet(a);
-        objCodeEndRegion(oc, start);
-        return start;
-    }
-
-    // landStub emits the stub longjmp calls, func(jump uintptr, val uint32,
-    // ctx uintptr) uint32, jump a Jump (jump.go): its jump frame, then the code
-    // of the caller's function, [start, end). It returns from the call that
-    // wrote the frame again, with val, when the caller's RBP is on the chain of
-    // frame pointers from its own caller, the frame below returns into that
-    // code and the token is the frame's: the invocation is the one that made
-    // the call. Else it returns 0.
-    //
-    // The switch is a ret, so the stack pointer table says 0 throughout:
-    // before it the stub is a leaf of its Go caller, after it a leaf called
-    // from the landing site, whose return address it stores at the new top.
-    static void objCodeLandStub(ObjCode* oc) {
-        Asm* a = &oc->a;
-        auto word = [&](i32 k) mutable -> Amem {
-            return baseAt(RAX, 8 * k);
-        };
-        i32 start = objCodeBeginRegion(oc, symLand);
-        setMap(oc->globals, symLand, true);
-        asmLoad(a, 8, 8, false, RDX, baseAt(R14, gStackHi));
-        asmMovRR(a, 8, R9, RDX);
-        asmAluRM(a, aluSub, 8, R9, baseAt(RCX, offBase));
-        asmMovRR(a, 8, RSI, R9);
-        asmAluRM(a, aluSub, 8, RSI, word(jumpBP));
-        asmMovRR(a, 8, RDI, RBP);
-        i32 walk = asmPos(a);
-        asmLoad(a, 8, 8, false, R8, baseAt(RDI, 0));
-        asmAluRR(a, aluCmp, 8, R8, RSI);
-        i32 found = asmJcc8(a, ccE);
-        asmAluRR(a, aluCmp, 8, R8, RDI);
-        i32 down = asmJccRel(a, ccBE);
-        asmAluRR(a, aluCmp, 8, R8, RDX);
-        i32 above = asmJccRel(a, ccAE);
-        asmMovRR(a, 8, RDI, R8);
-        asmPatch8(a, asmJmp8(a), walk);
-        asmHere8(a, found);
-        asmLoad(a, 8, 8, false, R8, baseAt(RDI, 8));
-        asmAluRM(a, aluCmp, 8, R8, word(jumpWords));
-        i32 before = asmJccRel(a, ccB);
-        asmAluRM(a, aluCmp, 8, R8, word(jumpWords + 1));
-        i32 after = asmJccRel(a, ccAE);
-        asmLoad(a, 8, 8, false, R8, baseAt(RSI, -8));
-        asmAluRM(a, aluCmp, 8, R8, word(jumpToken));
-        i32 other = asmJccRel(a, ccNE);
-        asmMovRR(a, 8, ctxReg, RCX);
-        asmStore(a, 8, ctxReg, baseAt(R14, gInstance));
-        asmLoad(a, 8, 8, false, memReg, baseAt(ctxReg, offMem));
-        asmMovRR(a, 8, R8, R9);
-        asmAluRM(a, aluSub, 8, R8, word(jumpSP));
-        asmAluRI(a, aluSub, 8, R8, 8);
-        asmLoad(a, 8, 8, false, RDX, word(jumpPC));
-        asmStore(a, 8, RDX, baseAt(R8, 0));
-        asmMovRR(a, 8, RBP, RSI);
-        // val leaves RBX before the callee-saved registers, RBX among them,
-        // come back from the frame, which RAX still addresses.
-        asmMovRR(a, 4, RDX, RBX);
-        for (Int k = 0; k < length(calleeSaved); ++k) {
-            asmLoad(a, 8, 8, false, calleeSaved[k], word(jumpRegs + convert<i32>(k)));
-        }
-        asmMovRR(a, 4, RAX, RDX);
-        asmMovRR(a, 8, RSP, R8);
-        asmRet(a);
-        auto range1071 = Array<i32, 5>{{down, above, before, after, other}};
-        for (Int index1072 = 0, rangeEnd1073 = length(range1071); index1072 < rangeEnd1073; ++index1072) {
-            i32 at = range1071[index1072];
-            asmPatch32(a, at, asmPos(a));
-        }
-        asmAluRR(a, aluXor, 4, RAX, RAX);
-        asmRet(a);
-        objCodeEndRegion(oc, start);
-    }
-
     // placeBlobs lays the constants and data segments out in .rodata.
     static void objCodePlaceBlobs(ObjCode* oc) {
         oc->blobAt = makeSlice<i32>(length(oc->blobs));
@@ -17876,93 +17570,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             CallFixup c = calls[i];
             asmPatch32(a, c.at, oc->funcAt[c.fn]);
         }
-        auto stubCalls = oc->stubCalls;
-        for (Int i = 0; i < length(stubCalls); ++i) {
-            CallFixup c = stubCalls[i];
-            asmPatch32(a, c.at, oc->stubAt[c.fn]);
-        }
         auto jumpCalls = oc->jumpCalls;
         for (Int i = 0; i < length(jumpCalls); ++i) {
             CallFixup c = jumpCalls[i];
             asmPatch32(a, c.at, oc->jumpAt[c.fn]);
         }
-    }
-
-    // resumeStub emits the stub a child of fork enters by, func(request
-    // uintptr), on a resumeRequest: with a frame of its own, it places the
-    // frames below its stack pointer, links them to its frame and returns from
-    // the call of the jump frame with 0, the instance's base set so that the
-    // parent's offsets hold. The top frame returns into the stub, which
-    // returns to Go. Writing below its stack pointer, it must not be preempted
-    // (gort.go); first it grows the stack until the frames fit.
-    static void objCodeResumeStub(ObjCode* oc) {
-        Asm* a = &oc->a;
-        auto word = [&](i32 k) mutable -> Amem {
-            return baseAt(RAX, k);
-        };
-        i32 start = objCodeBeginRegion(oc, symResume);
-        setMap(oc->globals, symResume, true);
-        asmLoad(a, 8, 8, false, ctxReg, word(resumeCtx));
-        asmStore(a, 8, ctxReg, baseAt(R14, gInstance));
-        asmLea(a, 8, RDX, rspAt(-512));
-        asmAluRM(a, aluSub, 8, RDX, word(resumeSize));
-        asmAluRM(a, aluCmp, 8, RDX, baseAt(R14, gStackguard0));
-        i32 grow = asmJccRel(a, ccBE);
-        // RDX is the copied frames' base, RSI the top frame's offset; the
-        // callee-saved registers come last, from the request.
-        asmPush(a, RBP);
-        asmMovRR(a, 8, RBP, RSP);
-        asmMovRR(a, 8, RDI, RSP);
-        asmAluRM(a, aluSub, 8, RDI, word(resumeSize));
-        asmMovRR(a, 8, RDX, RDI);
-        asmLoad(a, 8, 8, false, RSI, word(resumeBuf));
-        asmLoad(a, 8, 8, false, RCX, word(resumeSize));
-        asmRepMovsb(a);
-        asmLoad(a, 8, 8, false, R8, word(resumeBP));
-        asmLoad(a, 8, 8, false, RSI, word(resumeTop));
-        i32 relink = asmPos(a);
-        asmAluRR(a, aluCmp, 8, R8, RSI);
-        i32 last = asmJcc8(a, ccE);
-        asmLoad(a, 8, 8, false, RCX, indexed(RDX, R8));
-        asmLea(a, 8, RDI, indexed(RDX, RCX));
-        asmStore(a, 8, RDI, indexed(RDX, R8));
-        asmMovRR(a, 8, R8, RCX);
-        asmPatch8(a, asmJmp8(a), relink);
-        asmHere8(a, last);
-        asmStore(a, 8, RBP, indexed(RDX, RSI));
-        asmRex(a, true, 7, -1, -1, false);
-        asmBytes(a, {u8(u8(141LL)), u8(u8(shiftLeft(lo3(7), 3) | 5))});
-        i32 contAt = asmPos(a);
-        asmU32(a, 0);
-        asmLea(a, 8, RCX, indexed(RDX, RSI));
-        asmStore(a, 8, RDI, baseAt(RCX, 8));
-        asmLoad(a, 8, 8, false, RDI, baseAt(R14, gStackHi));
-        asmAluRR(a, aluSub, 8, RDI, RDX);
-        asmAluRM(a, aluSub, 8, RDI, word(resumeSP));
-        asmStore(a, 8, RDI, baseAt(ctxReg, offBase));
-        asmLoad(a, 8, 8, false, memReg, baseAt(ctxReg, offMem));
-        for (Int k = 0; k < length(calleeSaved); ++k) {
-            asmLoad(a, 8, 8, false, calleeSaved[k], word(resumeRegs + 8 * convert<i32>(k)));
-        }
-        asmLoad(a, 8, 8, false, RDI, word(resumePC));
-        asmMovRR(a, 8, RBP, RDX);
-        asmAluRM(a, aluAdd, 8, RBP, word(resumeBP));
-        asmLea(a, 8, R8, baseAt(RDX, -8));
-        asmStore(a, 8, RDI, baseAt(R8, 0));
-        asmAluRR(a, aluXor, 4, RAX, RAX);
-        asmMovRR(a, 8, RSP, R8);
-        asmRet(a);
-        i32 cont = asmPos(a);
-        littlePutUint32(subslice(a->buf, contAt, length(a->buf)), convert<u32>(cont - (contAt + 4)));
-        asmPop(a, RBP);
-        asmRet(a);
-        asmSetSP(a, 0);
-        asmPatch32(a, grow, asmPos(a));
-        asmPush(a, RDX);
-        objCodeCallStub(oc, stubMorestack);
-        objCodeDropWord(oc);
-        asmPatch32(a, asmJmpRel(a), start);
-        objCodeEndRegion(oc, start);
     }
 
     // slowPath grows the stack and starts the region again at entry. It
@@ -17971,7 +17583,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Asm* a = &oc->a;
         asmPatch32(a, at, asmPos(a));
         asmPush(a, total <= stackSmall ? RSP : temp);
-        objCodeCallStub(oc, stubMorestack);
+        asmCallMem(a, objCodeGotMem(oc, symMorestackStub));
         objCodeDropWord(oc);
         asmPatch32(a, asmJmpRel(a), entry);
     }
@@ -17998,60 +17610,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             asmAluRM(a, aluCmp, 8, temp, baseAt(R14, gStackguard0));
         }
         return asmJccRel(a, ccBE);
-    }
-
-    // stubs emits the morestack stub and the interrupt stub.
-    //
-    // A stack check that found g.stackguard0 at stackPreempt calls the
-    // morestack stub, but the preemption can complete before Go's morestack
-    // reads the guard again, from a signal at the call or from Go code an
-    // interruption runs; newstack would then grow the stack for a frame
-    // that fits. The loader marks the stub assembly, which Go never
-    // preempts or interrupts, and the stub compares what the check
-    // compared, which its caller pushed, with the guard once more: above
-    // it, it returns to the check without calling morestack.
-    static void objCodeStubs(ObjCode* oc) {
-        Asm* a = &oc->a;
-        i32 start = objCodeBeginRegion(oc, symMorestackStub);
-        oc->stubAt[stubMorestack] = start;
-        Slice<VReg> saved = sliceOf<VReg>({RAX, RBX, RCX, RDX, RSI, RDI, R8, R9, R10, R11, R12, R13, R15});
-        asmPush(a, RBP);
-        asmMovRR(a, 8, RBP, RSP);
-        for (Int i = 0; i < length(saved); ++i) {
-            VReg r = saved[i];
-            asmPush(a, r);
-        }
-        i32 xmms = convert<i32>(8 * length(goFloatRegs));
-        asmAluRI(a, aluSub, 8, RSP, convert<i64>(xmms));
-        for (Int i = 0; i < length(goFloatRegs); ++i) {
-            VReg x = goFloatRegs[i];
-            asmFstore(a, 8, x, rspAt(convert<i32>(8 * i)));
-        }
-        asmLoad(a, 8, 8, false, RAX, baseAt(RBP, 16));
-        asmAluRM(a, aluCmp, 8, RAX, baseAt(R14, gStackguard0));
-        i32 fits = asmJccRel(a, ccA);
-        asmLoad(a, 8, 8, false, RAX, baseAt(R14, gStackHi));
-        asmAluRR(a, aluSub, 8, RAX, RSP);
-        asmAluRM(a, aluCmp, 8, RAX, baseAt(ctxReg, offStackLimit));
-        i32 overflow = asmJccRel(a, ccA);
-        asmCallMem(a, objCodeGotMem(oc, symMorestack));
-        asmPatch32(a, fits, asmPos(a));
-        for (Int i = 0; i < length(goFloatRegs); ++i) {
-            VReg x = goFloatRegs[i];
-            asmFload(a, 8, x, rspAt(convert<i32>(8 * i)));
-        }
-        asmAluRI(a, aluAdd, 8, RSP, convert<i64>(xmms));
-        Int i = length(saved) - 1;
-        for (; i >= 0; i--) {
-            asmPop(a, saved[i]);
-        }
-        asmPop(a, RBP);
-        asmRet(a);
-        asmSetSP(a, 8 + 8 * convert<i32>(length(saved)) + xmms);
-        asmPatch32(a, overflow, asmPos(a));
-        objCodeTrapCall(oc, trapStack);
-        objCodeEndRegion(oc, start);
-        oc->stubAt[stubInterrupt] = objCodeInterruptStub(oc);
     }
 
     // thunk emits a function Go calls with ABIInternal, func(ctx uintptr,
@@ -20308,11 +19866,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // constOffset evaluates a constant offset expression: i32.const or
     // i64.const.
-    // lowFree tells whether the module keeps nothing in the first 64 KiB of
-    // its memory: its own, every data segment active at a constant address
-    // of 64 KiB or more, and its stack pointer, the first global, starting
-    // at 64 KiB or more. Our toolchain links the stack first, its lowest
-    // 64 KiB a red zone past the program's budget.
+    // lowFree tells whether the module keeps nothing in the first boundSlack
+    // bytes of its memory: its own, every data segment active at a constant
+    // address of boundSlack or more, and its stack pointer, the first
+    // global, starting at boundSlack or more. Our toolchain links the stack
+    // first, its lowest boundSlack bytes a red zone past the program's
+    // budget.
     static bool moduleLowFree(Module* m) {
         if (length(m->mems) == 0 || m->mems[0].imported || length(m->globals) == 0) {
             return false;
@@ -22806,7 +22365,6 @@ namespace {
         code->a.sps = makeSlice<SpEntry>(0);
         code->funcAt = makeSlice<i32>(0);
         code->calls = makeSlice<CallFixup>(0);
-        code->stubCalls = makeSlice<CallFixup>(0);
         code->jumpAt = makeMap<i32, i32>();
         code->jumpCalls = makeSlice<CallFixup>(0);
         code->blobs = makeSlice<CodeBlob>(0);
@@ -22824,7 +22382,6 @@ namespace {
         code->importSyms = makeSlice<String>(module->importedFuncs);
         code->importIntrinsics = makeSlice<Int>(module->importedFuncs);
         objCodeAddFixedBlobs(code);
-        objCodeStubs(code);
         objCodeImportAdapters(code);
         for (Int i = module->importedFuncs; i < length(module->funcs); ++i) {
             Function* function;

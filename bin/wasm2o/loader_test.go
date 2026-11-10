@@ -960,7 +960,7 @@ func TestInterrupt(t *testing.T) {
 	result := make(chan uint64)
 
 	go func() {
-		tokens <- runtime.SetInterrupt(uintptr(funcs[0]), uintptr(funcs[1]), i.symbol(symInterruptCall))
+		tokens <- runtime.SetInterrupt(uintptr(funcs[0]), uintptr(funcs[1]), interruptStub())
 		result <- mix.Interface().(func(uintptr, uint64) uint64)(i.ctx(), n)
 		runtime.SetInterrupt(0, 0, 0)
 	}()

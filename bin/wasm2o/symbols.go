@@ -9,36 +9,29 @@ import (
 // type in its name, so an ordinary linker can match them and a loader needs
 // nothing else:
 //
-//	w2o.import.<module>.<name>.<params>.<results>  a Go function value the code calls
+//	w2o.import.<module>.<name>.<params>.<results>  a Go function the code calls
 //	w2o.export.<name>.<params>.<results>           a thunk Go calls
 //	w2o.init                                       the thunk that starts an instance
-//	w2o.land                                       the stub longjmp calls (goabi.go)
-//	w2o.frames, w2o.resume                         the stubs fork calls, which Go must not preempt in resume
-//	w2o.morestack                                  the stub stack checks call, which Go must not preempt
 //
 // Names are spelled by symbolPart, types by a letter each: i i32, I i64,
-// f f32, F f64, v v128, r funcref, e externref. The code also calls Go's
-// runtime.morestack_noctxt and the Go function values w2o.trap,
-// w2o.memory_grow, w2o.table_grow and w2o.interrupt, through the GOT;
-// Go's runtime injects calls of w2o.interrupt_call (goabi.go). The bulk
-// memory instructions and the imports of lib/c's memcpy, memmove and
-// memset, whose ranges the code checks itself, call the native memory
-// functions w2o.memcpy, w2o.memmove and w2o.memset with host addresses:
-// the destination, the source or byte and the length in AX, BX and CX, as
-// Go passes them; they write what Go's functions write.
+// f f32, F f64, v v128, r funcref, e externref. The code also calls, through
+// the GOT, the Go functions w2o.trap, w2o.memory_grow and w2o.table_grow,
+// the loader's stubs w2o.morestack, which stack checks call, and
+// w2o.interrupt_call, which a return from an import calls and Go's runtime
+// injects (stubs_amd64.s), and the native memory functions w2o.memcpy,
+// w2o.memmove and w2o.memset, which the bulk memory instructions and the
+// imports of lib/c's memcpy, memmove and memset call with host addresses
+// after checking the ranges themselves: the destination, the source or
+// byte and the length in AX, BX and CX, as Go passes them; they write what
+// Go's functions write.
 const (
 	symInit          = "w2o.init"
-	symLand          = "w2o.land"
-	symFrames        = "w2o.frames"
-	symResume        = "w2o.resume"
 	symMorestackStub = "w2o.morestack"
 	symImport        = "w2o.import."
 	symExport        = "w2o.export."
-	symMorestack     = "runtime.morestack_noctxt"
 	symTrap          = "w2o.trap"
 	symMemoryGrow    = "w2o.memory_grow"
 	symTableGrow     = "w2o.table_grow"
-	symInterrupt     = "w2o.interrupt"
 	symInterruptCall = "w2o.interrupt_call"
 	symMemcpy        = "w2o.memcpy"
 	symMemmove       = "w2o.memmove"

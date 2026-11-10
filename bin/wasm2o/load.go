@@ -366,16 +366,16 @@ func (c *Code) keepFunc(f any) uintptr {
 
 func (c *Code) resolve(sym string, imports Imports) uintptr {
 	switch sym {
-	case symMorestack:
-		return goSymbol("runtime.morestack_noctxt")
+	case symMorestackStub:
+		return morestackStub()
+	case symInterruptCall:
+		return interruptStub()
 	case symTrap:
 		return c.keepFunc(helperTrap)
 	case symMemoryGrow:
 		return c.keepFunc(helperMemoryGrow)
 	case symTableGrow:
 		return c.keepFunc(helperTableGrow)
-	case symInterrupt:
-		return c.keepFunc(helperInterrupt)
 	case symMemcpy, symMemmove:
 		return goSymbol("runtime.memmove")
 	case symMemset:

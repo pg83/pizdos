@@ -76,11 +76,13 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   own: arguments and results in RAX, RCX, RDX, RSI, RDI and R8, then on
   the stack; RBX and R9-R12 callee-saved; R13 the instance, R15 the memory
   base. The thunks Go calls and the adapters of tables' and exports'
-  imports move between the conventions. A stack check calls the `w2o.morestack` stub with what it
-  compared on the stack; the loader marks the stub assembly, which Go
-  never preempts, and the stub compares that with `g.stackguard0` again
-  before Go's morestack, so a preemption that completed after the check
-  does not grow the stack. `W2O_PERFMAP=<dir>` makes the loader write perf-<pid>.map.
+  imports move between the conventions. The stubs the code calls are the
+  loader's, Go assembly in `stubs_amd64.s`, which Go never preempts, and
+  the object reaches them through the GOT: a stack check calls
+  `w2o.morestack` with what it compared on the stack, and the stub compares
+  that with `g.stackguard0` again before Go's morestack, so a preemption
+  that completed after the check does not grow the stack.
+  `W2O_PERFMAP=<dir>` makes the loader write perf-<pid>.map.
 - What the code needs of the VM it gets through imports. lib/c's mem* and
   str* functions are kernel imports (`__KERNEL`), so a program calls lib/c
   and lib/c the kernel, which implements them. The imports of memcpy,
@@ -142,13 +144,12 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   twice: its direct calls go through an adapter that writes the caller's
   frame to the instance header (`abi.go`), and the caller keeps an
   invocation token below its saved RBP. `jump.go` returns from such a call
-  again through the `w2o.land` stub, which checks the frame on the RBP chain
-  and switches stacks with a `ret`, dropping the frames between, Go's too.
-  For fork, `w2o.frames` copies the frames up to the entry thunk (they hold
-  no stack address but the saved RBPs) and `w2o.resume` places them on
-  another goroutine's stack; it writes below its stack pointer, so the
-  loader marks it assembly, which Go never preempts, and the header's base
-  keeps jump frames valid in the child. The register allocator needs nothing
+  again through the land stub, which checks the frame on the RBP chain and
+  switches stacks, dropping the frames between, Go's too. For fork, the
+  frames stub copies the frames up to the entry thunk (they hold no stack
+  address but the saved RBPs) and the resume stub places them on another
+  goroutine's stack, writing below its stack pointer, which assembly may;
+  the header's base keeps jump frames valid in the child. The register allocator needs nothing
   for it: values living across a call are in the callee-saved registers,
   which the frame keeps, or in their vreg's own spill slot.
 - The loader (`load.go`, `gort.go`, `wasi.go`, `run.go`, `jump.go`) is linux/amd64
@@ -158,9 +159,9 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   anchored edits (`edits.py`) that `dev/go.py --runtime` applies to the
   native builds of wasm2o: `runtime.SetInterrupt` and `runtime.Interrupt`
   make the next preemption signal that finds a goroutine in the module's
-  functions inject a call of `w2o.interrupt_call` there, as Go injects
-  asyncPreempt. The stub saves every register and flag and calls Go; the
-  same stub runs on the way out of any import while the instance's
+  functions inject a call of the loader's `w2o.interrupt_call` there, as Go
+  injects asyncPreempt. The stub saves every register and flag and calls
+  Go; the same stub runs on the way out of any import while the instance's
   interrupt word is set. The kernel delivers signals there, below the
   shadow stack's 128-byte red zone, and repeats Interrupt every
   millisecond until they are taken.

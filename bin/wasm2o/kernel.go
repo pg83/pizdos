@@ -318,7 +318,7 @@ func (p *Process) runImage(img *execImage, i *Instance, enter func()) (next *exe
 	funcs, ok := i.functionCode()
 
 	if ok {
-		p.token.Store(runtime.SetInterrupt(uintptr(funcs[0]), uintptr(funcs[1]), i.symbol(symInterruptCall)))
+		p.token.Store(runtime.SetInterrupt(uintptr(funcs[0]), uintptr(funcs[1]), interruptStub()))
 	}
 
 	defer func() {

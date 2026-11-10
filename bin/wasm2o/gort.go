@@ -34,9 +34,6 @@ type goPCHeader struct {
 	funcnameOffset, cuOffset, filetabOffset, pctabOffset, pclnOffset uintptr
 }
 
-// funcFlagAsm is abi.FuncFlagAsm.
-const funcFlagAsm = 1 << 2
-
 type goFuncTab struct {
 	entry, offset uint32
 }
@@ -171,6 +168,25 @@ func goSymbol(name string) uintptr {
 	return 0
 }
 
+// goFunctionRange returns the code of the function of the program that
+// pc is in, [lo, hi).
+func goFunctionRange(pc uintptr) (lo, hi uintptr) {
+	checkGo()
+	m := hostModule
+
+	for k, f := range m.ftab[:len(m.ftab)-1] {
+		lo, hi := m.text+uintptr(f.entry), m.text+uintptr(m.ftab[k+1].entry)
+
+		if lo <= pc && pc < hi {
+			return lo, hi
+		}
+	}
+
+	throwFmt("no function at %#x in the program", pc)
+
+	return 0, 0
+}
+
 func append32(dst []byte, values ...uint32) []byte {
 	for _, v := range values {
 		dst = binary.LittleEndian.AppendUint32(dst, v)
@@ -237,11 +253,6 @@ func registerCode(name string, base uintptr, size uintptr, regions []Region) {
 
 		line := uint32(index + 1)
 		flag := uint32(0)
-
-		if r.name == symResume || r.name == symMorestackStub {
-			flag = funcFlagAsm
-		}
-
 		pcsp := m.pcTable(r.sp, size)
 		pcfile := m.pcTable([]spEntry{{0, 0}}, size)
 		pcln := m.pcTable([]spEntry{{0, int32(line)}}, size)
