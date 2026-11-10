@@ -35,3 +35,7 @@ __pycache__/
 /python_tarball
 /libc_check
 /libc_check_o
+/libcxx
+/llvm_tarball
+/cxx_check
+/cxx_check_o
