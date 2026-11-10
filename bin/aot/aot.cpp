@@ -3397,10 +3397,6 @@ namespace {
         u64 memoryTail{};
         bool tailRanges{};
         bool tailProfile{};
-        // lowFree: the module keeps nothing in the first boundSlack bytes of
-        // its memory, so an address that wrapped around 2^32 is out of
-        // bounds and a sum's base may be checked for it (lowererAddress).
-        bool lowFree{};
         Slice<FuncType> types{};
         Slice<Import> imports{};
         Slice<Func> funcs{};
@@ -14055,9 +14051,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             // checked instead, once for every address derived from it in
             // its scope, and the sum is addressed from the base, so a sum
             // used for addresses alone is never computed (markDeferred). A
-            // base not yet checked is checked only in a module whose low
-            // memory is free: a sum that wrapped around 2^32 lands there, and
-            // the base's check traps where the sum's would not.
+            // sum that wrapped around 2^32 lands in the module's free low
+            // memory (moduleLowFree), where the base's trap is right.
             Value* av = &l->f->values[addr];
             if (av->op == OpAdd) {
                 Span<i32> args = functionArgs(l->f, addr);
@@ -14071,7 +14066,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     i64 c = convert<i64>(convert<u32>(lowererConstBits(l, k)));
                     auto temporary741 = lookupMap(l->checked, base);
                     const bool baseChecked = temporary741.v1 && temporary741.v0 >= c + end;
-                    if ((baseChecked || l->m->lowFree) && c + end <= boundSlack && offset + c < 2147483647) {
+                    if (c + end <= boundSlack && offset + c < 2147483647) {
                         VReg rb = lowererUse(l, base);
                         if (!baseChecked) {
                             l->checkUndo = appendValues(l->checkUndo, CheckUndo{base, temporary741.v0, temporary741.v1});
@@ -19864,36 +19859,43 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
     }
 
-    // constOffset evaluates a constant offset expression: i32.const or
-    // i64.const.
-    // lowFree tells whether the module keeps nothing in the first boundSlack
-    // bytes of its memory: its own, every data segment active at a constant
-    // address of boundSlack or more, and its stack pointer, the first
-    // global, starting at boundSlack or more. Our toolchain links the stack
-    // first, its lowest boundSlack bytes a red zone past the program's
-    // budget.
+    // moduleLowFree tells whether the module keeps nothing in the first
+    // boundSlack bytes of its own memory, which compilation with the tail
+    // requires: every active data segment at a constant address of
+    // boundSlack or more (a passive one is placed by memory.init, as a store
+    // is), and its stack, when the first global is a mutable i32 with a
+    // constant start, as wasm-ld's __stack_pointer is, starting at boundSlack
+    // or more. wasm-ld places data at 1024 by default; our toolchain links
+    // the stack first, its lowest boundSlack bytes a red zone past the
+    // program's budget. An address that wrapped around 2^32 is then out of
+    // bounds, and a sum's base may be checked for it (lowererAddress).
     static bool moduleLowFree(Module* m) {
-        if (length(m->mems) == 0 || m->mems[0].imported || length(m->globals) == 0) {
+        if (length(m->mems) == 0 || m->mems[0].imported) {
             return false;
         }
         for (Int i = 0; i < length(m->datas); ++i) {
             Data d = m->datas[i];
             if (d.mode != segmentActive) {
-                return false;
+                continue;
             }
             auto offset = constOffset(d.offset);
             if (!offset.v1 || offset.v0 < boundSlack) {
                 return false;
             }
         }
+        if (length(m->globals) == 0) {
+            return true;
+        }
         Global g = m->globals[0];
         if (g.imported || g.typ != I32 || !g.mutableValue) {
-            return false;
+            return true;
         }
         auto stack = constOffset(g.init);
-        return stack.v1 && stack.v0 >= boundSlack;
+        return !stack.v1 || stack.v0 >= boundSlack;
     }
 
+    // constOffset evaluates a constant offset expression: i32.const or
+    // i64.const.
     static Tuple2<i64, bool> constOffset(Slice<u8> expr) {
         Reader reader{expr, {}};
         Reader* r = &reader;
@@ -19934,7 +19936,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static Module* decodeModule(Slice<u8> data) {
         Reader* r = activePool->make<Reader>(Reader{data, {}});
-        Module* m = activePool->make<Module>(Module{{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, i64(-1LL), {}, {}, i64(-1LL), {}, {}, {}, {}});
+        Module* m = activePool->make<Module>(Module{{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, i64(-1LL), {}, {}, i64(-1LL), {}, {}, {}, {}});
         if ((asString(readerBytes(r, 4)) != String("\000asm"))) {
             compilerError(String("magic header not detected"));
         }
@@ -22356,7 +22358,9 @@ namespace {
             module->memoryTail = boundSlack;
             module->tailRanges = options.tailRanges;
             module->tailProfile = options.tailProfile && options.tailRanges;
-            module->lowFree = moduleLowFree(module);
+            if (!moduleLowFree(module)) {
+                compilerError(String("unsupported: data or the stack in the first KiB of memory"));
+            }
         }
         ObjCode* code = modulePool.make<ObjCode>();
         code->pool = &modulePool;

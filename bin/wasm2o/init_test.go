@@ -4,15 +4,17 @@ package main
 
 import (
 	"encoding/binary"
+	"strings"
 	"testing"
 )
 
 // Keep segment order and drops across descriptor pages; start must see the
-// final result of overlapping active segments.
+// final result of overlapping active segments. The segments start at
+// boundSlack, where the compiler admits data.
 func TestSegmentedInit(t *testing.T) {
 	const count = 5001
 	m := &testModule{memMin: 1, memMax: 1, funcs: []testFunc{
-		{code: cat(i32c(512), i32c(0), []byte{0x2d, 0, 0, 0x3a, 0, 0})},
+		{code: cat(i32c(boundSlack+512), i32c(boundSlack), []byte{0x2d, 0, 0, 0x3a, 0, 0})},
 		{export: "again", code: cat(i32c(1000), i32c(0), i32c(1), []byte{0xfc, 8, 0, 0})},
 		{export: "last", code: cat(i32c(1000), i32c(0), i32c(1), []byte{0xfc, 8}, leb(nil, count-1), []byte{0})},
 	}}
@@ -29,7 +31,7 @@ func TestSegmentedInit(t *testing.T) {
 		}
 
 		data = append(data, 0) // active segment, memory zero
-		data = append(data, i32c(int32(offset))...)
+		data = append(data, i32c(boundSlack+int32(offset))...)
 		data = append(data, 0x0b, 1, value)
 		want[offset] = value
 	}
@@ -46,12 +48,12 @@ func TestSegmentedInit(t *testing.T) {
 	defer i.release()
 
 	for offset, value := range want {
-		if got := i.memory.bytes()[offset]; got != value {
+		if got := i.memory.bytes()[boundSlack+offset]; got != value {
 			t.Fatalf("data byte %d = %d, want %d", offset, got, value)
 		}
 	}
 
-	if got := i.memory.bytes()[512]; got != want[0] {
+	if got := i.memory.bytes()[boundSlack+512]; got != want[0] {
 		t.Fatalf("start function read %d, want last segment's %d", got, want[0])
 	}
 
@@ -81,7 +83,7 @@ func TestInitPassiveAndEmptySegments(t *testing.T) {
 			data = append(data, 0x0b, 0) // empty at the memory boundary
 		} else {
 			data = append(data, 0)
-			data = append(data, i32c(int32(j))...)
+			data = append(data, i32c(boundSlack+int32(j))...)
 			data = append(data, 0x0b, 1, byte(j))
 		}
 	}
@@ -104,9 +106,27 @@ func TestInitPassiveAndEmptySegments(t *testing.T) {
 		}
 	}
 
-	if got := i.memory.bytes(); got[6] != 6 || got[7] != 0 || got[8] != 8 || got[1000] != 0x7f {
+	if got := i.memory.bytes(); got[boundSlack+6] != 6 || got[boundSlack+7] != 0 || got[boundSlack+8] != 8 || got[1000] != 0x7f {
 		t.Fatal("passive data was initialized or dropped with the active data")
 	}
+}
+
+// Compilation with the tail refuses a module keeping data in the first
+// boundSlack bytes of its memory, where an address that wrapped around 2^32
+// would land; strict compilation takes it.
+func TestInitLowDataRefused(t *testing.T) {
+	m := &testModule{memMin: 1, memMax: 1, funcs: []testFunc{{}}}
+	data := leb(nil, 1)
+	data = append(data, 0)
+	data = append(data, i32c(boundSlack-1)...)
+	data = append(data, 0x0b, 1, 0x7f)
+	wasm := initDataModule(m, data, false)
+
+	if e := try(func() { compileModule(wasm) }); e == nil || !strings.Contains(e.message(), "first KiB") {
+		t.Fatalf("data below boundSlack: %v", e)
+	}
+
+	readObject(compileModuleWithOptions(wasm, CompileOptions{}))
 }
 
 // An unsafe destination keeps its original checks and the writes preceding

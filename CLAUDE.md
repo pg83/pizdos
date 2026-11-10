@@ -121,12 +121,14 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   `memory.size`, growth limits and the zero initialization of newly grown
   pages retain their logical meaning. The object records the extension;
   running it needs this loader but no environment setting.
-  A module that keeps nothing in its first 1 KiB (every data segment at
-  1 KiB or more, wasm-ld's default, and the stack pointer starting there;
-  our toolchain links the stack first with 1 KiB past the program's budget)
-  has the accesses through base + c covered by one check of the base: a sum
-  that wrapped around 2^32 would land in that free memory, so trapping on
-  the base is right. The two sides of the ring are the one constant. `W2X_MEMORY_TAIL=plain` disables range versioning for comparisons;
+  A module must keep nothing in its first 1 KiB: every data segment at
+  1 KiB or more, wasm-ld's default, and the stack pointer starting there
+  (our toolchain links the stack first with 1 KiB past the program's
+  budget); the compiler refuses one that does not. The accesses through
+  base + c are then covered by one check of the base: a sum that wrapped
+  around 2^32 would land in that free memory, so trapping on the base is
+  right. The two sides of the ring are the one constant.
+  `W2X_MEMORY_TAIL=plain` disables range versioning for comparisons;
   `W2X_MEMORY_TAIL=strict` compiles with exact Wasm bounds. `wasm2o spec`
   and boundary-assertion unit tests select strict compilation explicitly.
   `W2X_TAIL_PROFILE=1` adds per-function counters to an optimized object;
