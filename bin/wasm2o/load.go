@@ -91,6 +91,8 @@ func (i *Instance) attach(host any) {
 
 // LinearMemory is reserved at its maximum: it grows in place.
 type LinearMemory struct {
+	// mapping holds boundSlack bytes, then data.
+	mapping  []byte
 	data     []byte
 	pages    uint64
 	max      uint64
@@ -133,7 +135,11 @@ func newMemory(least, most uint64) *LinearMemory {
 		throwFmt("memory of %d..%d pages", least, most)
 	}
 
-	m := &LinearMemory{data: mmap(int(most*pageSize+boundSlack), syscall.PROT_READ|syscall.PROT_WRITE), max: most}
+	// boundSlack accessible bytes before the memory and past its maximum: an
+	// access derived from a checked address reaches at most that far either
+	// way (aot.cpp lowererAddress).
+	mapping := mmap(int(boundSlack+most*pageSize+boundSlack), syscall.PROT_READ|syscall.PROT_WRITE)
+	m := &LinearMemory{mapping: mapping, data: mapping[boundSlack:], max: most}
 	m.grow(uint32(least))
 
 	return m
@@ -629,7 +635,7 @@ func (i *Instance) release() {
 	i.writeTailProfile()
 
 	if i.memory != nil && !i.obj.meta.memory.imported && len(i.memory.users) == 1 {
-		throw(syscall.Munmap(i.memory.data))
+		throw(syscall.Munmap(i.memory.mapping))
 	}
 
 	throw(syscall.Munmap(i.block))

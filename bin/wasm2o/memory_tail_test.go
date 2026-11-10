@@ -11,6 +11,67 @@ import (
 	"testing"
 )
 
+// An access at a negative constant offset from a base is covered by the
+// base's check and addressed from the base: with the tail it reaches the
+// slack before the memory where the sum wrapped, and traps only for a base
+// past the end; strict compilation traps on the wrapped sum.
+func TestMemoryTailBefore(t *testing.T) {
+	m := &testModule{memMin: 1, memMax: 1, funcs: []testFunc{
+		{params: i32, results: i32, export: "before", code: cat(get(0), i32c(-8), []byte{opI32Add, opI32Load, 2, 0})},
+		{params: []ValType{I32, I32}, export: "storeBefore", code: cat(get(0), i32c(-8), []byte{opI32Add}, get(1), []byte{opI32Store, 2, 0})},
+		{params: i32, results: i32, export: "both", code: cat(
+			get(0), []byte{opI32Load, 2, 4},
+			get(0), i32c(-4), []byte{opI32Add, opI32Load, 2, 0, opI32Add})},
+	}}
+
+	for _, options := range []CompileOptions{{}, {memoryTail: true, tailRanges: true}} {
+		i := instantiate(t.Name(), readObject(compileModuleWithOptions(m.encode(), options)), nil, 8<<20)
+		i.start()
+		mem := i.memory.bytes()
+		f, _ := i.export("before")
+		before := f.Interface().(func(uintptr, uint32) uint32)
+		f, _ = i.export("storeBefore")
+		storeBefore := f.Interface().(func(uintptr, uint32, uint32))
+		f, _ = i.export("both")
+		both := f.Interface().(func(uintptr, uint32) uint32)
+		binary.LittleEndian.PutUint32(mem[100:], 7)
+		binary.LittleEndian.PutUint32(mem[104:], 9)
+		binary.LittleEndian.PutUint32(mem[108:], 11)
+
+		if before(i.ctx(), 108) != 7 || both(i.ctx(), 104) != 18 {
+			t.Fatalf("tail %t: wrong values at negative offsets", options.memoryTail)
+		}
+
+		for _, p := range []uint32{pageSize + 8, pageSize + boundSlack - 4} {
+			if trap := trapOf(func() { before(i.ctx(), p) }); trap != trapMemoryOOB {
+				t.Fatalf("tail %t: base %d past the end: trap %d", options.memoryTail, p, trap)
+			}
+		}
+
+		if options.memoryTail {
+			if before(i.ctx(), 4) != 0 {
+				t.Fatal("the slack before the memory was not zero")
+			}
+
+			storeBefore(i.ctx(), 4, 0x5a5a5a5a)
+
+			if before(i.ctx(), 4) != 0x5a5a5a5a || !bytes.Equal(mem[:8], make([]byte, 8)) {
+				t.Fatal("a store before the memory reached the memory or was lost")
+			}
+		} else {
+			if trap := trapOf(func() { before(i.ctx(), 4) }); trap != trapMemoryOOB {
+				t.Fatalf("strict wrapped load: trap %d", trap)
+			}
+
+			if trap := trapOf(func() { storeBefore(i.ctx(), 4, 1) }); trap != trapMemoryOOB || !bytes.Equal(mem[:8], make([]byte, 8)) {
+				t.Fatalf("strict wrapped store: trap %d, memory %x", trap, mem[:8])
+			}
+		}
+
+		i.release()
+	}
+}
+
 // A constant length of memory.copy or memory.fill compiles to loads and
 // stores: every length up to the limit, overlapping either way, and a range
 // crossing the logical end, which strict compilation refuses before any

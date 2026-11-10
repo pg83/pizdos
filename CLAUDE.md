@@ -126,10 +126,13 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   A module must keep nothing in its first 1 KiB: every data segment at
   1 KiB or more, wasm-ld's default, and the stack pointer starting there
   (our toolchain links the stack first with 1 KiB past the program's
-  budget); the compiler refuses one that does not. The accesses through
-  base + c are then covered by one check of the base: a sum that wrapped
-  around 2^32 would land in that free memory, so trapping on the base is
-  right. The two sides of the ring are the one constant.
+  budget); the compiler refuses one that does not. The loader maps 1 KiB
+  of accessible memory before the linear memory too. The accesses through
+  base + c, with c within 1 KiB either way, are then covered by one check
+  of the base and addressed from it in 64 bits: a sum that wrapped around
+  2^32 is addressed as if it had not, into the free low memory or the
+  slack before it, as an access reaching past the end lands in the tail.
+  The two sides of the ring are the one constant.
   `W2X_MEMORY_TAIL=plain` disables range versioning for comparisons;
   `W2X_MEMORY_TAIL=strict` compiles with exact Wasm bounds. `wasm2o spec`
   and boundary-assertion unit tests select strict compilation explicitly.

@@ -45,7 +45,9 @@ const jumpSaved = 5
 
 // boundSlack is how far past a checked address an access may reach without
 // a check of its own: an access at address a, offset o and width n is in
-// bounds when a <= size - boundSlack and o + n <= boundSlack.
+// bounds when a <= size - boundSlack and o + n <= boundSlack. The memory
+// has boundSlack accessible bytes before it too, for an access at a + o
+// with -boundSlack <= o < 0 addressed from a in 64 bits.
 const boundSlack = 1024
 
 // Diagnostic counters per function: guards, fallbacks, omitted checks,

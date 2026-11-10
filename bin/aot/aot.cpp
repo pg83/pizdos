@@ -14138,17 +14138,21 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         i64 prior = temporary740.v0;
         bool had = temporary740.v1;
         checked = checked || (had && prior >= end);
-        if (checked && offset < 2147483647) {
-            return memIndexed(memReg, lowererUse(l, addr), convert<i32>(offset));
-        }
-        if (!checked && l->m->memoryTail && end <= boundSlack) {
-            // An address base + c with c >= 0 is covered by the check of the
-            // base: the sum reaches at most c + end past it. The base is
-            // checked instead, once for every address derived from it in
-            // its scope, and the sum is addressed from the base, so a sum
-            // used for addresses alone is never computed (markDeferred). A
-            // sum that wrapped around 2^32 lands in the module's free low
-            // memory (moduleLowFree), where the base's trap is right.
+        if (l->m->memoryTail && end <= boundSlack) {
+            // An address base + c, with c within boundSlack either way, is
+            // covered by the check of the base: the memory has boundSlack
+            // accessible bytes before it and past its size, so with the
+            // base within the size the access begins at most boundSlack
+            // before the base and ends at most boundSlack past it. The base
+            // is checked instead, once for every address derived from it in
+            // its scope, and the access is addressed from the base in 64
+            // bits, so a sum used for addresses alone is never computed
+            // (markDeferred), and a sum that wrapped around 2^32 is
+            // addressed as if it had not: it lands in the free memory on
+            // either side (moduleLowFree), where the base's trap, or the
+            // slack, is right. A sum with c >= 0 is itself within the base's
+            // check; one with c < 0 may have wrapped, so its own register
+            // is never taken as checked.
             Value* av = &l->f->values[addr];
             if (av->op == OpAdd) {
                 Span<i32> args = functionArgs(l->f, addr);
@@ -14159,21 +14163,22 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     k = args[0];
                 }
                 if (lowererIsConst(l, k) && !lowererIsConst(l, base)) {
-                    i64 c = convert<i64>(convert<u32>(lowererConstBits(l, k)));
+                    i64 c = convert<i64>(convert<i32>(convert<u32>(lowererConstBits(l, k))));
+                    i64 top = c + end;
                     auto temporary741 = lookupMap(l->checked, base);
-                    const bool baseChecked = temporary741.v1 && temporary741.v0 >= c + end;
-                    if (c + end <= boundSlack && offset + c < 2147483647) {
+                    const bool baseChecked = temporary741.v1 && temporary741.v0 >= top;
+                    if (c >= -boundSlack && top <= boundSlack && (baseChecked || !checked)) {
                         VReg rb = lowererUse(l, base);
                         if (!baseChecked) {
                             l->checkUndo = appendValues(l->checkUndo, CheckUndo{base, temporary741.v0, temporary741.v1});
                             setMap(l->checked, base, i64(boundSlack));
                             MInst in = inst(mCheck);
                             in.src = rb;
-                            in.imm = c + end;
+                            in.imm = maximum(top, convert<i64>(width));
                             in.addressValue = base;
                             lowererEmit(l, in);
                         }
-                        if (!had || prior < boundSlack - c) {
+                        if (c >= 0 && (!had || prior < boundSlack - c)) {
                             l->checkUndo = appendValues(l->checkUndo, CheckUndo{addr, prior, had});
                             setMap(l->checked, addr, boundSlack - c);
                         }
@@ -14181,6 +14186,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     }
                 }
             }
+        }
+        if (checked && offset < 2147483647) {
+            return memIndexed(memReg, lowererUse(l, addr), convert<i32>(offset));
         }
         VReg ra = lowererUse(l, addr);
         // With the accessible tail, the check of a base within the logical size
