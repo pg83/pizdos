@@ -14002,8 +14002,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             funcEmitterJumpTo(e, ccE, mInstTable(in)[0]);
         }
         VReg t0 = mInstTemps(in)[0];
-        asmAluRI(a, aluCmp, 4, in->src, convert<i64>(n));
-        funcEmitterJumpTo(e, ccAE, def);
+        if (in->aux != 2) {
+            asmAluRI(a, aluCmp, 4, in->src, convert<i64>(n));
+            funcEmitterJumpTo(e, ccAE, def);
+        }
         asmRex(a, true, convert<i64>(t0), -1, -1, false);
         asmBytes(a, {u8(u8(141LL)), u8(u8(shiftLeft(lo3(convert<i64>(t0)), 3) | 5))});
         i32 leaAt = asmPos(a);
@@ -17333,7 +17335,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 for (Int i = 0, end = length(t->edges); i < end; ++i) {
                     mInstExtra(&in)->table.pushBack(lowererEdgeBlock(l, b, i));
                 }
-                if (length(mInstTable(&in)) >= 5 && mInstTable(&in)[0] != mInstTable(&in)[length(mInstTable(&in)) - 1]) {
+                // An index the table covers needs no comparison with its size.
+                if (isNil(l->addresses)) {
+                    l->addresses = activePool->make<ValueRanges>(ValueRanges{l->f, makeSlice<ValueRange>(length(l->f->values)), makeSlice<bool>(length(l->f->values))});
+                }
+                const ValueRange range = valueRangesOf(l->addresses, t->value, 0);
+                const bool covered = range.lo >= 0 && range.hi < length(t->edges) - 1;
+                if (covered) {
+                    in.aux = 2;
+                }
+                if (!covered && length(mInstTable(&in)) >= 5 && mInstTable(&in)[0] != mInstTable(&in)[length(mInstTable(&in)) - 1]) {
                     i32 dispatch = convert<i32>(length(l->mf->blocks));
                     i32 first = mInstTable(&in)[0];
                     mInstTable(&in)[0] = mInstTable(&in)[length(mInstTable(&in)) - 1];
