@@ -89,7 +89,10 @@ int vfprintf(FILE* __restrict, const char* __restrict, va_list) __PRINTF(2, 0);
 int vsprintf(char* __restrict, const char* __restrict, va_list) __PRINTF(2, 0);
 int vsnprintf(char* __restrict, size_t, const char* __restrict, va_list) __PRINTF(3, 0);
 int vdprintf(int, const char* __restrict, va_list) __PRINTF(2, 0);
+#ifndef __cplusplus
+/* C++ has libc++'s own, its locale fallback for a libc without xlocale */
 int vasprintf(char**, const char*, va_list) __PRINTF(2, 0);
+#endif
 
 int scanf(const char* __restrict, ...) __SCANF(1, 2);
 int fscanf(FILE* __restrict, const char* __restrict, ...) __SCANF(2, 3);

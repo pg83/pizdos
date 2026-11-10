@@ -30,6 +30,8 @@ int strcmp(const char*, const char*);
 int strncmp(const char*, const char*, size_t);
 int strcoll(const char*, const char*);
 size_t strxfrm(char* __restrict, const char* __restrict, size_t);
+int strcoll_l(const char*, const char*, locale_t);
+size_t strxfrm_l(char* __restrict, const char* __restrict, size_t, locale_t);
 int strverscmp(const char*, const char*);
 
 char* strchr(const char*, int);

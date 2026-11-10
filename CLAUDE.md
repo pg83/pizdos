@@ -5,10 +5,10 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
 
 ## Build and test
 
-- `./build` builds `libc.a`, `libstr.o`, `busybox.wasm`, `busybox.links`,
-  `bin/busybox/abi.txt` (every kernel import busybox uses), `doom.wasm`,
-  `doom.o` (doomgeneric with our terminal backend, `bin/doom`), `wasm2o`,
-  native `aot`, `aot.wasm`, `aot.aot` and the wazero runner.
+- `./build` builds `libc.a`, `libc++.a`, `libstr.o`, `busybox.wasm`,
+  `busybox.links`, `bin/busybox/abi.txt` (every kernel import busybox uses),
+  `doom.wasm`, `doom.o` (doomgeneric with our terminal backend, `bin/doom`),
+  `wasm2o`, native `aot`, `aot.wasm`, `aot.aot` and the wazero runner.
 - `./build test` runs `tst/test_*.py`, each with the outputs of the nodes
   `TESTED` names for it in build.py.
 - `sh dev/stand/build.sh` supplies the pinned ix revision's libraries and
@@ -54,10 +54,29 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
 - The imports of memcpy, memmove, memset, memcmp, memchr, strlen, strcpy,
   strcat, strcmp, strspn and strcspn are named `__kernel_<name>`: only the
   compiler implements them, at each call.
+- A process has one thread: `pthread.h` is lib/c's own, its locks never
+  wait for another thread and `pthread_create` fails; `locale_t` is the one
+  C locale with UTF-8 strings, and every `_l` function the function without
+  the locale. `_start` runs the module's constructors; `__cxa_atexit` and
+  `__cxa_thread_atexit` add to atexit's list, which grows as needed.
 - The link has no `--allow-undefined`: a missing function is a link error,
   not a silent import.
 - `test_libc` runs tst/libc/check.c, built against lib/c, in the kernel:
   one line of results per area, compared with the test's expected text.
+
+## lib/cxx
+
+- libc++ and libc++abi of the LLVM release `LLVM` pins in build.py, compiled
+  by `lib/cxx/make.py` with the flags and sources of LLVM's runtimes build
+  for this system but none of its probes; `__config_site` is ours: musl-like
+  libc, lib/c's pthread, no filesystem library, no time zone database, no
+  exceptions. `libc++.a` holds both libraries, `include.tar` the
+  `include/c++/v1` a C++ program puts before lib/c's headers.
+- libc++ takes the generic locale path of a libc without xlocale: it
+  defines `strto*_l` and, in C++, `vasprintf` itself, which lib/c therefore
+  does not declare for C++.
+- `test_cxx` runs tst/cxx/check.cpp, built against lib/cxx, in the kernel:
+  one line of results per area between its static objects' lines.
 
 ## lib/str
 

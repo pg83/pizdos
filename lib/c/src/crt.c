@@ -21,6 +21,9 @@ const struct in6_addr in6addr_loopback = IN6ADDR_LOOPBACK_INIT;
 
 int __main_argc_argv(int, char**);
 
+// The module's constructors, C++'s static objects among them (wasm-ld).
+void __wasm_call_ctors(void);
+
 static char* lastComponent(char* path) {
     char* last = path;
 
@@ -38,6 +41,7 @@ __attribute__((__export_name__("_start"))) void _start(void) {
     char** argv = 0;
 
     __kernel_start(&errno, &environ, &argc, &argv, tzname, &timezone, &daylight, &h_errno);
+    __wasm_call_ctors();
 
     if (argc > 0) {
         program_invocation_name = argv[0];

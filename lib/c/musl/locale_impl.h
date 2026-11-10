@@ -4,7 +4,10 @@
 #include <locale.h>
 #include <stdlib.h>
 
-#define CURRENT_LOCALE ((locale_t)0)
+/* The wide stdio functions make a stream's locale current for the call:
+   lib/c has the one locale, so nothing reads it (src/locale.c). */
+extern locale_t __current_locale;
+#define CURRENT_LOCALE __current_locale
 #define CURRENT_UTF8 1
 #define C_LOCALE ((locale_t)0)
 #define UTF8_LOCALE ((locale_t)0)

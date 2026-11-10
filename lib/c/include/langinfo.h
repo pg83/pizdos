@@ -65,5 +65,6 @@ typedef int nl_item;
 #define NOEXPR 0x50001
 
 char* nl_langinfo(nl_item);
+char* nl_langinfo_l(nl_item, locale_t);
 
 __END_DECLS

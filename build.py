@@ -34,6 +34,7 @@ BUSYBOX = "1.36.1"
 DOOMGENERIC = "e257a09527062bfb986b6e5e0780839b6cbd5b71"
 PYTHON = "3.14.10"
 STR = "1318a0f603c8d23839f02840cc1d9129c82f0839"
+LLVM = "23.1.5"
 
 
 def fetch(name, url, sha256, output):
@@ -83,6 +84,13 @@ str_tarball = fetch(
     f"$(B)/ext/str-{STR}.tar.gz",
 )
 
+llvm_tarball = fetch(
+    "llvm_tarball",
+    f"https://github.com/llvm/llvm-project/releases/download/llvmorg-{LLVM}/llvm-project-{LLVM}.src.tar.xz",
+    "fb50b1eac93ddeb3aa8dab4cfe324dff74f4a9c2bdee6160c9e36188f8d06a6e",
+    f"$(B)/ext/llvm-project-{LLVM}.src.tar.xz",
+)
+
 # doom1.wad of the shareware 1.9, the last one id released
 doom_wad = fetch(
     "doom_wad",
@@ -108,6 +116,19 @@ libc = command(
     outputs=["$(B)/lib/c/libc.a"],
     deps=[musl_tarball],
     cmd=["python3", "$(S)/lib/c/make.py", CLANG, LLVM_AR, musl_tarball.outputs[0], "$(B)/lib/c/libc.a"],
+    descr="CC",
+    color="green",
+)
+
+# lib/cxx: libc++ and libc++abi of the LLVM release, for lib/c: the library
+# and include/c++/v1, the headers a C++ program includes before lib/c's.
+libcxx = command(
+    name="libcxx",
+    inputs=[*LIBC_HEADERS, "$(S)/lib/cxx/make.py", "$(S)/lib/cxx/__config_site", "$(S)/dev/wasm.py"],
+    outputs=["$(B)/lib/cxx/libc++.a", "$(B)/lib/cxx/include.tar"],
+    deps=[llvm_tarball],
+    cmd=["python3", "$(S)/lib/cxx/make.py", CLANG, LLVM_AR, llvm_tarball.outputs[0], "$(S)/lib/c/include",
+         "$(B)/lib/cxx/libc++.a", "$(B)/lib/cxx/include.tar"],
     descr="CC",
     color="green",
 )
@@ -361,6 +382,27 @@ libc_check_o = command(
     color="light-cyan",
 )
 
+# test_cxx's program: lib/cxx's library over lib/c with deterministic results.
+cxx_check = command(
+    name="cxx_check",
+    inputs=[*LIBC_HEADERS, "$(S)/tst/cxx/check.cpp", "$(S)/tst/cxx/make.py", "$(S)/dev/wasm.py"],
+    outputs=["$(B)/tst/cxx/check.wasm"],
+    deps=[libc, libcxx],
+    cmd=["python3", "$(S)/tst/cxx/make.py", CLANG, WASM_LD, "$(S)/tst/cxx/check.cpp", "$(S)/lib/c/include", libc.outputs[0],
+         libcxx.outputs[1], libcxx.outputs[0], "$(B)/tst/cxx/check.wasm"],
+    descr="CC",
+    color="green",
+)
+
+cxx_check_o = command(
+    name="cxx_check_o",
+    outputs=["$(B)/tst/cxx/check.o"],
+    deps=[wasm2o, cxx_check],
+    cmd=[wasm2o.outputs[0], "-o", "$(B)/tst/cxx/check.o", cxx_check.outputs[0]],
+    descr="AO",
+    color="light-cyan",
+)
+
 # Exercise an ordinary linker's relocations on the self-compiled command.
 aot_relinked = command(
     name="aot_relinked",
@@ -509,6 +551,7 @@ TESTED = {
     "aot": [aot, aot_command, wazero, wasm2o, busybox, aot_selftest],
     "busybox_abi": [busybox],
     "busybox": [wasm2o, busybox_o, busybox],
+    "cxx": [wasm2o, cxx_check_o],
     "doom": [wasm2o, doom_o, doom_wad],
     "libc": [wasm2o, libc_check_o],
     "python": [wasm2o, python_o, python, python_tarball, busybox_o, busybox],
@@ -534,6 +577,6 @@ for test in build.glob("$(S)/tst/test_*.py"):
         color="green",
     ))
 
-group("install", busybox, busybox_abi, busybox_o, doom, doom_o, python, python_o, wasm2o, aot_native, aot, aot_aot, wazero)
+group("install", libcxx, busybox, busybox_abi, busybox_o, doom, doom_o, python, python_o, wasm2o, aot_native, aot, aot_aot, wazero)
 group("test", *tests, wasm2o_go_test, wasm2o_spec_test)
 group("stand", wasm2o, aot_native, aot, aot_aot, busybox, stand_corpus, *decode_stand, python, python_o, stand_python_native)

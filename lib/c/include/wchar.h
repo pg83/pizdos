@@ -1,6 +1,8 @@
 #pragma once
 
 #include <__base.h>
+/* the classification functions, which XSI's wchar.h declares too */
+#include <wctype.h>
 
 __BEGIN_DECLS
 
@@ -60,5 +62,31 @@ wchar_t* wmemmove(wchar_t*, const wchar_t*, size_t);
 wchar_t* wmemset(wchar_t*, wchar_t, size_t);
 int wcwidth(wchar_t);
 int wcswidth(const wchar_t*, size_t);
+
+int wcscoll_l(const wchar_t*, const wchar_t*, locale_t);
+size_t wcsxfrm_l(wchar_t* __restrict, const wchar_t* __restrict, size_t, locale_t);
+
+wint_t fgetwc(FILE*);
+wint_t getwc(FILE*);
+wint_t getwchar(void);
+wint_t ungetwc(wint_t, FILE*);
+wint_t fputwc(wchar_t, FILE*);
+wint_t putwc(wchar_t, FILE*);
+wint_t putwchar(wchar_t);
+wchar_t* fgetws(wchar_t* __restrict, int, FILE* __restrict);
+int fputws(const wchar_t* __restrict, FILE* __restrict);
+int fwide(FILE*, int);
+int swprintf(wchar_t* __restrict, size_t, const wchar_t* __restrict, ...);
+int vswprintf(wchar_t* __restrict, size_t, const wchar_t* __restrict, va_list);
+int fwprintf(FILE* __restrict, const wchar_t* __restrict, ...);
+int vfwprintf(FILE* __restrict, const wchar_t* __restrict, va_list);
+int wprintf(const wchar_t* __restrict, ...);
+int vwprintf(const wchar_t* __restrict, va_list);
+int swscanf(const wchar_t* __restrict, const wchar_t* __restrict, ...);
+int vswscanf(const wchar_t* __restrict, const wchar_t* __restrict, va_list);
+int fwscanf(FILE* __restrict, const wchar_t* __restrict, ...);
+int vfwscanf(FILE* __restrict, const wchar_t* __restrict, va_list);
+int wscanf(const wchar_t* __restrict, ...);
+int vwscanf(const wchar_t* __restrict, va_list);
 
 __END_DECLS

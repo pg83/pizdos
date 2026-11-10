@@ -63,4 +63,6 @@ int clock_getres(clockid_t, struct timespec*);
 int clock_nanosleep(clockid_t, int, const struct timespec*, struct timespec*);
 int stime(const time_t*);
 
+size_t strftime_l(char* __restrict, size_t, const char* __restrict, const struct tm* __restrict, locale_t);
+
 __END_DECLS
