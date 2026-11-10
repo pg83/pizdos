@@ -6143,6 +6143,8 @@ namespace {
 
     static Tuple2<u8, Int> lowererCompare(Lowerer* l, i32 c);
 
+    static bool lowererBranchPair(Lowerer* l, i32 c);
+
     static i64 lowererConstBits(Lowerer* l, i32 v);
 
     static VReg lowererConstReg(Lowerer* l, i64 x, u8 size);
@@ -15444,6 +15446,23 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // parity is then reported through the second result, 1 when an unordered
     // result must make the comparison false (eq) and 2 when it must make it
     // true (ne).
+    // branchPair reports whether c, which a block branches on, is an i32 and
+    // or or of two integer comparisons of that block that nothing else
+    // reads: the branch can test each in turn.
+    static bool lowererBranchPair(Lowerer* l, i32 c) {
+        Function* f = l->f;
+        const Value* val = &f->values[c];
+        if ((val->op != OpAnd && val->op != OpOr) || val->typ != I32) {
+            return false;
+        }
+        Span<i32> args = functionArgs(f, c);
+        auto comparison = [&](i32 x) {
+            const Value* xv = &f->values[x];
+            return xv->op >= OpEqz && xv->op <= OpGeU && l->uses[x] == 1 && xv->block == val->block;
+        };
+        return args[0] != args[1] && comparison(args[0]) && comparison(args[1]);
+    }
+
     static Tuple2<u8, Int> lowererCompare(Lowerer* l, i32 c) {
         Function* f = l->f;
         Value* val = &f->values[c];
@@ -16838,6 +16857,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 i32 c = blk->term.value;
                 if (l->uses[c] == 1 && f->values[c].block == b && flagCondition(f->values[c].op)) {
                     l->deferred[c] = true;
+                    // Both integer comparisons of an and or an or the block
+                    // branches on wait for the branch: each branches itself.
+                    if (lowererBranchPair(l, c)) {
+                        Span<i32> args = functionArgs(f, c);
+                        l->deferred[args[0]] = true;
+                        l->deferred[args[1]] = true;
+                    }
                 }
             }
             auto instrs = blk->instrs.view();
@@ -17940,6 +17966,25 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             case TermIf: {
                 i32 then = lowererEdgeBlock(l, b, 0);
                 i32 els = lowererEdgeBlock(l, b, 1);
+                if (l->deferred[t->value] && lowererBranchPair(l, t->value)) {
+                    // a && b leaves for the else when a fails, a || b for the
+                    // then when a holds; b decides the rest.
+                    const bool conjunction = l->f->values[t->value].op == OpAnd;
+                    Span<i32> args = functionArgs(l->f, t->value);
+                    MInst j = inst(mJcc);
+                    const u8 first = lowererCompare(l, args[0]).v0;
+                    j.cc = conjunction ? convert<u8>(first ^ 1) : first;
+                    j.target = conjunction ? els : then;
+                    lowererEmit(l, j);
+                    j = inst(mJcc);
+                    j.cc = lowererCompare(l, args[1]).v0;
+                    j.target = then;
+                    lowererEmit(l, j);
+                    j = inst(mJmp);
+                    j.target = els;
+                    lowererEmit(l, j);
+                    break;
+                }
                 u8 cc = {};
                 Int parity = 0;
                 if (l->rmwFlags[t->value]) {

@@ -170,3 +170,53 @@ func TestOuterConstants(t *testing.T) {
 		t.Fatalf("next: %d checks, want 1", checks[0])
 	}
 }
+
+// A branch on an and or an or of two comparisons tests each in turn: a && b
+// leaves for the else when a fails, a || b for the then when a holds.
+func TestBranchPairs(t *testing.T) {
+	const opI32Eq, opI32LtS, opI32GtU, opI32And = 0x46, 0x48, 0x4b, 0x71
+	// pair(a, b, c, d): both = a < b && c != d (signed), either = a >u b || c == d
+	both := cat(get(0), get(1), []byte{opI32LtS}, get(2), get(3), []byte{opI32Ne, opI32And, opIf, byte(I32)}, i32c(1), []byte{opElse}, i32c(2), []byte{0x0b})
+	either := cat(get(0), get(1), []byte{opI32GtU}, get(2), get(3), []byte{opI32Eq, opI32Or, opIf, byte(I32)}, i32c(3), []byte{opElse}, i32c(4), []byte{0x0b})
+	params := []ValType{I32, I32, I32, I32}
+	m := &testModule{funcs: []testFunc{
+		{params: params, results: i32, export: "both", code: both},
+		{params: params, results: i32, export: "either", code: either},
+	}}
+	i := instantiate(t.Name(), readObject(compileModuleWithOptions(m.encode(), CompileOptions{memoryTail: true, tailRanges: true})), nil, 8<<20)
+	i.start()
+	defer i.release()
+	f, _ := i.export("both")
+	bothFn := f.Interface().(func(uintptr, uint32, uint32, uint32, uint32) uint32)
+	f, _ = i.export("either")
+	eitherFn := f.Interface().(func(uintptr, uint32, uint32, uint32, uint32) uint32)
+	values := []uint32{0, 1, 2, 0x7fffffff, 0x80000000, 0xffffffff}
+
+	for _, a := range values {
+		for _, b := range values {
+			for _, c := range values[:3] {
+				for _, d := range values[:3] {
+					want := uint32(2)
+
+					if int32(a) < int32(b) && c != d {
+						want = 1
+					}
+
+					if got := bothFn(i.ctx(), a, b, c, d); got != want {
+						t.Fatalf("both(%#x, %#x, %d, %d) = %d, want %d", a, b, c, d, got, want)
+					}
+
+					want = 4
+
+					if a > b || c == d {
+						want = 3
+					}
+
+					if got := eitherFn(i.ctx(), a, b, c, d); got != want {
+						t.Fatalf("either(%#x, %#x, %d, %d) = %d, want %d", a, b, c, d, got, want)
+					}
+				}
+			}
+		}
+	}
+}
