@@ -381,6 +381,238 @@ TEXT ·w2oResumeReturn(SB), NOSPLIT|NOFRAME, $0-0
 	POPQ	BP
 	RET
 
+// w2oMemmove copies CX bytes from BX to AX, as memmove: the code's
+// w2o.memcpy and w2o.memmove. Up to 128 bytes it loads everything before
+// it stores; past that it copies forward, 128 bytes at a time through
+// 32-byte vectors, the last 32 bytes loaded first and stored last, unless
+// the destination begins inside the source or the copy is past 16 MiB,
+// which Go's memmove does. The stores are ordinary: what is copied is
+// usually read next. AVX2 is there (useAVX2).
+TEXT ·w2oMemmove(SB), NOSPLIT|NOFRAME, $0-0
+	CMPQ	CX, $16
+	JBE	move16
+	CMPQ	CX, $32
+	JBE	move32
+	CMPQ	CX, $64
+	JBE	move64
+	CMPQ	CX, $128
+	JBE	move128
+	MOVQ	AX, DX
+	SUBQ	BX, DX
+	CMPQ	DX, CX
+	JB	elsewhere
+	CMPQ	CX, $0x1000000
+	JA	elsewhere
+	VMOVDQU	-32(BX)(CX*1), Y4
+	LEAQ	-32(AX)(CX*1), R8
+	SUBQ	$32, CX
+forward:
+	CMPQ	CX, $128
+	JB	rest
+	VMOVDQU	(BX), Y0
+	VMOVDQU	32(BX), Y1
+	VMOVDQU	64(BX), Y2
+	VMOVDQU	96(BX), Y3
+	VMOVDQU	Y0, (AX)
+	VMOVDQU	Y1, 32(AX)
+	VMOVDQU	Y2, 64(AX)
+	VMOVDQU	Y3, 96(AX)
+	ADDQ	$128, BX
+	ADDQ	$128, AX
+	SUBQ	$128, CX
+	JNZ	forward
+	JMP	last
+rest:
+	// Less than 128 bytes before the last 32: whole vectors, the final
+	// one reaching into those.
+	VMOVDQU	(BX), Y0
+	VMOVDQU	Y0, (AX)
+	ADDQ	$32, BX
+	ADDQ	$32, AX
+	SUBQ	$32, CX
+	JA	rest
+last:
+	VMOVDQU	Y4, (R8)
+	VZEROUPPER
+	RET
+move128:
+	VMOVDQU	(BX), Y0
+	VMOVDQU	32(BX), Y1
+	VMOVDQU	-64(BX)(CX*1), Y2
+	VMOVDQU	-32(BX)(CX*1), Y3
+	VMOVDQU	Y0, (AX)
+	VMOVDQU	Y1, 32(AX)
+	VMOVDQU	Y2, -64(AX)(CX*1)
+	VMOVDQU	Y3, -32(AX)(CX*1)
+	VZEROUPPER
+	RET
+move64:
+	VMOVDQU	(BX), Y0
+	VMOVDQU	-32(BX)(CX*1), Y1
+	VMOVDQU	Y0, (AX)
+	VMOVDQU	Y1, -32(AX)(CX*1)
+	VZEROUPPER
+	RET
+move32:
+	MOVOU	(BX), X0
+	MOVOU	-16(BX)(CX*1), X1
+	MOVOU	X0, (AX)
+	MOVOU	X1, -16(AX)(CX*1)
+	RET
+move16:
+	CMPQ	CX, $8
+	JB	move7
+	MOVQ	(BX), DX
+	MOVQ	-8(BX)(CX*1), SI
+	MOVQ	DX, (AX)
+	MOVQ	SI, -8(AX)(CX*1)
+	RET
+move7:
+	CMPQ	CX, $4
+	JB	move3
+	MOVL	(BX), DX
+	MOVL	-4(BX)(CX*1), SI
+	MOVL	DX, (AX)
+	MOVL	SI, -4(AX)(CX*1)
+	RET
+move3:
+	CMPQ	CX, $2
+	JB	move1
+	MOVW	(BX), DX
+	MOVW	-2(BX)(CX*1), SI
+	MOVW	DX, (AX)
+	MOVW	SI, -2(AX)(CX*1)
+	RET
+move1:
+	TESTQ	CX, CX
+	JEQ	moved
+	MOVB	(BX), DX
+	MOVB	DX, (AX)
+moved:
+	RET
+elsewhere:
+	MOVQ	·memmoveTarget(SB), DX
+	JMP	DX
+
+// w2oMemset sets CX bytes at AX to the low byte of BX: the code's
+// w2o.memset, in the same steps as w2oMemmove, but from 1 MiB on by REP
+// STOSB, which need not read the lines it overwrites.
+TEXT ·w2oMemset(SB), NOSPLIT|NOFRAME, $0-0
+	MOVBQZX	BX, BX
+	MOVQ	$0x0101010101010101, DX
+	IMULQ	DX, BX
+	CMPQ	CX, $16
+	JBE	set16
+	CMPQ	CX, $0x100000
+	JAE	setstring
+	MOVQ	BX, X0
+	PUNPCKLQDQ	X0, X0
+	CMPQ	CX, $32
+	JBE	set32
+	VPBROADCASTQ	X0, Y0
+	CMPQ	CX, $64
+	JBE	set64
+	CMPQ	CX, $128
+	JBE	set128
+	VMOVDQU	Y0, -32(AX)(CX*1)
+	SUBQ	$32, CX
+setblocks:
+	CMPQ	CX, $128
+	JB	setrest
+	VMOVDQU	Y0, (AX)
+	VMOVDQU	Y0, 32(AX)
+	VMOVDQU	Y0, 64(AX)
+	VMOVDQU	Y0, 96(AX)
+	ADDQ	$128, AX
+	SUBQ	$128, CX
+	JNZ	setblocks
+	JMP	setlast
+setrest:
+	VMOVDQU	Y0, (AX)
+	ADDQ	$32, AX
+	SUBQ	$32, CX
+	JA	setrest
+setlast:
+	VZEROUPPER
+	RET
+set128:
+	VMOVDQU	Y0, (AX)
+	VMOVDQU	Y0, 32(AX)
+	VMOVDQU	Y0, -64(AX)(CX*1)
+	VMOVDQU	Y0, -32(AX)(CX*1)
+	VZEROUPPER
+	RET
+set64:
+	VMOVDQU	Y0, (AX)
+	VMOVDQU	Y0, -32(AX)(CX*1)
+	VZEROUPPER
+	RET
+set32:
+	MOVOU	X0, (AX)
+	MOVOU	X0, -16(AX)(CX*1)
+	RET
+set16:
+	CMPQ	CX, $8
+	JB	set7
+	MOVQ	BX, (AX)
+	MOVQ	BX, -8(AX)(CX*1)
+	RET
+set7:
+	CMPQ	CX, $4
+	JB	set3
+	MOVL	BX, (AX)
+	MOVL	BX, -4(AX)(CX*1)
+	RET
+set3:
+	CMPQ	CX, $2
+	JB	set1
+	MOVW	BX, (AX)
+	MOVW	BX, -2(AX)(CX*1)
+	RET
+set1:
+	TESTQ	CX, CX
+	JEQ	setdone
+	MOVB	BX, (AX)
+setdone:
+	RET
+setstring:
+	MOVQ	AX, DI
+	MOVQ	BX, AX
+	REP;	STOSB
+	RET
+
+// func copyMemory(dst, src unsafe.Pointer, n uintptr) is w2oMemmove for
+// Go: the stand puts its inputs into a module's memory with it.
+TEXT ·copyMemory(SB), NOSPLIT, $0-24
+	MOVQ	dst+0(FP), AX
+	MOVQ	src+8(FP), BX
+	MOVQ	n+16(FP), CX
+	JMP	·w2oMemmove(SB)
+
+// func cpuHasAVX2() bool reports AVX2 with its state saved by the system.
+TEXT ·cpuHasAVX2(SB), NOSPLIT, $0-1
+	MOVL	$1, AX
+	XORL	CX, CX
+	CPUID
+	ANDL	$0x18000000, CX
+	CMPL	CX, $0x18000000
+	JNE	none
+	XORL	CX, CX
+	XGETBV
+	ANDL	$6, AX
+	CMPL	AX, $6
+	JNE	none
+	MOVL	$7, AX
+	XORL	CX, CX
+	CPUID
+	BTL	$5, BX
+	JCC	none
+	MOVB	$1, ret+0(FP)
+	RET
+none:
+	MOVB	$0, ret+0(FP)
+	RET
+
 // The addresses of the stubs (stubs.go).
 TEXT ·morestackStub(SB), NOSPLIT, $0-8
 	LEAQ	·w2oMorestack(SB), AX
@@ -409,5 +641,15 @@ TEXT ·resumeStub(SB), NOSPLIT, $0-8
 
 TEXT ·resumeReturnStub(SB), NOSPLIT, $0-8
 	LEAQ	·w2oResumeReturn(SB), AX
+	MOVQ	AX, ret+0(FP)
+	RET
+
+TEXT ·memmoveStub(SB), NOSPLIT, $0-8
+	LEAQ	·w2oMemmove(SB), AX
+	MOVQ	AX, ret+0(FP)
+	RET
+
+TEXT ·memsetStub(SB), NOSPLIT, $0-8
+	LEAQ	·w2oMemset(SB), AX
 	MOVQ	AX, ret+0(FP)
 	RET

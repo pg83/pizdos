@@ -383,8 +383,18 @@ func (c *Code) resolve(sym string, imports Imports) uintptr {
 	case symTableGrow:
 		return c.keepFunc(helperTableGrow)
 	case symMemcpy, symMemmove:
+		if useAVX2 {
+			findMemmove()
+
+			return memmoveStub()
+		}
+
 		return goSymbol("runtime.memmove")
 	case symMemset:
+		if useAVX2 {
+			return memsetStub()
+		}
+
 		return c.keepFunc(hostMemset)
 	}
 

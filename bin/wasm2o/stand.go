@@ -92,7 +92,7 @@ func (m *module) put(b []byte) uint32 {
 		throwFmt("malloc of %d bytes failed", len(b))
 	}
 
-	copy(m.mem()[p:], b)
+	moveMemory(m.mem()[p:], b)
 
 	return p
 }

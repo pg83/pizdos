@@ -92,10 +92,13 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   addresses, the destination, the source or byte and the length in AX, BX
   and CX, as Go passes them, Go's spill room reserved; a constant length
   of 32 bytes or less is loads and stores, as a native compiler makes
-  them, since programs compile with `-fno-builtin`. The loader binds
-  Go's `runtime.memmove` and its `hostMemset` to them; pg83/str's functions
-  take their place later. A call through a pointer still reaches the
-  kernel's `libcMemcpy`.
+  them, since programs compile with `-fno-builtin`. The loader binds its
+  own to them (`stubs_amd64.s`): AVX2 vectors with ordinary stores, `REP
+  STOSB` for fills from 1 MiB, Go's `runtime.memmove` for a destination
+  inside the source and copies past 16 MiB, and without AVX2 Go's
+  `runtime.memmove` and `hostMemset`; the stand copies its inputs into a
+  module with the same function. pg83/str's functions take their place
+  later. A call through a pointer still reaches the kernel's `libcMemcpy`.
 - A call of an import, or of a function of the VM, is a call of a Go
   function as Go makes it: the instance in AX, the arguments in Go's
   registers and stack slots, `call *GOT[symbol]`, the GOT holding the
