@@ -75,8 +75,18 @@ type Instance struct {
 	block  []byte
 	memory *LinearMemory
 	tables [][]uintptr
-	// host is what the embedder attaches: the kernel's process, the WASI.
+	// mem is the accessible memory, the tail included: setMemory keeps it.
+	mem []byte
+	// host is what the embedder attaches: the kernel's process, the WASI;
+	// proc is the process when it is one.
 	host any
+	proc *Process
+}
+
+// attach attaches a host to the instance.
+func (i *Instance) attach(host any) {
+	i.host = host
+	i.proc, _ = host.(*Process)
 }
 
 // LinearMemory is reserved at its maximum: it grows in place.
@@ -157,7 +167,7 @@ func (m *LinearMemory) bytes() []byte {
 }
 
 func (i *Instance) memoryBytes() []byte {
-	return i.memory.data[:i.memory.pages*pageSize+i.obj.meta.memory.tail]
+	return i.mem
 }
 
 func (i *Instance) ctx() uintptr {
@@ -170,6 +180,7 @@ func (i *Instance) put64(at uint32, v uint64) {
 
 func (i *Instance) setMemory() {
 	size := i.memory.pages * pageSize
+	i.mem = i.memory.data[:size+i.obj.meta.memory.tail]
 	i.put64(offMem, uint64(uintptr(unsafe.Pointer(unsafe.SliceData(i.memory.data)))))
 	i.put64(offMemSize, size)
 	i.put64(offMemBound, uint64(int64(size+i.obj.meta.memory.tail)-boundSlack))
@@ -198,12 +209,68 @@ func helperMemoryGrow(ctx uintptr, delta uint32) uint32 {
 // The bulk memory instructions, whose ranges the code checked: memory.init
 // copies from the segment's bytes in the object.
 func helperMemoryCopy(ctx uintptr, d, s, n uint32) {
-	m := instanceAt(ctx).memoryBytes()
-	copy(m[d:][:n], m[s:][:n])
+	moveBytes(instanceAt(ctx).mem, d, s, n)
 }
 
 func helperMemoryFill(ctx uintptr, d, v, n uint32) {
-	fill(instanceAt(ctx).memoryBytes()[d:][:n], byte(v))
+	setBytes(instanceAt(ctx).mem, d, v, n)
+}
+
+// moveBytes copies the n bytes of m at s to d, overlapping or not: up to
+// 16, loaded before they are stored, by hand, more by memmove.
+func moveBytes(m []byte, d, s, n uint32) {
+	if n > 16 {
+		copy(m[d:][:n], m[s:][:n])
+
+		return
+	}
+
+	if n == 0 {
+		return
+	}
+
+	src, dst := unsafe.Pointer(&m[s]), unsafe.Pointer(&m[d])
+
+	switch {
+	case n >= 8:
+		a, b := *(*uint64)(src), *(*uint64)(unsafe.Add(src, n-8))
+		*(*uint64)(dst), *(*uint64)(unsafe.Add(dst, n-8)) = a, b
+	case n >= 4:
+		a, b := *(*uint32)(src), *(*uint32)(unsafe.Add(src, n-4))
+		*(*uint32)(dst), *(*uint32)(unsafe.Add(dst, n-4)) = a, b
+	case n >= 2:
+		a, b := *(*uint16)(src), *(*uint16)(unsafe.Add(src, n-2))
+		*(*uint16)(dst), *(*uint16)(unsafe.Add(dst, n-2)) = a, b
+	default:
+		*(*byte)(dst) = *(*byte)(src)
+	}
+}
+
+// setBytes sets the n bytes of m at d to v: up to 16 by hand, more by fill.
+func setBytes(m []byte, d, v, n uint32) {
+	if n > 16 {
+		fill(m[d:][:n], byte(v))
+
+		return
+	}
+
+	if n == 0 {
+		return
+	}
+
+	x := uint64(byte(v)) * 0x0101010101010101
+	dst := unsafe.Pointer(&m[d])
+
+	switch {
+	case n >= 8:
+		*(*uint64)(dst), *(*uint64)(unsafe.Add(dst, n-8)) = x, x
+	case n >= 4:
+		*(*uint32)(dst), *(*uint32)(unsafe.Add(dst, n-4)) = uint32(x), uint32(x)
+	case n >= 2:
+		*(*uint16)(dst), *(*uint16)(unsafe.Add(dst, n-2)) = uint16(x), uint16(x)
+	default:
+		*(*byte)(dst) = byte(x)
+	}
 }
 
 func helperMemoryInit(ctx uintptr, d uint32, src uint64, n uint32) {

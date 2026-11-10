@@ -168,7 +168,7 @@ func compileStreams(input io.Reader, output io.Writer, options CompileOptions) {
 
 	defer i.release()
 
-	i.host = &CompilerIO{input: input, output: output}
+	i.attach(&CompilerIO{input: input, output: output})
 	i.start()
 	flags := uint32(0)
 

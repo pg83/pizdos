@@ -21,7 +21,7 @@ func runObject(path, root string, argv []string) (code int) {
 
 	w := newWASI(argv)
 	i := instantiate(argv[0], obj, w, runStack)
-	i.host = w
+	i.attach(w)
 
 	defer i.writeTailProfile()
 

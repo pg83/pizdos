@@ -298,19 +298,29 @@ func (p *Process) libcStrcat(d, s uint32) uint32 {
 }
 
 func (p *Process) libcMemcpy(d, s, n uint32) uint32 {
-	copy(p.span(d, n), p.span(s, n))
+	m := p.inst.mem
+
+	if uint64(d)+uint64(n) > uint64(len(m)) || uint64(s)+uint64(n) > uint64(len(m)) {
+		oob()
+	}
+
+	moveBytes(m, d, s, n)
 
 	return d
 }
 
 func (p *Process) libcMemmove(d, s, n uint32) uint32 {
-	copy(p.span(d, n), p.span(s, n))
-
-	return d
+	return p.libcMemcpy(d, s, n)
 }
 
 func (p *Process) libcMemset(d, c, n uint32) uint32 {
-	fill(p.span(d, n), byte(c))
+	m := p.inst.mem
+
+	if uint64(d)+uint64(n) > uint64(len(m)) {
+		oob()
+	}
+
+	setBytes(m, d, c, n)
 
 	return d
 }

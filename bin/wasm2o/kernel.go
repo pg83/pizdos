@@ -161,7 +161,7 @@ func newKernel(root string) *Kernel {
 
 // proc is the process of the instance ctx.
 func proc(ctx uintptr) *Process {
-	return instanceAt(ctx).host.(*Process)
+	return instanceAt(ctx).proc
 }
 
 // Imports: the kernel's functions; the module imports nothing else.
@@ -301,7 +301,7 @@ func (p *Process) runFrom(img *execImage, i *Instance, enter func()) {
 func (p *Process) runImage(img *execImage, i *Instance, enter func()) (next *execImage, status int) {
 	if i == nil {
 		i = newInstance(img.code, p.k, runStack)
-		i.host = p
+		i.attach(p)
 		p.heap, p.static, p.env, p.errnoAt, p.environAt, p.siginfo = 0, 0, 0, 0, 0, 0
 		p.regexes, p.constants, p.locale = map[uint32]*posixRegex{}, map[string]uint32{}, [lcAll]string{}
 		p.envStrings, p.mappings = map[uint32]bool{}, map[uint32]mapping{}
@@ -523,7 +523,7 @@ func (p *Process) newString(s string) uint32 {
 // memory
 
 func (p *Process) mem() []byte {
-	return p.inst.memoryBytes()
+	return p.inst.mem
 }
 
 func oob() {

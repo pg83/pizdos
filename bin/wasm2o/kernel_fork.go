@@ -48,7 +48,7 @@ type vforkFrame struct {
 // resume returns the parent from vfork with pid.
 func (v *vforkFrame) resume(pid int32) {
 	p := v.parent
-	p.inst.host = p
+	p.inst.attach(p)
 	p.raiseInterrupt()
 	binary.LittleEndian.PutUint32(p.inst.block[p.stackPointer():], v.stack)
 	p.inst.longjmp(&v.jump, uint32(pid))
@@ -71,7 +71,7 @@ func (p *Process) startVfork() uint32 {
 	c.locale, c.envStrings, c.mappings, c.tzAt, c.herrnoAt = p.locale, p.envStrings, p.mappings, p.tzAt, p.herrnoAt
 	c.token.Store(p.token.Load())
 	c.inherit(p)
-	p.inst.host = c
+	p.inst.attach(c)
 
 	return c.result(0, nil)
 }
@@ -103,7 +103,7 @@ func (p *Process) fork(setup func(c *Process)) (int32, error) {
 
 	c := p.k.newProcess(p)
 	inst := p.inst.clone(p.k, runStack, from, to)
-	inst.host = c
+	inst.attach(c)
 	c.image = p.image
 	c.heap, c.static, c.env, c.errnoAt, c.environAt, c.siginfo = p.heap, p.static, p.env, p.errnoAt, p.environAt, p.siginfo
 	c.nextRegex, c.stackAt, c.locale, c.tzAt, c.herrnoAt = p.nextRegex, p.stackAt, p.locale, p.tzAt, p.herrnoAt
@@ -197,7 +197,7 @@ func (p *Process) endBorrowers(i *Instance, e any) {
 		q = v.parent
 	}
 
-	i.host = p
+	i.attach(p)
 }
 
 // pidSelector is what waitpid's pid selects of the children: one, the
