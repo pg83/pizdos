@@ -14319,6 +14319,23 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         if (checked && offset < 2147483647) {
+            // A sum of a base and a constant within bounds, used only for
+            // addresses, is addressed from the base, the constant in the
+            // displacement, when the base's range shows the sum does not
+            // wrap: a table at a constant address indexed by a byte, say.
+            Value* av = &l->f->values[addr];
+            if (av->op == OpAdd && l->deferred[addr] && !isNil(l->addresses)) {
+                Span<i32> args = functionArgs(l->f, addr);
+                const i32 k = lowererIsConst(l, args[1]) ? 1 : lowererIsConst(l, args[0]) ? 0 : -1;
+                if (k >= 0 && !lowererIsConst(l, args[1 - k])) {
+                    const i32 base = args[1 - k];
+                    const i64 c = convert<i64>(convert<u32>(lowererConstBits(l, args[k])));
+                    const ValueRange range = valueRangesOf(l->addresses, base, 0);
+                    if (range.lo >= 0 && range.hi + c < 2147483647 && offset + c < 2147483647) {
+                        return memIndexed(memReg, lowererUse(l, base), convert<i32>(offset + c));
+                    }
+                }
+            }
             return memIndexed(memReg, lowererUse(l, addr), convert<i32>(offset));
         }
         VReg ra = lowererUse(l, addr);
