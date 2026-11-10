@@ -6177,6 +6177,8 @@ namespace {
 
     static void lowererLoad(Lowerer* l, i32 v, i32 addr);
 
+    static bool lowererNarrowShift(Lowerer* l, i32 v, i32 a, i32 k);
+
     static VReg lowererLoad64(Lowerer* l, Mem mem);
 
     static void lowererLowerValue(Lowerer* l, i32 v);
@@ -15855,6 +15857,51 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         lowererEmit(l, in);
     }
 
+    // narrowShift loads the high bytes of a load shifted right by whole
+    // bytes, little-endian at a higher offset, where nothing writes memory
+    // between the load and the shift: the opcode word's argument, say,
+    // instead of a copy and a shift.
+    static bool lowererNarrowShift(Lowerer* l, i32 v, i32 a, i32 k) {
+        Function* f = l->f;
+        const Value* lv = &f->values[a];
+        if (!lowererIsConst(l, k) || lv->op != OpLoad || lv->typ != I32 || lv->block != f->values[v].block || f->values[v].typ != I32) {
+            return false;
+        }
+        const MemKind kind = convert<MemKind>(lv->aux2);
+        const Int width = memKindWidth(kind);
+        const i64 shift = lowererConstBits(l, k) & 31;
+        Int narrow = 0;
+        if (width == 2 && !memKindSigned(kind) && shift == 8) {
+            narrow = 1;
+        } else if (width == 4 && (shift == 16 || shift == 24)) {
+            narrow = 4 - shift / 8;
+        }
+        if (narrow == 0) {
+            return false;
+        }
+        auto instrs = f->blocks[lv->block].instrs.view();
+        Int i = 0;
+        while (i < length(instrs) && instrs[i] != a) {
+            ++i;
+        }
+        for (++i; i < length(instrs) && instrs[i] != v; ++i) {
+            if (!lowererTransparent(f->values[instrs[i]].op)) {
+                return false;
+            }
+        }
+        if (i == length(instrs)) {
+            return false;
+        }
+        const i32 addr = functionArgs(f, a)[0];
+        MInst in = inst(mLoad);
+        in.mem = lowererAddress(l, addr, lv->aux + shift / 8, narrow, MemKind(kind & memProven) != MemKind(0LL));
+        in.dst = lowererDef(l, v);
+        in.size = convert<u8>(narrow);
+        in.dsize = 4;
+        lowererEmit(l, in);
+        return true;
+    }
+
     static VReg lowererLoad64(Lowerer* l, Mem mem) {
         VReg r = mFuncNewReg(l->mf, classGPR);
         MInst in = inst(mLoad);
@@ -15884,6 +15931,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             case OpShl:
             case OpShrS:
             case OpShrU: {
+                if (val->op == OpShrU && lowererNarrowShift(l, v, args[0], args[1])) {
+                    break;
+                }
                 lowererShift(l, v, val->op, args[0], args[1], size);
                 break;
             }
