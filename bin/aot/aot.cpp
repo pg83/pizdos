@@ -5742,6 +5742,8 @@ namespace {
 
     static void allocatorConstantDefinitions(Allocator* a);
 
+    static void allocatorOrderSlots(Allocator* a);
+
     static Interval* allocatorPartAt(Interval* root, i32 p);
 
     static void allocatorScan(Allocator* a);
@@ -10567,6 +10569,61 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         for (usize x = 0; x < defs.size(); ++x) {
             if (defs[x] != 1) {
                 a->constant[x] = false;
+            }
+        }
+    }
+
+    // orderSlots numbers the spill slots by how often the code reaches them,
+    // a block weighing eight times the loop around it and a cold one one:
+    // the slots first in the frame take an 8-bit displacement.
+    static void allocatorOrderSlots(Allocator* a) {
+        if (a->nslots < 2) {
+            return;
+        }
+        MFunc* mf = a->mf;
+        auto each = [&](auto&& f) {
+            for (Int j = 0; j < length(a->order); ++j) {
+                MBlock* blk = &mf->blocks[a->order[j]];
+                u64 w = 1;
+                for (Int d = 0; !blk->cold && d < blk->depth && d < 6; ++d) {
+                    w *= 8;
+                }
+                auto instructions = blk->insts.view();
+                for (Int i = 0; i < length(instructions); ++i) {
+                    mInstForEachOperand(&instructions[i], [&](VReg* r, Int) {
+                        if (isSlot(*r) && slotOf(*r) < constantSlot) {
+                            f(r, w);
+                        }
+                    });
+                }
+            }
+        };
+        Slice<u64> weight = makeSlice<u64>(a->nslots);
+        each([&](VReg* r, u64 w) {
+            weight[slotOf(*r)] += w;
+        });
+        Slice<i32> byWeight = makeSlice<i32>(a->nslots);
+        for (i32 k = 0; k < a->nslots; ++k) {
+            byWeight[k] = k;
+        }
+        sortValuesStable(byWeight, [&](Int x, Int y) {
+            return weight[byWeight[x]] > weight[byWeight[y]];
+        });
+        Slice<i32> renumber = makeSlice<i32>(a->nslots);
+        bool changed = false;
+        for (i32 k = 0; k < a->nslots; ++k) {
+            renumber[byWeight[k]] = k;
+            changed = changed || byWeight[k] != k;
+        }
+        if (!changed) {
+            return;
+        }
+        each([&](VReg* r, u64) {
+            *r = slotLoc(renumber[slotOf(*r)]);
+        });
+        for (usize x = 0; x < a->slots.size(); ++x) {
+            if (a->slots[x] >= 0 && a->slots[x] < constantSlot) {
+                a->slots[x] = renumber[a->slots[x]];
             }
         }
     }
@@ -20549,6 +20606,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         allocatorSpillAtJoins(a);
         allocatorConstantDefinitions(a);
         allocatorResolve(a);
+        allocatorOrderSlots(a);
         return a;
     }
 
