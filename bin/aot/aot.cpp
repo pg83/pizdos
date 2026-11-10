@@ -16731,7 +16731,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         VReg rx = lowererUse(l, x);
         VReg ry = lowererUse(l, y);
         VReg d = lowererDef(l, v);
-        lowererMov(l, d, ry, size);
         u8 cc = 5;
         Int parity = 0;
         if (l->deferred[cond]) {
@@ -16746,6 +16745,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             tst.size = 4;
             lowererEmit(l, tst);
         }
+        // The conditional move overwrites a copy of one value with the
+        // other: of the value used only here, if the other is used again,
+        // so that the copy is the value's own register.
+        if (parity == 0 && l->uses[x] == 1 && l->uses[y] > 1) {
+            auto swapped = rx;
+            rx = ry;
+            ry = swapped;
+            cc = convert<u8>(cc ^ 1);
+        }
+        lowererMov(l, d, ry, size);
         MInst cm = inst(mCmov);
         cm.dst = d;
         cm.src = rx;
