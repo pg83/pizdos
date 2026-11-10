@@ -4278,6 +4278,11 @@ namespace {
         Vec<u64> constantSlots{};
         // definitions counts each virtual register's definitions.
         Vec<i32> definitions{};
+        // home is, for a value split at a loop header that many blocks
+        // return to, its part from there: a later part of the value takes
+        // that part's register while it is free, and evicts its holder when
+        // it can, so that the value returns to the header where it left it.
+        Vec<Interval*> home{};
     };
 
     static constexpr i32 constantSlot = 1 << 24;
@@ -9467,6 +9472,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         i32 firstUse = intervalNextUse(cur, start);
+        // A part of a value split at a dispatch header takes back the
+        // register it has there whenever that register's next use comes
+        // after the part's first.
+        if (a->home.size()) {
+            Interval* h = a->home[usize(allocatorVindex(a, cur->vreg))];
+            if (h && h != cur && h->reg != noReg && intervalStart(h) < start && nextUse[h->reg] > firstUse && blockPos[h->reg] > start + 1) {
+                reg = h->reg;
+            }
+        }
         if (firstUse > nextUse[reg] || blockPos[reg] <= start + 1 || nextUse[reg] == 0) {
             allocatorSpill(a, cur);
             if (firstUse < maxPos) {
@@ -10703,6 +10717,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
                 Interval* child = intervalSplit(part, from);
                 parts = appendValues(parts, Part{child, length(child->uses) + length(child->memUses)});
+                if (!a->home.size()) {
+                    a->home.resize(usize(mf->nregs));
+                    a->home.fill(nullptr);
+                }
+                a->home[usize(x)] = child;
             });
             sortValuesStable(parts, [&](Int x, Int y) {
                 return parts[x].uses > parts[y].uses;
@@ -10887,6 +10906,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         VReg h = allocatorHintReg(a, cur);
         if (h != noReg && allocatable(h) && allocatorRegClass(a, h) == cur->classValue && freeUntil[h] >= end) {
             reg = h;
+        }
+        if (reg == noReg && a->home.size()) {
+            Interval* h = a->home[usize(allocatorVindex(a, cur->vreg))];
+            if (h && h != cur && h->reg != noReg && intervalStart(h) < start && freeUntil[h->reg] > start + 1) {
+                reg = h->reg;
+            }
         }
         if (reg == noReg) {
             VReg s = allocatorSiblingReg(a, cur);
