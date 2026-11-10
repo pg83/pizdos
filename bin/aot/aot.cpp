@@ -10930,7 +10930,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // ending in a switch that many blocks jump to, over the jump at the end
     // of each of them: each block takes its own indirect jump, through the
     // one table, instead of a jump to the shared one. The blocks' moves
-    // have put every value where the dispatch reads it.
+    // have put every value where the dispatch reads it. The predecessor
+    // lists stay as they were.
     static void allocatorDuplicateDispatch(Allocator* a) {
         MFunc* mf = a->mf;
         auto order = a->order.view();
@@ -19844,6 +19845,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         for (Int i = 0; i < length(post); ++i) {
             rank[post[i]] = convert<i32>(i);
         }
+        // The predecessors from the successors, the blocks' own lists being
+        // stale where the allocator copied a dispatch into the blocks that
+        // jumped to it.
+        Slice<Slice<i32>> preds = makeSlice<Slice<i32>>(n);
+        for (Int i = 0; i < length(post); ++i) {
+            const auto succs = mf->blocks[post[i]].succs;
+            for (Int k = 0; k < length(succs); ++k) {
+                preds[succs[k]] = appendValues(preds[succs[k]], post[i]);
+            }
+        }
         Slice<i32> idom = makeSlice<i32>(n);
         for (Int b = 0; b < n; ++b) {
             idom[b] = -1;
@@ -19854,10 +19865,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             for (Int i = length(post) - 2; i >= 0; --i) {
                 const i32 b = post[i];
                 i32 d = -1;
-                const auto preds = mf->blocks[b].preds;
-                for (Int k = 0; k < length(preds); ++k) {
-                    i32 x = preds[k];
-                    if (!seen[x] || idom[x] < 0) {
+                for (Int k = 0; k < length(preds[b]); ++k) {
+                    i32 x = preds[b][k];
+                    if (idom[x] < 0) {
                         continue;
                     }
                     if (d >= 0) {
@@ -26027,6 +26037,32 @@ namespace {
                     fail("unexpected outgoing liveness after local use-defs");
                 });
             }
+        }
+        {
+            // A dispatch copied into the blocks that jumped to it leaves the
+            // predecessor lists as they were: the stack check's dominators
+            // come from the successors.
+            ObjPool pool;
+            PoolScope scope(pool);
+            MFunc function;
+            for (Int b = 0; b < 7; ++b) {
+                function.blocks.pushBack(MBlock{});
+            }
+            function.blocks[5].insts.pushBack(inst(mCall));
+            function.blocks[6].insts.pushBack(inst(mCall));
+            function.blocks[0].succs = sliceOf<i32>({1});
+            function.blocks[1].succs = sliceOf<i32>({2, 3});
+            function.blocks[2].succs = sliceOf<i32>({5, 6});
+            function.blocks[3].succs = sliceOf<i32>({5, 6});
+            function.blocks[4].succs = sliceOf<i32>({5, 6});
+            function.blocks[1].preds = sliceOf<i32>({0});
+            function.blocks[2].preds = sliceOf<i32>({1});
+            function.blocks[3].preds = sliceOf<i32>({1});
+            function.blocks[4].preds = sliceOf<i32>({2, 3});
+            function.blocks[5].preds = sliceOf<i32>({4});
+            function.blocks[6].preds = sliceOf<i32>({4});
+            const Slice<i32> checks = objCodeStackCheckBlocks(&function);
+            require(length(checks) == 1 && checks[0] == 1, "the stack check dominating the calls of a duplicated dispatch");
         }
         {
             ObjPool pool;
