@@ -15075,6 +15075,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 return;
             }
         }
+        // The destination starts as a copy of the first operand: of a
+        // commutative operation, the one used only here, in this block,
+        // which then shares its register.
+        if ((op == OpMul || op == OpAnd || op == OpOr || op == OpXor) && l->uses[a] > 1 && l->uses[b] == 1 && l->f->values[b].block == l->block && l->f->values[b].op != OpParam) {
+            auto swapped = a;
+            a = b;
+            b = swapped;
+        }
         VReg ra = lowererUse(l, a);
         VReg rb = lowererUse(l, b);
         lowererMov(l, d, ra, size);
