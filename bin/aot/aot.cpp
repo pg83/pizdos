@@ -2933,8 +2933,6 @@ namespace {
 
     struct SpEntry;
 
-    struct SpillDef;
-
     struct Table;
 
     struct TableFixup;
@@ -3535,24 +3533,6 @@ namespace {
         result = combineHash(result, hashValue(value.at));
         result = combineHash(result, hashValue(value.sym));
         result = combineHash(result, hashValue(value.addend));
-        return result;
-    }
-
-    struct SpillDef {
-        Int count{};
-        i32 block{};
-        i32 pos{};
-    };
-
-    static bool operator==(const SpillDef& a, const SpillDef& b) {
-        return a.count == b.count && a.block == b.block && a.pos == b.pos;
-    }
-
-    static u64 hashValue(const SpillDef& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.count));
-        result = combineHash(result, hashValue(value.block));
-        result = combineHash(result, hashValue(value.pos));
         return result;
     }
 
@@ -5703,7 +5683,7 @@ namespace {
 
     static void allocatorResolve(Allocator* a);
 
-    static void allocatorSaveSpillsBeforeLoops(Allocator* a, PositionedMoves& inner, Map<i32, Slice<Move>> atEnd, Map<i32, Slice<Move>> atStart);
+    static void allocatorSaveSpillsAtDefinitions(Allocator* a, PositionedMoves& inner, Map<i32, Slice<Move>> atEnd, Map<i32, Slice<Move>> atStart);
 
     static void allocatorScan(Allocator* a);
 
@@ -10179,7 +10159,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
             }
         }
-        allocatorSaveSpillsBeforeLoops(a, inner, atEnd, atStart);
+        allocatorSaveSpillsAtDefinitions(a, inner, atEnd, atStart);
         if (inner.entries.size() > 1) {
             sortValues(inner.entries.view(), [&](Int i, Int j) {
                 const auto& left = inner.entries[usize(i)];
@@ -10270,103 +10250,113 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
     }
 
-    // A spill slot belongs to one virtual register. If that register has one
-    // definition outside a loop, saving it there makes every later save of the
-    // same value redundant, including saves repeated on each loop iteration.
-    // Coalesced loop parameters have several definitions and are left alone.
-    static void allocatorSaveSpillsBeforeLoops(Allocator* a, PositionedMoves& inner, Map<i32, Slice<Move>> atEnd, Map<i32, Slice<Move>> atStart) {
+    // A spill slot belongs to one virtual register. Saving the register in
+    // its slot after each of its definitions keeps the slot up to date
+    // wherever the value lives, so every save where a part of it moves from
+    // a register to the slot can go. That is cheaper when the definitions
+    // run less often than those saves: a value defined outside a loop and
+    // spilled in it, or a loop parameter defined in a few of the loop's
+    // blocks and spilled in many. A block weighs eight times the loop around
+    // it; a cold one weighs one.
+    static void allocatorSaveSpillsAtDefinitions(Allocator* a, PositionedMoves& inner, Map<i32, Slice<Move>> atEnd, Map<i32, Slice<Move>> atStart) {
         if (!a->nslots || (!inner.entries.size() && !length(atEnd) && !length(atStart))) {
             return;
         }
-        bool hasLoop = false;
-        for (Int i = 0; i < length(a->mf->blocks); ++i) {
-            if (a->mf->blocks[usize(i)].depth > 0) {
-                hasLoop = true;
-                break;
+        auto weight = [&](i32 b) -> u64 {
+            const MBlock& blk = a->mf->blocks[b];
+            if (blk.cold) {
+                return 1;
             }
-        }
-        if (!hasLoop) {
-            return;
-        }
-        Slice<SpillDef> defs = makeSlice<SpillDef>(a->mf->nregs);
-        auto order = a->order.view();
-        for (Int j = 0; j < length(order); ++j) {
-            i32 b = order[j];
-            for (Int j = 0, end = length(a->mf->blocks[b].insts.view()); j < end; ++j) {
-                Int i = j;
-                MInst* in = &a->mf->blocks[b].insts[i];
-                mInstForEachOperand(in, [&](VReg* r, Int role) mutable -> void {
-                    if (*r == noReg || vRegIsPhys(*r) || (role & roleDef) == 0 || role == roleTemp) {
-                        return;
-                    }
-                    SpillDef* d = &defs[allocatorVindex(a, *r)];
-                    d->count++;
-                    d->block = b;
-                    d->pos = a->blockFrom[b] + 2 + 2 * i;
-                });
+            u64 w = 1;
+            for (Int d = 0; d < blk.depth && d < 6; ++d) {
+                w *= 8;
             }
-        }
+            return w;
+        };
         Map<VReg, Int> owners = makeMap<VReg, Int>();
         auto slots = a->slots.view();
         for (Int x = 0; x < length(slots); ++x) {
-            i32 slot = slots[x];
-            if (slot >= 0 && defs[x].count == 1) {
-                setMap(owners, slotLoc(slot), x);
+            if (slots[x] >= 0) {
+                setMap(owners, slotLoc(slots[x]), x);
             }
         }
         if (!length(owners)) {
             return;
         }
-        Slice<bool> save = makeSlice<bool>(length(defs));
+        Slice<u64> saves = makeSlice<u64>(a->mf->nregs);
         auto consider = [&](Slice<Move> moves, i32 b) mutable -> void {
-            auto range518 = moves;
-            for (Int index519 = 0, rangeEnd520 = length(range518); index519 < rangeEnd520; ++index519) {
-                Move m = range518[index519];
-                auto temporary521 = lookupMap(owners, m.dst);
-                Int x = temporary521.v0;
-                bool ok = temporary521.v1;
-                if (ok && a->mf->blocks[b].depth > a->mf->blocks[defs[x].block].depth) {
-                    save[x] = true;
+            for (Int i = 0; i < length(moves); ++i) {
+                auto owner = lookupMap(owners, moves[i].dst);
+                if (owner.v1) {
+                    saves[owner.v0] += weight(b);
                 }
             }
         };
         for (usize i = 0; i < inner.entries.size(); ++i) {
             const auto& entry = inner.entries[i];
             auto owner = lookupMap(owners, entry.move.dst);
-            if (owner.v1 && a->mf->blocks[a->posBlock[entry.position / 4]].depth > a->mf->blocks[defs[owner.v0].block].depth) {
-                save[owner.v0] = true;
+            if (owner.v1) {
+                saves[owner.v0] += weight(a->posBlock[entry.position / 4]);
             }
         }
-        auto range525 = atEnd;
-        for (Int index526 = 0; index526 < mapSlots(range525); ++index526) {
-            if (!mapOccupied(range525, index526)) {
-                continue;
+        for (Int k = 0; k < mapSlots(atEnd); ++k) {
+            if (mapOccupied(atEnd, k)) {
+                consider(mapValue(atEnd, k), mapKey(atEnd, k));
             }
-            i32 b = mapKey(range525, index526);
-            Slice<Move> moves = mapValue(range525, index526);
-            consider(moves, b);
         }
-        auto range528 = atStart;
-        for (Int index529 = 0; index529 < mapSlots(range528); ++index529) {
-            if (!mapOccupied(range528, index529)) {
-                continue;
+        for (Int k = 0; k < mapSlots(atStart); ++k) {
+            if (mapOccupied(atStart, k)) {
+                consider(mapValue(atStart, k), mapKey(atStart, k));
             }
-            i32 b = mapKey(range528, index529);
-            Slice<Move> moves = mapValue(range528, index529);
-            consider(moves, b);
+        }
+        // The saves after the definitions, and the definitions that end
+        // their block, after which the resolver has no place for a save.
+        Slice<u64> defined = makeSlice<u64>(a->mf->nregs);
+        Slice<bool> last = makeSlice<bool>(a->mf->nregs);
+        auto eachDefinition = [&](auto&& f) {
+            auto order = a->order.view();
+            for (Int j = 0; j < length(order); ++j) {
+                const i32 b = order[j];
+                auto instructions = a->mf->blocks[b].insts.view();
+                for (Int i = 0; i < length(instructions); ++i) {
+                    const i32 p = a->blockFrom[b] + 2 + 2 * i32(i);
+                    mInstForEachOperand(&instructions[i], [&](VReg* r, Int role) {
+                        if (*r == noReg || vRegIsPhys(*r) || (role & roleDef) == 0 || role == roleTemp) {
+                            return;
+                        }
+                        const Int x = allocatorVindex(a, *r);
+                        if (saves[x] != 0) {
+                            f(x, *r, b, i, p);
+                        }
+                    });
+                }
+            }
+        };
+        eachDefinition([&](Int x, VReg r, i32 b, Int i, i32 p) {
+            if (i + 1 == length(a->mf->blocks[b].insts)) {
+                last[x] = true;
+            } else if (!isSlot(allocatorLocation(a, r, p + 1))) {
+                defined[x] += weight(b);
+            }
+        });
+        Slice<bool> save = makeSlice<bool>(a->mf->nregs);
+        bool any = false;
+        for (Int x = 0; x < a->mf->nregs; ++x) {
+            if (saves[x] != 0 && !last[x] && defined[x] < saves[x]) {
+                save[x] = true;
+                any = true;
+            }
+        }
+        if (!any) {
+            return;
         }
         auto filter = [&](Slice<Move> moves) mutable -> Slice<Move> {
             Slice<Move> out = subslice(moves, 0, 0);
-            auto range531 = moves;
-            for (Int index532 = 0, rangeEnd533 = length(range531); index532 < rangeEnd533; ++index532) {
-                Move m = range531[index532];
-                auto temporary534 = lookupMap(owners, m.dst);
-                Int x = temporary534.v0;
-                bool ok = temporary534.v1;
-                if (ok && save[x]) {
-                    continue;
+            for (Int i = 0; i < length(moves); ++i) {
+                auto owner = lookupMap(owners, moves[i].dst);
+                if (!owner.v1 || !save[owner.v0]) {
+                    out = appendValues(out, moves[i]);
                 }
-                out = appendValues(out, m);
             }
             return out;
         };
@@ -10379,40 +10369,26 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         inner.entries.resize(kept);
-        auto range538 = atEnd;
-        for (Int index539 = 0; index539 < mapSlots(range538); ++index539) {
-            if (!mapOccupied(range538, index539)) {
-                continue;
+        for (Int k = 0; k < mapSlots(atEnd); ++k) {
+            if (mapOccupied(atEnd, k)) {
+                setMap(atEnd, mapKey(atEnd, k), filter(mapValue(atEnd, k)));
             }
-            i32 b = mapKey(range538, index539);
-            Slice<Move> moves = mapValue(range538, index539);
-            setMap(atEnd, b, filter(moves));
         }
-        auto range541 = atStart;
-        for (Int index542 = 0; index542 < mapSlots(range541); ++index542) {
-            if (!mapOccupied(range541, index542)) {
-                continue;
+        for (Int k = 0; k < mapSlots(atStart); ++k) {
+            if (mapOccupied(atStart, k)) {
+                setMap(atStart, mapKey(atStart, k), filter(mapValue(atStart, k)));
             }
-            i32 b = mapKey(range541, index542);
-            Slice<Move> moves = mapValue(range541, index542);
-            setMap(atStart, b, filter(moves));
         }
-        auto range544 = save;
-        for (Int index545 = 0, rangeEnd546 = length(range544); index545 < rangeEnd546; ++index545) {
-            Int x = index545;
-            bool yes = range544[index545];
-            if (!yes) {
-                continue;
+        eachDefinition([&](Int x, VReg r, i32, Int, i32 p) {
+            if (!save[x]) {
+                return;
             }
-            SpillDef d = defs[x];
-            VReg r = convert<VReg>(x) + firstVirtual;
-            VReg src = allocatorLocation(a, r, d.pos + 1);
+            VReg src = allocatorLocation(a, r, p + 1);
             VReg dst = slotLoc(a->slots[x]);
             if (src != dst) {
-                i32 key = 2 * (d.pos + 2);
-                appendMove(inner, key, Move{dst, src});
+                appendMove(inner, 2 * (p + 2), Move{dst, src});
             }
-        }
+        });
     }
 
     static void allocatorScan(Allocator* a) {
