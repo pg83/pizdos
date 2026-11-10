@@ -6245,7 +6245,7 @@ namespace {
 
     static void optimizerSetArgs(Optimizer* o, i32 v, Span<const i32> args);
 
-    static bool optimizerSimplify(Optimizer* o);
+    static bool optimizerSimplify(Optimizer* o, Int from = 0);
 
     static bool optimizerSimplifyTerm(Optimizer* o, i32 b);
 
@@ -18849,11 +18849,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     // simplify folds constants and rewrites operations into simpler ones.
-    static bool optimizerSimplify(Optimizer* o) {
+    static bool optimizerSimplify(Optimizer* o, Int from) {
         Function* f = o->f;
         bool changed = false;
         optimizerCountUses(o);
-        for (Int b = 0, end = length(f->blocks); b < end; ++b) {
+        for (Int b = from, end = length(f->blocks); b < end; ++b) {
             Block* blk = &f->blocks[b];
             if (blk->dead) {
                 continue;
@@ -21408,12 +21408,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             optimizerDeadCode(o);
         }
         optimizerSelectTriangles(o);
-        if (versionMemoryLoops(f)) {
+        const Int unversioned = length(f->blocks);
+        const bool versioned = versionMemoryLoops(f);
+        if (versioned) {
             o->counted = false;
         }
         Int round = 0;
         for (; round < 4; round++) {
-            bool changed = optimizerCleanup(o);
+            // The guards of versioned loops are built of constants and
+            // loop-entry values the simplifier folds.
+            bool changed = versioned && optimizerSimplify(o, unversioned);
+            changed = optimizerCleanup(o) || changed;
             changed = optimizerTrivialParams(o) || changed;
             if (!changed) {
                 break;
