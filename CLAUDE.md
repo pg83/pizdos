@@ -90,7 +90,9 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   memory instructions: it checks the ranges and calls the native memory
   functions `w2o.memcpy`, `w2o.memmove` and `w2o.memset` with host
   addresses, the destination, the source or byte and the length in AX, BX
-  and CX, as Go passes them, Go's spill room reserved. The loader binds
+  and CX, as Go passes them, Go's spill room reserved; a constant length
+  of 32 bytes or less is loads and stores, as a native compiler makes
+  them, since programs compile with `-fno-builtin`. The loader binds
   Go's `runtime.memmove` and its `hostMemset` to them; pg83/str's functions
   take their place later. A call through a pointer still reaches the
   kernel's `libcMemcpy`.

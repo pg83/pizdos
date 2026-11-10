@@ -15763,8 +15763,116 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // The bulk memory instructions and the imports of lib/c's memcpy,
     // memmove and memset check their ranges and call the native memory
     // functions with host addresses: memory.init's source is the segment's
-    // bytes in the object.
+    // bytes in the object. A constant length of inlineCopyMax bytes or less
+    // is loads and stores instead, as a native compiler makes them.
+    static constexpr i64 inlineCopyMax = 32;
+
+    struct MemChunk {
+        i64 at{};
+        u8 width{};
+    };
+
+    // memChunks covers n bytes, 1 to inlineCopyMax, with at most four
+    // accesses of up to eight bytes: whole eights, then the rest as one
+    // access of its width, two and one for three, or an access of eight
+    // (four below eight bytes) reaching the end over the previous.
+    static Int memChunks(i64 n, Array<MemChunk, 5>* chunks) {
+        Int count = 0;
+        i64 at = 0;
+        while (n - at >= 8) {
+            (*chunks)[count++] = MemChunk{at, 8};
+            at += 8;
+        }
+        i64 rest = n - at;
+        if (rest == 1 || rest == 2 || rest == 4) {
+            (*chunks)[count++] = MemChunk{at, convert<u8>(rest)};
+        } else if (rest == 3) {
+            (*chunks)[count++] = MemChunk{at, 2};
+            (*chunks)[count++] = MemChunk{at + 2, 1};
+        } else if (rest >= 5 && n >= 8) {
+            (*chunks)[count++] = MemChunk{n - 8, 8};
+        } else if (rest >= 5) {
+            (*chunks)[count++] = MemChunk{0, 4};
+            (*chunks)[count++] = MemChunk{n - 4, 4};
+        }
+        return count;
+    }
+
+    // constLength is a constant length argument of 1 to inlineCopyMax, or 0.
+    static i64 lowererConstLength(Lowerer* l, i32 v) {
+        if (!lowererIsConst(l, v)) {
+            return 0;
+        }
+        i64 n = convert<i64>(convert<u32>(lowererConstBits(l, v)));
+        return n >= 1 && n <= inlineCopyMax ? n : 0;
+    }
+
+    // inlineCopy copies a constant length as loads, all of them first, then
+    // stores: memory.copy may overlap. The addresses are checked as any
+    // access's; the last chunk reaches farthest, so its check, made first,
+    // covers the others, and a trap precedes every store.
+    static bool lowererInlineCopy(Lowerer* l, Span<const i32> args) {
+        i64 n = lowererConstLength(l, args[2]);
+        if (n == 0) {
+            return false;
+        }
+        Array<MemChunk, 5> chunks{};
+        Int count = memChunks(n, &chunks);
+        Array<VReg, 5> loaded{};
+        for (Int i = count - 1; i >= 0; --i) {
+            MInst in = inst(mLoad);
+            in.dst = mFuncNewReg(l->mf, classGPR);
+            in.mem = lowererAddress(l, args[1], chunks[i].at, chunks[i].width, false);
+            in.size = chunks[i].width;
+            in.dsize = 8;
+            lowererEmit(l, in);
+            loaded[i] = in.dst;
+        }
+        for (Int i = count - 1; i >= 0; --i) {
+            MInst in = inst(mStore);
+            in.mem = lowererAddress(l, args[0], chunks[i].at, chunks[i].width, false);
+            in.src = loaded[i];
+            in.size = chunks[i].width;
+            lowererEmit(l, in);
+        }
+        return true;
+    }
+
+    // inlineFill stores a constant byte over a constant length, the
+    // farthest chunk first as inlineCopy does.
+    static bool lowererInlineFill(Lowerer* l, Span<const i32> args) {
+        i64 n = lowererConstLength(l, args[2]);
+        if (n == 0 || !lowererIsConst(l, args[1])) {
+            return false;
+        }
+        i64 byte = lowererConstBits(l, args[1]) & 255;
+        i64 pattern = convert<i64>(convert<u64>(byte) * 0x0101010101010101ULL);
+        VReg value = byte == 0 ? noReg : lowererConstReg(l, pattern, 8);
+        Array<MemChunk, 5> chunks{};
+        Int count = memChunks(n, &chunks);
+        for (Int i = count - 1; i >= 0; --i) {
+            Mem mem = lowererAddress(l, args[0], chunks[i].at, chunks[i].width, false);
+            if (value == noReg) {
+                MInst in = inst(mStoreImm);
+                in.mem = mem;
+                in.imm = 0;
+                in.size = chunks[i].width;
+                lowererEmit(l, in);
+            } else {
+                MInst in = inst(mStore);
+                in.mem = mem;
+                in.src = value;
+                in.size = chunks[i].width;
+                lowererEmit(l, in);
+            }
+        }
+        return true;
+    }
+
     static void lowererMemCopy(Lowerer* l, Span<const i32> args, String sym) {
+        if (lowererInlineCopy(l, args)) {
+            return;
+        }
         VReg d = lowererUse(l, args[0]);
         VReg s = lowererUse(l, args[1]);
         VReg n = lowererUse(l, args[2]);
@@ -15778,6 +15886,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void lowererMemFill(Lowerer* l, Span<const i32> args) {
+        if (lowererInlineFill(l, args)) {
+            return;
+        }
         VReg d = lowererUse(l, args[0]);
         VReg val = lowererUse(l, args[1]);
         VReg n = lowererUse(l, args[2]);

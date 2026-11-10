@@ -3,10 +3,119 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
+	"fmt"
 	"math"
+	"slices"
 	"testing"
 )
+
+// A constant length of memory.copy or memory.fill compiles to loads and
+// stores: every length up to the limit, overlapping either way, and a range
+// crossing the logical end, which strict compilation refuses before any
+// store and the tail admits as it admits a store.
+func TestConstantCopy(t *testing.T) {
+	const lengths = 32
+	m := &testModule{memMin: 1, memMax: 1}
+
+	for n := 1; n <= lengths; n++ {
+		m.funcs = append(m.funcs,
+			testFunc{params: []ValType{I32, I32}, export: fmt.Sprintf("copy%d", n), code: cat(get(0), get(1), i32c(int32(n)), []byte{0xfc, 10, 0, 0})},
+			testFunc{params: i32, export: fmt.Sprintf("fill%d", n), code: cat(get(0), i32c(0xa5), i32c(int32(n)), []byte{0xfc, 11, 0})})
+	}
+
+	for _, options := range []CompileOptions{{}, {memoryTail: true, tailRanges: true}} {
+		i := instantiate(t.Name(), readObject(compileModuleWithOptions(m.encode(), options)), nil, 8<<20)
+		i.start()
+		mem := i.memory.bytes()
+
+		for n := 1; n <= lengths; n++ {
+			f, _ := i.export(fmt.Sprintf("copy%d", n))
+			copyBytes := f.Interface().(func(uintptr, uint32, uint32))
+			f, _ = i.export(fmt.Sprintf("fill%d", n))
+			fill := f.Interface().(func(uintptr, uint32))
+
+			for _, pair := range [][2]uint32{{1000, 100}, {104, 100}, {100, 104}, {100, 100}} {
+				for j := range 256 {
+					mem[100+j] = byte(j + n)
+				}
+
+				want := slices.Clone(mem[:4096])
+				copy(want[pair[0]:pair[0]+uint32(n)], want[pair[1]:pair[1]+uint32(n)])
+				copyBytes(i.ctx(), pair[0], pair[1])
+
+				if !bytes.Equal(mem[:4096], want) {
+					t.Fatalf("tail %t: copy of %d bytes from %d to %d", options.memoryTail, n, pair[1], pair[0])
+				}
+			}
+
+			fill(i.ctx(), 2000)
+
+			if mem[1999] != 0 || mem[2000+n] != 0 || !bytes.Equal(mem[2000:2000+n], bytes.Repeat([]byte{0xa5}, n)) {
+				t.Fatalf("tail %t: fill of %d bytes", options.memoryTail, n)
+			}
+		}
+
+		f, _ := i.export("copy8")
+		copy8 := f.Interface().(func(uintptr, uint32, uint32))
+		f, _ = i.export("fill8")
+		fill8 := f.Interface().(func(uintptr, uint32))
+		source := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+		copy(mem, source)
+
+		for _, p := range []uint32{pageSize + 1, pageSize + boundSlack - 4} {
+			if trap := trapOf(func() { copy8(i.ctx(), p, 0) }); trap != trapMemoryOOB {
+				t.Fatalf("tail %t: copy to %d past the end: trap %d", options.memoryTail, p, trap)
+			}
+
+			if trap := trapOf(func() { copy8(i.ctx(), 0, p) }); trap != trapMemoryOOB {
+				t.Fatalf("tail %t: copy from %d past the end: trap %d", options.memoryTail, p, trap)
+			}
+
+			if trap := trapOf(func() { fill8(i.ctx(), p) }); trap != trapMemoryOOB {
+				t.Fatalf("tail %t: fill at %d past the end: trap %d", options.memoryTail, p, trap)
+			}
+		}
+
+		crossing := uint32(pageSize - 4)
+		copy(mem[crossing:], []byte{0xee, 0xee, 0xee, 0xee})
+
+		if options.memoryTail {
+			copy8(i.ctx(), crossing, 0)
+
+			if !bytes.Equal(i.memoryBytes()[crossing:crossing+8], source) {
+				t.Fatal("copy across the logical end did not reach the tail")
+			}
+
+			copy8(i.ctx(), 16, crossing)
+
+			if !bytes.Equal(mem[16:24], source) {
+				t.Fatal("copy from across the logical end did not read the tail")
+			}
+
+			fill8(i.ctx(), crossing)
+
+			if !bytes.Equal(i.memoryBytes()[crossing:crossing+8], bytes.Repeat([]byte{0xa5}, 8)) {
+				t.Fatal("fill across the logical end did not reach the tail")
+			}
+		} else {
+			if trap := trapOf(func() { copy8(i.ctx(), crossing, 0) }); trap != trapMemoryOOB || !bytes.Equal(mem[crossing:], []byte{0xee, 0xee, 0xee, 0xee}) {
+				t.Fatalf("strict copy across the end: trap %d, memory %x", trap, mem[crossing:])
+			}
+
+			if trap := trapOf(func() { copy8(i.ctx(), 16, crossing) }); trap != trapMemoryOOB || !bytes.Equal(mem[16:24], make([]byte, 8)) {
+				t.Fatalf("strict copy from across the end: trap %d, memory %x", trap, mem[16:24])
+			}
+
+			if trap := trapOf(func() { fill8(i.ctx(), crossing) }); trap != trapMemoryOOB || !bytes.Equal(mem[crossing:], []byte{0xee, 0xee, 0xee, 0xee}) {
+				t.Fatalf("strict fill across the end: trap %d, memory %x", trap, mem[crossing:])
+			}
+		}
+
+		i.release()
+	}
+}
 
 func loadMemoryTail(t *testing.T, m *testModule, optimized bool) *Instance {
 	t.Helper()
