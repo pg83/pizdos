@@ -39,3 +39,6 @@ __pycache__/
 /llvm_tarball
 /cxx_check
 /cxx_check_o
+/libc_headers
+/clang
+/clang_o

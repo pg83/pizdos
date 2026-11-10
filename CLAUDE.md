@@ -8,7 +8,8 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
 - `./build` builds `libc.a`, `libc++.a`, `libstr.o`, `busybox.wasm`,
   `busybox.links`, `bin/busybox/abi.txt` (every kernel import busybox uses),
   `doom.wasm`, `doom.o` (doomgeneric with our terminal backend, `bin/doom`),
-  `wasm2o`, native `aot`, `aot.wasm`, `aot.aot` and the wazero runner.
+  `llvm.wasm` and `llvm.o` (clang, `bin/clang`), `wasm2o`, native `aot`,
+  `aot.wasm`, `aot.aot` and the wazero runner.
 - `./build test` runs `tst/test_*.py`, each with the outputs of the nodes
   `TESTED` names for it in build.py.
 - `sh dev/stand/build.sh` supplies the pinned ix revision's libraries and
@@ -58,7 +59,9 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   wait for another thread and `pthread_create` fails; `locale_t` is the one
   C locale with UTF-8 strings, and every `_l` function the function without
   the locale. `_start` runs the module's constructors; `__cxa_atexit` and
-  `__cxa_thread_atexit` add to atexit's list, which grows as needed.
+  `__cxa_thread_atexit` add to atexit's list, which grows as needed. A
+  program is one object: `dlopen` fails and `dladdr` names the program, the
+  path the kernel exec'd through its links (`__kernel_program`).
 - The link has no `--allow-undefined`: a missing function is a link error,
   not a silent import.
 - `test_libc` runs tst/libc/check.c, built against lib/c, in the kernel:
@@ -69,7 +72,7 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
 - libc++ and libc++abi of the LLVM release `LLVM` pins in build.py, compiled
   by `lib/cxx/make.py` with the flags and sources of LLVM's runtimes build
   for this system but none of its probes; `__config_site` is ours: musl-like
-  libc, lib/c's pthread, no filesystem library, no time zone database, no
+  libc, lib/c's pthread, the filesystem library, no time zone database, no
   exceptions. `libc++.a` holds both libraries, `include.tar` the
   `include/c++/v1` a C++ program puts before lib/c's headers.
 - libc++ takes the generic locale path of a libc without xlocale: it
@@ -299,6 +302,28 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   regrtest on TESTS; tests that need sockets, threads or the C API's test
   modules stay out, as do those relying on the C stack's depth, which the
   shadow stack does not measure (CPython skips them on WASI).
+
+## bin/clang
+
+- `make.py` builds LLVM's multicall program, `llvm-driver` (clang,
+  clang++, wasm-ld, ld.lld, llvm-ar and the rest by the name it runs as),
+  from the release lib/cxx comes from, configured as ix builds clang 23:
+  clang, lld and polly, every target, polly linked in, no shared
+  libraries; one thread, no zlib, zstd, libxml2 or terminfo. CMake sees
+  Pizdos, a Unix of wasm32 modules (a platform file and a toolchain
+  make.py writes, dev/wasm.py's flags); libm, libpthread, librt and libdl
+  are empty archives, as musl's are. The host gives cmake, ninja and the
+  release's llvm-tblgen and clang-tblgen on PATH; nothing is built for it.
+- One source edit, a wasm case in Path.inc's `is_local`; and
+  `-DCLANG_BUILD_STATIC`, since clang's export macros test `__WASM__`,
+  which no compiler defines.
+- clang finds itself through `dladdr` and its headers in
+  `lib/clang/<version>/include` beside `/bin/llvm`. A compile alone runs
+  cc1 in the driver's process; one that also links runs cc1 and wasm-ld as
+  children, fork and exec of the object, which must be executable.
+- `test_clang` runs it in the kernel in a root with lib/c's and lib/cxx's
+  headers and libraries: clang and clang++ compile and link a C and a C++
+  program, which wasm2o compiles and the kernel runs.
 
 ## bin/busybox
 

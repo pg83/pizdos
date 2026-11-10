@@ -4,13 +4,13 @@
     make.py <cc> <ar> <llvm-tarball> <libc-include> <libc++.a> <include.tar>
 
 The flags and sources are those of LLVM's runtimes build configured for this
-system (__config_site: lib/c's threads, locales and wide characters, no
-filesystem library), without its probes: libc++abi without exceptions, new
-and delete from libc++abi, thread_local destructors registered with lib/c.
+system (__config_site: lib/c's threads, locales and wide characters, and
+the filesystem library), without its probes: libc++abi without exceptions,
+new and delete from libc++abi, thread_local destructors registered with
+lib/c.
 libc++.a holds both libraries; include.tar is include/c++/v1, the headers a
 C++ program includes before lib/c's.
 """
-import io
 import os
 import shutil
 import sys
@@ -28,11 +28,12 @@ PARTS = ["libcxx/include/", "libcxx/src/", "libcxx/vendor/", "libcxxabi/include/
 CXX_SOURCES = """
 algorithm.cpp any.cpp atomic.cpp barrier.cpp bind.cpp call_once.cpp charconv.cpp chrono.cpp
 condition_variable.cpp condition_variable_destructor.cpp error_category.cpp exception.cpp expected.cpp
-filesystem/filesystem_clock.cpp filesystem/filesystem_error.cpp filesystem/path.cpp fstream.cpp
+filesystem/directory_entry.cpp filesystem/directory_iterator.cpp filesystem/filesystem_clock.cpp
+filesystem/filesystem_error.cpp filesystem/int128_builtins.cpp filesystem/operations.cpp filesystem/path.cpp fstream.cpp
 functional.cpp future.cpp hash.cpp ios.cpp ios.instantiations.cpp iostream.cpp locale.cpp memory.cpp
 memory_resource.cpp mutex.cpp mutex_destructor.cpp new_handler.cpp new_helpers.cpp optional.cpp ostream.cpp
-print.cpp random.cpp random_shuffle.cpp regex.cpp ryu/d2fixed.cpp ryu/d2s.cpp ryu/f2s.cpp stdexcept.cpp
-string.cpp strstream.cpp system_error.cpp text_encoding.cpp thread.cpp typeinfo.cpp valarray.cpp
+print.cpp random.cpp random_shuffle.cpp regex.cpp ryu/d2fixed.cpp ryu/d2s.cpp ryu/f2s.cpp shared_mutex.cpp
+stdexcept.cpp string.cpp strstream.cpp system_error.cpp text_encoding.cpp thread.cpp typeinfo.cpp valarray.cpp
 variant.cpp vector.cpp verbose_abort.cpp
 """.split()
 
@@ -81,19 +82,6 @@ def headers(tree, include):
         shutil.copy(tree / "libcxxabi/include" / name, include / name)
 
 
-def write_tar(root, output):
-    with tarfile.open(output, "w", format=tarfile.PAX_FORMAT) as archive:
-        for path in sorted(root.rglob("*")):
-            info = archive.gettarinfo(path, str(path.relative_to(root.parent.parent.parent)))
-            info.mtime, info.uid, info.gid, info.uname, info.gname = 0, 0, 0, "", ""
-            info.mode = 0o755 if path.is_dir() else 0o644
-
-            if path.is_dir():
-                archive.addfile(info)
-            else:
-                archive.addfile(info, io.BytesIO(path.read_bytes()))
-
-
 def main():
     cc, ar, tarball, libc_include, library, include_tar = sys.argv[1:7]
     work = Path(os.environ.get("TMPDIR") or "/tmp") / "cxx"
@@ -117,8 +105,7 @@ def main():
 
     wasm.compile_all(cc, units)
     wasm.archive(ar, library, [obj for source, obj, flags in units])
-    Path(include_tar).parent.mkdir(parents=True, exist_ok=True)
-    write_tar(include, include_tar)
+    wasm.write_tar(include_tar, work / "out", include)
 
 
 if __name__ == "__main__":

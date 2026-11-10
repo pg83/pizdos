@@ -139,6 +139,9 @@ type execImage struct {
 	code *Code
 	argv []string
 	envp []string
+	// path is the guest's absolute path of the program's file, through its
+	// links, or empty when the file is outside the root.
+	path string
 }
 
 // procExit is the panic of a process that ends; status is a wait status.
@@ -203,6 +206,7 @@ func runKernel(path, root string, argv []string) int {
 	k := newKernel(root)
 	fd := throw2(syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC, 0))
 	code, err := k.code(fd, path)
+	program := k.programPath(fd)
 	syscall.Close(fd)
 	throw(err)
 	p := k.newProcess(nil)
@@ -228,7 +232,7 @@ func runKernel(path, root string, argv []string) int {
 	k.first = p
 	k.fg = p.pgid
 
-	go p.run(&execImage{code: code, argv: argv, envp: env})
+	go p.run(&execImage{code: code, argv: argv, envp: env, path: program})
 
 	return <-k.exit
 }
@@ -255,6 +259,18 @@ func (k *Kernel) newProcess(parent *Process) *Process {
 	k.procs[p.pid] = p
 
 	return p
+}
+
+// programPath is the guest's path of the program a host descriptor reads,
+// or empty when it is outside the root.
+func (k *Kernel) programPath(fd int) string {
+	host, err := k.hostPath(fd)
+
+	if err != nil || host != k.rootPath && k.rootPath != "/" && !strings.HasPrefix(host, k.rootPath+"/") {
+		return ""
+	}
+
+	return k.guestPath(host)
 }
 
 // guestPath is the guest's path of a host path, which is inside the root
@@ -481,6 +497,24 @@ func (p *Process) libc__kernel_start(errnoAt, environAt, argcAt, argvAt, tznameA
 	p.put32(argcAt, uint32(len(p.image.argv)))
 	p.put32(argvAt, argv)
 	p.put32(environAt, p.env)
+}
+
+// libc__kernel_program writes the guest's path of the program to buf, as
+// getcwd writes the working directory's: what lib/c's dladdr names.
+func (p *Process) libc__kernel_program(buf, size uint32) uint32 {
+	path := p.image.path
+
+	if path == "" {
+		return p.pointer(0, syscall.ENOENT)
+	}
+
+	if uint32(len(path)) >= size {
+		return p.pointer(0, syscall.ERANGE)
+	}
+
+	p.putString(buf, path)
+
+	return p.pointer(buf, nil)
 }
 
 // stringArray copies strings to the heap as a null-terminated array of

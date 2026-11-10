@@ -2,11 +2,12 @@
  * lib/c's functions with deterministic results, one line each, for
  * test_libc.py to compare: strings, wide strings, classes, locales, time,
  * the environment, random, the heap, files and directories, the user
- * databases, signals and the in-process parts.
+ * databases, signals, dynamic loading and the in-process parts.
  */
 #include <arpa/inet.h>
 #include <ctype.h>
 #include <dirent.h>
+#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <fenv.h>
@@ -229,6 +230,14 @@ static void files(void) {
     char buf[8] = {0};
     pread(fd, buf, 3, 2);
     printf(" %s", buf);
+    int copy = openat(dir, "c", O_CREAT | O_RDWR, 0644);
+    off_t from = 1;
+    printf(" copy_file_range %zd %lld", copy_file_range(fd, &from, copy, 0, 4, 0), (long long)from);
+    char copied[8] = {0};
+    pread(copy, copied, sizeof copied - 1, 0);
+    printf(" %s", copied);
+    close(copy);
+    unlinkat(dir, "c", 0);
     struct stat st;
     printf(" fstatat %d %lld", fstatat(dir, "f", &st, 0), (long long)st.st_size);
     printf(" faccessat %d", faccessat(dir, "f", R_OK, 0));
@@ -478,6 +487,16 @@ static void network(void) {
     if_freenameindex(ifs);
 }
 
+// The program is the one object: nothing loads, dladdr names it.
+static void loading(void) {
+    void* handle = dlopen("libm.so", RTLD_NOW);
+    const char* why = dlerror();
+    printf("dlopen %d %d %d", handle == 0, why != 0, dlerror() == 0);
+    printf(" dlsym %d", dlsym(RTLD_DEFAULT, "printf") == 0);
+    Dl_info info;
+    printf(" dladdr %d %s\n", dladdr((void*)loading, &info), info.dli_fname);
+}
+
 static void rest(void) {
     fenv_t env;
     fexcept_t flags;
@@ -503,6 +522,7 @@ int main(void) {
     users();
     signals();
     network();
+    loading();
     rest();
 
     return 0;

@@ -24,7 +24,9 @@ def touch(path):
 # Tool paths are absolute in every command line, so a toolchain change is a
 # node UID change.
 CLANG = tool("clang")
+CLANGXX = tool("clang++")
 LLVM_AR = tool("llvm-ar")
+LLVM_RANLIB = tool("llvm-ranlib")
 WASM_LD = tool("wasm-ld")
 LD_LLD = tool("ld.lld")
 GO = tool("go")
@@ -117,6 +119,16 @@ libc = command(
     deps=[musl_tarball],
     cmd=["python3", "$(S)/lib/c/make.py", CLANG, LLVM_AR, musl_tarball.outputs[0], "$(B)/lib/c/libc.a"],
     descr="CC",
+    color="green",
+)
+
+# lib/c's headers as a program compiled inside the system finds them.
+libc_headers = command(
+    name="libc_headers",
+    inputs=[*LIBC_HEADERS, "$(S)/lib/c/make.py", "$(S)/dev/wasm.py"],
+    outputs=["$(B)/lib/c/include.tar"],
+    cmd=["python3", "$(S)/lib/c/make.py", "headers", "$(B)/lib/c/include.tar"],
+    descr="HD",
     color="green",
 )
 
@@ -362,6 +374,39 @@ python_o = command(
     color="light-cyan",
 )
 
+# clang for this system: LLVM's multicall program of the release lib/cxx
+# comes from, compiled against lib/c and lib/cxx, and the headers clang
+# keeps beside it. The host gives cmake, ninja and the release's
+# llvm-tblgen and clang-tblgen on PATH.
+LLVM_TBLGEN = shutil.which("llvm-tblgen") or ""
+CLANG_TBLGEN = shutil.which("clang-tblgen") or ""
+
+clang = command(
+    name="clang",
+    inputs=[*LIBC_HEADERS, "$(S)/bin/clang/make.py", "$(S)/dev/wasm.py"],
+    outputs=["$(B)/bin/clang/llvm.wasm", "$(B)/bin/clang/resource.tar"],
+    deps=[llvm_tarball, libc, libcxx],
+    cmd=[
+        "python3", "$(S)/bin/clang/make.py",
+        CLANG, CLANGXX, LLVM_AR, LLVM_RANLIB,
+        shutil.which("cmake") or "cmake", shutil.which("ninja") or "ninja",
+        llvm_tarball.outputs[0], LLVM_TBLGEN, CLANG_TBLGEN,
+        "$(S)/lib/c/include", libc.outputs[0], libcxx.outputs[1], libcxx.outputs[0],
+        "$(B)/bin/clang/llvm.wasm", "$(B)/bin/clang/resource.tar",
+    ],
+    descr="CL",
+    color="green",
+)
+
+clang_o = command(
+    name="clang_o",
+    outputs=["$(B)/bin/clang/llvm.o"],
+    deps=[wasm2o, clang],
+    cmd=[wasm2o.outputs[0], "-o", "$(B)/bin/clang/llvm.o", clang.outputs[0]],
+    descr="AO",
+    color="light-cyan",
+)
+
 # test_libc's program: lib/c's functions with deterministic results.
 libc_check = command(
     name="libc_check",
@@ -551,6 +596,7 @@ TESTED = {
     "aot": [aot, aot_command, wazero, wasm2o, busybox, aot_selftest],
     "busybox_abi": [busybox],
     "busybox": [wasm2o, busybox_o, busybox],
+    "clang": [wasm2o, clang_o, clang, libc, libc_headers, libcxx],
     "cxx": [wasm2o, cxx_check_o],
     "doom": [wasm2o, doom_o, doom_wad],
     "libc": [wasm2o, libc_check_o],
@@ -577,6 +623,6 @@ for test in build.glob("$(S)/tst/test_*.py"):
         color="green",
     ))
 
-group("install", libcxx, busybox, busybox_abi, busybox_o, doom, doom_o, python, python_o, wasm2o, aot_native, aot, aot_aot, wazero)
+group("install", libcxx, libc_headers, clang, clang_o, busybox, busybox_abi, busybox_o, doom, doom_o, python, python_o, wasm2o, aot_native, aot, aot_aot, wazero)
 group("test", *tests, wasm2o_go_test, wasm2o_spec_test)
 group("stand", wasm2o, aot_native, aot, aot_aot, busybox, stand_corpus, *decode_stand, python, python_o, stand_python_native)

@@ -8,6 +8,7 @@ package main
 func (k *Kernel) functionTable() map[string]any {
 	return map[string]any{
 		"__kernel_start":         libc__kernel_start,
+		"__kernel_program":       libc__kernel_program,
 		"read":                   libcRead,
 		"write":                  libcWrite,
 		"readv":                  libcReadv,
@@ -16,6 +17,7 @@ func (k *Kernel) functionTable() map[string]any {
 		"pwritev":                libcPwritev,
 		"pread":                  libcPread,
 		"pwrite":                 libcPwrite,
+		"copy_file_range":        libcCopy_file_range,
 		"fdatasync":              libcFdatasync,
 		"sync":                   libcSync,
 		"syncfs":                 libcSyncfs,
@@ -521,6 +523,10 @@ func libc__kernel_start(ctx uintptr, errnoAt, environAt, argcAt, argvAt, tznameA
 	proc(ctx).libc__kernel_start(errnoAt, environAt, argcAt, argvAt, tznameAt, timezoneAt, daylightAt, herrnoAt)
 }
 
+func libc__kernel_program(ctx uintptr, buf, size uint32) uint32 {
+	return proc(ctx).libc__kernel_program(buf, size)
+}
+
 func libcRead(ctx uintptr, fd, buf, n uint32) uint32 {
 	return proc(ctx).libcRead(fd, buf, n)
 }
@@ -551,6 +557,10 @@ func libcPread(ctx uintptr, fd, buf, n uint32, off uint64) uint32 {
 
 func libcPwrite(ctx uintptr, fd, buf, n uint32, off uint64) uint32 {
 	return proc(ctx).libcPwrite(fd, buf, n, off)
+}
+
+func libcCopy_file_range(ctx uintptr, in, offIn, out, offOut, n, flags uint32) uint32 {
+	return proc(ctx).libcCopy_file_range(in, offIn, out, offOut, n, flags)
 }
 
 func libcFdatasync(ctx uintptr, fd uint32) uint32 {

@@ -104,26 +104,27 @@ func (p *Process) exec(path string, argv, envp []string) error {
 
 // execFrom is exec of the file a host descriptor reads, when fd is one.
 func (p *Process) execFrom(path string, fd int, argv, envp []string) error {
-	code, argv, err := p.loadFrom(path, fd, argv)
+	img, err := p.loadFrom(path, fd, argv)
 
 	if err != nil {
 		return err
 	}
 
-	p.execImage(&execImage{code: code, argv: argv, envp: envp})
+	img.envp = envp
+	p.execImage(img)
 
 	return syscall.ELOOP
 }
 
 // loadProgram is exec's search: a wasm object, or the interpreter of a #!
-// script, with argv rewritten for it.
-func (p *Process) loadProgram(path string, argv []string) (*Code, []string, error) {
+// script, with argv rewritten for it; the image has no environment yet.
+func (p *Process) loadProgram(path string, argv []string) (*execImage, error) {
 	return p.loadFrom(path, -1, argv)
 }
 
 // loadFrom is loadProgram of the file a host descriptor reads, when first
 // is one: fexecve's.
-func (p *Process) loadFrom(path string, first int, argv []string) (*Code, []string, error) {
+func (p *Process) loadFrom(path string, first int, argv []string) (*execImage, error) {
 	for range 4 {
 		fd, err := first, error(nil)
 
@@ -135,7 +136,7 @@ func (p *Process) loadFrom(path string, first int, argv []string) (*Code, []stri
 		}
 
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 
 		var st syscall.Stat_t
@@ -143,13 +144,13 @@ func (p *Process) loadFrom(path string, first int, argv []string) (*Code, []stri
 		if err := syscall.Fstat(fd, &st); err != nil || st.Mode&syscall.S_IFMT != syscall.S_IFREG {
 			syscall.Close(fd)
 
-			return nil, nil, syscall.EACCES
+			return nil, syscall.EACCES
 		}
 
 		if err := atCall(sysFaccessat2, fd, "", 1, atEmptyPath); err != nil {
 			syscall.Close(fd)
 
-			return nil, nil, err
+			return nil, err
 		}
 
 		head := make([]byte, 256)
@@ -162,7 +163,7 @@ func (p *Process) loadFrom(path string, first int, argv []string) (*Code, []stri
 			fields := strings.Fields(string(line))
 
 			if len(fields) == 0 {
-				return nil, nil, syscall.ENOEXEC
+				return nil, syscall.ENOEXEC
 			}
 
 			script := []string{fields[0]}
@@ -182,16 +183,17 @@ func (p *Process) loadFrom(path string, first int, argv []string) (*Code, []stri
 		}
 
 		code, err := p.k.code(fd, path)
+		program := p.k.programPath(fd)
 		syscall.Close(fd)
 
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 
-		return code, argv, nil
+		return &execImage{code: code, argv: argv, path: program}, nil
 	}
 
-	return nil, nil, syscall.ELOOP
+	return nil, syscall.ELOOP
 }
 
 // execPath is exec with a search of PATH when file has no slash.
@@ -640,11 +642,13 @@ func (p *Process) libc_Exit(code uint32) {
 // 127, the way a child that cannot run ends.
 func (p *Process) libcSystem(cmd uint32) uint32 {
 	argv := []string{"sh", "-c", string(p.cstr(cmd))}
-	code, _, err := p.loadProgram("/bin/sh", argv)
+	img, err := p.loadProgram("/bin/sh", argv)
 
 	if err != nil {
 		return uint32(int32(127 << 8))
 	}
+
+	img.envp = p.environment()
 
 	c := p.k.newProcess(p)
 	c.inherit(p)
@@ -652,7 +656,7 @@ func (p *Process) libcSystem(cmd uint32) uint32 {
 	done := make(chan int, 1)
 
 	go func() {
-		c.run(&execImage{code: code, argv: argv, envp: p.environment()})
+		c.run(img)
 		done <- c.status
 	}()
 

@@ -12,3 +12,7 @@
 void __kernel_start(int* errnoAt, char*** environAt, int* argc, char*** argv, char** tznameAt, long* timezoneAt,
                     int* daylightAt, int* herrnoAt) __KERNEL(__kernel_start);
 void __kernel_syslog(int priority, const char* message) __KERNEL(__kernel_syslog);
+
+// __kernel_program is getcwd of the program's file: its absolute path,
+// through its links, or a failure when it is outside the root.
+char* __kernel_program(char* path, size_t size) __KERNEL(__kernel_program);

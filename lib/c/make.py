@@ -2,6 +2,10 @@
 """Build lib/c's in-process archive: our own sources and the musl subset in musl/files.txt.
 
     make.py <cc> <ar> <musl-tarball> <libc.a>
+    make.py headers <include.tar>
+
+The second packs include/, the headers as a program built inside the system
+finds them.
 
 A .h line of files.txt names a musl internal header to keep; every other
 header of src/internal is deleted, so a quoted include of it falls through to
@@ -22,6 +26,11 @@ FLAGS = ["-O2", "-std=c99", "-D_XOPEN_SOURCE=700", "-w"]
 
 
 def main():
+    if sys.argv[1] == "headers":
+        wasm.write_tar(sys.argv[2], ROOT, ROOT / "include")
+
+        return
+
     cc, ar, tarball, output = sys.argv[1:5]
     work = Path(os.environ.get("TMPDIR") or "/tmp") / "libc"
     shutil.rmtree(work, ignore_errors=True)

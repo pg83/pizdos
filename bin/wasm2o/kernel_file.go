@@ -396,12 +396,13 @@ func (s fdSet) set(p *Process, fd int) {
 }
 
 const (
-	sysSyncfs     = 306
-	pollPri       = 0x2
-	fdSetsize     = 1024
-	pollInSet     = pollIn | pollHup | pollErr
-	pollOutSet    = pollOut | pollErr
-	maxPollWaitMs = 1 << 30
+	sysSyncfs        = 306
+	sysCopyFileRange = 326
+	pollPri          = 0x2
+	fdSetsize        = 1024
+	pollInSet        = pollIn | pollHup | pollErr
+	pollOutSet       = pollOut | pollErr
+	maxPollWaitMs    = 1 << 30
 )
 
 // selectFds waits as select does, with a timeout in milliseconds, and
@@ -546,6 +547,51 @@ func (p *Process) libcPwrite(fd, buf, n uint32, off uint64) uint32 {
 	})
 
 	return p.result(r, err)
+}
+
+// copy_file_range is the host's between the host descriptors; an offset
+// given is read from the guest's memory and written back.
+func (p *Process) libcCopy_file_range(in, offIn, out, offOut, n, flags uint32) uint32 {
+	src, err := p.fd(in)
+
+	if err != nil {
+		return p.result(0, err)
+	}
+
+	dst, err := p.fd(out)
+
+	if err != nil {
+		return p.result(0, err)
+	}
+
+	var from, to *int64
+
+	if offIn != 0 {
+		from = new(int64)
+		*from = int64(p.u64(offIn))
+	}
+
+	if offOut != 0 {
+		to = new(int64)
+		*to = int64(p.u64(offOut))
+	}
+
+	r, _, e := syscall.Syscall6(sysCopyFileRange, uintptr(src.fd), uintptr(unsafe.Pointer(from)), uintptr(dst.fd),
+		uintptr(unsafe.Pointer(to)), uintptr(n), uintptr(flags))
+
+	if e != 0 {
+		return p.result(0, e)
+	}
+
+	if from != nil {
+		p.put64(offIn, uint64(*from))
+	}
+
+	if to != nil {
+		p.put64(offOut, uint64(*to))
+	}
+
+	return p.result(int(r), nil)
 }
 
 func (p *Process) libcFdatasync(fd uint32) uint32 {

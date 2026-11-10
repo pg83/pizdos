@@ -86,6 +86,7 @@ ssize_t read(int, void*, size_t);
 ssize_t write(int, const void*, size_t);
 ssize_t pread(int, void*, size_t, off_t);
 ssize_t pwrite(int, const void*, size_t, off_t);
+ssize_t copy_file_range(int, off_t*, int, off_t*, size_t, unsigned);
 off_t lseek(int, off_t, int);
 int close(int);
 int dup(int);

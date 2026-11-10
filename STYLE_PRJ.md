@@ -10,10 +10,11 @@ Per-project settings that the shared [STYLE.md](STYLE.md) delegates here.
 - **Names.** Functions, types and macros of the libc ABI keep their external
   spelling (`__stdio_write`, `struct stat`, `O_CLOEXEC`). Our own helpers and
   locals follow STYLE.md: `lowerCamelCase`, `UpperCamelCase` types.
-- **Kernel imports.** A libc function implemented by the kernel is declared
-  in its public header with `__KERNEL(name)`; the import name is spelled out
-  so the linker can tell an import from a missing definition. A function
-  defined in the process has no attribute.
+- **Kernel imports.** A libc function the kernel implements is lib/c's own
+  function calling the import, declared `__KERNEL(name)` under the C name
+  `__kernel_<name>` (`src/kernel.c`, or `__INLINE` in its header); the
+  import name is spelled out so the linker can tell an import from a
+  missing definition. No other declaration has the attribute.
 - **Third-party code.** musl and busybox sources are fetched as release
   tarballs and are never edited; what they need from us lives in `lib/c/musl`
   (replacement internal headers) and `lib/c/src`.

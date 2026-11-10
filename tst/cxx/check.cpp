@@ -1,17 +1,20 @@
 /*
  * lib/cxx's C++ library over lib/c, one line of deterministic results per
  * area, for test_cxx.py to compare: static and thread_local objects,
- * strings, containers, streams, algorithms, memory, utilities, locks,
- * time, random numbers, regular expressions, locales, conversions and
- * formatting, and RTTI.
+ * strings, containers, streams, files, algorithms, memory, utilities,
+ * locks, time, random numbers, regular expressions, locales, conversions
+ * and formatting, and RTTI.
  */
 #include <algorithm>
 #include <any>
 #include <charconv>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <deque>
+#include <filesystem>
 #include <format>
+#include <fstream>
 #include <functional>
 #include <iomanip>
 #include <iostream>
@@ -25,6 +28,7 @@
 #include <random>
 #include <regex>
 #include <set>
+#include <shared_mutex>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -102,6 +106,24 @@ namespace {
         std::cout << "streams " << o.str() << " " << i << " " << x << " " << w << " " << wo.str().size() << std::endl;
     }
 
+    void files() {
+        namespace fs = std::filesystem;
+        fs::path dir = fs::temp_directory_path() / "cxx";
+        fs::create_directories(dir / "sub");
+        {
+            std::ofstream out(dir / "a.txt");
+            out << "line one\nline two\n";
+        }
+        std::ifstream in(dir / "a.txt");
+        std::string first;
+        std::getline(in, first);
+        fs::copy_file(dir / "a.txt", dir / "b.txt");
+        auto entries = std::distance(fs::directory_iterator(dir), fs::directory_iterator());
+        std::printf("files %s %ju %td %d %s %ju\n", first.c_str(), static_cast<std::uintmax_t>(fs::file_size(dir / "b.txt")),
+                    entries, fs::is_directory(dir / "sub"), (dir / "a.txt").extension().c_str(),
+                    static_cast<std::uintmax_t>(fs::remove_all(dir)));
+    }
+
     void algorithms() {
         std::vector<int> v(5);
         std::iota(v.begin(), v.end(), 1);
@@ -169,7 +191,16 @@ namespace {
             calls++;
         });
         std::unique_lock<std::mutex> u(m, std::try_to_lock);
-        std::printf("locks %d %d %d\n", calls, u.owns_lock(), std::this_thread::get_id() == std::this_thread::get_id());
+        std::shared_mutex s;
+        int readers = 0;
+        {
+            std::shared_lock<std::shared_mutex> a(s);
+            std::shared_lock<std::shared_mutex> b(s);
+            readers = a.owns_lock() + b.owns_lock();
+        }
+        std::unique_lock<std::shared_mutex> writer(s, std::try_to_lock);
+        std::printf("locks %d %d %d %d %d\n", calls, u.owns_lock(), std::this_thread::get_id() == std::this_thread::get_id(),
+                    readers, writer.owns_lock());
     }
 
     void clocks() {
@@ -231,6 +262,7 @@ int main() {
     strings();
     containers();
     streams();
+    files();
     algorithms();
     memory();
     utilities();

@@ -2,10 +2,12 @@
 """lib/c's functions under `wasm2o run`: tst/libc/check.c prints one line
 of results per area, which must be these. Its root has /etc/passwd,
 /etc/group, /etc/hosts and /etc/services, so no name goes to the host's
-resolver, and a /tmp to make files and sockets in.
+resolver, a /tmp to make files and sockets in, and the program as
+/bin/check, the path dladdr names.
 
     test_libc.py <wasm2o> <check.o>
 """
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -45,7 +47,7 @@ setenv 0 1 0 1 0 3 0 unset -1 1
 getsubopt 0:- 1:10 2:-
 random 262836907 2022765545 1318479596 1 rand_r 1993684161 1388323688
 memalign 0 1 1 1 usable 1 reallocarray 1 1 mmap 0 0 0 0
-openat 1 pwrite 6 pread cde fstatat 0 6 faccessat 0 renameat 0 linkat 0 symlinkat 0 readlinkat 1 g truncate 0 2 unlinkat 0 0
+openat 1 pwrite 6 pread cde copy_file_range 4 5 bcde fstatat 0 6 faccessat 0 renameat 0 linkat 0 symlinkat 0 readlinkat 1 g truncate 0 2 unlinkat 0 0
 mkfifo 0 1 statvfs 0 1 flock 0 lockf 0 0
 dir 4 2 1 scandir 4 . .. g p glob 0 /tmp/d/g /tmp/d/p 1
 mkstemps 1 suffix tmpfile temporary tmpnam 1 tempnam 1
@@ -58,6 +60,7 @@ getaddrinfo 0 2/6 10.0.0.7:80 box -2 Name does not resolve
 getnameinfo 0 box ssh servent domain 53 udp protoent udp 17 hostent box 10.0.0.7 1
 socketpair ping bind 0 listen 0 1 connect 0 accept 1 getsockname /tmp/socket sendmsg 1 recvmsg 1 x pass timeout -1 1
 if_nameindex 1 crypt $6$salt$egUxKNxDs8kPfh8iPMNcosMhb2eWah6d3R44JDm5Rj/j/XWR5E33QPd0YmHXoDHOIDR6kL5D3JcQcz0O8FHE00 xy/gRonXQz8UE
+dlopen 1 1 1 dlsym 1 dladdr 1 /bin/check
 fenv 0 0 0 0 0 gethostname 1 confstr 14 sysconf 1 pathconf 255
 """
 
@@ -73,8 +76,10 @@ def main():
         (root / "etc" / "group").write_text(GROUP)
         (root / "etc" / "hosts").write_text(HOSTS)
         (root / "etc" / "services").write_text(SERVICES)
-        r = subprocess.run([wasm2o, "run", "--root", str(root), "-a", "check", check], capture_output=True, text=True,
-                           env={"PATH": "/bin"}, timeout=120)
+        (root / "bin").mkdir()
+        shutil.copy(check, root / "bin" / "check")
+        r = subprocess.run([wasm2o, "run", "--root", str(root), "-a", "check", str(root / "bin" / "check")],
+                           capture_output=True, text=True, env={"PATH": "/bin"}, timeout=120)
 
     if r.returncode != 0 or r.stdout != EXPECTED:
         got, want = r.stdout.splitlines(), EXPECTED.splitlines()
