@@ -19265,13 +19265,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return asmJccRel(a, ccBE);
     }
 
-    // stackCheckBlocks gives the blocks that check the stack where they
-    // begin, in place of the prologue, of a function with calls whose frame
-    // a leaf could have: until its first call it runs as a leaf does. Every
-    // path to a call passes one of them, the nearest dominator of the
-    // call's block outside every loop, and none dominates another. There
-    // are none when the entry would be one, or when one would not do: each
-    // check takes the room of the prologue's.
+    // stackCheckBlocks gives the block that checks the stack where it
+    // begins, in place of the prologue, of a function with calls whose frame
+    // a leaf could have: until its first call it runs as a leaf does. The
+    // block is the nearest common dominator of the blocks that call, outside
+    // every loop, and there is none when that is the entry. The check takes
+    // the room of the prologue's.
     static Slice<i32> objCodeStackCheckBlocks(MFunc* mf) {
         const Int n = length(mf->blocks);
         // The blocks in postorder from the entry, block 0.
@@ -19354,27 +19353,32 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             checks[at] = true;
         }
-        Slice<i32> blocks = {};
-        for (Int i = length(post) - 1; i >= 0; --i) {
-            const i32 b = post[i];
-            if (!checks[b]) {
+        i32 common = -1;
+        for (Int i = 0; i < length(post); ++i) {
+            i32 x = post[i];
+            if (!checks[x]) {
                 continue;
             }
-            bool covered = false;
-            for (i32 x = idom[b]; !covered; x = idom[x]) {
-                covered = checks[x];
-                if (x == 0) {
-                    break;
+            if (common >= 0) {
+                i32 y = common;
+                while (x != y) {
+                    while (rank[x] < rank[y]) {
+                        x = idom[x];
+                    }
+                    while (rank[y] < rank[x]) {
+                        y = idom[y];
+                    }
                 }
             }
-            if (!covered) {
-                blocks = appendValues(blocks, b);
-            }
+            common = x;
         }
-        if (length(blocks) > 1) {
+        while (common > 0 && mf->blocks[common].depth > 0) {
+            common = idom[common];
+        }
+        if (common <= 0) {
             return {};
         }
-        return blocks;
+        return sliceOf<i32>({common});
     }
 
     // thunk emits a function Go calls with ABIInternal, func(ctx uintptr,
