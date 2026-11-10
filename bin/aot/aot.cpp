@@ -4662,8 +4662,10 @@ namespace {
         Map<String, bool> globals{};
         Int initFn{};
         i32 dataInitTable = -1;
-        // importSyms are the imported functions' symbols by function index.
+        // importSyms are the imported functions' symbols by function index,
+        // importIntrinsics the memory functions among them.
         Slice<String> importSyms{};
+        Slice<Int> importIntrinsics{};
     };
 
     struct Table {
@@ -5261,8 +5263,21 @@ namespace {
     static constexpr Int calleeJump = 2;
 
     // calleeGo calls a Go function of the VM, imm the index of its extern
-    // symbol: an import's, or that of an instruction's function.
+    // symbol: an import's. calleeNative calls a native memory function,
+    // imm its symbol's index, with host addresses in Go's registers.
     static constexpr Int calleeGo = 3;
+
+    static constexpr Int calleeNative = 4;
+
+    // The imports of lib/c's memory functions the code compiles itself: it
+    // checks their ranges and calls the native functions.
+    static constexpr Int intrinsicNone = 0;
+
+    static constexpr Int intrinsicMemcpy = 1;
+
+    static constexpr Int intrinsicMemmove = 2;
+
+    static constexpr Int intrinsicMemset = 3;
 
     static constexpr Int constF32Sign = 0;
 
@@ -5606,11 +5621,15 @@ namespace {
 
     static const String symInterruptCall = String("w2o.interrupt_call");
 
-    static const String symMemoryCopy = String("w2o.memory_copy");
+    // The native memory functions the loader binds: memcpy and memmove take
+    // the destination, the source and the length, memset the destination,
+    // the byte and the length, in AX, BX and CX, as Go passes them, and keep
+    // RBP, R14 and X15 as Go's functions do.
+    static const String symMemcpy = String("w2o.memcpy");
 
-    static const String symMemoryFill = String("w2o.memory_fill");
+    static const String symMemmove = String("w2o.memmove");
 
-    static const String symMemoryInit = String("w2o.memory_init");
+    static const String symMemset = String("w2o.memset");
 
     static constexpr SortedHint unknownHint = SortedHint(0LL);
 
@@ -6032,6 +6051,8 @@ namespace {
 
     static void funcEmitterGoCall(FuncEmitter* e, i32 index);
 
+    static void funcEmitterNativeCall(FuncEmitter* e, i32 index);
+
     static void funcEmitterSwap(FuncEmitter* e, VReg x, VReg y);
 
     static void funcEmitterSwitchTable(FuncEmitter* e, MInst* in);
@@ -6081,6 +6102,10 @@ namespace {
     static void lowererCall(Lowerer* l, i32 v, Int index, Span<const i32> args);
 
     static void lowererGoCall(Lowerer* l, i32 v, Slice<VReg> regs, Slice<ValType> params, Slice<ValType> results, String sym);
+
+    static void lowererIntrinsic(Lowerer* l, i32 v, Int intrinsic, Span<const i32> args);
+
+    static void lowererNativeCall(Lowerer* l, String sym, VReg a, VReg b, VReg c);
 
     static void lowererCallIndirect(Lowerer* l, i32 v, Int typeIndex, Int table, Span<const i32> args);
 
@@ -6142,7 +6167,7 @@ namespace {
 
     static void lowererMemAddr(Lowerer* l, VReg dst, VReg a);
 
-    static void lowererMemCopy(Lowerer* l, Span<const i32> args);
+    static void lowererMemCopy(Lowerer* l, Span<const i32> args, String sym);
 
     static void lowererMemFill(Lowerer* l, Span<const i32> args);
 
@@ -6542,6 +6567,8 @@ namespace {
     static Slice<VReg> resultRegs(Slice<ValType> results);
 
     static bool returnsTwice(String name);
+
+    static Int intrinsicOf(Import imp, FuncType* t);
 
     template <typename Data>
     static void reverseRange_func(Data data, Int a, Int b);
@@ -7393,7 +7420,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // class. Calls need no XMM clobbers in an integer-only function, or GPR
     // clobbers in a function with only virtual XMM registers.
     static Slice<VReg> mInstClobberSet(MInst* in, u8 registerClasses) {
-        if (in->op == mCall && in->aux == calleeGo) {
+        if (in->op == mCall && (in->aux == calleeGo || in->aux == calleeNative)) {
             if (registerClasses == (1u << classGPR)) {
                 return goClobberGprs;
             }
@@ -9521,7 +9548,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     for (Int k = 0; k < length(clobbers); ++k) {
                         intervalAddRange(interval(clobbers[k]), p + 1, p + 2);
                     }
-                    if (in->op == mCall && in->aux == calleeGo) {
+                    if (in->op == mCall && (in->aux == calleeGo || in->aux == calleeNative)) {
                         // The function's callers keep R10-R12 across their
                         // call of it: it saves them, as Go writes them.
                         for (Int k = 0; k < length(calleeSaved); ++k) {
@@ -13331,6 +13358,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         funcEmitterGoCall(e, convert<i32>(in->imm));
                         break;
                     }
+                    case calleeNative: {
+                        funcEmitterNativeCall(e, convert<i32>(in->imm));
+                        break;
+                    }
                     default: {
                         objCodeCallFunc(e->oc, convert<i64>(in->imm));
                         break;
@@ -13562,6 +13593,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static Amem funcEmitterSlotMem(FuncEmitter* e, i32 slot) {
         return rspAt(convert<i32>(e->mf->stackArgs) + 8 * slot);
+    }
+
+    // nativeCall calls the native memory function of extern symbol index,
+    // its arguments placed: it writes what Go writes, so the instance and
+    // the memory base come back as after a call of Go.
+    static void funcEmitterNativeCall(FuncEmitter* e, i32 index) {
+        Asm* a = e->a;
+        asmCallMem(a, Amem{-1, -1, {}, {}, index, labelGot});
+        asmLoad(a, 8, 8, false, ctxReg, baseAt(R14, gInstance));
+        asmLoad(a, 8, 8, false, memReg, baseAt(ctxReg, offMem));
     }
 
     // goCall calls the function of extern symbol index as Go calls one, with
@@ -14131,6 +14172,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // frame.
     static void lowererCall(Lowerer* l, i32 v, Int index, Span<const i32> args) {
         FuncType* t = moduleFuncType(l->m, convert<u32>(index));
+        if (index < l->m->importedFuncs && l->oc->importIntrinsics[index] != intrinsicNone) {
+            lowererIntrinsic(l, v, l->oc->importIntrinsics[index], args);
+            return;
+        }
         if (index < l->m->importedFuncs && !l->m->funcs[index].returnsTwice) {
             Slice<VReg> regs = makeSlice<VReg>(length(args));
             for (Int i = 0; i < length(args); ++i) {
@@ -15482,7 +15527,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 break;
             }
             case OpMemCopy: {
-                lowererMemCopy(l, args);
+                lowererMemCopy(l, args, symMemmove);
                 break;
             }
             case OpCopyForward: {
@@ -15641,18 +15686,21 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         lowererEmit(l, in);
     }
 
-    // The bulk memory instructions check their ranges and call the VM's Go
-    // functions, as memory.grow does: memory.copy and memory.fill with the
-    // destination, the source or byte and the length, memory.init with the
-    // destination, the address of the segment's bytes at the source and the
-    // length.
-    static void lowererMemCopy(Lowerer* l, Span<const i32> args) {
+    // The bulk memory instructions and the imports of lib/c's memcpy,
+    // memmove and memset check their ranges and call the native memory
+    // functions with host addresses: memory.init's source is the segment's
+    // bytes in the object.
+    static void lowererMemCopy(Lowerer* l, Span<const i32> args, String sym) {
         VReg d = lowererUse(l, args[0]);
         VReg s = lowererUse(l, args[1]);
         VReg n = lowererUse(l, args[2]);
         lowererCheckRange(l, d, n, memAt(ctxReg, l->lay->memoryEnd), 8, trapMemoryOOB);
         lowererCheckRange(l, s, n, memAt(ctxReg, l->lay->memoryEnd), 8, trapMemoryOOB);
-        lowererGoCall(l, -1, sliceOf<VReg>({d, s, n}), sliceOf<ValType>({I32, I32, I32}), {}, symMemoryCopy);
+        VReg dst = mFuncNewReg(l->mf, classGPR);
+        lowererMemAddr(l, dst, d);
+        VReg src = mFuncNewReg(l->mf, classGPR);
+        lowererMemAddr(l, src, s);
+        lowererNativeCall(l, sym, dst, src, n);
     }
 
     static void lowererMemFill(Lowerer* l, Span<const i32> args) {
@@ -15660,7 +15708,41 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         VReg val = lowererUse(l, args[1]);
         VReg n = lowererUse(l, args[2]);
         lowererCheckRange(l, d, n, memAt(ctxReg, l->lay->memoryEnd), 8, trapMemoryOOB);
-        lowererGoCall(l, -1, sliceOf<VReg>({d, val, n}), sliceOf<ValType>({I32, I32, I32}), {}, symMemoryFill);
+        VReg dst = mFuncNewReg(l->mf, classGPR);
+        lowererMemAddr(l, dst, d);
+        lowererNativeCall(l, symMemset, dst, val, n);
+    }
+
+    // intrinsic compiles a call of lib/c's memcpy, memmove or memset: its
+    // result is the destination.
+    static void lowererIntrinsic(Lowerer* l, i32 v, Int intrinsic, Span<const i32> args) {
+        if (intrinsic == intrinsicMemset) {
+            lowererMemFill(l, args);
+        } else {
+            lowererMemCopy(l, args, intrinsic == intrinsicMemcpy ? symMemcpy : symMemmove);
+        }
+        if (v >= 0 && l->uses[v] > 0) {
+            lowererMov(l, lowererDef(l, v), lowererUse(l, args[0]), 4);
+        }
+    }
+
+    // nativeCall calls the native memory function sym names with a, b and c
+    // in AX, BX and CX, the room Go's convention gives a function to spill
+    // them reserved: a Go function may be bound.
+    static void lowererNativeCall(Lowerer* l, String sym, VReg a, VReg b, VReg c) {
+        GoFrame g = goAssign(sliceOf<ValType>({I64, I64, I64}), {});
+        if (Int(g.size) > l->mf->stackArgs) {
+            l->mf->stackArgs = g.size;
+        }
+        MInst pm = inst(mParMove);
+        mInstExtra(&pm)->moves.assign(Span<const Move>({Move{RAX, a}, Move{RBX, b}, Move{RCX, c}}));
+        lowererEmit(l, pm);
+        MInst in = inst(mCall);
+        in.aux = calleeNative;
+        in.imm = convert<i64>(objCodeExtern(l->oc, sym));
+        mInstExtra(&in)->uses.assign(Span<const VReg>({RAX, RBX, RCX}));
+        l->mf->hasCalls = true;
+        lowererEmit(l, in);
     }
 
     static void lowererMemInit(Lowerer* l, Int seg, Span<const i32> args) {
@@ -15702,6 +15784,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         lowererEmit(l, c);
         lowererTrapIf(l, ccA, trapMemoryOOB);
         lowererCheckRange(l, d, n, memAt(ctxReg, l->lay->memoryEnd), 8, trapMemoryOOB);
+        VReg dst = mFuncNewReg(l->mf, classGPR);
+        lowererMemAddr(l, dst, d);
         VReg src = mFuncNewReg(l->mf, classGPR);
         MInst lea = inst(mLea);
         lea.dst = src;
@@ -15714,7 +15798,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         addS.size = 8;
         addS.aux = 0;
         lowererEmit(l, addS);
-        lowererGoCall(l, -1, sliceOf<VReg>({d, src, n}), sliceOf<ValType>({I32, I64, I32}), {}, symMemoryInit);
+        lowererNativeCall(l, symMemmove, dst, src, n);
     }
 
     static void lowererMov(Lowerer* l, VReg dst, VReg src, u8 size) {
@@ -17237,6 +17321,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             FuncType* t = moduleFuncType(m, imp.index);
             String sym = importSymbol(imp.module, imp.name, t);
             oc->importSyms[imp.index] = sym;
+            oc->importIntrinsics[imp.index] = intrinsicOf(imp, t);
             String name = String("w2o.adapter.") + symbolPart(imp.module) + String(".") + symbolPart(imp.name);
             oc->funcAt[imp.index] = objCodeGoCall(oc, name, t->params, t->results, sym, false);
             if (m->funcs[imp.index].returnsTwice) {
@@ -21595,6 +21680,32 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return regs;
     }
 
+    // intrinsicOf tells the imports of lib/c's memory functions, by module,
+    // name and type.
+    static Int intrinsicOf(Import imp, FuncType* t) {
+        if (imp.module != String("kernel") || length(t->params) != 3 || length(t->results) != 1) {
+            return intrinsicNone;
+        }
+        for (Int i = 0; i < 3; ++i) {
+            if (t->params[i] != I32) {
+                return intrinsicNone;
+            }
+        }
+        if (t->results[0] != I32) {
+            return intrinsicNone;
+        }
+        if (imp.name == String("memcpy")) {
+            return intrinsicMemcpy;
+        }
+        if (imp.name == String("memmove")) {
+            return intrinsicMemmove;
+        }
+        if (imp.name == String("memset")) {
+            return intrinsicMemset;
+        }
+        return intrinsicNone;
+    }
+
     // returnsTwice tells the imports that return twice by their names, as C
     // compilers do.
     static bool returnsTwice(String name) {
@@ -22461,6 +22572,7 @@ namespace {
         code->lay = newLayout(module);
         code->funcAt = makeSlice<i32>(length(module->funcs));
         code->importSyms = makeSlice<String>(module->importedFuncs);
+        code->importIntrinsics = makeSlice<Int>(module->importedFuncs);
         objCodeAddFixedBlobs(code);
         objCodeStubs(code);
         objCodeImportAdapters(code);

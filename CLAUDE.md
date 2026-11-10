@@ -79,11 +79,15 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   does not grow the stack. `W2O_PERFMAP=<dir>` makes the loader write perf-<pid>.map.
 - What the code needs of the VM it gets through imports. lib/c's mem* and
   str* functions are kernel imports (`__KERNEL`), so a program calls lib/c
-  and lib/c the kernel, which implements them; the bulk memory instructions
-  check their ranges and call the VM's functions `w2o.memory_copy`,
-  `w2o.memory_fill` and `w2o.memory_init`, as memory.grow calls
-  `w2o.memory_grow`. Implementations, such as pg83/str's later, change
-  behind those names.
+  and lib/c the kernel, which implements them. The imports of memcpy,
+  memmove and memset the compiler compiles itself, as it does the bulk
+  memory instructions: it checks the ranges and calls the native memory
+  functions `w2o.memcpy`, `w2o.memmove` and `w2o.memset` with host
+  addresses, the destination, the source or byte and the length in AX, BX
+  and CX, as Go passes them, Go's spill room reserved. The loader binds
+  Go's `runtime.memmove` and its `hostMemset` to them; pg83/str's functions
+  take their place later. A call through a pointer still reaches the
+  kernel's `libcMemcpy`.
 - A call of an import, or of a function of the VM, is a call of a Go
   function as Go makes it: the instance in AX, the arguments in Go's
   registers and stack slots, `call *GOT[symbol]`, the GOT holding the

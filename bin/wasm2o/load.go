@@ -206,14 +206,11 @@ func helperMemoryGrow(ctx uintptr, delta uint32) uint32 {
 	return instanceAt(ctx).memory.grow(delta)
 }
 
-// The bulk memory instructions, whose ranges the code checked: memory.init
-// copies from the segment's bytes in the object.
-func helperMemoryCopy(ctx uintptr, d, s, n uint32) {
-	moveBytes(instanceAt(ctx).mem, d, s, n)
-}
-
-func helperMemoryFill(ctx uintptr, d, v, n uint32) {
-	setBytes(instanceAt(ctx).mem, d, v, n)
+// hostMemset is the native memset the code calls (symbols.go) until a
+// faster one takes its place: the destination is a host address, whose
+// range the code checked.
+func hostMemset(dst, c, n uintptr) {
+	setBytes(unsafe.Slice((*byte)(unsafe.Pointer(dst)), n), 0, uint32(c), uint32(n))
 }
 
 // moveBytes copies the n bytes of m at s to d, overlapping or not: up to
@@ -271,10 +268,6 @@ func setBytes(m []byte, d, v, n uint32) {
 	default:
 		*(*byte)(dst) = byte(x)
 	}
-}
-
-func helperMemoryInit(ctx uintptr, d uint32, src uint64, n uint32) {
-	copy(instanceAt(ctx).memoryBytes()[d:][:n], unsafe.Slice((*byte)(unsafe.Pointer(uintptr(src))), n))
 }
 
 // fill sets every byte of b to c.
@@ -383,12 +376,10 @@ func (c *Code) resolve(sym string, imports Imports) uintptr {
 		return c.keepFunc(helperTableGrow)
 	case symInterrupt:
 		return c.keepFunc(helperInterrupt)
-	case symMemoryCopy:
-		return c.keepFunc(helperMemoryCopy)
-	case symMemoryFill:
-		return c.keepFunc(helperMemoryFill)
-	case symMemoryInit:
-		return c.keepFunc(helperMemoryInit)
+	case symMemcpy, symMemmove:
+		return goSymbol("runtime.memmove")
+	case symMemset:
+		return c.keepFunc(hostMemset)
 	}
 
 	for k := range c.obj.meta.imports {
