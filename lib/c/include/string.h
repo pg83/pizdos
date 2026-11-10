@@ -9,49 +9,49 @@ void* memmove(void*, const void*, size_t);
 void* memset(void*, int, size_t);
 int memcmp(const void*, const void*, size_t);
 void* memchr(const void*, int, size_t);
-void* memrchr(const void*, int, size_t) __KERNEL(memrchr);
-void* memmem(const void*, size_t, const void*, size_t) __KERNEL(memmem);
-void* mempcpy(void* __restrict, const void* __restrict, size_t) __KERNEL(mempcpy);
-void* memccpy(void* __restrict, const void* __restrict, int, size_t) __KERNEL(memccpy);
-void* rawmemchr(const void*, int) __KERNEL(rawmemchr);
+void* memrchr(const void*, int, size_t);
+void* memmem(const void*, size_t, const void*, size_t);
+void* mempcpy(void* __restrict, const void* __restrict, size_t);
+void* memccpy(void* __restrict, const void* __restrict, int, size_t);
+void* rawmemchr(const void*, int);
 
 size_t strlen(const char*);
-size_t strnlen(const char*, size_t) __KERNEL(strnlen);
+size_t strnlen(const char*, size_t);
 char* strcpy(char* __restrict, const char* __restrict);
-char* strncpy(char* __restrict, const char* __restrict, size_t) __KERNEL(strncpy);
-char* stpcpy(char* __restrict, const char* __restrict) __KERNEL(stpcpy);
-char* stpncpy(char* __restrict, const char* __restrict, size_t) __KERNEL(stpncpy);
+char* strncpy(char* __restrict, const char* __restrict, size_t);
+char* stpcpy(char* __restrict, const char* __restrict);
+char* stpncpy(char* __restrict, const char* __restrict, size_t);
 char* strcat(char* __restrict, const char* __restrict);
-char* strncat(char* __restrict, const char* __restrict, size_t) __KERNEL(strncat);
-size_t strlcpy(char*, const char*, size_t) __KERNEL(strlcpy);
-size_t strlcat(char*, const char*, size_t) __KERNEL(strlcat);
+char* strncat(char* __restrict, const char* __restrict, size_t);
+size_t strlcpy(char*, const char*, size_t);
+size_t strlcat(char*, const char*, size_t);
 
 int strcmp(const char*, const char*);
-int strncmp(const char*, const char*, size_t) __KERNEL(strncmp);
-int strcoll(const char*, const char*) __KERNEL(strcoll);
-size_t strxfrm(char* __restrict, const char* __restrict, size_t) __KERNEL(strxfrm);
-int strverscmp(const char*, const char*) __KERNEL(strverscmp);
+int strncmp(const char*, const char*, size_t);
+int strcoll(const char*, const char*);
+size_t strxfrm(char* __restrict, const char* __restrict, size_t);
+int strverscmp(const char*, const char*);
 
-char* strchr(const char*, int) __KERNEL(strchr);
-char* strrchr(const char*, int) __KERNEL(strrchr);
-char* strchrnul(const char*, int) __KERNEL(strchrnul);
-char* strstr(const char*, const char*) __KERNEL(strstr);
-char* strcasestr(const char*, const char*) __KERNEL(strcasestr);
+char* strchr(const char*, int);
+char* strrchr(const char*, int);
+char* strchrnul(const char*, int);
+char* strstr(const char*, const char*);
+char* strcasestr(const char*, const char*);
 size_t strspn(const char*, const char*);
 size_t strcspn(const char*, const char*);
-char* strpbrk(const char*, const char*) __KERNEL(strpbrk);
-char* strtok(char* __restrict, const char* __restrict) __KERNEL(strtok);
-char* strtok_r(char* __restrict, const char* __restrict, char** __restrict) __KERNEL(strtok_r);
-char* strsep(char**, const char*) __KERNEL(strsep);
+char* strpbrk(const char*, const char*);
+char* strtok(char* __restrict, const char* __restrict);
+char* strtok_r(char* __restrict, const char* __restrict, char** __restrict);
+char* strsep(char**, const char*);
 
-char* strdup(const char*) __KERNEL(strdup);
-char* strndup(const char*, size_t) __KERNEL(strndup);
+char* strdup(const char*);
+char* strndup(const char*, size_t);
 
-char* strerror(int) __KERNEL(strerror);
-int strerror_r(int, char*, size_t) __KERNEL(strerror_r);
-char* strsignal(int) __KERNEL(strsignal);
+char* strerror(int);
+int strerror_r(int, char*, size_t);
+char* strsignal(int);
 
-void explicit_bzero(void*, size_t) __KERNEL(explicit_bzero);
+void explicit_bzero(void*, size_t);
 
 /*
  * These are lib/c's functions over imports the compiler compiles at each

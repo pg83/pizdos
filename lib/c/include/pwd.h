@@ -16,13 +16,13 @@ struct passwd {
     char* pw_shell;
 };
 
-struct passwd* getpwnam(const char*) __KERNEL(getpwnam);
-struct passwd* getpwuid(uid_t) __KERNEL(getpwuid);
-int getpwnam_r(const char*, struct passwd*, char*, size_t, struct passwd**) __KERNEL(getpwnam_r);
-int getpwuid_r(uid_t, struct passwd*, char*, size_t, struct passwd**) __KERNEL(getpwuid_r);
-struct passwd* getpwent(void) __KERNEL(getpwent);
-void setpwent(void) __KERNEL(setpwent);
-void endpwent(void) __KERNEL(endpwent);
+struct passwd* getpwnam(const char*);
+struct passwd* getpwuid(uid_t);
+int getpwnam_r(const char*, struct passwd*, char*, size_t, struct passwd**);
+int getpwuid_r(uid_t, struct passwd*, char*, size_t, struct passwd**);
+struct passwd* getpwent(void);
+void setpwent(void);
+void endpwent(void);
 struct passwd* fgetpwent(FILE*);
 int putpwent(const struct passwd*, FILE*);
 

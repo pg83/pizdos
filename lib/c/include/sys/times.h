@@ -11,6 +11,6 @@ struct tms {
     clock_t tms_cstime;
 };
 
-clock_t times(struct tms*) __KERNEL(times);
+clock_t times(struct tms*);
 
 __END_DECLS

@@ -166,18 +166,18 @@ struct termios {
 #define TCSADRAIN 1
 #define TCSAFLUSH 2
 
-int tcgetattr(int, struct termios*) __KERNEL(tcgetattr);
-int tcsetattr(int, int, const struct termios*) __KERNEL(tcsetattr);
-int tcsendbreak(int, int) __KERNEL(tcsendbreak);
-int tcdrain(int) __KERNEL(tcdrain);
-int tcflush(int, int) __KERNEL(tcflush);
-int tcflow(int, int) __KERNEL(tcflow);
-pid_t tcgetsid(int) __KERNEL(tcgetsid);
-speed_t cfgetospeed(const struct termios*) __KERNEL(cfgetospeed);
-speed_t cfgetispeed(const struct termios*) __KERNEL(cfgetispeed);
-int cfsetospeed(struct termios*, speed_t) __KERNEL(cfsetospeed);
-int cfsetispeed(struct termios*, speed_t) __KERNEL(cfsetispeed);
-int cfsetspeed(struct termios*, speed_t) __KERNEL(cfsetspeed);
-void cfmakeraw(struct termios*) __KERNEL(cfmakeraw);
+int tcgetattr(int, struct termios*);
+int tcsetattr(int, int, const struct termios*);
+int tcsendbreak(int, int);
+int tcdrain(int);
+int tcflush(int, int);
+int tcflow(int, int);
+pid_t tcgetsid(int);
+speed_t cfgetospeed(const struct termios*);
+speed_t cfgetispeed(const struct termios*);
+int cfsetospeed(struct termios*, speed_t);
+int cfsetispeed(struct termios*, speed_t);
+int cfsetspeed(struct termios*, speed_t);
+void cfmakeraw(struct termios*);
 
 __END_DECLS

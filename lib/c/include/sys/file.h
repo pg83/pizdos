@@ -9,6 +9,6 @@ __BEGIN_DECLS
 #define LOCK_NB 4
 #define LOCK_UN 8
 
-int flock(int, int) __KERNEL(flock);
+int flock(int, int);
 
 __END_DECLS

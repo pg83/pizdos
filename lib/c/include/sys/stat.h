@@ -67,21 +67,21 @@ struct stat {
 #define UTIME_NOW ((1l << 30) - 1l)
 #define UTIME_OMIT ((1l << 30) - 2l)
 
-int stat(const char* __restrict, struct stat* __restrict) __KERNEL(stat);
-int fstat(int, struct stat*) __KERNEL(fstat);
-int lstat(const char* __restrict, struct stat* __restrict) __KERNEL(lstat);
-int fstatat(int, const char* __restrict, struct stat* __restrict, int) __KERNEL(fstatat);
-int chmod(const char*, mode_t) __KERNEL(chmod);
-int fchmod(int, mode_t) __KERNEL(fchmod);
-int fchmodat(int, const char*, mode_t, int) __KERNEL(fchmodat);
-int mkdir(const char*, mode_t) __KERNEL(mkdir);
-int mkdirat(int, const char*, mode_t) __KERNEL(mkdirat);
-int mkfifo(const char*, mode_t) __KERNEL(mkfifo);
-int mkfifoat(int, const char*, mode_t) __KERNEL(mkfifoat);
-int mknod(const char*, mode_t, dev_t) __KERNEL(mknod);
-int mknodat(int, const char*, mode_t, dev_t) __KERNEL(mknodat);
-mode_t umask(mode_t) __KERNEL(umask);
-int utimensat(int, const char*, const struct timespec[2], int) __KERNEL(utimensat);
-int futimens(int, const struct timespec[2]) __KERNEL(futimens);
+int stat(const char* __restrict, struct stat* __restrict);
+int fstat(int, struct stat*);
+int lstat(const char* __restrict, struct stat* __restrict);
+int fstatat(int, const char* __restrict, struct stat* __restrict, int);
+int chmod(const char*, mode_t);
+int fchmod(int, mode_t);
+int fchmodat(int, const char*, mode_t, int);
+int mkdir(const char*, mode_t);
+int mkdirat(int, const char*, mode_t);
+int mkfifo(const char*, mode_t);
+int mkfifoat(int, const char*, mode_t);
+int mknod(const char*, mode_t, dev_t);
+int mknodat(int, const char*, mode_t, dev_t);
+mode_t umask(mode_t);
+int utimensat(int, const char*, const struct timespec[2], int);
+int futimens(int, const struct timespec[2]);
 
 __END_DECLS

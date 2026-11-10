@@ -114,24 +114,24 @@ struct ucred {
 
 #define SOMAXCONN 4096
 
-int socket(int, int, int) __KERNEL(socket);
-int socketpair(int, int, int, int[2]) __KERNEL(socketpair);
-int bind(int, const struct sockaddr*, socklen_t) __KERNEL(bind);
-int connect(int, const struct sockaddr*, socklen_t) __KERNEL(connect);
-int listen(int, int) __KERNEL(listen);
-int accept(int, struct sockaddr* __restrict, socklen_t* __restrict) __KERNEL(accept);
-int accept4(int, struct sockaddr* __restrict, socklen_t* __restrict, int) __KERNEL(accept4);
-int getsockname(int, struct sockaddr* __restrict, socklen_t* __restrict) __KERNEL(getsockname);
-int getpeername(int, struct sockaddr* __restrict, socklen_t* __restrict) __KERNEL(getpeername);
-int getsockopt(int, int, int, void* __restrict, socklen_t* __restrict) __KERNEL(getsockopt);
-int setsockopt(int, int, int, const void*, socklen_t) __KERNEL(setsockopt);
-ssize_t send(int, const void*, size_t, int) __KERNEL(send);
-ssize_t sendto(int, const void*, size_t, int, const struct sockaddr*, socklen_t) __KERNEL(sendto);
-ssize_t sendmsg(int, const struct msghdr*, int) __KERNEL(sendmsg);
-ssize_t recv(int, void*, size_t, int) __KERNEL(recv);
-ssize_t recvfrom(int, void* __restrict, size_t, int, struct sockaddr* __restrict, socklen_t* __restrict) __KERNEL(recvfrom);
-ssize_t recvmsg(int, struct msghdr*, int) __KERNEL(recvmsg);
-int shutdown(int, int) __KERNEL(shutdown);
-int sockatmark(int) __KERNEL(sockatmark);
+int socket(int, int, int);
+int socketpair(int, int, int, int[2]);
+int bind(int, const struct sockaddr*, socklen_t);
+int connect(int, const struct sockaddr*, socklen_t);
+int listen(int, int);
+int accept(int, struct sockaddr* __restrict, socklen_t* __restrict);
+int accept4(int, struct sockaddr* __restrict, socklen_t* __restrict, int);
+int getsockname(int, struct sockaddr* __restrict, socklen_t* __restrict);
+int getpeername(int, struct sockaddr* __restrict, socklen_t* __restrict);
+int getsockopt(int, int, int, void* __restrict, socklen_t* __restrict);
+int setsockopt(int, int, int, const void*, socklen_t);
+ssize_t send(int, const void*, size_t, int);
+ssize_t sendto(int, const void*, size_t, int, const struct sockaddr*, socklen_t);
+ssize_t sendmsg(int, const struct msghdr*, int);
+ssize_t recv(int, void*, size_t, int);
+ssize_t recvfrom(int, void* __restrict, size_t, int, struct sockaddr* __restrict, socklen_t* __restrict);
+ssize_t recvmsg(int, struct msghdr*, int);
+int shutdown(int, int);
+int sockatmark(int);
 
 __END_DECLS

@@ -36,18 +36,24 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
 
 - Our own libc. Musl sources are used only for stdio, sorting, libm, getopt,
   number parsing and multibyte conversion (`lib/c/musl/files.txt`); every
-  other function is a kernel import or our code in `lib/c/src`.
-- A kernel import is declared `__KERNEL(name)` in its public header. Never
-  define a function that a header declares that way, and never declare an
-  in-process function with it.
+  other function is our code in `lib/c/src`, most of them calls of the
+  kernel's imports.
+- Programs see only lib/c's functions. An import is lib/c's alone, declared
+  `__KERNEL(name)` under the C name `__kernel_<name>`, and the function
+  `name` calls it: `src/kernel.c` defines those by one line each, a
+  variadic one passing its va_list on, the pointer the import took when the
+  function was the import. malloc, calloc, realloc and free and the eleven
+  string functions below are `__INLINE` in their headers (GNU inline,
+  always inlined, never emitted), so a call is the import's call, and
+  defined in `src/mem.c` for a pointer; setjmp, _setjmp, sigsetjmp, fork,
+  vfork and forkpty are `__INLINE` only, their import's call in the
+  caller's frame, with no definition to point to.
 - Headers are written for this system, not copied from musl or glibc;
   constants use Linux generic values, struct layouts are fixed by the ABI
   because the kernel reads and writes them.
-- memcpy, memmove, memset, memcmp, memchr, strlen, strcpy, strcat, strcmp,
-  strspn and strcspn are lib/c's own (`src/mem.c`) over imports
-  `__kernel_<name>` that only the compiler implements, at each call;
-  string.h defines them `__INLINE` (GNU inline, always inlined, never
-  emitted), so a call is the import's call, and a pointer reaches lib/c's.
+- The imports of memcpy, memmove, memset, memcmp, memchr, strlen, strcpy,
+  strcat, strcmp, strspn and strcspn are named `__kernel_<name>`: only the
+  compiler implements them, at each call.
 - The link has no `--allow-undefined`: a missing function is a link error,
   not a silent import.
 - `test_libc` runs tst/libc/check.c, built against lib/c, in the kernel:
@@ -105,13 +111,12 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   that with `g.stackguard0` again before Go's morestack, so a preemption
   that completed after the check does not grow the stack.
   `W2O_PERFMAP=<dir>` makes the loader write perf-<pid>.map.
-- What the code needs of the VM it gets through imports. lib/c's mem* and
-  str* functions are kernel imports (`__KERNEL`), so a program calls lib/c
-  and lib/c the kernel, which implements them, but for the eleven lib/c
-  defines over `__kernel_<name>` imports, which the compiler compiles at
-  each call, as it does the bulk memory instructions: it checks the ranges
-  and calls lib/str's function `str.<name>` with host addresses, the
-  arguments in AX, CX and DX, as the module's functions call each other:
+- What the code needs of the VM it gets through imports. A program calls
+  lib/c and lib/c the kernel's imports, which the kernel implements, but for
+  the eleven string functions' `__kernel_<name>`, which the compiler
+  compiles at each call, as it does the bulk memory instructions: it checks
+  the ranges and calls lib/str's function `str.<name>` with host addresses,
+  the arguments in AX, CX and DX, as the module's functions call each other:
   the call changes what such a call may and keeps the instance, the memory
   base and the callee-saved registers. memcpy, memmove and memset of a
   constant length of 32 bytes or less are loads and stores, as a native
@@ -120,18 +125,18 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   the result -1, 0 or 1; memchr searches up to the length or the memory's
   end, whichever is nearer, and traps when the end cut a search that found
   nothing; strlen checks the string's start before the call and its NUL
-  after it, and needs the zero byte the loader keeps past the accessible
-  end (`newMemory`) to stop a string that runs to it; strcpy and strcat are
+  after it, and needs the zero byte the loader keeps past the accessible end
+  (`newMemory`) to stop a string that runs to it; strcpy and strcat are
   strlen and a memmove of the string and its NUL, the destination's range
-  checked first; strcmp, strspn and strcspn take both strings' strlen
-  before lib/str's function, strcmp's result -1, 0 or 1. Such an import has
-  no adapter and no code of its own: a module that exports it, puts it in
-  a table or a global or takes it with ref.func is refused. The loader
-  links lib/str's object once (`str.go`), registered with Go as assembly,
-  never preempted asynchronously, calls its `str_choose()` and binds each
-  `str.<slot>` to the function of that slot in the configuration it
-  returns: the GOT holds the host's function itself, no table between. The
-  stand copies its inputs into a module with the same memmove.
+  checked first; strcmp, strspn and strcspn take both strings' strlen before
+  lib/str's function, strcmp's result -1, 0 or 1. Such an import has no
+  adapter and no code of its own: a module that exports it, puts it in a
+  table or a global or takes it with ref.func is refused. The loader links
+  lib/str's object once (`str.go`), registered with Go as assembly, never
+  preempted asynchronously, calls its `str_choose()` and binds each
+  `str.<slot>` to the function of that slot in the configuration it returns:
+  the GOT holds the host's function itself, no table between. The stand
+  copies its inputs into a module with the same memmove.
 - A call of an import, or of a function of the VM, is a call of a Go
   function as Go makes it: the instance in AX, the arguments in Go's
   registers and stack slots, `call *GOT[symbol]`, the GOT holding the

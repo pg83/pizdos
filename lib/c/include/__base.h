@@ -1,11 +1,12 @@
 #pragma once
 
 /*
- * Shared vocabulary of every public header. A function marked __KERNEL is
- * imported from the kernel's "kernel" module under its own name; everything
- * else is defined inside the process (crt, stdio, libm and the rest of lib/c).
- * A header's __INLINE definition is inlined at every call and never emitted:
- * lib/c defines the function itself once, which a pointer to it reaches.
+ * Shared vocabulary of every public header. Every function is lib/c's own,
+ * defined inside the process (crt, stdio, libm and the rest of lib/c); one
+ * the kernel implements calls the kernel's import, declared __KERNEL(name)
+ * under the C name __kernel_<name> (src/kernel.c). A header's __INLINE
+ * definition is inlined at every call and never emitted: lib/c defines the
+ * function itself once, which a pointer to it reaches.
  * The ABI is wasm32 with a 64-bit long double, 64-bit time_t, off_t, ino_t
  * and dev_t; struct layouts below are what the kernel reads and writes.
  */

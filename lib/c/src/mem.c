@@ -1,10 +1,27 @@
+#include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 
 /*
- * The functions string.h inlines, for a pointer to one and a call without
- * the header: the same calls of the compiler's imports.
+ * The functions stdlib.h and string.h inline, for a pointer to one and a
+ * call without the header: the same calls of the imports.
  */
+void* malloc(size_t n) {
+    return __kernel_malloc(n);
+}
+
+void* calloc(size_t count, size_t size) {
+    return __kernel_calloc(count, size);
+}
+
+void* realloc(void* p, size_t n) {
+    return __kernel_realloc(p, n);
+}
+
+void free(void* p) {
+    __kernel_free(p);
+}
+
 void* memcpy(void* restrict d, const void* restrict s, size_t n) {
     return __kernel_memcpy(d, s, n);
 }

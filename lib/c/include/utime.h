@@ -9,6 +9,6 @@ struct utimbuf {
     time_t modtime;
 };
 
-int utime(const char*, const struct utimbuf*) __KERNEL(utime);
+int utime(const char*, const struct utimbuf*);
 
 __END_DECLS

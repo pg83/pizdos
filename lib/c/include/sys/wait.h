@@ -29,10 +29,10 @@ typedef enum {
 
 struct rusage;
 
-pid_t wait(int*) __KERNEL(wait);
-pid_t waitpid(pid_t, int*, int) __KERNEL(waitpid);
-pid_t wait3(int*, int, struct rusage*) __KERNEL(wait3);
-pid_t wait4(pid_t, int*, int, struct rusage*) __KERNEL(wait4);
-int waitid(idtype_t, id_t, siginfo_t*, int) __KERNEL(waitid);
+pid_t wait(int*);
+pid_t waitpid(pid_t, int*, int);
+pid_t wait3(int*, int, struct rusage*);
+pid_t wait4(pid_t, int*, int, struct rusage*);
+int waitid(idtype_t, id_t, siginfo_t*, int);
 
 __END_DECLS

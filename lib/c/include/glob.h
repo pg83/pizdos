@@ -28,7 +28,7 @@ typedef struct {
 #define GLOB_NOMATCH 3
 #define GLOB_NOSYS 4
 
-int glob(const char* __restrict, int, int (*)(const char*, int), glob_t* __restrict) __KERNEL(glob);
-void globfree(glob_t*) __KERNEL(globfree);
+int glob(const char* __restrict, int, int (*)(const char*, int), glob_t* __restrict);
+void globfree(glob_t*);
 
 __END_DECLS

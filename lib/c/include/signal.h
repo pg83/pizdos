@@ -119,31 +119,31 @@ typedef struct {
 #define CLD_STOPPED 5
 #define CLD_CONTINUED 6
 
-sighandler_t signal(int, sighandler_t) __KERNEL(signal);
-sighandler_t bsd_signal(int, sighandler_t) __KERNEL(bsd_signal);
-int sigaction(int, const struct sigaction* __restrict, struct sigaction* __restrict) __KERNEL(sigaction);
-int sigprocmask(int, const sigset_t* __restrict, sigset_t* __restrict) __KERNEL(sigprocmask);
-int pthread_sigmask(int, const sigset_t* __restrict, sigset_t* __restrict) __KERNEL(pthread_sigmask);
-int sigsuspend(const sigset_t*) __KERNEL(sigsuspend);
-int sigpending(sigset_t*) __KERNEL(sigpending);
-int sigwait(const sigset_t* __restrict, int* __restrict) __KERNEL(sigwait);
-int sigwaitinfo(const sigset_t* __restrict, siginfo_t* __restrict) __KERNEL(sigwaitinfo);
-int sigtimedwait(const sigset_t* __restrict, siginfo_t* __restrict, const struct timespec* __restrict) __KERNEL(sigtimedwait);
-int sigqueue(pid_t, int, union sigval) __KERNEL(sigqueue);
-int siginterrupt(int, int) __KERNEL(siginterrupt);
-int sigaltstack(const stack_t* __restrict, stack_t* __restrict) __KERNEL(sigaltstack);
-int sigemptyset(sigset_t*) __KERNEL(sigemptyset);
-int sigfillset(sigset_t*) __KERNEL(sigfillset);
-int sigaddset(sigset_t*, int) __KERNEL(sigaddset);
-int sigdelset(sigset_t*, int) __KERNEL(sigdelset);
-int sigismember(const sigset_t*, int) __KERNEL(sigismember);
-int sigisemptyset(const sigset_t*) __KERNEL(sigisemptyset);
-int sigorset(sigset_t*, const sigset_t*, const sigset_t*) __KERNEL(sigorset);
-int sigandset(sigset_t*, const sigset_t*, const sigset_t*) __KERNEL(sigandset);
-int kill(pid_t, int) __KERNEL(kill);
-int killpg(pid_t, int) __KERNEL(killpg);
-int raise(int) __KERNEL(raise);
-void psignal(int, const char*) __KERNEL(psignal);
-void psiginfo(const siginfo_t*, const char*) __KERNEL(psiginfo);
+sighandler_t signal(int, sighandler_t);
+sighandler_t bsd_signal(int, sighandler_t);
+int sigaction(int, const struct sigaction* __restrict, struct sigaction* __restrict);
+int sigprocmask(int, const sigset_t* __restrict, sigset_t* __restrict);
+int pthread_sigmask(int, const sigset_t* __restrict, sigset_t* __restrict);
+int sigsuspend(const sigset_t*);
+int sigpending(sigset_t*);
+int sigwait(const sigset_t* __restrict, int* __restrict);
+int sigwaitinfo(const sigset_t* __restrict, siginfo_t* __restrict);
+int sigtimedwait(const sigset_t* __restrict, siginfo_t* __restrict, const struct timespec* __restrict);
+int sigqueue(pid_t, int, union sigval);
+int siginterrupt(int, int);
+int sigaltstack(const stack_t* __restrict, stack_t* __restrict);
+int sigemptyset(sigset_t*);
+int sigfillset(sigset_t*);
+int sigaddset(sigset_t*, int);
+int sigdelset(sigset_t*, int);
+int sigismember(const sigset_t*, int);
+int sigisemptyset(const sigset_t*);
+int sigorset(sigset_t*, const sigset_t*, const sigset_t*);
+int sigandset(sigset_t*, const sigset_t*, const sigset_t*);
+int kill(pid_t, int);
+int killpg(pid_t, int);
+int raise(int);
+void psignal(int, const char*);
+void psiginfo(const siginfo_t*, const char*);
 
 __END_DECLS

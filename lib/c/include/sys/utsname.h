@@ -13,6 +13,6 @@ struct utsname {
     char domainname[65];
 };
 
-int uname(struct utsname*) __KERNEL(uname);
+int uname(struct utsname*);
 
 __END_DECLS

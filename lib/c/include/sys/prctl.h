@@ -13,6 +13,6 @@ __BEGIN_DECLS
 #define PR_SET_NO_NEW_PRIVS 38
 #define PR_GET_NO_NEW_PRIVS 39
 
-int prctl(int, ...) __KERNEL(prctl);
+int prctl(int, ...);
 
 __END_DECLS

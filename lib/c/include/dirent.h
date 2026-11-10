@@ -29,17 +29,17 @@ struct dirent {
 #define DT_SOCK 12
 #define DT_WHT 14
 
-DIR* opendir(const char*) __KERNEL(opendir);
-DIR* fdopendir(int) __KERNEL(fdopendir);
-int closedir(DIR*) __KERNEL(closedir);
-struct dirent* readdir(DIR*) __KERNEL(readdir);
-int readdir_r(DIR* __restrict, struct dirent* __restrict, struct dirent** __restrict) __KERNEL(readdir_r);
-void rewinddir(DIR*) __KERNEL(rewinddir);
-void seekdir(DIR*, long) __KERNEL(seekdir);
-long telldir(DIR*) __KERNEL(telldir);
-int dirfd(DIR*) __KERNEL(dirfd);
-int alphasort(const struct dirent**, const struct dirent**) __KERNEL(alphasort);
-int versionsort(const struct dirent**, const struct dirent**) __KERNEL(versionsort);
+DIR* opendir(const char*);
+DIR* fdopendir(int);
+int closedir(DIR*);
+struct dirent* readdir(DIR*);
+int readdir_r(DIR* __restrict, struct dirent* __restrict, struct dirent** __restrict);
+void rewinddir(DIR*);
+void seekdir(DIR*, long);
+long telldir(DIR*);
+int dirfd(DIR*);
+int alphasort(const struct dirent**, const struct dirent**);
+int versionsort(const struct dirent**, const struct dirent**);
 int scandir(const char*, struct dirent***, int (*)(const struct dirent*), int (*)(const struct dirent**, const struct dirent**));
 
 __END_DECLS

@@ -90,6 +90,6 @@ struct winsize {
 #define SIOCGPGRP 0x8904
 #define SIOCATMARK 0x8905
 
-int ioctl(int, unsigned long, ...) __KERNEL(ioctl);
+int ioctl(int, unsigned long, ...);
 
 __END_DECLS

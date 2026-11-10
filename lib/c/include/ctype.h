@@ -4,21 +4,21 @@
 
 __BEGIN_DECLS
 
-int isalnum(int) __KERNEL(isalnum);
-int isalpha(int) __KERNEL(isalpha);
-int isascii(int) __KERNEL(isascii);
-int isblank(int) __KERNEL(isblank);
-int iscntrl(int) __KERNEL(iscntrl);
-int isdigit(int) __KERNEL(isdigit);
-int isgraph(int) __KERNEL(isgraph);
-int islower(int) __KERNEL(islower);
-int isprint(int) __KERNEL(isprint);
-int ispunct(int) __KERNEL(ispunct);
-int isspace(int) __KERNEL(isspace);
-int isupper(int) __KERNEL(isupper);
-int isxdigit(int) __KERNEL(isxdigit);
-int tolower(int) __KERNEL(tolower);
-int toupper(int) __KERNEL(toupper);
-int toascii(int) __KERNEL(toascii);
+int isalnum(int);
+int isalpha(int);
+int isascii(int);
+int isblank(int);
+int iscntrl(int);
+int isdigit(int);
+int isgraph(int);
+int islower(int);
+int isprint(int);
+int ispunct(int);
+int isspace(int);
+int isupper(int);
+int isxdigit(int);
+int tolower(int);
+int toupper(int);
+int toascii(int);
 
 __END_DECLS

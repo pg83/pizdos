@@ -50,9 +50,9 @@ __BEGIN_DECLS
 #define LOG_NOWAIT 0x10
 #define LOG_PERROR 0x20
 
-void openlog(const char*, int, int) __KERNEL(openlog);
-void closelog(void) __KERNEL(closelog);
-int setlogmask(int) __KERNEL(setlogmask);
+void openlog(const char*, int, int);
+void closelog(void);
+int setlogmask(int);
 void syslog(int, const char*, ...) __PRINTF(2, 3);
 void vsyslog(int, const char*, va_list) __PRINTF(2, 0);
 

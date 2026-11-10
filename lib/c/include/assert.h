@@ -14,6 +14,6 @@
 
 __BEGIN_DECLS
 
-__NORETURN void __assert_fail(const char*, const char*, int, const char*) __KERNEL(__assert_fail);
+__NORETURN void __assert_fail(const char*, const char*, int, const char*);
 
 __END_DECLS

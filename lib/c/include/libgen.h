@@ -4,7 +4,7 @@
 
 __BEGIN_DECLS
 
-char* basename(char*) __KERNEL(basename);
-char* dirname(char*) __KERNEL(dirname);
+char* basename(char*);
+char* dirname(char*);
 
 __END_DECLS

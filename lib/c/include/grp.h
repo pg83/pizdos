@@ -13,16 +13,16 @@ struct group {
     char** gr_mem;
 };
 
-struct group* getgrnam(const char*) __KERNEL(getgrnam);
-struct group* getgrgid(gid_t) __KERNEL(getgrgid);
-int getgrnam_r(const char*, struct group*, char*, size_t, struct group**) __KERNEL(getgrnam_r);
-int getgrgid_r(gid_t, struct group*, char*, size_t, struct group**) __KERNEL(getgrgid_r);
-struct group* getgrent(void) __KERNEL(getgrent);
-void setgrent(void) __KERNEL(setgrent);
-void endgrent(void) __KERNEL(endgrent);
+struct group* getgrnam(const char*);
+struct group* getgrgid(gid_t);
+int getgrnam_r(const char*, struct group*, char*, size_t, struct group**);
+int getgrgid_r(gid_t, struct group*, char*, size_t, struct group**);
+struct group* getgrent(void);
+void setgrent(void);
+void endgrent(void);
 struct group* fgetgrent(FILE*);
-int getgrouplist(const char*, gid_t, gid_t*, int*) __KERNEL(getgrouplist);
-int initgroups(const char*, gid_t) __KERNEL(initgroups);
-int setgroups(size_t, const gid_t*) __KERNEL(setgroups);
+int getgrouplist(const char*, gid_t, gid_t*, int*);
+int initgroups(const char*, gid_t);
+int setgroups(size_t, const gid_t*);
 
 __END_DECLS

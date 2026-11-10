@@ -23,7 +23,7 @@ struct statfs {
     unsigned long f_spare[4];
 };
 
-int statfs(const char*, struct statfs*) __KERNEL(statfs);
-int fstatfs(int, struct statfs*) __KERNEL(fstatfs);
+int statfs(const char*, struct statfs*);
+int fstatfs(int, struct statfs*);
 
 __END_DECLS

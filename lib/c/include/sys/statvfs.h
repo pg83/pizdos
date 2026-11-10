@@ -28,7 +28,7 @@ struct statvfs {
 #define ST_NODIRATIME 2048
 #define ST_RELATIME 4096
 
-int statvfs(const char* __restrict, struct statvfs* __restrict) __KERNEL(statvfs);
-int fstatvfs(int, struct statvfs*) __KERNEL(fstatvfs);
+int statvfs(const char* __restrict, struct statvfs* __restrict);
+int fstatvfs(int, struct statvfs*);
 
 __END_DECLS

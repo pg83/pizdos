@@ -23,10 +23,10 @@ struct sysinfo {
     char __reserved[256];
 };
 
-int sysinfo(struct sysinfo*) __KERNEL(sysinfo);
-int get_nprocs_conf(void) __KERNEL(get_nprocs_conf);
-int get_nprocs(void) __KERNEL(get_nprocs);
-long get_phys_pages(void) __KERNEL(get_phys_pages);
-long get_avphys_pages(void) __KERNEL(get_avphys_pages);
+int sysinfo(struct sysinfo*);
+int get_nprocs_conf(void);
+int get_nprocs(void);
+long get_phys_pages(void);
+long get_avphys_pages(void);
 
 __END_DECLS

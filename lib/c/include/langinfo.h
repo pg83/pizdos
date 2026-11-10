@@ -64,6 +64,6 @@ typedef int nl_item;
 #define YESEXPR 0x50000
 #define NOEXPR 0x50001
 
-char* nl_langinfo(nl_item) __KERNEL(nl_langinfo);
+char* nl_langinfo(nl_item);
 
 __END_DECLS

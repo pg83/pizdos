@@ -25,13 +25,13 @@ struct itimerval {
 #define timeradd(s, t, a) (void)((a)->tv_sec = (s)->tv_sec + (t)->tv_sec, ((a)->tv_usec = (s)->tv_usec + (t)->tv_usec) >= 1000000 && ((a)->tv_usec -= 1000000, (a)->tv_sec++))
 #define timersub(s, t, a) (void)((a)->tv_sec = (s)->tv_sec - (t)->tv_sec, ((a)->tv_usec = (s)->tv_usec - (t)->tv_usec) < 0 && ((a)->tv_usec += 1000000, (a)->tv_sec--))
 
-int gettimeofday(struct timeval* __restrict, void* __restrict) __KERNEL(gettimeofday);
-int settimeofday(const struct timeval*, const struct timezone*) __KERNEL(settimeofday);
-int getitimer(int, struct itimerval*) __KERNEL(getitimer);
-int setitimer(int, const struct itimerval* __restrict, struct itimerval* __restrict) __KERNEL(setitimer);
-int utimes(const char*, const struct timeval[2]) __KERNEL(utimes);
-int lutimes(const char*, const struct timeval[2]) __KERNEL(lutimes);
-int futimes(int, const struct timeval[2]) __KERNEL(futimes);
-int adjtime(const struct timeval*, struct timeval*) __KERNEL(adjtime);
+int gettimeofday(struct timeval* __restrict, void* __restrict);
+int settimeofday(const struct timeval*, const struct timezone*);
+int getitimer(int, struct itimerval*);
+int setitimer(int, const struct itimerval* __restrict, struct itimerval* __restrict);
+int utimes(const char*, const struct timeval[2]);
+int lutimes(const char*, const struct timeval[2]);
+int futimes(int, const struct timeval[2]);
+int adjtime(const struct timeval*, struct timeval*);
 
 __END_DECLS

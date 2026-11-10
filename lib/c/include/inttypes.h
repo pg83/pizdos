@@ -9,8 +9,8 @@ typedef struct {
     intmax_t rem;
 } imaxdiv_t;
 
-intmax_t imaxabs(intmax_t) __KERNEL(imaxabs);
-imaxdiv_t imaxdiv(intmax_t, intmax_t) __KERNEL(imaxdiv);
+intmax_t imaxabs(intmax_t);
+imaxdiv_t imaxdiv(intmax_t, intmax_t);
 intmax_t strtoimax(const char* __restrict, char** __restrict, int);
 uintmax_t strtoumax(const char* __restrict, char** __restrict, int);
 

@@ -39,7 +39,7 @@ struct lconv {
     char int_n_sign_posn;
 };
 
-char* setlocale(int, const char*) __KERNEL(setlocale);
-struct lconv* localeconv(void) __KERNEL(localeconv);
+char* setlocale(int, const char*);
+struct lconv* localeconv(void);
 
 __END_DECLS

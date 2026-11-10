@@ -13,6 +13,6 @@ __BEGIN_DECLS
 #define FNM_NOMATCH 1
 #define FNM_NOSYS (-1)
 
-int fnmatch(const char*, const char*, int) __KERNEL(fnmatch);
+int fnmatch(const char*, const char*, int);
 
 __END_DECLS

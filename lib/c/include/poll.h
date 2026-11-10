@@ -25,7 +25,7 @@ struct pollfd {
 #define POLLMSG 0x400
 #define POLLRDHUP 0x2000
 
-int poll(struct pollfd*, nfds_t, int) __KERNEL(poll);
-int ppoll(struct pollfd*, nfds_t, const struct timespec*, const sigset_t*) __KERNEL(ppoll);
+int poll(struct pollfd*, nfds_t, int);
+int ppoll(struct pollfd*, nfds_t, const struct timespec*, const sigset_t*);
 
 __END_DECLS

@@ -61,11 +61,11 @@ struct rusage {
 #define PRIO_PGRP 1
 #define PRIO_USER 2
 
-int getrlimit(int, struct rlimit*) __KERNEL(getrlimit);
-int setrlimit(int, const struct rlimit*) __KERNEL(setrlimit);
-int prlimit(pid_t, int, const struct rlimit*, struct rlimit*) __KERNEL(prlimit);
-int getrusage(int, struct rusage*) __KERNEL(getrusage);
-int getpriority(int, id_t) __KERNEL(getpriority);
-int setpriority(int, id_t, int) __KERNEL(setpriority);
+int getrlimit(int, struct rlimit*);
+int setrlimit(int, const struct rlimit*);
+int prlimit(pid_t, int, const struct rlimit*, struct rlimit*);
+int getrusage(int, struct rusage*);
+int getpriority(int, id_t);
+int setpriority(int, id_t, int);
 
 __END_DECLS

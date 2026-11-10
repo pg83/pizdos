@@ -139,9 +139,9 @@ char* tempnam(const char*, const char*);
 FILE* popen(const char*, const char*);
 int pclose(FILE*);
 
-int remove(const char*) __KERNEL(remove);
-int rename(const char*, const char*) __KERNEL(rename);
-int renameat(int, const char*, int, const char*) __KERNEL(renameat);
-char* ctermid(char*) __KERNEL(ctermid);
+int remove(const char*);
+int rename(const char*, const char*);
+int renameat(int, const char*, int, const char*);
+char* ctermid(char*);
 
 __END_DECLS

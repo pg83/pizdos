@@ -83,23 +83,23 @@ struct addrinfo {
 
 extern int h_errno;
 
-int getaddrinfo(const char* __restrict, const char* __restrict, const struct addrinfo* __restrict, struct addrinfo** __restrict) __KERNEL(getaddrinfo);
-void freeaddrinfo(struct addrinfo*) __KERNEL(freeaddrinfo);
-const char* gai_strerror(int) __KERNEL(gai_strerror);
-int getnameinfo(const struct sockaddr* __restrict, socklen_t, char* __restrict, socklen_t, char* __restrict, socklen_t, int) __KERNEL(getnameinfo);
-struct hostent* gethostbyname(const char*) __KERNEL(gethostbyname);
-struct hostent* gethostbyname2(const char*, int) __KERNEL(gethostbyname2);
-struct hostent* gethostbyaddr(const void*, socklen_t, int) __KERNEL(gethostbyaddr);
-void sethostent(int) __KERNEL(sethostent);
-void endhostent(void) __KERNEL(endhostent);
-struct hostent* gethostent(void) __KERNEL(gethostent);
-struct servent* getservbyname(const char*, const char*) __KERNEL(getservbyname);
-struct servent* getservbyport(int, const char*) __KERNEL(getservbyport);
-struct protoent* getprotobyname(const char*) __KERNEL(getprotobyname);
-struct protoent* getprotobynumber(int) __KERNEL(getprotobynumber);
-struct netent* getnetbyname(const char*) __KERNEL(getnetbyname);
-struct netent* getnetbyaddr(uint32_t, int) __KERNEL(getnetbyaddr);
-void herror(const char*) __KERNEL(herror);
-const char* hstrerror(int) __KERNEL(hstrerror);
+int getaddrinfo(const char* __restrict, const char* __restrict, const struct addrinfo* __restrict, struct addrinfo** __restrict);
+void freeaddrinfo(struct addrinfo*);
+const char* gai_strerror(int);
+int getnameinfo(const struct sockaddr* __restrict, socklen_t, char* __restrict, socklen_t, char* __restrict, socklen_t, int);
+struct hostent* gethostbyname(const char*);
+struct hostent* gethostbyname2(const char*, int);
+struct hostent* gethostbyaddr(const void*, socklen_t, int);
+void sethostent(int);
+void endhostent(void);
+struct hostent* gethostent(void);
+struct servent* getservbyname(const char*, const char*);
+struct servent* getservbyport(int, const char*);
+struct protoent* getprotobyname(const char*);
+struct protoent* getprotobynumber(int);
+struct netent* getnetbyname(const char*);
+struct netent* getnetbyaddr(uint32_t, int);
+void herror(const char*);
+const char* hstrerror(int);
 
 __END_DECLS

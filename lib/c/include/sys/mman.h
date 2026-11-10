@@ -34,14 +34,14 @@ __BEGIN_DECLS
 #define MADV_WILLNEED 3
 #define MADV_DONTNEED 4
 
-void* mmap(void*, size_t, int, int, int, off_t) __KERNEL(mmap);
-int munmap(void*, size_t) __KERNEL(munmap);
-int mprotect(void*, size_t, int) __KERNEL(mprotect);
-int msync(void*, size_t, int) __KERNEL(msync);
-int madvise(void*, size_t, int) __KERNEL(madvise);
-int mlock(const void*, size_t) __KERNEL(mlock);
-int munlock(const void*, size_t) __KERNEL(munlock);
-int mlockall(int) __KERNEL(mlockall);
-int munlockall(void) __KERNEL(munlockall);
+void* mmap(void*, size_t, int, int, int, off_t);
+int munmap(void*, size_t);
+int mprotect(void*, size_t, int);
+int msync(void*, size_t, int);
+int madvise(void*, size_t, int);
+int mlock(const void*, size_t);
+int munlock(const void*, size_t);
+int mlockall(int);
+int munlockall(void);
 
 __END_DECLS

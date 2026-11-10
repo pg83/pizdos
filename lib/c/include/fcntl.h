@@ -77,11 +77,11 @@ struct flock {
 #define POSIX_FADV_DONTNEED 4
 #define POSIX_FADV_NOREUSE 5
 
-int open(const char*, int, ...) __KERNEL(open);
-int openat(int, const char*, int, ...) __KERNEL(openat);
-int creat(const char*, mode_t) __KERNEL(creat);
-int fcntl(int, int, ...) __KERNEL(fcntl);
-int posix_fadvise(int, off_t, off_t, int) __KERNEL(posix_fadvise);
-int posix_fallocate(int, off_t, off_t) __KERNEL(posix_fallocate);
+int open(const char*, int, ...);
+int openat(int, const char*, int, ...);
+int creat(const char*, mode_t);
+int fcntl(int, int, ...);
+int posix_fadvise(int, off_t, off_t, int);
+int posix_fallocate(int, off_t, off_t);
 
 __END_DECLS

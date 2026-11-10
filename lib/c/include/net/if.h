@@ -68,9 +68,9 @@ struct ifreq {
 #define ifr_ifindex ifr_ifru.ifru_ivalue
 #define ifr_newname ifr_ifru.ifru_newname
 
-unsigned if_nametoindex(const char*) __KERNEL(if_nametoindex);
-char* if_indextoname(unsigned, char*) __KERNEL(if_indextoname);
-struct if_nameindex* if_nameindex(void) __KERNEL(if_nameindex);
-void if_freenameindex(struct if_nameindex*) __KERNEL(if_freenameindex);
+unsigned if_nametoindex(const char*);
+char* if_indextoname(unsigned, char*);
+struct if_nameindex* if_nameindex(void);
+void if_freenameindex(struct if_nameindex*);
 
 __END_DECLS
