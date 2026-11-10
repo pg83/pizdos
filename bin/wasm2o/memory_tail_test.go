@@ -165,6 +165,7 @@ func TestNarrowedShifts(t *testing.T) {
 		{params: i32, results: i32, export: "half", code: cat(get(0), []byte{opI32Load, 2, 0}, i32c(16), []byte{opI32ShrU})},
 		{params: i32, results: i32, locals: i32, export: "both", code: cat(get(0), []byte{opI32Load16U, 1, 0, opLocalTee, 1}, i32c(255), []byte{0x71}, get(1), i32c(8), []byte{opI32ShrU, opI32Add})},
 		{params: i32, results: i32, locals: i32, export: "stored", code: cat(get(0), []byte{opI32Load16U, 1, 0, opLocalSet, 1}, get(0), i32c(0x7700), []byte{0x3b, 1, 0}, get(1), i32c(8), []byte{opI32ShrU})},
+		{params: i32, results: i32, export: "low", code: cat(get(0), []byte{opI32Load16U, 1, 0}, i32c(255), []byte{0x71})},
 	}}
 
 	for _, options := range []CompileOptions{{}, {memoryTail: true, tailRanges: true}} {
@@ -175,13 +176,24 @@ func TestNarrowedShifts(t *testing.T) {
 			f, _ := i.export(name)
 			return f.Interface().(func(uintptr, uint32) uint32)
 		}
-		high, top, half, both, stored := fn("high"), fn("top"), fn("half"), fn("both"), fn("stored")
+		high, top, half, both, stored, low := fn("high"), fn("top"), fn("half"), fn("both"), fn("stored"), fn("low")
 		binary.LittleEndian.PutUint32(mem[2000:], 0x89abcdef)
 		binary.LittleEndian.PutUint32(mem[2004:], 0x12345678)
 		binary.LittleEndian.PutUint16(mem[pageSize-2:], 0xa5c3)
 
 		if high(i.ctx(), 2000) != 0xcd || top(i.ctx(), 2000) != 0x12 || half(i.ctx(), 2000) != 0x89ab || both(i.ctx(), 2000) != 0xef+0xcd || high(i.ctx(), pageSize-2) != 0xa5 {
 			t.Fatalf("tail %t: high bytes %#x %#x %#x %#x", options.memoryTail, high(i.ctx(), 2000), top(i.ctx(), 2000), half(i.ctx(), 2000), both(i.ctx(), 2000))
+		}
+
+		if low(i.ctx(), 2000) != 0xef || low(i.ctx(), pageSize-2) != 0xc3 {
+			t.Fatalf("tail %t: low bytes %#x", options.memoryTail, low(i.ctx(), 2000))
+		}
+
+		if !options.memoryTail {
+			// The narrowed load keeps the check of the whole half.
+			if trap := trapOf(func() { low(i.ctx(), pageSize-1) }); trap != trapMemoryOOB {
+				t.Fatalf("strict: low byte of a half past the end: trap %d", trap)
+			}
 		}
 
 		if got := stored(i.ctx(), 2000); got != 0xcd || binary.LittleEndian.Uint16(mem[2000:]) != 0x7700 {

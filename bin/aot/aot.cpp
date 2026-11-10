@@ -5775,6 +5775,8 @@ namespace {
 
     static void allocatorDuplicateDispatch(Allocator* a);
 
+    static void allocatorNarrowMasks(Allocator* a);
+
     static Interval* allocatorPartAt(Interval* root, i32 p);
 
     static void allocatorScan(Allocator* a);
@@ -10760,6 +10762,70 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     p->insts.pushBack(mf->blocks[h].insts[i]);
                 }
                 p->succs = mf->blocks[h].succs;
+            }
+        }
+    }
+
+    // narrowMasks loads only the low bytes of an unsigned load that a mask
+    // of them is the only reader of in its register: a byte or a half
+    // instead of a word and an and. The load's check, of its own width,
+    // stays where it was.
+    static void allocatorNarrowMasks(Allocator* a) {
+        MFunc* mf = a->mf;
+        auto order = a->order.view();
+        for (Int j = 0; j < length(order); ++j) {
+            auto insts = mf->blocks[order[j]].insts.view();
+            for (Int i = 0; i < length(insts); ++i) {
+                MInst* in = &insts[i];
+                if (in->op != mAluImm || in->aux != u8(aluAnd) || in->size != 4 || !vRegIsPhys(in->dst) || (in->imm != 255 && in->imm != 65535)) {
+                    continue;
+                }
+                const u8 width = in->imm == 255 ? 1 : 2;
+                Int next = i + 1;
+                while (next < length(insts) && insts[next].op == mNop) {
+                    ++next;
+                }
+                if (next < length(insts) && (insts[next].op == mJcc || insts[next].op == mSetcc || insts[next].op == mCmov || insts[next].op == mFSelect)) {
+                    continue;
+                }
+                const VReg r = in->dst;
+                // Back through the block, and a block it alone enters from.
+                i32 b = order[j];
+                Span<MInst> scan = insts;
+                Int k = i - 1;
+                for (Int hops = 0; hops < 4; ++hops) {
+                    bool done = false;
+                    for (; k >= 0 && !done; --k) {
+                        MInst* prior = &scan[k];
+                        if ((prior->op == mMov || prior->op == mFMov) && prior->dst == prior->src && prior->aux == 0) {
+                            continue;
+                        }
+                        if (prior->op == mLoad && prior->dst == r) {
+                            if (prior->aux == 0 && prior->dsize == 4 && prior->size > width) {
+                                prior->size = width;
+                                *in = inst(mNop);
+                            }
+                            done = true;
+                            break;
+                        }
+                        bool touches = false;
+                        mInstForEachOperand(prior, [&](VReg* o, Int) {
+                            touches = touches || *o == r;
+                        });
+                        auto clobbers = mInstClobberSet(prior, mf->registerClasses);
+                        for (Int c = 0; c < length(clobbers); ++c) {
+                            touches = touches || clobbers[c] == r;
+                        }
+                        done = touches;
+                    }
+                    const auto preds = mf->blocks[b].preds;
+                    if (done || length(preds) != 1 || length(mf->blocks[preds[0]].succs) != 1) {
+                        break;
+                    }
+                    b = preds[0];
+                    scan = mf->blocks[b].insts.view();
+                    k = length(scan) - 1;
+                }
             }
         }
     }
@@ -20978,6 +21044,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         allocatorOrderSlots(a);
         allocatorDeadMoves(a);
         allocatorDuplicateDispatch(a);
+        allocatorNarrowMasks(a);
         return a;
     }
 
