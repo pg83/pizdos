@@ -70,6 +70,27 @@ static void strings(void) {
     char swapped[4];
     swab("1234", swapped, 4);
     printf(" %.4s strcoll %d\n", swapped, strcoll("a", "b") < 0);
+    /* through pointers: lib/c's own functions, which string.h inlines */
+    void* (*volatile cpy)(void*, const void*, size_t) = memcpy;
+    void* (*volatile move)(void*, const void*, size_t) = memmove;
+    void* (*volatile set)(void*, int, size_t) = memset;
+    int (*volatile cmp)(const void*, const void*, size_t) = memcmp;
+    void* (*volatile chr)(const void*, int, size_t) = memchr;
+    size_t (*volatile len)(const char*) = strlen;
+    char* (*volatile scpy)(char*, const char*) = strcpy;
+    char* (*volatile scat)(char*, const char*) = strcat;
+    int (*volatile scmp)(const char*, const char*) = strcmp;
+    size_t (*volatile spn)(const char*, const char*) = strspn;
+    size_t (*volatile cspn)(const char*, const char*) = strcspn;
+    char s[16];
+    char t[8];
+    set(s, 'x', sizeof s);
+    scpy(s, "abc");
+    scat(s, "def");
+    move(s + 1, s, 3);
+    cpy(t, s, 7);
+    printf("pointers %s %zu %d %d %td %zu %zu\n", t, len(s), cmp(s, "aac", 3), scmp(s, "aabcd"), (char*)chr(s, 'c', 6) - s,
+           spn(s, "ab"), cspn(s, "e"));
 }
 
 static void wide(void) {

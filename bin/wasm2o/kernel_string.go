@@ -209,26 +209,8 @@ func ffs(x uint64) uint32 {
 	return uint32(bits.TrailingZeros64(x) + 1)
 }
 
-func (p *Process) libcStrlen(s uint32) uint32 {
-	return uint32(len(p.cstr(s)))
-}
-
-func (p *Process) libcStrcmp(a, b uint32) uint32 {
-	return uint32(int32(bytes.Compare(p.cstr(a), p.cstr(b))))
-}
-
 func (p *Process) libcStrcasecmp(a, b uint32) uint32 {
 	return p.strncmp(a, b, ^uint32(0), true)
-}
-
-func (p *Process) libcMemcmp(a, b, n uint32) uint32 {
-	return uint32(int32(bytes.Compare(p.span(a, n), p.span(b, n))))
-}
-
-func (p *Process) libcMemchr(s, c, n uint32) uint32 {
-	at, _ := p.search(s, n, byte(c))
-
-	return at
 }
 
 func (p *Process) libcStrchr(s, c uint32) uint32 {
@@ -279,48 +261,8 @@ func (p *Process) libcStrpbrk(s, accept uint32) uint32 {
 	return s + n
 }
 
-func (p *Process) libcStrcpy(d, s uint32) uint32 {
-	p.strcpy(d, s)
-
-	return d
-}
-
 func (p *Process) libcStrncpy(d, s, n uint32) uint32 {
 	p.stpncpy(d, s, n)
-
-	return d
-}
-
-func (p *Process) libcStrcat(d, s uint32) uint32 {
-	p.strcpy(d+uint32(len(p.cstr(d))), s)
-
-	return d
-}
-
-func (p *Process) libcMemcpy(d, s, n uint32) uint32 {
-	m := p.inst.mem
-
-	if uint64(d)+uint64(n) > uint64(len(m)) || uint64(s)+uint64(n) > uint64(len(m)) {
-		oob()
-	}
-
-	moveBytes(m, d, s, n)
-
-	return d
-}
-
-func (p *Process) libcMemmove(d, s, n uint32) uint32 {
-	return p.libcMemcpy(d, s, n)
-}
-
-func (p *Process) libcMemset(d, c, n uint32) uint32 {
-	m := p.inst.mem
-
-	if uint64(d)+uint64(n) > uint64(len(m)) {
-		oob()
-	}
-
-	setBytes(m, d, c, n)
 
 	return d
 }
@@ -981,14 +923,6 @@ func (p *Process) libcStrncmp(a, b, n uint32) uint32 {
 
 func (p *Process) libcStrncasecmp(a, b, n uint32) uint32 {
 	return p.strncmp(a, b, n, true)
-}
-
-func (p *Process) libcStrspn(s, accept uint32) uint32 {
-	return p.spanSet(s, accept, false)
-}
-
-func (p *Process) libcStrcspn(s, reject uint32) uint32 {
-	return p.spanSet(s, reject, true)
 }
 
 func (p *Process) libcStrstr(h, n uint32) uint32 {

@@ -34,6 +34,8 @@ type testModule struct {
 	funcs   []testFunc
 	// memory, when max is not zero, is min..max pages.
 	memMin, memMax uint32
+	// importExports exports imports by index under these names
+	importExports map[int]string
 }
 
 func leb(out []byte, x uint64) []byte {
@@ -101,6 +103,8 @@ func (m *testModule) encode() []byte {
 	funcs = leb(funcs, uint64(len(m.funcs)))
 	exported := 0
 
+	exported += len(m.importExports)
+
 	for i, f := range m.funcs {
 		funcs = leb(funcs, uint64(len(m.imports)+i))
 
@@ -110,6 +114,11 @@ func (m *testModule) encode() []byte {
 	}
 
 	exports = leb(exports, uint64(exported))
+
+	for i, export := range m.importExports {
+		exports = leb(append(name(exports, export), 0), uint64(i))
+	}
+
 	code = leb(code, uint64(len(m.funcs)))
 
 	for i, f := range m.funcs {

@@ -4,6 +4,8 @@
  * Shared vocabulary of every public header. A function marked __KERNEL is
  * imported from the kernel's "kernel" module under its own name; everything
  * else is defined inside the process (crt, stdio, libm and the rest of lib/c).
+ * A header's __INLINE definition is inlined at every call and never emitted:
+ * lib/c defines the function itself once, which a pointer to it reaches.
  * The ABI is wasm32 with a 64-bit long double, 64-bit time_t, off_t, ino_t
  * and dev_t; struct layouts below are what the kernel reads and writes.
  */
@@ -21,6 +23,7 @@
 #endif
 
 #define __KERNEL(name) __attribute__((__import_module__("kernel"), __import_name__(#name)))
+#define __INLINE extern __inline __attribute__((__gnu_inline__, __always_inline__))
 #define __NORETURN __attribute__((__noreturn__))
 #define __RETURNS_TWICE __attribute__((__returns_twice__))
 #define __PRINTF(f, a) __attribute__((__format__(__printf__, f, a)))

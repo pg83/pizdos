@@ -24,6 +24,7 @@ basename lib file.txt
 strerror_r 0 No such file or directory 34 No 
 div -3 -1 142857142857 1 ffs 5 41
 memccpy 4 swab 2143 strcoll 1
+pointers aabcef 6 -1 1 3 3 4
 wcslen 12 wcschr 7 wcsrchr 9 wcsstr 6
 wcsspn 1 wcscspn 5 wcspbrk 6 wcscmp 1 0
 wcstok 3 wcwidth 1 2 0 -1 wcswidth 4

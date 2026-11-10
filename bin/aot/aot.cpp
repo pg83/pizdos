@@ -5276,8 +5276,9 @@ namespace {
 
     static constexpr Int calleeStr = 4;
 
-    // The imports of lib/c's memory and string functions the code compiles
-    // itself: it checks their ranges and calls lib/str's.
+    // The imports lib/c's memory and string functions call, __kernel_memcpy
+    // and the like, which the code compiles itself: it checks their ranges
+    // and calls lib/str's.
     static constexpr Int intrinsicNone = 0;
 
     static constexpr Int intrinsicMemcpy = 1;
@@ -6344,6 +6345,10 @@ namespace {
     static Amem objCodeGotMem(ObjCode* oc, String sym);
 
     static void objCodeImportAdapters(ObjCode* oc);
+
+    static void objCodeRefuseIntrinsicAddresses(ObjCode* oc);
+
+    static void objCodeRefuseIntrinsic(ObjCode* oc, Int index);
 
     static void objCodeInitThunk(ObjCode* oc);
 
@@ -16804,6 +16809,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 break;
             }
             case OpRefFunc: {
+                objCodeRefuseIntrinsic(l->oc, convert<i64>(val->aux));
                 MInst in = inst(mLea);
                 in.dst = lowererDef(l, v);
                 in.mem = memAt(ctxReg, layoutDesc(l->lay, convert<i64>(val->aux)));
@@ -19482,11 +19488,52 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             String sym = importSymbol(imp.module, imp.name, t);
             oc->importSyms[imp.index] = sym;
             oc->importIntrinsics[imp.index] = intrinsicOf(imp, t);
+            if (oc->importIntrinsics[imp.index] != intrinsicNone) {
+                continue;
+            }
             String name = String("w2o.adapter.") + symbolPart(imp.module) + String(".") + symbolPart(imp.name);
             oc->funcAt[imp.index] = objCodeGoCall(oc, name, t->params, t->results, sym, false);
             if (m->funcs[imp.index].returnsTwice) {
                 setMap(oc->jumpAt, convert<i32>(imp.index), objCodeGoCall(oc, name + String(".jump"), t->params, t->results, sym, true));
             }
+        }
+        objCodeRefuseIntrinsicAddresses(oc);
+    }
+
+    // An import the code compiles at its calls has no code of its own, so
+    // nothing may take its address: lib/c takes the address of its own
+    // function instead. A module whose elements, exports or globals do is
+    // refused here, ref.func in code where it is lowered.
+    static void objCodeRefuseIntrinsicAddresses(ObjCode* oc) {
+        Module* m = oc->m;
+        auto refFunc = [&](Slice<u8> x) mutable -> void {
+            if (length(x) > 0 && x[0] == 210) {
+                Reader r = Reader{subslice(x, 1, length(x)), {}};
+                objCodeRefuseIntrinsic(oc, convert<i64>(readerU32(&r)));
+            }
+        };
+        auto elems = m->elems;
+        for (Int i = 0; i < length(elems); ++i) {
+            auto exprs = elems[i].exprs;
+            for (Int k = 0; k < length(exprs); ++k) {
+                refFunc(exprs[k]);
+            }
+        }
+        auto exports = m->exports;
+        for (Int i = 0; i < length(exports); ++i) {
+            if (exports[i].kind == externFunc) {
+                objCodeRefuseIntrinsic(oc, convert<i64>(exports[i].index));
+            }
+        }
+        auto globals = m->globals;
+        for (Int i = 0; i < length(globals); ++i) {
+            refFunc(globals[i].init);
+        }
+    }
+
+    static void objCodeRefuseIntrinsic(ObjCode* oc, Int index) {
+        if (index < oc->m->importedFuncs && oc->importIntrinsics[index] != intrinsicNone) {
+            compilerError(String("unsupported: the address of an import compiled at its calls"));
         }
     }
 
@@ -19541,6 +19588,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             auto range1052 = m->funcs;
             for (Int index1053 = 0, rangeEnd1054 = length(range1052); index1053 < rangeEnd1054; ++index1053) {
                 Int i = index1053;
+                if (i < m->importedFuncs && oc->importIntrinsics[i] != intrinsicNone) {
+                    continue;
+                }
                 i32 d = layoutDesc(lay, i);
                 asmBytes(a, {u8(u8(72LL)), u8(u8(141LL)), u8(u8(5LL))});
                 a->fixups = appendValues(a->fixups, RipFixup{asmPos(a), asmPos(a) + 4, convert<i32>(i), labelFunc});
@@ -24502,8 +24552,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return regs;
     }
 
-    // intrinsicOf tells the imports of lib/c's memory and string functions,
-    // by module, name and type.
+    // intrinsicOf tells the imports lib/c's memory and string functions call,
+    // __kernel_memcpy and the like (string.h), by module, name and type.
     static Int intrinsicOf(Import imp, FuncType* t) {
         if (imp.module != String("kernel") || length(t->results) != 1 || t->results[0] != I32) {
             return intrinsicNone;
@@ -24518,12 +24568,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             Int params;
             Int intrinsic;
         };
-        const Known known[] = {{String("memcpy"), 3, intrinsicMemcpy}, {String("memmove"), 3, intrinsicMemmove},
-                               {String("memset"), 3, intrinsicMemset}, {String("memcmp"), 3, intrinsicMemcmp},
-                               {String("memchr"), 3, intrinsicMemchr}, {String("strlen"), 1, intrinsicStrlen},
-                               {String("strcpy"), 2, intrinsicStrcpy}, {String("strcat"), 2, intrinsicStrcat},
-                               {String("strcmp"), 2, intrinsicStrcmp}, {String("strspn"), 2, intrinsicStrspn},
-                               {String("strcspn"), 2, intrinsicStrcspn}};
+        const Known known[] = {{String("__kernel_memcpy"), 3, intrinsicMemcpy}, {String("__kernel_memmove"), 3, intrinsicMemmove},
+                               {String("__kernel_memset"), 3, intrinsicMemset}, {String("__kernel_memcmp"), 3, intrinsicMemcmp},
+                               {String("__kernel_memchr"), 3, intrinsicMemchr}, {String("__kernel_strlen"), 1, intrinsicStrlen},
+                               {String("__kernel_strcpy"), 2, intrinsicStrcpy}, {String("__kernel_strcat"), 2, intrinsicStrcat},
+                               {String("__kernel_strcmp"), 2, intrinsicStrcmp}, {String("__kernel_strspn"), 2, intrinsicStrspn},
+                               {String("__kernel_strcspn"), 2, intrinsicStrcspn}};
         for (const Known& k : known) {
             if (imp.name == k.name && length(t->params) == k.params) {
                 return k.intrinsic;

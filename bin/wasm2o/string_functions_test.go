@@ -5,23 +5,25 @@ package main
 import (
 	"bytes"
 	"math/rand"
+	"strings"
 	"testing"
 )
 
-// The imports of lib/c's memcmp, memchr, strlen, strcpy, strcat, strcmp,
-// strspn and strcspn call lib/str's functions, the ranges and strings
-// checked at the call: each agrees with the kernel's own on what it
-// returns, whether it traps and the memory it leaves, for ranges and
-// strings anywhere in the memory, at its end and past it, with and without
-// the accessible tail, at every size up to the maximum and with its result
-// unused. Nothing is written past the accessible end.
+// The imports lib/c's memory and string functions call, __kernel_memcpy and
+// the like, are compiled at each call into lib/str's functions, the ranges
+// and strings checked there: each agrees with what the kernel's function
+// did, kernel below, on what it returns, whether it traps and the memory it
+// leaves, for ranges and strings anywhere in the memory, at its end and past
+// it, with and without the accessible tail, at every size up to the maximum
+// and with its result unused. Nothing is written past the accessible end,
+// and no import is bound: the code calls none.
 func TestStringFunctions(t *testing.T) {
 	type function struct {
 		name  string
 		arity int
 	}
 
-	functions := []function{{"memcmp", 3}, {"memchr", 3}, {"strlen", 1}, {"strcpy", 2}, {"strcat", 2}, {"strcmp", 2}, {"strspn", 2}, {"strcspn", 2}}
+	functions := []function{{"memcpy", 3}, {"memmove", 3}, {"memset", 3}, {"memcmp", 3}, {"memchr", 3}, {"strlen", 1}, {"strcpy", 2}, {"strcat", 2}, {"strcmp", 2}, {"strspn", 2}, {"strcspn", 2}}
 	m := &testModule{memMin: 1, memMax: 3}
 
 	for k, f := range functions {
@@ -33,22 +35,15 @@ func TestStringFunctions(t *testing.T) {
 			args = append(args, get(j)...)
 		}
 
-		m.imports = append(m.imports, testImport{module: "kernel", name: f.name, params: params, results: i32})
+		m.imports = append(m.imports, testImport{module: "kernel", name: "__kernel_" + f.name, params: params, results: i32})
 		m.funcs = append(m.funcs, testFunc{params: params, results: i32, export: f.name, code: cat(args, call(k))},
 			testFunc{params: params, export: f.name + "_drop", code: cat(args, call(k), []byte{opDrop})})
 	}
 
 	m.funcs = append(m.funcs, testFunc{params: []ValType{I32}, results: i32, export: "grow", code: cat(get(0), []byte{opMemoryGrow, 0})})
 
-	// The imports' adapters need them; the code never calls them.
-	unused3 := func(uintptr, uint32, uint32, uint32) uint32 { panic("an import of a string function called") }
-	unused2 := func(uintptr, uint32, uint32) uint32 { panic("an import of a string function called") }
-	imports := testImports{"kernel.memcmp": unused3, "kernel.memchr": unused3,
-		"kernel.strlen": func(uintptr, uint32) uint32 { panic("an import of a string function called") },
-		"kernel.strcpy": unused2, "kernel.strcat": unused2, "kernel.strcmp": unused2, "kernel.strspn": unused2, "kernel.strcspn": unused2}
-
 	for _, options := range []CompileOptions{{memoryTail: true, tailRanges: true}, {}} {
-		i := instantiate(t.Name(), readObject(compileModuleWithOptions(m.encode(), options)), imports, 8<<20)
+		i := instantiate(t.Name(), readObject(compileModuleWithOptions(m.encode(), options)), testImports{}, 8<<20)
 		i.start()
 		p := &Process{inst: i}
 
@@ -76,25 +71,41 @@ func TestStringFunctions(t *testing.T) {
 			return r, trap
 		}
 
+		// kernel is what the kernel's functions did, which the code keeps:
+		// a range past the memory's end, or a string not ended within it,
+		// traps, as does a search that the end cut short.
 		kernel := func(name string, a []uint32) (r uint32, trap int) {
 			trap = trapOf(func() {
 				switch name {
+				case "memcpy", "memmove":
+					copy(p.span(a[0], a[2]), p.span(a[1], a[2]))
+					r = a[0]
+				case "memset":
+					d := p.span(a[0], a[2])
+
+					for k := range d {
+						d[k] = byte(a[1])
+					}
+
+					r = a[0]
 				case "memcmp":
-					r = p.libcMemcmp(a[0], a[1], a[2])
+					r = uint32(int32(bytes.Compare(p.span(a[0], a[2]), p.span(a[1], a[2]))))
 				case "memchr":
-					r = p.libcMemchr(a[0], a[1], a[2])
+					r, _ = p.search(a[0], a[2], byte(a[1]))
 				case "strlen":
-					r = p.libcStrlen(a[0])
+					r = uint32(len(p.cstr(a[0])))
 				case "strcpy":
-					r = p.libcStrcpy(a[0], a[1])
+					p.strcpy(a[0], a[1])
+					r = a[0]
 				case "strcat":
-					r = p.libcStrcat(a[0], a[1])
+					p.strcpy(a[0]+uint32(len(p.cstr(a[0]))), a[1])
+					r = a[0]
 				case "strcmp":
-					r = p.libcStrcmp(a[0], a[1])
+					r = uint32(int32(bytes.Compare(p.cstr(a[0]), p.cstr(a[1]))))
 				case "strspn":
-					r = p.libcStrspn(a[0], a[1])
+					r = p.spanSet(a[0], a[1], false)
 				case "strcspn":
-					r = p.libcStrcspn(a[0], a[1])
+					r = p.spanSet(a[0], a[1], true)
 				}
 			})
 
@@ -181,7 +192,7 @@ func TestStringFunctions(t *testing.T) {
 			for range 1000 {
 				copy(mem, base)
 
-				switch random.Intn(7) {
+				switch random.Intn(10) {
 				case 0:
 					a, b := at(), at()
 
@@ -301,6 +312,27 @@ func TestStringFunctions(t *testing.T) {
 
 					str(s)
 					check(name, s, set)
+				case 7:
+					s, d := at(), at()
+
+					if random.Intn(2) == 0 {
+						d = near(s)
+					}
+
+					check("memmove", d, s, length(s))
+				case 8:
+					// memcpy's ranges do not overlap
+					s, d := at(), at()
+					n := length(s)
+
+					if uint64(d) < uint64(s)+uint64(n) && uint64(s) < uint64(d)+uint64(n) {
+						continue
+					}
+
+					check("memcpy", d, s, n)
+				case 9:
+					d := at()
+					check("memset", d, uint32(random.Intn(1<<16)), length(d))
 				}
 			}
 
@@ -325,6 +357,13 @@ func TestStringFunctions(t *testing.T) {
 			check("memcmp", end, end, 0)
 			check("memcmp", end-1, 0, 2)
 			check("memcmp", 0, end-1, 1)
+			check("memmove", end-1, 0, 1)
+			check("memmove", end-1, 0, 2)
+			check("memcpy", 0, end-1, 1)
+			check("memcpy", 0, end, 1)
+			check("memset", end-1, 7, 1)
+			check("memset", end, 7, 0)
+			check("memset", end, 7, 1)
 			check("strcmp", end-1, end-1)
 			check("strcmp", 0, end-1)
 			check("strspn", end-1, 0)
@@ -343,5 +382,22 @@ func TestStringFunctions(t *testing.T) {
 		}
 
 		i.release()
+	}
+}
+
+// Nothing may take the address of an import compiled at its calls, which has
+// no code of its own: lib/c's pointers are to its own functions. A module
+// exporting one or returning a reference to one is refused.
+func TestStringFunctionAddressRefused(t *testing.T) {
+	strlen := []testImport{{module: "kernel", name: "__kernel_strlen", params: []ValType{I32}, results: i32}}
+	const opRefFunc = 0xd2
+
+	for what, m := range map[string]*testModule{
+		"an export":   {imports: strlen, importExports: map[int]string{0: "strlen"}},
+		"a reference": {imports: strlen, funcs: []testFunc{{results: []ValType{FuncRef}, export: "f", code: []byte{opRefFunc, 0}}}},
+	} {
+		if e := try(func() { compileModule(m.encode()) }); e == nil || !strings.Contains(e.message(), "compiled at its calls") {
+			t.Fatalf("%s of __kernel_strlen: %v", what, e)
+		}
 	}
 }

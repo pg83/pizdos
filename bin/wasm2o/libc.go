@@ -145,30 +145,19 @@ func (k *Kernel) functionTable() map[string]any {
 		"malloc_usable_size":     libcMalloc_usable_size,
 		"malloc_trim":            libcMalloc_trim,
 		"reallocarray":           libcReallocarray,
-		"strlen":                 libcStrlen,
 		"strnlen":                libcStrnlen,
-		"strcmp":                 libcStrcmp,
 		"strncmp":                libcStrncmp,
 		"strcasecmp":             libcStrcasecmp,
 		"strncasecmp":            libcStrncasecmp,
-		"memcmp":                 libcMemcmp,
-		"memchr":                 libcMemchr,
 		"strchr":                 libcStrchr,
 		"strchrnul":              libcStrchrnul,
 		"strrchr":                libcStrrchr,
-		"strspn":                 libcStrspn,
-		"strcspn":                libcStrcspn,
 		"strpbrk":                libcStrpbrk,
 		"strstr":                 libcStrstr,
 		"strcasestr":             libcStrcasestr,
-		"strcpy":                 libcStrcpy,
 		"stpcpy":                 libcStpcpy,
 		"strncpy":                libcStrncpy,
 		"stpncpy":                libcStpncpy,
-		"strcat":                 libcStrcat,
-		"memcpy":                 libcMemcpy,
-		"memmove":                libcMemmove,
-		"memset":                 libcMemset,
 		"mempcpy":                libcMempcpy,
 		"strdup":                 libcStrdup,
 		"strndup":                libcStrndup,
@@ -1080,16 +1069,8 @@ func libcReallocarray(ctx uintptr, ptr, n, size uint32) uint32 {
 	return proc(ctx).libcReallocarray(ptr, n, size)
 }
 
-func libcStrlen(ctx uintptr, s uint32) uint32 {
-	return proc(ctx).libcStrlen(s)
-}
-
 func libcStrnlen(ctx uintptr, s, n uint32) uint32 {
 	return proc(ctx).libcStrnlen(s, n)
-}
-
-func libcStrcmp(ctx uintptr, a, b uint32) uint32 {
-	return proc(ctx).libcStrcmp(a, b)
 }
 
 func libcStrncmp(ctx uintptr, a, b, n uint32) uint32 {
@@ -1104,14 +1085,6 @@ func libcStrncasecmp(ctx uintptr, a, b, n uint32) uint32 {
 	return proc(ctx).libcStrncasecmp(a, b, n)
 }
 
-func libcMemcmp(ctx uintptr, a, b, n uint32) uint32 {
-	return proc(ctx).libcMemcmp(a, b, n)
-}
-
-func libcMemchr(ctx uintptr, s, c, n uint32) uint32 {
-	return proc(ctx).libcMemchr(s, c, n)
-}
-
 func libcStrchr(ctx uintptr, s, c uint32) uint32 {
 	return proc(ctx).libcStrchr(s, c)
 }
@@ -1122,14 +1095,6 @@ func libcStrchrnul(ctx uintptr, s, c uint32) uint32 {
 
 func libcStrrchr(ctx uintptr, s, c uint32) uint32 {
 	return proc(ctx).libcStrrchr(s, c)
-}
-
-func libcStrspn(ctx uintptr, s, accept uint32) uint32 {
-	return proc(ctx).libcStrspn(s, accept)
-}
-
-func libcStrcspn(ctx uintptr, s, reject uint32) uint32 {
-	return proc(ctx).libcStrcspn(s, reject)
 }
 
 func libcStrpbrk(ctx uintptr, s, accept uint32) uint32 {
@@ -1144,10 +1109,6 @@ func libcStrcasestr(ctx uintptr, h, n uint32) uint32 {
 	return proc(ctx).libcStrcasestr(h, n)
 }
 
-func libcStrcpy(ctx uintptr, d, s uint32) uint32 {
-	return proc(ctx).libcStrcpy(d, s)
-}
-
 func libcStpcpy(ctx uintptr, d, s uint32) uint32 {
 	return proc(ctx).libcStpcpy(d, s)
 }
@@ -1158,22 +1119,6 @@ func libcStrncpy(ctx uintptr, d, s, n uint32) uint32 {
 
 func libcStpncpy(ctx uintptr, d, s, n uint32) uint32 {
 	return proc(ctx).libcStpncpy(d, s, n)
-}
-
-func libcStrcat(ctx uintptr, d, s uint32) uint32 {
-	return proc(ctx).libcStrcat(d, s)
-}
-
-func libcMemcpy(ctx uintptr, d, s, n uint32) uint32 {
-	return proc(ctx).libcMemcpy(d, s, n)
-}
-
-func libcMemmove(ctx uintptr, d, s, n uint32) uint32 {
-	return proc(ctx).libcMemmove(d, s, n)
-}
-
-func libcMemset(ctx uintptr, d, c, n uint32) uint32 {
-	return proc(ctx).libcMemset(d, c, n)
 }
 
 func libcMempcpy(ctx uintptr, d, s, n uint32) uint32 {
