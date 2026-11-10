@@ -10624,7 +10624,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // deadMoves drops the moves into registers that nothing reads before
     // they are written again: a reload at the start of a block that does
-    // not use the value and leaves it in its slot, say. The liveness of the
+    // not use the value and leaves it in its slot, say. So go the leas and
+    // extensions, which set no flags, that nothing reads: a sum each of
+    // whose accesses is addressed from its base. The liveness of the
     // physical registers runs backward over the blocks to a fixed point;
     // every instruction names the registers it reads and writes, or its
     // clobbers do, as the allocation itself relies on.
@@ -10719,7 +10721,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     }
                     dropped += Int(moves.size() - kept);
                     moves.resize(kept);
-                } else if ((in->op == mMov || in->op == mFMov || in->op == mMovImm || in->op == mFConst) && vRegIsPhys(in->dst) && (live & bit(in->dst)) == 0) {
+                } else if ((in->op == mMov || in->op == mFMov || in->op == mMovImm || in->op == mFConst || in->op == mLea || in->op == mExt) && vRegIsPhys(in->dst) && (live & bit(in->dst)) == 0) {
                     *in = inst(mNop);
                     dropped++;
                 }
