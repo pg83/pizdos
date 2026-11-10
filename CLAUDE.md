@@ -142,13 +142,14 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   registers and stack slots, `call *GOT[symbol]`, the GOT holding the
   function's code address. No import is a closure: every function of the
   kernel, the WASI host and the tests is a named function of ctx. The
-  allocator keeps nothing in registers across such a call; after it the
-  code reads the instance from `g.instance`, a field our runtime adds to
-  g, which the entry thunks set and restore and the resume and land stubs
-  set, and the memory base from the instance; while the instance's
-  interrupt word is set it calls the interrupt stub. The adapters
-  `w2o.adapter.*` remain for the imports tables and exports name and for
-  the `.jump` calls of imports that return twice. `bindContext(code, ctx)`
+  allocator keeps nothing in registers across such a call; after it the code
+  reads the instance from `g.instance`, a field our runtime adds to g, which
+  the entry thunks set and restore and the resume and land stubs set, and
+  the memory base from the instance; while the instance's interrupt word is
+  set it calls the interrupt stub. An import has an adapter `w2o.adapter.*`
+  only when the module names it, in an element, an export or a global, which
+  is how a pointer reaches it (ref.func keeps to those), and one that
+  returns twice has its `.jump` for its calls. `bindContext(code, ctx)`
   makes a stub that calls code with ctx first: the spec runner binds a
   module's import to another module's export thunk with its instance.
 - Compilation enables a physical 1 KiB readable and writable tail beyond

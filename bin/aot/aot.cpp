@@ -4716,9 +4716,11 @@ namespace {
         Int initFn{};
         i32 dataInitTable = -1;
         // importSyms are the imported functions' symbols by function index,
-        // importIntrinsics the memory functions among them.
+        // importIntrinsics the memory functions among them, importCode
+        // those with code, an adapter, that a pointer can reach.
         Slice<String> importSyms{};
         Slice<Int> importIntrinsics{};
+        Slice<bool> importCode{};
     };
 
     struct Table {
@@ -6346,9 +6348,7 @@ namespace {
 
     static void objCodeImportAdapters(ObjCode* oc);
 
-    static void objCodeRefuseIntrinsicAddresses(ObjCode* oc);
-
-    static void objCodeRefuseIntrinsic(ObjCode* oc, Int index);
+    static Slice<bool> objCodeNamedFunctions(ObjCode* oc);
 
     static void objCodeInitThunk(ObjCode* oc);
 
@@ -16809,7 +16809,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 break;
             }
             case OpRefFunc: {
-                objCodeRefuseIntrinsic(l->oc, convert<i64>(val->aux));
+                Int fn = convert<i64>(val->aux);
+                if (fn < l->m->importedFuncs && !l->oc->importCode[fn]) {
+                    if (l->oc->importIntrinsics[fn] != intrinsicNone) {
+                        compilerError(String("unsupported: the address of an import compiled at its calls"));
+                    }
+                    compilerError(String("ref.func of a function no element, export or global names"));
+                }
                 MInst in = inst(mLea);
                 in.dst = lowererDef(l, v);
                 in.mem = memAt(ctxReg, layoutDesc(l->lay, convert<i64>(val->aux)));
@@ -19476,8 +19482,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // adapter, for its direct calls, which writes the jump frame; the module
     // then has the land stub (goabi.go). Tables and exports take the first,
     // as their callers keep no token.
+    // importAdapters makes the code of the imports a pointer can reach, the
+    // functions the module names: an adapter that calls the Go function.
+    // The others are only called, so they have none; an import the code
+    // compiles at its calls must not be named.
     static void objCodeImportAdapters(ObjCode* oc) {
         Module* m = oc->m;
+        Slice<bool> named = objCodeNamedFunctions(oc);
         auto imports = m->imports;
         for (Int i = 0; i < length(imports); ++i) {
             Import imp = imports[i];
@@ -19489,27 +19500,35 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             oc->importSyms[imp.index] = sym;
             oc->importIntrinsics[imp.index] = intrinsicOf(imp, t);
             if (oc->importIntrinsics[imp.index] != intrinsicNone) {
+                if (named[imp.index]) {
+                    compilerError(String("unsupported: the address of an import compiled at its calls"));
+                }
                 continue;
             }
             String name = String("w2o.adapter.") + symbolPart(imp.module) + String(".") + symbolPart(imp.name);
-            oc->funcAt[imp.index] = objCodeGoCall(oc, name, t->params, t->results, sym, false);
+            if (named[imp.index]) {
+                oc->importCode[imp.index] = true;
+                oc->funcAt[imp.index] = objCodeGoCall(oc, name, t->params, t->results, sym, false);
+            }
             if (m->funcs[imp.index].returnsTwice) {
                 setMap(oc->jumpAt, convert<i32>(imp.index), objCodeGoCall(oc, name + String(".jump"), t->params, t->results, sym, true));
             }
         }
-        objCodeRefuseIntrinsicAddresses(oc);
     }
 
-    // An import the code compiles at its calls has no code of its own, so
-    // nothing may take its address: lib/c takes the address of its own
-    // function instead. A module whose elements, exports or globals do is
-    // refused here, ref.func in code where it is lowered.
-    static void objCodeRefuseIntrinsicAddresses(ObjCode* oc) {
+    // namedFunctions marks the functions the module's elements, exports and
+    // globals name: the only ones whose address it can take, by ref.func
+    // too, which a valid module keeps to them.
+    static Slice<bool> objCodeNamedFunctions(ObjCode* oc) {
         Module* m = oc->m;
+        Slice<bool> named = makeSlice<bool>(length(m->funcs));
         auto refFunc = [&](Slice<u8> x) mutable -> void {
             if (length(x) > 0 && x[0] == 210) {
                 Reader r = Reader{subslice(x, 1, length(x)), {}};
-                objCodeRefuseIntrinsic(oc, convert<i64>(readerU32(&r)));
+                u32 index = readerU32(&r);
+                if (convert<i64>(index) < length(named)) {
+                    named[index] = true;
+                }
             }
         };
         auto elems = m->elems;
@@ -19522,19 +19541,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         auto exports = m->exports;
         for (Int i = 0; i < length(exports); ++i) {
             if (exports[i].kind == externFunc) {
-                objCodeRefuseIntrinsic(oc, convert<i64>(exports[i].index));
+                named[exports[i].index] = true;
             }
         }
         auto globals = m->globals;
         for (Int i = 0; i < length(globals); ++i) {
             refFunc(globals[i].init);
         }
-    }
-
-    static void objCodeRefuseIntrinsic(ObjCode* oc, Int index) {
-        if (index < oc->m->importedFuncs && oc->importIntrinsics[index] != intrinsicNone) {
-            compilerError(String("unsupported: the address of an import compiled at its calls"));
-        }
+        return named;
     }
 
     // Every destination was checked against the private memory's minimum.
@@ -19588,7 +19602,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             auto range1052 = m->funcs;
             for (Int index1053 = 0, rangeEnd1054 = length(range1052); index1053 < rangeEnd1054; ++index1053) {
                 Int i = index1053;
-                if (i < m->importedFuncs && oc->importIntrinsics[i] != intrinsicNone) {
+                if (i < m->importedFuncs && !oc->importCode[i]) {
                     continue;
                 }
                 i32 d = layoutDesc(lay, i);
@@ -25480,6 +25494,7 @@ namespace {
         code->funcAt = makeSlice<i32>(length(module->funcs));
         code->importSyms = makeSlice<String>(module->importedFuncs);
         code->importIntrinsics = makeSlice<Int>(module->importedFuncs);
+        code->importCode = makeSlice<bool>(module->importedFuncs);
         objCodeAddFixedBlobs(code);
         objCodeImportAdapters(code);
         for (Int i = module->importedFuncs; i < length(module->funcs); ++i) {
