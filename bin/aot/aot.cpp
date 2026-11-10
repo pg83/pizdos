@@ -4900,7 +4900,7 @@ namespace {
 
     static constexpr Int headerSize = offInterrupt + 8;
 
-    static constexpr Int boundSlack = 65536;
+    static constexpr Int boundSlack = 1024;
 
     static constexpr Int tailCounterBytes = 32;
 
@@ -20289,7 +20289,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 return false;
             }
             auto offset = constOffset(d.offset);
-            if (!offset.v1 || offset.v0 < 65536) {
+            if (!offset.v1 || offset.v0 < boundSlack) {
                 return false;
             }
         }
@@ -20298,7 +20298,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return false;
         }
         auto stack = constOffset(g.init);
-        return stack.v1 && stack.v0 >= 65536;
+        return stack.v1 && stack.v0 >= boundSlack;
     }
 
     static Tuple2<i64, bool> constOffset(Slice<u8> expr) {
@@ -22760,7 +22760,7 @@ namespace {
         initializeCompilerTables();
         Module* module = decodeModule(readInput(modulePool));
         if (options.memoryTail && length(module->mems) > 0) {
-            module->memoryTail = 65536;
+            module->memoryTail = boundSlack;
             module->tailRanges = options.tailRanges;
             module->tailProfile = options.tailProfile && options.tailRanges;
             module->lowFree = moduleLowFree(module);

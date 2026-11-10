@@ -106,25 +106,25 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   the `.jump` calls of imports that return twice. `bindContext(code, ctx)`
   makes a stub that calls code with ctx first: the spec runner binds a
   module's import to another module's export thunk with its instance.
-- Compilation enables a physical 64 KiB readable and writable tail beyond
-  the logical memory size by default: a check that an address is within
-  the logical size admits every access reaching up to 64 KiB past it, so
-  later accesses from the same address need no check; an address past the
-  logical size traps. Machine-code range versioning lets one address guard
-  cover related addresses within 64 KiB on the fast path, with each access
-  checked in order on the fallback path. Versioning precedes register
+- Compilation enables a physical 1 KiB readable and writable tail beyond
+  the logical memory size by default (`boundSlack`): a check that an
+  address is within the logical size admits every access reaching up to
+  1 KiB past it, so later accesses from the same address need no check; an
+  address past the logical size traps. Machine-code range versioning lets
+  one address guard cover related addresses within 1 KiB on the fast path,
+  with each access checked in order on the fallback path. Versioning precedes register
   allocation; emission places fallback blocks after hot code, sends jumps
   past blocks that only jump, falls through blocks that emit nothing and
   uses multi-byte NOPs for loop alignment.
   `memory.size`, growth limits and the zero initialization of newly grown
   pages retain their logical meaning. The object records the extension;
   running it needs this loader but no environment setting.
-  A module that keeps nothing in its first 64 KiB (every data segment at
-  64 KiB or more, the stack pointer starting there; our toolchain links the
-  stack first with 64 KiB past the program's budget) has the accesses
-  through base + c covered by one check of the base: a sum that wrapped
-  around 2^32 would land in that free memory, so trapping on the base is
-  right. `W2X_MEMORY_TAIL=plain` disables range versioning for comparisons;
+  A module that keeps nothing in its first 1 KiB (every data segment at
+  1 KiB or more, wasm-ld's default, and the stack pointer starting there;
+  our toolchain links the stack first with 1 KiB past the program's budget)
+  has the accesses through base + c covered by one check of the base: a sum
+  that wrapped around 2^32 would land in that free memory, so trapping on
+  the base is right. The two sides of the ring are the one constant. `W2X_MEMORY_TAIL=plain` disables range versioning for comparisons;
   `W2X_MEMORY_TAIL=strict` compiles with exact Wasm bounds. `wasm2o spec`
   and boundary-assertion unit tests select strict compilation explicitly.
   `W2X_TAIL_PROFILE=1` adds per-function counters to an optimized object;

@@ -36,7 +36,7 @@ FLAGS = [
 
 LINK = [
     "--stack-first",
-    "-z", "stack-size=1114112",
+    "-z", "stack-size=1049600",
     "--max-memory=4294967296",
     "--export=__heap_base",
     "--export=__stack_pointer",

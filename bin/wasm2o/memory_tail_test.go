@@ -52,7 +52,7 @@ func TestMemoryTailDefault(t *testing.T) {
 	f, _ := i.export("chain")
 	chain := f.Interface().(func(uintptr, uint32, uint32) uint32)
 
-	if obj.meta.memory.tail != boundSlack || i.memory.pages != 1 || len(i.memoryBytes()) != 2*pageSize {
+	if obj.meta.memory.tail != boundSlack || i.memory.pages != 1 || len(i.memoryBytes()) != pageSize+boundSlack {
 		t.Fatal("default compilation did not enable the accessible tail")
 	}
 
@@ -89,7 +89,7 @@ func TestMemoryTail(t *testing.T) {
 		f, _ = i.export("copy")
 		copyBytes := f.Interface().(func(uintptr, uint32, uint32, uint32))
 
-		if size(i.ctx()) != 1 || len(i.memory.bytes()) != pageSize || len(i.memoryBytes()) != 2*pageSize {
+		if size(i.ctx()) != 1 || len(i.memory.bytes()) != pageSize || len(i.memoryBytes()) != pageSize+boundSlack {
 			t.Fatalf("optimized %t: logical and accessible sizes disagree", optimized)
 		}
 
@@ -103,7 +103,7 @@ func TestMemoryTail(t *testing.T) {
 
 		// The tail extends accesses whose base is within the logical size;
 		// a base past it traps without touching memory.
-		for _, p := range []uint32{pageSize + 1, 2*pageSize - 4, 2*pageSize - 2} {
+		for _, p := range []uint32{pageSize + 1, pageSize + boundSlack - 4, pageSize + boundSlack - 2} {
 			before := string(i.memoryBytes()[pageSize:])
 
 			if trap := trapOf(func() { store(i.ctx(), p, 99) }); trap != trapMemoryOOB {
@@ -119,7 +119,7 @@ func TestMemoryTail(t *testing.T) {
 			}
 		}
 
-		fill(i.ctx(), pageSize, 0x7b, pageSize)
+		fill(i.ctx(), pageSize, 0x7b, boundSlack)
 		copyBytes(i.ctx(), pageSize+128, pageSize, 32)
 
 		if grow(i.ctx(), 0) != 1 || read(i.ctx(), pageSize) != 0x7b7b7b7b {
@@ -169,7 +169,7 @@ func TestMemoryTailRanges(t *testing.T) {
 		t.Fatal("fast region did not write across the logical end")
 	}
 
-	p := uint32(2*pageSize - 12)
+	p := uint32(pageSize + boundSlack - 12)
 
 	if trap := trapOf(func() { chain(i.ctx(), p, 33) }); trap != trapMemoryOOB {
 		t.Fatalf("chain based past the logical end: trap %d", trap)
