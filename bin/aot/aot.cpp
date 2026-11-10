@@ -6443,6 +6443,8 @@ namespace {
 
     static Amem baseAt(VReg base, i32 disp);
 
+    static bool belowBase(Function* f, i32 addr, i64 end);
+
     template <typename Data>
     static void breakPatterns_func(Data data, Int a, Int b);
 
@@ -14850,6 +14852,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     const bool boundedBase = proven && l->bounded[usize(base)] == l->block && l->block >= 0;
                     if (c >= -boundSlack && top <= boundSlack && (baseChecked || !checked || boundedBase)) {
                         VReg rb = lowererUse(l, base);
+                        // The sum reaches as far past itself as the base
+                        // does past the base, less c: the whole slack
+                        // after a check of the base, only as far as a fact
+                        // of the base reaches without one.
+                        i64 reach = baseChecked ? temporary741.v0 : 0;
                         if (!baseChecked && !boundedBase) {
                             l->checkUndo = appendValues(l->checkUndo, CheckUndo{base, temporary741.v0, temporary741.v1});
                             setMap(l->checked, base, i64(boundSlack));
@@ -14858,10 +14865,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             in.imm = maximum(top, convert<i64>(width));
                             in.addressValue = base;
                             lowererEmit(l, in);
+                            reach = boundSlack;
                         }
-                        if (c >= 0 && (!had || prior < boundSlack - c)) {
+                        if (c >= 0 && reach - c > 0 && (!had || prior < reach - c)) {
                             l->checkUndo = appendValues(l->checkUndo, CheckUndo{addr, prior, had});
-                            setMap(l->checked, addr, boundSlack - c);
+                            setMap(l->checked, addr, reach - c);
                         }
                         return memIndexed(memReg, rb, convert<i32>(offset + c));
                     }
@@ -14884,6 +14892,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             continue;
                         }
                         auto known = lookupMap(l->checked, base2);
+                        i64 reach = known.v1 ? known.v0 : 0;
                         if (!known.v1 || known.v0 < top) {
                             l->checkUndo = appendValues(l->checkUndo, CheckUndo{base2, known.v0, known.v1});
                             setMap(l->checked, base2, i64(boundSlack));
@@ -14892,10 +14901,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             in.imm = maximum(top, convert<i64>(width));
                             in.addressValue = base2;
                             lowererEmit(l, in);
+                            reach = boundSlack;
                         }
-                        if (!had || prior < boundSlack - range.hi) {
+                        if (!had || prior < reach - range.hi) {
                             l->checkUndo = appendValues(l->checkUndo, CheckUndo{addr, prior, had});
-                            setMap(l->checked, addr, boundSlack - range.hi);
+                            setMap(l->checked, addr, reach - range.hi);
                         }
                         return memIndexed(memReg, lowererUse(l, addr), convert<i32>(offset));
                     }
@@ -21196,6 +21206,32 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return f;
     }
 
+    // belowBase reports whether the lowering addresses an access ending end
+    // bytes past addr from a base, addr being the sum of the base and a
+    // negative constant within the slack: the access then says nothing of
+    // the sum, which may have wrapped around to far past the size.
+    static bool belowBase(Function* f, i32 addr, i64 end) {
+        if (!f->module->memoryTail || end > boundSlack || f->values[addr].op != OpAdd) {
+            return false;
+        }
+        auto constant = [&](i32 v) {
+            const Op op = f->values[v].op;
+            return op == OpConst || op == OpUndef || op == OpRefNull;
+        };
+        Span<i32> args = functionArgs(f, addr);
+        i32 base = args[0];
+        i32 k = args[1];
+        if (constant(base)) {
+            base = args[1];
+            k = args[0];
+        }
+        if (!constant(k) || constant(base)) {
+            return false;
+        }
+        const i64 c = f->values[k].op == OpConst ? convert<i64>(convert<i32>(convert<u32>(f->values[k].aux))) : 0;
+        return c < 0 && c >= -boundSlack && c + end <= boundSlack;
+    }
+
     // Carry successful memory checks through SSA edges and parameters. A
     // parameter is checked only as far as every incoming argument has already
     // been checked. Starting with no facts keeps cyclic proofs conservative.
@@ -21253,7 +21289,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 Value* val = &f->values[v];
                 if (val->op == OpLoad || val->op == OpStore) {
                     i32 addr = functionArgs(f, v)[0];
-                    accesses.pushBack(CheckedValue{addr, val->aux + convert<i64>(memKindWidth(convert<MemKind>(val->aux2)))});
+                    const i64 end = val->aux + convert<i64>(memKindWidth(convert<MemKind>(val->aux2)));
+                    if (!belowBase(f, addr, end)) {
+                        accesses.pushBack(CheckedValue{addr, end});
+                    }
                     if (f->values[addr].op == OpParam) {
                         add(addr);
                     }
