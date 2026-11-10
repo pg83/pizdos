@@ -6367,6 +6367,12 @@ namespace {
 
     static bool optimizerUnreachable(Optimizer* o);
 
+    static bool optimizerUnrollLoops(Optimizer* o);
+
+    static bool optimizerDisjointOrs(Optimizer* o);
+
+    static bool optimizerOuterConstants(Optimizer* o);
+
     static u8 readerByte(Reader* r);
 
     static Slice<u8> readerBytes(Reader* r, Int n);
@@ -19625,7 +19631,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void optimizerCommonExpressions(Optimizer* o) {
         Function* f = o->f;
         optimizerApply(o);
-        CfgInfo* ci = functionAnalyze(f);
+        CfgInfo* ci = f->cfg ? f->cfg : functionAnalyze(f);
         f->cfg = ci;
         auto children = cfgInfoChildren(ci);
 
@@ -20802,6 +20808,568 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         if (changed) {
             functionComputePreds(f);
+        }
+        return changed;
+    }
+
+    // unrollLoops replaces an innermost loop by its body as many times in a
+    // row as it runs, when constants decide that: the loop leaves only from
+    // its latch, what the latch tests follows from the constants the
+    // preheader passes its header's parameters, and it runs at most
+    // unrollTrips times, its body short. The copies see their variables as
+    // constants, so the lanes of a loop over a pixel's channels become a
+    // base and a constant each, which one check of the base covers.
+    static bool optimizerUnrollLoops(Optimizer* o) {
+        constexpr Int unrollTrips = 8;
+        constexpr Int unrollInstructions = 640;
+        Function* f = o->f;
+        if (!f->hasLoops) {
+            return false;
+        }
+        optimizerApply(o);
+        CfgInfo* ci = functionAnalyze(f);
+        const Int blocks = length(f->blocks);
+        bool changed = false;
+        auto order = ci->order;
+        for (Int oi = 0; oi < length(order); ++oi) {
+            const i32 h = order[oi];
+            if (!ci->header[h] || h >= blocks) {
+                continue;
+            }
+            i32 latch = -1;
+            i32 preheader = -1;
+            bool simple = true;
+            auto preds = f->blocks[h].preds;
+            for (Int i = 0; i < length(preds); ++i) {
+                if (cfgInfoDominates(ci, h, preds[i])) {
+                    simple = simple && latch < 0;
+                    latch = preds[i];
+                } else {
+                    simple = simple && preheader < 0;
+                    preheader = preds[i];
+                }
+            }
+            if (!simple || latch < 0 || preheader < 0 || f->blocks[latch].term.kind != TermIf) {
+                continue;
+            }
+            // The body: what reaches the latch back to the header, with no
+            // other loop inside.
+            Slice<bool> member = makeSlice<bool>(blocks);
+            member[h] = true;
+            Slice<i32> work = sliceOf<i32>({latch});
+            Int insts = 0;
+            while (simple && length(work) > 0) {
+                const i32 b = work[length(work) - 1];
+                work = subslice(work, 0, length(work) - 1);
+                if (member[b]) {
+                    continue;
+                }
+                if (ci->header[b] || ci->rpoIndex[b] < 0 || !cfgInfoDominates(ci, h, b)) {
+                    simple = false;
+                    break;
+                }
+                member[b] = true;
+                work = appendSlice(work, f->blocks[b].preds);
+            }
+            if (!simple) {
+                continue;
+            }
+            // The body accesses memory and calls nothing.
+            Slice<i32> body = {};
+            bool accesses = false;
+            for (Int i = 0; i < length(order); ++i) {
+                if (member[order[i]]) {
+                    body = appendValues(body, order[i]);
+                    auto instrs = f->blocks[order[i]].instrs.view();
+                    insts += length(instrs);
+                    for (Int j = 0; j < length(instrs); ++j) {
+                        const Op op = f->values[instrs[j]].op;
+                        accesses = accesses || op == OpLoad || op == OpStore;
+                        simple = simple && op != OpCall && op != OpCallIndirect;
+                    }
+                }
+            }
+            if (!simple || !accesses) {
+                continue;
+            }
+            // Only the latch leaves, to one block, and only it returns.
+            Term* t = &f->blocks[latch].term;
+            const Int back = t->edges[0].block == h ? 0 : 1;
+            if (t->edges[back].block != h || member[t->edges[1 - back].block]) {
+                continue;
+            }
+            const i32 exit = t->edges[1 - back].block;
+            for (Int i = 0; i < length(body) && simple; ++i) {
+                const Term& bt = f->blocks[body[i]].term;
+                if (bt.kind == TermReturn || bt.kind == TermTrap) {
+                    simple = false;
+                }
+                for (Int k = 0; k < length(bt.edges) && simple; ++k) {
+                    const i32 to = bt.edges[k].block;
+                    simple = (member[to] && (to != h || body[i] == latch)) || (body[i] == latch && to == exit);
+                }
+            }
+            if (!simple) {
+                continue;
+            }
+            // Run the latch's test on constants: the parameters the
+            // preheader passes constants, and what the latch passes back.
+            Edge entry = {};
+            auto pedges = f->blocks[preheader].term.edges;
+            for (Int k = 0; k < length(pedges); ++k) {
+                if (pedges[k].block == h) {
+                    entry = pedges[k];
+                }
+            }
+            auto params = f->blocks[h].params;
+            Slice<i64> known = makeSlice<i64>(length(params));
+            Slice<bool> isKnown = makeSlice<bool>(length(params));
+            for (Int j = 0; j < length(params); ++j) {
+                const Value& a = f->values[entry.args[j]];
+                isKnown[j] = a.op == OpConst;
+                known[j] = a.aux;
+            }
+            Fn<Tuple2<u64, bool>(i32, Int)> eval = {};
+            eval = [&](i32 v, Int depth) -> Tuple2<u64, bool> {
+                const Value& val = f->values[v];
+                if (val.op == OpConst) {
+                    return {u64(val.aux) & mask(val.typ), true};
+                }
+                if (depth > 12 || val.block < 0 || !member[val.block] || (val.typ != I32 && val.typ != I64)) {
+                    return {0, false};
+                }
+                if (val.op == OpParam) {
+                    if (val.block != h || !isKnown[val.aux]) {
+                        return {0, false};
+                    }
+                    return {u64(known[val.aux]) & mask(val.typ), true};
+                }
+                auto args = functionArgs(f, v);
+                if (val.nargs == 2 && isIntOp(val.op) && val.op != OpEqz) {
+                    auto a = eval(args[0], depth + 1);
+                    auto b = eval(args[1], depth + 1);
+                    if (!a.v1 || !b.v1) {
+                        return {0, false};
+                    }
+                    return foldInt(val.op, f->values[args[0]].typ, a.v0, b.v0);
+                }
+                if (val.nargs == 1 && ((val.op >= OpClz && val.op <= OpEqz) || val.op == OpWrap || val.op == OpExtendU || val.op == OpExtendS)) {
+                    auto a = eval(args[0], depth + 1);
+                    if (!a.v1) {
+                        return {0, false};
+                    }
+                    return foldUnary(val.op, val.typ, f->values[args[0]].typ, a.v0);
+                }
+                return {0, false};
+            };
+            Int trips = 1;
+            for (;; ++trips) {
+                auto c = eval(t->value, 0);
+                if (!c.v1) {
+                    trips = 0;
+                    break;
+                }
+                if ((c.v0 != 0) != (back == 0)) {
+                    break;
+                }
+                if (trips == unrollTrips) {
+                    trips = 0;
+                    break;
+                }
+                Slice<i64> next = makeSlice<i64>(length(params));
+                Slice<bool> nextKnown = makeSlice<bool>(length(params));
+                for (Int j = 0; j < length(params); ++j) {
+                    auto x = eval(t->edges[back].args[j], 0);
+                    nextKnown[j] = x.v1;
+                    next[j] = i64(x.v0);
+                }
+                known = next;
+                isKnown = nextKnown;
+            }
+            if (trips < 2 || trips * insts > unrollInstructions) {
+                continue;
+            }
+            // Copy k reads, for the header's parameters, what copy k - 1
+            // passes back; the last copy's latch goes to the exit.
+            const Int values = length(f->values);
+            // The copies take the body's terminators as they were: the
+            // latch's changes as the copies are made.
+            Slice<Term> terms = makeSlice<Term>(length(body));
+            for (Int i = 0; i < length(body); ++i) {
+                terms[i] = f->blocks[body[i]].term;
+            }
+            Slice<i32> map = makeSlice<i32>(values);
+            for (Int v = 0; v < values; ++v) {
+                map[v] = i32(v);
+            }
+                i32 previousLatch = latch;
+            for (Int k = 1; k < trips; ++k) {
+                Slice<i32> copy = makeSlice<i32>(blocks);
+                for (Int i = 0; i < length(body); ++i) {
+                    copy[body[i]] = functionNewBlock(f);
+                }
+                Slice<i32> backArgs = appendSlice(Slice<i32>{}, f->blocks[previousLatch].term.edges[back].args);
+                for (Int j = 0; j < length(params); ++j) {
+                    map[params[j]] = backArgs[j];
+                }
+                auto remap = [&](i32 v) {
+                    return v < values ? map[v] : v;
+                };
+                for (Int i = 0; i < length(body); ++i) {
+                    const i32 b = body[i];
+                    const i32 nb = copy[b];
+                    if (b != h) {
+                        Slice<i32> ps = {};
+                        auto bps = f->blocks[b].params;
+                        for (Int j = 0; j < length(bps); ++j) {
+                            const i32 n = functionNewValue(f, OpParam, f->values[bps[j]].typ, nb, f->values[bps[j]].aux, {});
+                            map[bps[j]] = n;
+                            ps = appendValues(ps, n);
+                        }
+                        f->blocks[nb].params = ps;
+                    }
+                    auto instrs = f->blocks[b].instrs.view();
+                    for (Int j = 0; j < length(instrs); ++j) {
+                        const i32 v = instrs[j];
+                        const Value val = f->values[v];
+                        Slice<i32> args = appendSlice(Slice<i32>{}, functionArgs(f, v));
+                        for (Int a = 0; a < length(args); ++a) {
+                            args[a] = remap(args[a]);
+                        }
+                        const i32 n = functionNewValue(f, val.op, val.typ, nb, val.aux, args);
+                        f->values[n].aux2 = val.aux2;
+                        map[v] = n;
+                        f->blocks[nb].instrs.pushBack(n);
+                    }
+                }
+                for (Int i = 0; i < length(body); ++i) {
+                    const i32 b = body[i];
+                    const Term src = terms[i];
+                    Term dst = Term{src.kind, src.value, {}, {}, src.aux};
+                    if (src.kind == TermIf || src.kind == TermSwitch) {
+                        dst.value = remap(src.value);
+                    }
+                    for (Int j = 0; j < length(src.values); ++j) {
+                        dst.values = appendValues(dst.values, remap(src.values[j]));
+                    }
+                    for (Int j = 0; j < length(src.edges); ++j) {
+                        Slice<i32> args = {};
+                        for (Int a = 0; a < length(src.edges[j].args); ++a) {
+                            args = appendValues(args, remap(src.edges[j].args[a]));
+                        }
+                        const i32 to = src.edges[j].block;
+                        dst.edges = appendValues(dst.edges, Edge{member[to] ? copy[to] : to, args});
+                    }
+                    f->blocks[copy[b]].term = dst;
+                }
+                // The latch before this copy enters it.
+                f->blocks[previousLatch].term = Term{TermJump, {}, sliceOf<Edge>({Edge{copy[h], {}}}), {}, {}};
+                previousLatch = copy[latch];
+            }
+            // The last copy leaves; every use past the loop reads its values.
+            Edge out = f->blocks[previousLatch].term.edges[1 - back];
+            f->blocks[previousLatch].term = Term{TermJump, {}, sliceOf<Edge>({out}), {}, {}};
+            auto outside = [&](i32 v) {
+                if (v >= values) {
+                    return v;
+                }
+                const i32 b = f->values[v].block;
+                return b >= 0 && b < blocks && member[b] ? map[v] : v;
+            };
+            for (Int b = 0; b < blocks; ++b) {
+                if (member[b] || f->blocks[b].dead) {
+                    continue;
+                }
+                auto instrs = f->blocks[b].instrs.view();
+                for (Int j = 0; j < length(instrs); ++j) {
+                    auto args = functionArgs(f, instrs[j]);
+                    for (Int a = 0; a < length(args); ++a) {
+                        args[a] = outside(args[a]);
+                    }
+                }
+                Term* bt = &f->blocks[b].term;
+                if (bt->kind == TermIf || bt->kind == TermSwitch) {
+                    bt->value = outside(bt->value);
+                }
+                for (Int j = 0; j < length(bt->values); ++j) {
+                    bt->values[j] = outside(bt->values[j]);
+                }
+                for (Int j = 0; j < length(bt->edges); ++j) {
+                    for (Int a = 0; a < length(bt->edges[j].args); ++a) {
+                        bt->edges[j].args[a] = outside(bt->edges[j].args[a]);
+                    }
+                }
+            }
+            changed = true;
+            // The analysis no longer describes the function.
+            break;
+        }
+        if (changed) {
+            functionComputePreds(f);
+            f->cfg = nullptr;
+            o->counted = false;
+        } else {
+            f->cfg = ci;
+        }
+        return changed;
+    }
+
+    // disjointOrs makes an add of each or whose operands have no set bit in
+    // common, as LLVM's disjoint or is before it becomes Wasm: the lanes of
+    // a pixel, (p << 2 | i) << 1 past a row, are then a base and a constant.
+    // A value's known trailing zeros come from constants, shifts, products
+    // and sums, a block parameter's from what every edge passes it, from the
+    // most each could have down to a fixed point; the other operand's bits
+    // that may be set from constants, masks, narrow loads and shifts right.
+    static bool optimizerDisjointOrs(Optimizer* o) {
+        Function* f = o->f;
+        optimizerApply(o);
+        const Int n = length(f->values);
+        auto width = [&](i32 v) -> Int {
+            return f->values[v].typ == I64 ? 64 : 32;
+        };
+        // The bits a value may have set, from the lowest up.
+        auto bits = [&](i32 v) -> Int {
+            const Value& val = f->values[v];
+            const Int w = width(v);
+            switch (val.op) {
+                case OpConst: {
+                    const u64 c = u64(val.aux) & mask(val.typ);
+                    return c == 0 ? 0 : 64 - Int(bitsLeadingZeros64(c));
+                }
+                case OpAnd: {
+                    auto args = functionArgs(f, v);
+                    for (Int k = 0; k < 2; ++k) {
+                        if (f->values[args[k]].op == OpConst) {
+                            const u64 c = u64(f->values[args[k]].aux) & mask(val.typ);
+                            return c == 0 ? 0 : 64 - Int(bitsLeadingZeros64(c));
+                        }
+                    }
+                    return w;
+                }
+                case OpLoad: {
+                    const MemKind kind = convert<MemKind>(val.aux2);
+                    const Int bytes = memKindWidth(kind);
+                    return !memKindSigned(kind) && bytes * 8 < w ? bytes * 8 : w;
+                }
+                case OpShrU: {
+                    auto args = functionArgs(f, v);
+                    if (f->values[args[1]].op == OpConst) {
+                        return w - Int(u64(f->values[args[1]].aux) & u64(w - 1));
+                    }
+                    return w;
+                }
+            }
+            return isCompare(val.op) ? 1 : w;
+        };
+        // Only an or of a value with few bits that may be set can be one.
+        bool any = false;
+        for (Int v = 0; v < n && !any; ++v) {
+            if (f->values[v].op == OpOr && f->values[v].block >= 0) {
+                auto args = functionArgs(f, i32(v));
+                any = bits(args[0]) < width(args[0]) || bits(args[1]) < width(args[1]);
+            }
+        }
+        if (!any) {
+            return false;
+        }
+        Slice<u8> zeros = makeSlice<u8>(n);
+        for (Int v = 0; v < n; ++v) {
+            zeros[v] = 64;
+        }
+        Slice<i32> order = functionRpo(f);
+        Slice<Slice<Edge*>> incoming = makeSlice<Slice<Edge*>>(length(f->blocks));
+        for (Int i = 0; i < length(order); ++i) {
+            const i32 b = order[i];
+            for (Int k = 0; k < length(f->blocks[b].term.edges); ++k) {
+                Edge* e = &f->blocks[b].term.edges[k];
+                incoming[e->block] = appendValues(incoming[e->block], e);
+            }
+        }
+        auto known = [&](i32 v) -> Int {
+            const Value& val = f->values[v];
+            if (val.op == OpConst) {
+                const u64 c = u64(val.aux) & mask(val.typ);
+                return c == 0 ? width(v) : Int(bitsTrailingZeros64(c));
+            }
+            Int z = zeros[v];
+            return z < width(v) ? z : width(v);
+        };
+        for (bool changed = true; changed;) {
+            changed = false;
+            for (Int i = 0; i < length(order); ++i) {
+                const i32 b = order[i];
+                auto params = f->blocks[b].params;
+                for (Int j = 0; j < length(params); ++j) {
+                    const i32 p = params[j];
+                    Int z = 64;
+                    auto edges = incoming[b];
+                    for (Int k = 0; k < length(edges); ++k) {
+                        const Int x = known(edges[k]->args[f->values[p].aux]);
+                        z = x < z ? x : z;
+                    }
+                    if (i == 0 || length(edges) == 0) {
+                        z = 0;
+                    }
+                    if (z < zeros[p]) {
+                        zeros[p] = u8(z);
+                        changed = true;
+                    }
+                }
+                auto instrs = f->blocks[b].instrs.view();
+                for (Int j = 0; j < length(instrs); ++j) {
+                    const i32 v = instrs[j];
+                    const Value& val = f->values[v];
+                    if (val.typ != I32 && val.typ != I64) {
+                        continue;
+                    }
+                    auto args = functionArgs(f, v);
+                    Int z = 0;
+                    switch (val.op) {
+                        case OpAdd:
+                        case OpSub:
+                        case OpOr:
+                        case OpXor: {
+                            const Int x = known(args[0]);
+                            const Int y = known(args[1]);
+                            z = x < y ? x : y;
+                            break;
+                        }
+                        case OpAnd: {
+                            const Int x = known(args[0]);
+                            const Int y = known(args[1]);
+                            z = x > y ? x : y;
+                            break;
+                        }
+                        case OpMul: {
+                            z = known(args[0]) + known(args[1]);
+                            break;
+                        }
+                        case OpShl: {
+                            if (f->values[args[1]].op == OpConst) {
+                                z = known(args[0]) + Int(u64(f->values[args[1]].aux) & u64(width(v) - 1));
+                            }
+                            break;
+                        }
+                        case OpSelect: {
+                            const Int x = known(args[1]);
+                            const Int y = known(args[2]);
+                            z = x < y ? x : y;
+                            break;
+                        }
+                        case OpExtendU:
+                        case OpExtendS:
+                        case OpWrap: {
+                            z = known(args[0]);
+                            break;
+                        }
+                    }
+                    // Every value starts at the top and only falls.
+                    z = z < width(v) ? z : width(v);
+                    if (z < zeros[v]) {
+                        zeros[v] = u8(z);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        bool rewritten = false;
+        for (Int v = 0; v < n; ++v) {
+            Value& val = f->values[v];
+            if (val.op != OpOr || val.block < 0 || (val.typ != I32 && val.typ != I64)) {
+                continue;
+            }
+            auto args = functionArgs(f, i32(v));
+            if (bits(args[1]) <= known(args[0]) || bits(args[0]) <= known(args[1])) {
+                f->values[v].op = OpAdd;
+                rewritten = true;
+            }
+        }
+        if (rewritten) {
+            o->counted = false;
+        }
+        return rewritten;
+    }
+
+    // outerConstants moves a constant at least zero out of an i32 sum to its
+    // outside, (p + (q + c)) to ((p + q) + c) and (x + c) << s to
+    // (x << s) + (c << s), when nothing else reads the inner value: an
+    // address is then a base and a constant, the lowering's form, and the
+    // addresses that differ in the constant alone share the base and its
+    // check. A constant below zero stays, since the base would be past the
+    // address.
+    static bool optimizerOuterConstants(Optimizer* o) {
+        Function* f = o->f;
+        optimizerApply(o);
+        optimizerCountUses(o);
+        bool changed = false;
+        auto constant = [&](i32 v, i64* c) {
+            const Value& val = f->values[v];
+            if (val.op != OpConst || val.typ != I32) {
+                return false;
+            }
+            *c = i64(i32(u32(val.aux)));
+            return true;
+        };
+        // inner gives x and c >= 0 of a sum x + c only v reads.
+        auto inner = [&](i32 v, i32* x, i64* c) {
+            const Value& val = f->values[v];
+            if (val.op != OpAdd || val.typ != I32 || o->uses[v] != 1) {
+                return false;
+            }
+            auto args = functionArgs(f, v);
+            for (Int k = 0; k < 2; ++k) {
+                if (constant(args[1 - k], c) && !constant(args[k], c) && *c >= 0) {
+                    constant(args[1 - k], c);
+                    *x = args[k];
+                    return true;
+                }
+            }
+            return false;
+        };
+        for (Int b = 0, end = length(f->blocks); b < end; ++b) {
+            if (f->blocks[b].dead) {
+                continue;
+            }
+            Vec<i32> out;
+            auto instrs = f->blocks[b].instrs.view();
+            bool rebuilt = false;
+            for (Int i = 0; i < length(instrs); ++i) {
+                const i32 v = instrs[i];
+                const Value val = f->values[v];
+                auto args = functionArgs(f, v);
+                i32 x = -1;
+                i64 c = 0;
+                if (val.op == OpShl && val.typ == I32 && f->values[args[1]].op == OpConst && inner(args[0], &x, &c)) {
+                    const u32 sh = u32(f->values[args[1]].aux) & 31;
+                    const i64 moved = i64(i32(u32(c) << sh));
+                    if (moved >= 0 && (u64(c) << sh) < u64(2147483648LL)) {
+                        const i32 t = functionNewValue(f, OpShl, I32, i32(b), 0, Span<const i32>({x, args[1]}));
+                        out.pushBack(t);
+                        f->values[v].op = OpAdd;
+                        optimizerSetArgs(o, v, Span<const i32>({t, optimizerConstant(o, I32, moved)}));
+                        rebuilt = changed = true;
+                    }
+                } else if (val.op == OpAdd && val.typ == I32) {
+                    for (Int k = 0; k < 2; ++k) {
+                        i64 other = 0;
+                        if (!constant(args[1 - k], &other) && inner(args[k], &x, &c)) {
+                            const i32 t = functionNewValue(f, OpAdd, I32, i32(b), 0, Span<const i32>({args[1 - k], x}));
+                            out.pushBack(t);
+                            optimizerSetArgs(o, v, Span<const i32>({t, optimizerConstant(o, I32, c)}));
+                            rebuilt = changed = true;
+                            break;
+                        }
+                    }
+                }
+                out.pushBack(v);
+            }
+            if (rebuilt) {
+                f->blocks[b].instrs = move(out);
+            }
+        }
+        if (changed) {
+            o->counted = false;
         }
         return changed;
     }
@@ -23124,6 +23692,37 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 if (!changed) {
                     break;
                 }
+            }
+        }
+        {
+            Int unrolled = 0;
+            for (; unrolled < 16 && optimizerUnrollLoops(o); unrolled++) {
+            }
+            for (Int round = 0; unrolled > 0 && round < 8; round++) {
+                bool changed = optimizerSimplify(o);
+                changed = optimizerThread(o) || changed;
+                changed = optimizerCleanup(o) || changed;
+                changed = optimizerTrivialParams(o) || changed;
+                if (!changed) {
+                    break;
+                }
+            }
+            // The analysis of a pass that changed nothing serves the
+            // common expressions; the rounds may change edges.
+            bool moved = optimizerDisjointOrs(o);
+            for (Int round = 0; round < 4 && optimizerOuterConstants(o); round++) {
+                moved = true;
+            }
+            for (Int round = 0; moved && round < 4; round++) {
+                f->cfg = nullptr;
+                bool changed = optimizerSimplify(o);
+                changed = optimizerCleanup(o) || changed;
+                if (!changed) {
+                    break;
+                }
+            }
+            if (unrolled > 0) {
+                f->cfg = nullptr;
             }
         }
         optimizerCommonExpressions(o);
