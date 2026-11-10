@@ -83,6 +83,58 @@ func TestFoldedLoads(t *testing.T) {
 	}
 }
 
+// A store of an update of what a load read from the same address updates
+// memory in place: in the load's block, in the block after a branch on the
+// loaded value, out of bounds trapping, and not across another store.
+func TestUpdatedLoads(t *testing.T) {
+	const i32LtS = 0x48
+	m := &testModule{memMin: 1, memMax: 1, funcs: []testFunc{
+		{params: []ValType{I32, I32}, export: "add", code: cat(get(0), get(0), []byte{opI32Load, 2, 0}, get(1), []byte{opI32Add, opI32Store, 2, 0})},
+		{params: i32, locals: i32, results: i32, export: "bounded", code: cat(
+			get(0), []byte{opI32Load, 2, 0, opLocalTee, 1}, i32c(100), []byte{i32LtS, opIf, byte(I32)},
+			get(0), get(1), i32c(1), []byte{opI32Add, opI32Store, 2, 0}, i32c(1), []byte{opElse}, i32c(0), []byte{0x0b})},
+		{params: []ValType{I32, I32}, export: "between", code: cat(get(0), get(0), []byte{opI32Load, 2, 0}, get(1), i32c(9), []byte{opI32Store, 2, 0}, i32c(1), []byte{opI32Add, opI32Store, 2, 0})},
+	}}
+
+	for _, options := range []CompileOptions{{}, {memoryTail: true, tailRanges: true}} {
+		i := instantiate(t.Name(), readObject(compileModuleWithOptions(m.encode(), options)), nil, 8<<20)
+		i.start()
+		mem := i.memory.bytes()
+		fn := func(name string) any {
+			f, _ := i.export(name)
+			return f.Interface()
+		}
+		add := fn("add").(func(uintptr, uint32, uint32))
+		bounded := fn("bounded").(func(uintptr, uint32) uint32)
+		between := fn("between").(func(uintptr, uint32, uint32))
+		binary.LittleEndian.PutUint32(mem[3000:], 40)
+		add(i.ctx(), 3000, 2)
+
+		if got := binary.LittleEndian.Uint32(mem[3000:]); got != 42 {
+			t.Fatalf("tail %t: update in place: %d", options.memoryTail, got)
+		}
+
+		if trap := trapOf(func() { add(i.ctx(), 2*pageSize, 1) }); trap != trapMemoryOOB {
+			t.Fatalf("tail %t: update out of bounds: trap %d", options.memoryTail, trap)
+		}
+
+		binary.LittleEndian.PutUint32(mem[3004:], 99)
+
+		if bounded(i.ctx(), 3004) != 1 || binary.LittleEndian.Uint32(mem[3004:]) != 100 || bounded(i.ctx(), 3004) != 0 || binary.LittleEndian.Uint32(mem[3004:]) != 100 {
+			t.Fatalf("tail %t: update after a branch: %d", options.memoryTail, binary.LittleEndian.Uint32(mem[3004:]))
+		}
+
+		binary.LittleEndian.PutUint32(mem[3008:], 5)
+		between(i.ctx(), 3008, 3008)
+
+		if got := binary.LittleEndian.Uint32(mem[3008:]); got != 6 {
+			t.Fatalf("tail %t: update across a store to the same address: %d", options.memoryTail, got)
+		}
+
+		i.release()
+	}
+}
+
 // An access at a negative constant offset from a base is covered by the
 // base's check and addressed from the base: with the tail it reaches the
 // slack before the memory where the sum wrapped, and traps only for a base

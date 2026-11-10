@@ -3885,6 +3885,9 @@ namespace {
         // foldable marks a deferred load its only user may read as a memory
         // operand (lowererFoldedLoad).
         Vec<bool> foldable{};
+        // rmw holds, for a store that updates what a load read from its
+        // address, the value it stores, or -1 (lowererMarkUpdates).
+        Vec<i32> rmw{};
         Vec<i32> mblk{};
         i32 cur{};
         Map<Array<i32, 2>, i32> split{};
@@ -5410,6 +5413,12 @@ namespace {
 
     static constexpr MOp mCounter = MOp(66LL);
 
+    // aluMemImm and aluMemReg update a memory operand with an immediate or a
+    // register: mem op= imm, mem op= src.
+    static constexpr MOp mAluMemImm = MOp(67LL);
+
+    static constexpr MOp mAluMemReg = MOp(68LL);
+
     static constexpr Int truncUnsigned = 1;
 
     static constexpr Int truncSat = 2;
@@ -5711,6 +5720,8 @@ namespace {
     static void asmAluRIRaw(Asm* a, AluOp op, u8 size, VReg dst, i64 x);
 
     static void asmAluRM(Asm* a, AluOp op, u8 size, VReg dst, Amem m);
+
+    static void asmAluMR(Asm* a, AluOp op, u8 size, Amem m, VReg src);
 
     static void asmAluRR(Asm* a, AluOp op, u8 size, VReg dst, VReg src);
 
@@ -6103,6 +6114,8 @@ namespace {
     static void lowererMarkDeferred(Lowerer* l);
 
     static void lowererMarkFoldable(Lowerer* l);
+
+    static void lowererMarkUpdates(Lowerer* l);
 
     static Tuple2<Mem, bool> lowererFoldedLoad(Lowerer* l, i32 v);
 
@@ -7425,8 +7438,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             case mStoreImm:
             case mCmpMemImm:
-            case mCounter: {
+            case mCounter:
+            case mAluMemImm: {
                 mem();
+                break;
+            }
+            case mAluMemReg: {
+                mem();
+                cb(&in->src, roleUse);
                 break;
             }
             case mAlu: {
@@ -10743,6 +10762,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         asmU32(a, convert<u32>(x));
     }
 
+    // aluMR emits "op m, src": the memory operand is updated.
+    static void asmAluMR(Asm* a, AluOp op, u8 size, Amem m, VReg src) {
+        asmOpRM(a, size == 8, Span<const u8>({u8(shiftLeft(convert<u8>(op), 3) | 1)}), convert<i64>(src), m, 0, false);
+    }
+
     static void asmAluRM(Asm* a, AluOp op, u8 size, VReg dst, Amem m) {
         if (op == aluImul) {
             asmOpRM(a, size == 8, Span<const u8>({u8(15LL), u8(175LL)}), convert<i64>(dst), m, 0, false);
@@ -13334,6 +13358,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 asmAluMI(a, aluCmp, in->size, funcEmitterMem(e, in->mem), in->imm);
                 break;
             }
+            case mAluMemImm: {
+                asmAluMI(a, convert<AluOp>(in->aux), in->size, funcEmitterMem(e, in->mem), in->imm);
+                break;
+            }
+            case mAluMemReg: {
+                asmAluMR(a, convert<AluOp>(in->aux), in->size, funcEmitterMem(e, in->mem), in->src);
+                break;
+            }
             case mTest: {
                 asmTest(a, in->size, in->src, in->src2);
                 break;
@@ -15872,6 +15904,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         l->deferred.fill(false);
         l->foldable.resize(f->values.size());
         l->foldable.fill(false);
+        l->rmw.resize(f->values.size());
+        l->rmw.fill(-1);
         auto order = l->ci->order;
         // An i32 sum of a base and a constant that only loads and stores of
         // its block address is lowered where one of them uses it, if any
@@ -15944,7 +15978,94 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
             }
         }
+        lowererMarkUpdates(l);
         lowererMarkFoldable(l);
+    }
+
+    // markUpdates finds stores of op(load, x) to the address the load read,
+    // at the load's width, op one x86 can apply to memory: the store updates
+    // memory in place. The load is in the store's block, or ends the block
+    // the store's block has as its only predecessor; between the two no
+    // value writes memory or traps otherwise than a load. A load of the
+    // store's block used only there goes: the store's check takes its place.
+    static void lowererMarkUpdates(Lowerer* l) {
+        Function* f = l->f;
+        auto order = l->ci->order;
+        for (Int o = 0; o < length(order); ++o) {
+            const i32 b = order[o];
+            auto instrs = f->blocks[b].instrs.view();
+            for (Int s = 0; s < length(instrs); ++s) {
+                const i32 st = instrs[s];
+                const Value* sv = &f->values[st];
+                if (sv->op != OpStore) {
+                    continue;
+                }
+                Span<i32> sargs = functionArgs(f, st);
+                const i32 addr = sargs[0];
+                const i32 y = sargs[1];
+                const Value* yv = &f->values[y];
+                const Int width = memKindWidth(convert<MemKind>(sv->aux2));
+                if (yv->block != b || l->uses[y] != 1 || isFloat(yv->typ) || width != Int(typeSize(yv->typ)) || (width != 4 && width != 8)) {
+                    continue;
+                }
+                if (yv->op != OpAdd && yv->op != OpSub && yv->op != OpAnd && yv->op != OpOr && yv->op != OpXor) {
+                    continue;
+                }
+                Span<i32> yargs = functionArgs(f, y);
+                i32 load = -1;
+                for (Int i = 0; i < 2 && load < 0; ++i) {
+                    if (i == 1 && yv->op == OpSub) {
+                        break;
+                    }
+                    const Value* lv = &f->values[yargs[i]];
+                    if (lv->op == OpLoad && functionArgs(f, yargs[i])[0] == addr && lv->aux == sv->aux && memKindWidth(convert<MemKind>(lv->aux2)) == width && yargs[1 - i] != yargs[i]) {
+                        load = yargs[i];
+                    }
+                }
+                if (load < 0) {
+                    continue;
+                }
+                const i32 lb = f->values[load].block;
+                bool ok = true;
+                Int from = 0;
+                if (lb == b) {
+                    from = -1;
+                    for (Int i = 0; i < s; ++i) {
+                        if (instrs[i] == load) {
+                            from = i + 1;
+                        }
+                    }
+                    ok = from >= 0;
+                } else {
+                    const auto preds = f->blocks[b].preds;
+                    ok = length(preds) == 1 && preds[0] == lb;
+                    if (ok) {
+                        auto before = f->blocks[lb].instrs.view();
+                        Int at = -1;
+                        for (Int i = 0; i < length(before); ++i) {
+                            if (before[i] == load) {
+                                at = i;
+                            }
+                        }
+                        ok = at >= 0;
+                        for (Int i = at + 1; ok && i < length(before); ++i) {
+                            ok = lowererTransparent(f->values[before[i]].op);
+                        }
+                    }
+                }
+                for (Int i = from; ok && i < s; ++i) {
+                    ok = instrs[i] == y || lowererTransparent(f->values[instrs[i]].op);
+                }
+                if (!ok) {
+                    continue;
+                }
+                l->rmw[st] = y;
+                l->deferred[y] = true;
+                if (lb == b && l->uses[load] == 1) {
+                    l->deferred[load] = true;
+                }
+            }
+        }
     }
 
     // transparent tells whether a load may move past a value of op: it
@@ -16014,7 +16135,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             for (Int j = 0; j < length(instrs); ++j) {
                 const i32 v = instrs[j];
                 const Value* val = &f->values[v];
-                if (val->op != OpLoad || l->uses[v] != 1) {
+                if (val->op != OpLoad || l->uses[v] != 1 || l->deferred[v]) {
                     continue;
                 }
                 const Int width = memKindWidth(convert<MemKind>(val->aux2));
@@ -16720,6 +16841,26 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         MemKind kind = convert<MemKind>(val->aux2);
         Mem mem = lowererAddress(l, addr, val->aux, memKindWidth(kind), MemKind(kind & memProven) != MemKind(0LL));
         u8 width = convert<u8>(memKindWidth(kind));
+        if (l->rmw[v] >= 0) {
+            const i32 y = l->rmw[v];
+            Value* yv = &l->f->values[y];
+            Span<i32> yargs = functionArgs(l->f, y);
+            const Value* first = &l->f->values[yargs[0]];
+            const bool loadFirst = first->op == OpLoad && functionArgs(l->f, yargs[0])[0] == addr && first->aux == val->aux;
+            const i32 x = loadFirst ? yargs[1] : yargs[0];
+            auto imm = lowererImm(l, x, width);
+            MInst in = inst(imm.v1 ? mAluMemImm : mAluMemReg);
+            in.mem = mem;
+            if (imm.v1) {
+                in.imm = imm.v0;
+            } else {
+                in.src = lowererUse(l, x);
+            }
+            in.size = width;
+            in.aux = convert<u8>(aluOpcode(yv->op));
+            lowererEmit(l, in);
+            return;
+        }
         ValType t = l->f->values[value].typ;
         if (isFloat(t) && lowererIsConst(l, value) && l->vregs[value] == noReg) {
             i64 bits = lowererConstBits(l, value);
@@ -21380,7 +21521,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static MFunc* lowerFunction(ObjCode* oc, Function* f) {
-        Lowerer* l = activePool->make<Lowerer>(Lowerer{oc->m, f, oc->lay, {}, activePool->make<MFunc>(MFunc{}), {}, {}, {}, {}, {}, {}, mapOf<Array<i32, 2>, i32>({}), mapOf<i32, i64>({}), {}, {}, {}, {}});
+        Lowerer* l = activePool->make<Lowerer>(Lowerer{oc->m, f, oc->lay, {}, activePool->make<MFunc>(MFunc{}), {}, {}, {}, {}, {}, {}, {}, mapOf<Array<i32, 2>, i32>({}), mapOf<i32, i64>({}), {}, {}, {}, {}});
         l->oc = oc;
         l->ci = f->cfg ? f->cfg : functionAnalyze(f);
         l->vregs.resize(f->values.size());
