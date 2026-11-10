@@ -14318,6 +14318,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
             }
         }
+        if (checked && lowererIsConst(l, addr)) {
+            // A constant address within bounds, a global's, is the
+            // displacement.
+            const i64 at = convert<i64>(convert<u32>(lowererConstBits(l, addr))) + offset;
+            if (at < 2147483647) {
+                return memAt(memReg, convert<i32>(at));
+            }
+        }
         if (checked && offset < 2147483647) {
             // A sum of a base and a constant within bounds, used only for
             // addresses, is addressed from the base, the constant in the
