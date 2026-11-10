@@ -23,7 +23,7 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 cd "$work"
 mkdir -p src tmp corpus/im corpus/pdf corpus/djvu corpus/svg
-UA="pizdos-stand-corpus/1 (https://github.com/pg83/pizdos)"
+UA="pizdos-stand-corpus/1 (https://github.com/pizd0s/kernel)"
 SVG=https://raw.githubusercontent.com/impulse-desktop/svg/4fff81eedb729d315ed31a10bde833514034865c/tst/corpus
 
 # fetch NAME SHA256 URL
