@@ -94,6 +94,12 @@ func TestUpdatedLoads(t *testing.T) {
 			get(0), []byte{opI32Load, 2, 0, opLocalTee, 1}, i32c(100), []byte{i32LtS, opIf, byte(I32)},
 			get(0), get(1), i32c(1), []byte{opI32Add, opI32Store, 2, 0}, i32c(1), []byte{opElse}, i32c(0), []byte{0x0b})},
 		{params: []ValType{I32, I32}, export: "between", code: cat(get(0), get(0), []byte{opI32Load, 2, 0}, get(1), i32c(9), []byte{opI32Store, 2, 0}, i32c(1), []byte{opI32Add, opI32Store, 2, 0})},
+		{params: i32, locals: i32, results: i32, export: "live", code: cat(
+			get(0), get(0), []byte{opI32Load, 2, 0}, i32c(-1), []byte{opI32Add, opLocalTee, 1, opI32Store, 2, 0},
+			get(1), []byte{opIf, byte(I32)}, i32c(1), []byte{opElse}, i32c(0), []byte{0x0b})},
+		{params: i32, locals: i32, results: i32, export: "dead", code: cat(
+			get(0), get(0), []byte{opI32Load, 2, 0}, i32c(-1), []byte{opI32Add, opLocalTee, 1, opI32Store, 2, 0},
+			get(1), []byte{opI32Eqz, opIf, byte(I32)}, i32c(1), []byte{opElse}, i32c(0), []byte{0x0b})},
 	}}
 
 	for _, options := range []CompileOptions{{}, {memoryTail: true, tailRanges: true}} {
@@ -107,6 +113,8 @@ func TestUpdatedLoads(t *testing.T) {
 		add := fn("add").(func(uintptr, uint32, uint32))
 		bounded := fn("bounded").(func(uintptr, uint32) uint32)
 		between := fn("between").(func(uintptr, uint32, uint32))
+		live := fn("live").(func(uintptr, uint32) uint32)
+		dead := fn("dead").(func(uintptr, uint32) uint32)
 		binary.LittleEndian.PutUint32(mem[3000:], 40)
 		add(i.ctx(), 3000, 2)
 
@@ -129,6 +137,18 @@ func TestUpdatedLoads(t *testing.T) {
 
 		if got := binary.LittleEndian.Uint32(mem[3008:]); got != 6 {
 			t.Fatalf("tail %t: update across a store to the same address: %d", options.memoryTail, got)
+		}
+
+		// The branch on the decremented value takes the update's flags.
+		binary.LittleEndian.PutUint32(mem[3012:], 2)
+		binary.LittleEndian.PutUint32(mem[3016:], 2)
+
+		if live(i.ctx(), 3012) != 1 || live(i.ctx(), 3012) != 0 || dead(i.ctx(), 3016) != 0 || dead(i.ctx(), 3016) != 1 || binary.LittleEndian.Uint32(mem[3012:]) != 0 || binary.LittleEndian.Uint32(mem[3016:]) != 0 {
+			t.Fatalf("tail %t: branch on an update: %d %d", options.memoryTail, binary.LittleEndian.Uint32(mem[3012:]), binary.LittleEndian.Uint32(mem[3016:]))
+		}
+
+		if trap := trapOf(func() { live(i.ctx(), 2*pageSize) }); trap != trapMemoryOOB {
+			t.Fatalf("tail %t: branch on an update out of bounds: trap %d", options.memoryTail, trap)
 		}
 
 		i.release()

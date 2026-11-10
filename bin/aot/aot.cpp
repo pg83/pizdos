@@ -3891,6 +3891,9 @@ namespace {
         // rmw holds, for a store that updates what a load read from its
         // address, the value it stores, or -1 (lowererMarkUpdates).
         Vec<i32> rmw{};
+        // rmwFlags marks a block's branch condition that tests a value an
+        // update in place stored: the update's flags decide the branch.
+        Vec<bool> rmwFlags{};
         Vec<i32> mblk{};
         i32 cur{};
         Map<Array<i32, 2>, i32> split{};
@@ -16008,6 +16011,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         l->foldable.fill(false);
         l->rmw.resize(f->values.size());
         l->rmw.fill(-1);
+        l->rmwFlags.resize(f->values.size());
+        l->rmwFlags.fill(false);
         auto order = l->ci->order;
         // An i32 sum of a base and a constant that only loads and stores of
         // its block address is lowered where one of them uses it, if any
@@ -16107,7 +16112,28 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 const i32 y = sargs[1];
                 const Value* yv = &f->values[y];
                 const Int width = memKindWidth(convert<MemKind>(sv->aux2));
-                if (yv->block != b || l->uses[y] != 1 || isFloat(yv->typ) || width != Int(typeSize(yv->typ)) || (width != 4 && width != 8)) {
+                // A value stored and otherwise only tested for zero by the
+                // block's branch, the store last before it, branches on the
+                // update's own flags.
+                i32 flags = -1;
+                if (l->uses[y] == 2 && f->blocks[b].term.kind == TermIf) {
+                    const i32 c = f->blocks[b].term.value;
+                    bool zero = c == y;
+                    bool last = true;
+                    if (c != y) {
+                        const Value* cv = &f->values[c];
+                        Span<i32> cargs = functionArgs(f, c);
+                        zero = cv->op == OpEqz ? cargs[0] == y : (cv->op == OpEq || cv->op == OpNe) && ((cargs[0] == y && lowererIsConst(l, cargs[1]) && lowererConstBits(l, cargs[1]) == 0) || (cargs[1] == y && lowererIsConst(l, cargs[0]) && lowererConstBits(l, cargs[0]) == 0));
+                        last = cv->block == b && l->uses[c] == 1 && l->deferred[c];
+                    }
+                    for (Int i = s + 1; last && i < length(instrs); ++i) {
+                        last = instrs[i] == c;
+                    }
+                    if (zero && last) {
+                        flags = c;
+                    }
+                }
+                if (yv->block != b || (l->uses[y] != 1 && flags < 0) || isFloat(yv->typ) || width != Int(typeSize(yv->typ)) || (width != 4 && width != 8)) {
                     continue;
                 }
                 if (yv->op != OpAdd && yv->op != OpSub && yv->op != OpAnd && yv->op != OpOr && yv->op != OpXor) {
@@ -16163,6 +16189,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
                 l->rmw[st] = y;
                 l->deferred[y] = true;
+                if (flags >= 0) {
+                    l->rmwFlags[flags] = true;
+                }
                 if (lb == b && l->uses[load] == 1) {
                     l->deferred[load] = true;
                 }
@@ -17127,7 +17156,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 i32 els = lowererEdgeBlock(l, b, 1);
                 u8 cc = {};
                 Int parity = 0;
-                if (l->foldable[t->value] && l->deferred[t->value] && l->f->values[t->value].op == OpLoad) {
+                if (l->rmwFlags[t->value]) {
+                    const Op op = l->f->values[t->value].op;
+                    cc = op == OpEqz || op == OpEq ? ccE : ccNE;
+                } else if (l->foldable[t->value] && l->deferred[t->value] && l->f->values[t->value].op == OpLoad) {
                     MInst in = inst(mCmpMemImm);
                     in.size = convert<u8>(memKindWidth(convert<MemKind>(l->f->values[t->value].aux2)));
                     in.mem = lowererFoldedLoad(l, t->value).v0;
@@ -21633,7 +21665,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static MFunc* lowerFunction(ObjCode* oc, Function* f) {
-        Lowerer* l = activePool->make<Lowerer>(Lowerer{oc->m, f, oc->lay, {}, activePool->make<MFunc>(MFunc{}), {}, {}, {}, {}, {}, {}, {}, mapOf<Array<i32, 2>, i32>({}), mapOf<i32, i64>({}), {}, {}, {}, {}});
+        Lowerer* l = activePool->make<Lowerer>(Lowerer{oc->m, f, oc->lay, {}, activePool->make<MFunc>(MFunc{}), {}, {}, {}, {}, {}, {}, {}, {}, mapOf<Array<i32, 2>, i32>({}), mapOf<i32, i64>({}), {}, {}, {}, {}});
         l->oc = oc;
         l->ci = f->cfg ? f->cfg : functionAnalyze(f);
         l->vregs.resize(f->values.size());
