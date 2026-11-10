@@ -4233,7 +4233,19 @@ namespace {
         // depth of its definition's block, and for any other a depth no
         // block exceeds.
         Vec<i32> invariantDepth{};
+        // A virtual register whose one definition loads a float constant is
+        // constant, with the constant's bits. Its spill slot is a constant
+        // slot, numbered from constantSlot, the constant of constantSlots:
+        // it takes no room in the frame, nothing is saved to it, and the
+        // emitter reads the constant where it would read the slot.
+        Vec<bool> constant{};
+        Vec<u64> constantBits{};
+        Vec<u64> constantSlots{};
+        // definitions counts each virtual register's definitions.
+        Vec<i32> definitions{};
     };
+
+    static constexpr i32 constantSlot = 1 << 24;
 
     struct Bypass {
         i32 pred{};
@@ -5714,6 +5726,10 @@ namespace {
     static void allocatorSplitAtJoins(Allocator* a);
 
     static void allocatorInvariants(Allocator* a);
+
+    static void allocatorConstants(Allocator* a);
+
+    static void allocatorConstantDefinitions(Allocator* a);
 
     static Interval* allocatorPartAt(Interval* root, i32 p);
 
@@ -9714,6 +9730,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         for (Int x = 0; x < mf->nregs; ++x) {
             parent[usize(x)] = i32(x);
         }
+        // A constant joins only a register its copy alone defines, so that
+        // what they become is still a constant: joined into a register
+        // defined otherwise too it would be saved and reloaded as a value.
+        allocatorConstants(a);
+        Vec<bool> constant(move(a->constant));
+        Vec<bool> lone;
+        lone.resize(usize(mf->nregs));
+        lone.fill(true);
         auto find = [&](i32 x) {
             while (parent[usize(x)] != x) {
                 parent[usize(x)] = parent[usize(parent[usize(x)])];
@@ -9736,12 +9760,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             if (x == y) {
                 return;
             }
+            if ((constant[usize(x)] || constant[usize(y)]) && (constant[usize(x)] || !lone[usize(x)] || a->definitions[usize(dx)] != 1)) {
+                return;
+            }
             CopyInterval* left = a->copyIntervals[usize(x)];
             CopyInterval* right = a->copyIntervals[usize(y)];
             if (!left || !right || !left->ranges.size() || !right->ranges.size() || overlap(left->ranges.view(), right->ranges.view())) {
                 return;
             }
             parent[usize(y)] = x;
+            constant[usize(x)] = constant[usize(x)] || constant[usize(y)];
+            lone[usize(x)] = false;
             // Only root ranges are read from here. The whole allocator is
             // discarded after a join, so merged buffers can be reused now.
             mergeRanges(left->ranges, right->ranges, scratch);
@@ -10188,7 +10217,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     }
                     key = 2 * (p - 1) + 1;
                 }
-                if (src != dst) {
+                if (src != dst && !(isSlot(dst) && slotOf(dst) >= constantSlot)) {
                     appendMove(inner, key, Move{dst, src});
                 }
                 (void)x;
@@ -10211,7 +10240,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         VReg r = convert<VReg>(x) + firstVirtual;
                         VReg src = allocatorLocation(a, r, a->blockTo[b] - 1);
                         VReg dst = allocatorLocation(a, r, a->blockFrom[s]);
-                        if (src != dst) {
+                        if (src != dst && !(isSlot(dst) && slotOf(dst) >= constantSlot)) {
                             moves = appendValues(moves, Move{dst, src});
                         }
                     });
@@ -10293,6 +10322,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     emitMoves(endMoves, i);
                 }
                 MInst* in = &instructions[Int(i)];
+                if (in->op == mFConst && !vRegIsPhys(in->dst) && isSlot(allocatorLocation(a, in->dst, p + 1))) {
+                    *in = inst(mNop);
+                }
                 mInstForEachOperand(in, [&](VReg* r, Int role) {
                     if (*r == noReg || vRegIsPhys(*r)) {
                         return;
@@ -10345,7 +10377,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Map<VReg, Int> owners = makeMap<VReg, Int>();
         auto slots = a->slots.view();
         for (Int x = 0; x < length(slots); ++x) {
-            if (slots[x] >= 0) {
+            if (slots[x] >= 0 && slots[x] < constantSlot) {
                 setMap(owners, slotLoc(slots[x]), x);
             }
         }
@@ -10475,6 +10507,53 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     // invariants fills invariantDepth.
+    // constants finds the virtual registers defined only by a load of a
+    // float constant.
+    static void allocatorConstants(Allocator* a) {
+        MFunc* mf = a->mf;
+        Vec<i32>& defs = a->definitions;
+        defs.resize(usize(mf->nregs));
+        defs.fill(0);
+        a->constant.resize(usize(mf->nregs));
+        a->constant.fill(false);
+        a->constantBits.resize(usize(mf->nregs));
+        a->constantBits.fill(0);
+        for (Int b = 0; b < length(mf->blocks); ++b) {
+            auto instructions = mf->blocks[b].insts.view();
+            for (Int i = 0; i < length(instructions); ++i) {
+                MInst* in = &instructions[i];
+                mInstForEachOperand(in, [&](VReg* r, Int role) {
+                    if (*r == noReg || vRegIsPhys(*r) || (role & roleDef) == 0 || role == roleTemp) {
+                        return;
+                    }
+                    const usize x = usize(allocatorVindex(a, *r));
+                    defs[x]++;
+                    if (in->op == mFConst) {
+                        a->constant[x] = true;
+                        a->constantBits[x] = in->size == 4 ? u64(u32(in->imm)) : u64(in->imm);
+                    }
+                });
+            }
+        }
+        for (usize x = 0; x < defs.size(); ++x) {
+            if (defs[x] != 1) {
+                a->constant[x] = false;
+            }
+        }
+    }
+
+    // constantDefinitions moves to its constant slot a constant whose first
+    // part is used by nothing after its definition: the definition goes, and
+    // whatever reads the part reads the constant.
+    static void allocatorConstantDefinitions(Allocator* a) {
+        for (usize x = 0; x < a->constant.size(); ++x) {
+            Interval* root = a->intervals[x];
+            if (a->constant[x] && root && root->reg != noReg && length(root->uses) == 1 && length(root->memUses) == 0) {
+                allocatorSpill(a, root);
+            }
+        }
+    }
+
     static void allocatorInvariants(Allocator* a) {
         MFunc* mf = a->mf;
         a->invariantDepth.resize(usize(mf->nregs));
@@ -10643,7 +10722,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void allocatorSpill(Allocator* a, Interval* it) {
         it->reg = noReg;
         Int x = allocatorVindex(a, it->vreg);
-        if (a->slots[x] < 0) {
+        if (a->slots[x] < 0 && a->constant[usize(x)]) {
+            a->slots[x] = constantSlot + i32(a->constantSlots.size());
+            a->constantSlots.pushBack(a->constantBits[usize(x)]);
+        } else if (a->slots[x] < 0) {
             a->slots[x] = a->nslots;
             a->nslots++;
         }
@@ -13734,6 +13816,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void funcEmitterMove(FuncEmitter* e, VReg dst, VReg src) {
         Asm* a = e->a;
+        if (isSlot(dst) && slotOf(dst) >= constantSlot) {
+            compilerError(String("internal error: a move into a constant slot"));
+        }
         if (isSlot(dst) && isSlot(src)) {
             asmPushMem(a, funcEmitterSlotMem(e, slotOf(src)));
             asmPopMem(a, funcEmitterSlotMem(e, slotOf(dst)));
@@ -13813,6 +13898,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static Amem funcEmitterSlotMem(FuncEmitter* e, i32 slot) {
+        if (slot >= constantSlot) {
+            return objCodeFloatConst(e->oc, e->al->constantSlots[usize(slot - constantSlot)], 8);
+        }
         return rspAt(convert<i32>(e->mf->stackArgs) + 8 * slot);
     }
 
@@ -13850,6 +13938,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void funcEmitterSwap(FuncEmitter* e, VReg x, VReg y) {
         Asm* a = e->a;
+        if ((isSlot(x) && slotOf(x) >= constantSlot) || (isSlot(y) && slotOf(y) >= constantSlot)) {
+            compilerError(String("internal error: a swap with a constant slot"));
+        }
         if (isSlot(x)) {
             auto temporary716 = y;
             auto temporary717 = x;
@@ -20279,10 +20370,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             a->posBlock = move(posBlock);
         }
         allocatorLiveness(a);
+        allocatorConstants(a);
         allocatorInvariants(a);
         allocatorBuildIntervals(a);
         allocatorScan(a);
         allocatorSpillAtJoins(a);
+        allocatorConstantDefinitions(a);
         allocatorResolve(a);
         return a;
     }
