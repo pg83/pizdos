@@ -3300,6 +3300,13 @@ namespace {
         VReg src{};
     };
 
+    // A RegMove of size 4 zero-extends a 32-bit value.
+    struct RegMove {
+        VReg dst{};
+        VReg src{};
+        u8 size{};
+    };
+
     static bool operator==(const Move& a, const Move& b) {
         return a.dst == b.dst && a.src == b.src;
     }
@@ -4870,27 +4877,24 @@ namespace {
 
     static constexpr Int offJump = 48;
 
-    static constexpr Int offBase = 104;
-
-    static constexpr Int offInterrupt = 112;
-
-    static constexpr Int headerSize = 120;
-
     static constexpr Int jumpPC = 0;
 
     static constexpr Int jumpSP = 1;
 
     static constexpr Int jumpBP = 2;
 
-    static constexpr Int jumpR10 = 3;
+    // jumpRegs holds the callee-saved registers, calleeSaved's in order.
+    static constexpr Int jumpRegs = 3;
 
-    static constexpr Int jumpR11 = 4;
+    static constexpr Int jumpToken = 8;
 
-    static constexpr Int jumpR12 = 5;
+    static constexpr Int jumpWords = 9;
 
-    static constexpr Int jumpToken = 6;
+    static constexpr Int offBase = offJump + 8 * jumpWords;
 
-    static constexpr Int jumpWords = 7;
+    static constexpr Int offInterrupt = offBase + 8;
+
+    static constexpr Int headerSize = offInterrupt + 8;
 
     static constexpr Int boundSlack = 65536;
 
@@ -5020,7 +5024,7 @@ namespace {
 
     static constexpr Int resumePC = 48;
 
-    static constexpr Int resumeR10 = 56;
+    static constexpr Int resumeRegs = 56;
 
     static constexpr Int resumeSlack = 512;
 
@@ -5847,6 +5851,8 @@ namespace {
 
     static void asmMovRR(Asm* a, u8 size, VReg dst, VReg src);
 
+    static void asmMoveRegs(Asm* a, Slice<RegMove> moves, VReg scratch);
+
     static void asmMovXG(Asm* a, u8 size, VReg dst, VReg src);
 
     static void asmMoveSP(Asm* a, i32 by);
@@ -5872,6 +5878,8 @@ namespace {
     static void asmPrefixed(Asm* a, u8 prefix, bool w, Span<const u8> op, Int reg, Int rm);
 
     static void asmPush(Asm* a, VReg r);
+
+    static void asmPushZero(Asm* a);
 
     static void asmPushMem(Asm* a, Amem m);
 
@@ -6836,17 +6844,20 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void initializeCompilerTables() {
-        allocGPRs = sliceOf<VReg>({RAX, RCX, RDX, RSI, RDI, R8, R9, RBX, R10, R11, R12});
+        // The internal convention: arguments and results in the six
+        // caller-saved registers, five callee-saved; R13 is the instance,
+        // R15 the memory base, R14 g and RBP the frame pointer.
+        allocGPRs = sliceOf<VReg>({RAX, RCX, RDX, RSI, RDI, R8, RBX, R9, R10, R11, R12});
 
         allocXMMs = xmmRange(15);
 
-        argGPRs = sliceOf<VReg>({RBX, RCX, RDI, RSI, R8, R9});
+        argGPRs = sliceOf<VReg>({RAX, RCX, RDX, RSI, RDI, R8});
 
         argXMMs = xmmRange(15);
 
-        calleeSaved = sliceOf<VReg>({R10, R11, R12});
+        calleeSaved = sliceOf<VReg>({RBX, R9, R10, R11, R12});
 
-        callerSavedGprs = sliceOf<VReg>({RAX, RBX, RCX, RDX, RSI, RDI, R8, R9});
+        callerSavedGprs = sliceOf<VReg>({RAX, RCX, RDX, RSI, RDI, R8});
         callerSavedXmms = xmmRange(15);
         callerSaved = appendSlice(callerSavedGprs, callerSavedXmms);
 
@@ -6866,7 +6877,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
         nopBytes = Array<Slice<u8>, 10>{{{}, sliceOf<u8>({u8(144LL)}), sliceOf<u8>({u8(102LL), u8(144LL)}), sliceOf<u8>({u8(15LL), u8(31LL), u8(0LL)}), sliceOf<u8>({u8(15LL), u8(31LL), u8(64LL), u8(0LL)}), sliceOf<u8>({u8(15LL), u8(31LL), u8(68LL), u8(0LL), u8(0LL)}), sliceOf<u8>({u8(102LL), u8(15LL), u8(31LL), u8(68LL), u8(0LL), u8(0LL)}), sliceOf<u8>({u8(15LL), u8(31LL), u8(128LL), u8(0LL), u8(0LL), u8(0LL), u8(0LL)}), sliceOf<u8>({u8(15LL), u8(31LL), u8(132LL), u8(0LL), u8(0LL), u8(0LL), u8(0LL), u8(0LL)}), sliceOf<u8>({u8(102LL), u8(15LL), u8(31LL), u8(132LL), u8(0LL), u8(0LL), u8(0LL), u8(0LL), u8(0LL)})}};
 
-        resultGPRs = sliceOf<VReg>({RAX, RBX, RCX, RDI, RSI, R8, R9});
+        resultGPRs = sliceOf<VReg>({RAX, RCX, RDX, RSI, RDI, R8});
 
         resultXMMs = xmmRange(15);
     }
@@ -9549,8 +9560,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         intervalAddRange(interval(clobbers[k]), p + 1, p + 2);
                     }
                     if (in->op == mCall && (in->aux == calleeGo || in->aux == calleeNative)) {
-                        // The function's callers keep R10-R12 across their
-                        // call of it: it saves them, as Go writes them.
+                        // The function's callers keep the callee-saved
+                        // registers across their call of it: it saves them,
+                        // as Go writes them.
                         for (Int k = 0; k < length(calleeSaved); ++k) {
                             a->used[calleeSaved[k]] = true;
                         }
@@ -10956,6 +10968,47 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
     }
 
+    // moveRegs moves registers in parallel: a move whose destination no other
+    // move still reads goes first; when every destination is read, the first
+    // source goes to scratch, which no move names, and its readers read that.
+    static void asmMoveRegs(Asm* a, Slice<RegMove> moves, VReg scratch) {
+        Slice<RegMove> pending = {};
+        for (Int i = 0; i < length(moves); ++i) {
+            if (moves[i].dst != moves[i].src) {
+                pending = appendValues(pending, moves[i]);
+            } else if (moves[i].size == 4) {
+                asmMovRR(a, 4, moves[i].dst, moves[i].src);
+            }
+        }
+        while (length(pending) > 0) {
+            Int done = -1;
+            for (Int i = 0; i < length(pending) && done < 0; ++i) {
+                bool blocked = false;
+                for (Int j = 0; j < length(pending); ++j) {
+                    if (j != i && pending[j].src == pending[i].dst) {
+                        blocked = true;
+                        break;
+                    }
+                }
+                if (!blocked) {
+                    asmMovRR(a, pending[i].size, pending[i].dst, pending[i].src);
+                    done = i;
+                }
+            }
+            if (done >= 0) {
+                pending = appendSlice(subslice(pending, 0, done), subslice(pending, done + 1, length(pending)));
+                continue;
+            }
+            VReg s = pending[0].src;
+            asmMovRR(a, 8, scratch, s);
+            for (Int j = 0; j < length(pending); ++j) {
+                if (pending[j].src == s) {
+                    pending[j].src = scratch;
+                }
+            }
+        }
+    }
+
     static void asmMovRR(Asm* a, u8 size, VReg dst, VReg src) {
         asmOpRR(a, size == 8, Span<const u8>({u8(139LL)}), convert<i64>(dst), convert<i64>(src), false);
     }
@@ -11033,6 +11086,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void asmPush(Asm* a, VReg r) {
         asmRex(a, false, -1, -1, convert<i64>(r), false);
         asmBytes(a, {u8(u8(80 + lo3(convert<i64>(r))))});
+        asmMoveSP(a, 8);
+    }
+
+    static void asmPushZero(Asm* a) {
+        asmBytes(a, {u8(u8(106LL)), u8(u8(0LL))});
         asmMoveSP(a, 8);
     }
 
@@ -16898,6 +16956,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         e->pushes = allocatorCalleeSavedUsed(al);
         e->frame = convert<i32>(mf->stackArgs) + 8 * al->nslots;
+        // The stack check follows the pushes: the arguments fill the
+        // caller-saved registers, so a large frame's check computes in a
+        // callee-saved register the function saves, R12 when it saves none.
+        const bool checks = mf->hasCalls || e->frame > leafFrame;
+        if (checks && e->frame > stackSmall && length(e->pushes) == 0) {
+            e->pushes = sliceOf<VReg>({R12});
+        }
+        const VReg checkTemp = length(e->pushes) ? e->pushes[0] : noReg;
         e->framed = mf->hasCalls || e->frame > 0 || length(e->pushes) > 0;
         e->body = 8 * convert<i32>(length(e->pushes)) + e->frame;
         if (e->framed) {
@@ -16907,22 +16973,22 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             e->body += 8;
         }
         e->incoming = e->body + 8;
-        i32 slow = -1;
-        if (mf->hasCalls || e->body > leafFrame) {
-            slow = objCodeStackCheck(oc, e->body, RAX);
-        }
         if (e->framed) {
             asmPush(a, RBP);
             asmMovRR(a, 8, RBP, RSP);
         }
         if (mf->returnsTwice) {
-            asmAluRR(a, aluXor, 4, RAX, RAX);
-            asmPush(a, RAX);
+            asmPushZero(a);
         }
         auto pushes = e->pushes;
         for (Int i = 0; i < length(pushes); ++i) {
             VReg r = pushes[i];
             asmPush(a, r);
+        }
+        const i32 retry = asmPos(a);
+        i32 slow = -1;
+        if (checks) {
+            slow = objCodeStackCheck(oc, e->frame, checkTemp);
         }
         if (e->frame > 0) {
             asmAluRI(a, aluSub, 8, RSP, convert<i64>(e->frame));
@@ -17015,8 +17081,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             e->late[i]();
         }
         if (slow >= 0) {
-            asmSetSP(a, 0);
-            objCodeSlowPath(oc, slow, start, e->body, RAX);
+            asmSetSP(a, e->body - e->frame);
+            objCodeSlowPath(oc, slow, retry, e->frame, checkTemp);
         }
         Map<Array<i64, 2>, i32> stubs = mapOf<Array<i64, 2>, i32>({});
         auto traps = e->traps;
@@ -17227,52 +17293,81 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         auto temporary1035 = internalLocs(results, resultGPRs, resultXMMs, nslots);
         Slice<VReg> rregs = temporary1035.v0;
         Slice<Int> rslots = temporary1035.v1;
-        Slice<VReg> saved = sliceOf<VReg>({R10, R11, R12, ctxReg});
+        Slice<VReg> saved = appendValues(appendSlice(Slice<VReg>{}, calleeSaved), ctxReg);
         i32 total = 8 + 8 * convert<i32>(length(saved)) + g.size;
         i32 start = objCodeBeginRegion(oc, name);
-        i32 slow = objCodeStackCheck(oc, total, RAX);
         asmPush(a, RBP);
         asmMovRR(a, 8, RBP, RSP);
         for (Int i = 0; i < length(saved); ++i) {
             VReg r = saved[i];
             asmPush(a, r);
         }
+        // The arguments fill the caller-saved registers: the stack check
+        // follows the pushes and computes in R12, saved.
+        const i32 retry = asmPos(a);
+        i32 slow = objCodeStackCheck(oc, g.size, R12);
         if (g.size > 0) {
             asmAluRI(a, aluSub, 8, RSP, convert<i64>(g.size));
         }
         i32 incoming = total + 8;
         if (record) {
+            // The caller's callee-saved registers, still in theirs, go into
+            // the frame before recordFrame uses two of them.
+            for (Int k = 0; k < length(calleeSaved); ++k) {
+                asmStore(a, 8, calleeSaved[k], baseAt(ctxReg, offJump + 8 * (jumpRegs + convert<i32>(k))));
+            }
             objCodeRecordFrame(oc);
         }
+        // The arguments move from the internal convention to Go's: registers
+        // to Go's stack first, then the registers among themselves, then the
+        // stack to Go's registers, which no register move reads. R12, saved,
+        // is the scratch.
+        Slice<RegMove> moves = {};
         for (Int i = 0; i < length(params); ++i) {
             ValType t = params[i];
             GoLoc dst = g.params[i];
-            if (pregs[i] != noReg && dst.reg == pregs[i]) {
-            } else if (pregs[i] == noReg && dst.reg != noReg) {
+            if (pregs[i] != noReg && dst.reg == noReg) {
+                asmStore(a, convert<u8>(goSize(t)), pregs[i], rspAt(dst.off));
+            } else if (pregs[i] == noReg && dst.reg == noReg) {
+                asmLoad(a, 8, 8, false, R12, rspAt(incoming + convert<i32>(8 * pslots[i])));
+                asmStore(a, convert<u8>(goSize(t)), R12, rspAt(dst.off));
+            } else if (pregs[i] != noReg) {
+                moves = appendValues(moves, RegMove{dst.reg, pregs[i], 8});
+            }
+        }
+        asmMoveRegs(a, moves, R12);
+        for (Int i = 0; i < length(params); ++i) {
+            GoLoc dst = g.params[i];
+            if (pregs[i] == noReg && dst.reg != noReg) {
                 asmLoad(a, 8, 8, false, dst.reg, rspAt(incoming + convert<i32>(8 * pslots[i])));
-            } else if (pregs[i] == noReg) {
-                asmLoad(a, 8, 8, false, RDX, rspAt(incoming + convert<i32>(8 * pslots[i])));
-                asmStore(a, convert<u8>(goSize(t)), RDX, rspAt(dst.off));
-            } else {
-                compilerError(String("internal error: parameter %d of %s moves between registers"));
             }
         }
         asmMovRR(a, 8, RAX, ctxReg);
         objCodeCallGo(oc, sym);
+        // The results move back the same way; Go leaves the upper half of a
+        // 32-bit result alone.
+        moves = {};
         for (Int i = 0; i < length(results); ++i) {
             ValType t = results[i];
             GoLoc src = g.results[i];
-            if (rregs[i] != noReg && src.reg == rregs[i]) {
+            if (rregs[i] == noReg && src.reg != noReg) {
                 if (t == I32) {
                     asmMovRR(a, 4, src.reg, src.reg);
                 }
-            } else if (rregs[i] == noReg && src.reg != noReg) {
                 asmStore(a, 8, src.reg, rspAt(incoming + convert<i32>(8 * rslots[i])));
-            } else if (rregs[i] == noReg) {
-                asmLoad(a, convert<u8>(goSize(t)), 8, false, RDX, rspAt(src.off));
-                asmStore(a, 8, RDX, rspAt(incoming + convert<i32>(8 * rslots[i])));
-            } else {
-                compilerError(String("internal error: result %d of %s moves between registers"));
+            } else if (rregs[i] == noReg && src.reg == noReg) {
+                asmLoad(a, convert<u8>(goSize(t)), 8, false, R12, rspAt(src.off));
+                asmStore(a, 8, R12, rspAt(incoming + convert<i32>(8 * rslots[i])));
+            } else if (rregs[i] != noReg && src.reg != noReg) {
+                moves = appendValues(moves, RegMove{rregs[i], src.reg, convert<u8>(t == I32 ? 4 : 8)});
+            }
+        }
+        asmMoveRegs(a, moves, R12);
+        for (Int i = 0; i < length(results); ++i) {
+            ValType t = results[i];
+            GoLoc src = g.results[i];
+            if (rregs[i] != noReg && src.reg == noReg) {
+                asmLoad(a, convert<u8>(goSize(t)), 8, false, rregs[i], rspAt(src.off));
             }
         }
         if (g.size > 0) {
@@ -17293,8 +17388,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         objCodeCallStub(oc, stubInterrupt);
         asmPop(a, RBP);
         asmRet(a);
-        asmSetSP(a, 0);
-        objCodeSlowPath(oc, slow, start, total, RAX);
+        asmSetSP(a, 8 + 8 * convert<i32>(length(saved)));
+        objCodeSlowPath(oc, slow, retry, g.size, R12);
         objCodeEndRegion(oc, start);
         return start;
     }
@@ -17543,7 +17638,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         asmLoad(a, 8, 8, false, R8, baseAt(RDI, 8));
         asmAluRM(a, aluCmp, 8, R8, word(jumpWords));
         i32 before = asmJccRel(a, ccB);
-        asmAluRM(a, aluCmp, 8, R8, word(8));
+        asmAluRM(a, aluCmp, 8, R8, word(jumpWords + 1));
         i32 after = asmJccRel(a, ccAE);
         asmLoad(a, 8, 8, false, R8, baseAt(RSI, -8));
         asmAluRM(a, aluCmp, 8, R8, word(jumpToken));
@@ -17551,16 +17646,19 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         asmMovRR(a, 8, ctxReg, RCX);
         asmStore(a, 8, ctxReg, baseAt(R14, gInstance));
         asmLoad(a, 8, 8, false, memReg, baseAt(ctxReg, offMem));
-        asmLoad(a, 8, 8, false, R10, word(jumpR10));
-        asmLoad(a, 8, 8, false, R11, word(jumpR11));
-        asmLoad(a, 8, 8, false, R12, word(jumpR12));
         asmMovRR(a, 8, R8, R9);
         asmAluRM(a, aluSub, 8, R8, word(jumpSP));
         asmAluRI(a, aluSub, 8, R8, 8);
-        asmLoad(a, 8, 8, false, R9, word(jumpPC));
-        asmStore(a, 8, R9, baseAt(R8, 0));
+        asmLoad(a, 8, 8, false, RDX, word(jumpPC));
+        asmStore(a, 8, RDX, baseAt(R8, 0));
         asmMovRR(a, 8, RBP, RSI);
-        asmMovRR(a, 4, RAX, RBX);
+        // val leaves RBX before the callee-saved registers, RBX among them,
+        // come back from the frame, which RAX still addresses.
+        asmMovRR(a, 4, RDX, RBX);
+        for (Int k = 0; k < length(calleeSaved); ++k) {
+            asmLoad(a, 8, 8, false, calleeSaved[k], word(jumpRegs + convert<i32>(k)));
+        }
+        asmMovRR(a, 4, RAX, RDX);
         asmMovRR(a, 8, RSP, R8);
         asmRet(a);
         auto range1071 = Array<i32, 5>{{down, above, before, after, other}};
@@ -17602,38 +17700,35 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     // recordFrame writes the jump frame in an adapter, whose RBP is set while
-    // the caller's registers are still in theirs; RAX and RDX carry nothing.
-    // The caller's token is handed out from the instance's count when the slot
-    // is still zero.
+    // the caller's registers are still in theirs, the callee-saved ones
+    // saved: R11 and R12 are its scratch. The caller's token is handed out
+    // from the instance's count when the slot is still zero.
     static void objCodeRecordFrame(ObjCode* oc) {
         Asm* a = &oc->a;
         auto word = [&](i32 k) mutable -> Amem {
             return baseAt(ctxReg, offJump + 8 * k);
         };
-        asmLoad(a, 8, 8, false, RAX, baseAt(RBP, 8));
-        asmStore(a, 8, RAX, word(jumpPC));
-        asmLoad(a, 8, 8, false, RAX, baseAt(R14, gStackHi));
-        asmAluRM(a, aluSub, 8, RAX, baseAt(ctxReg, offBase));
-        asmAluRR(a, aluSub, 8, RAX, RBP);
-        asmAluRI(a, aluSub, 8, RAX, 16);
-        asmStore(a, 8, RAX, word(jumpSP));
-        asmLoad(a, 8, 8, false, RDX, baseAt(RBP, 0));
-        asmLoad(a, 8, 8, false, RAX, baseAt(R14, gStackHi));
-        asmAluRM(a, aluSub, 8, RAX, baseAt(ctxReg, offBase));
-        asmAluRR(a, aluSub, 8, RAX, RDX);
-        asmStore(a, 8, RAX, word(jumpBP));
-        asmStore(a, 8, R10, word(jumpR10));
-        asmStore(a, 8, R11, word(jumpR11));
-        asmStore(a, 8, R12, word(jumpR12));
-        asmLoad(a, 8, 8, false, RAX, baseAt(RDX, -8));
-        asmTest(a, 8, RAX, RAX);
+        asmLoad(a, 8, 8, false, R12, baseAt(RBP, 8));
+        asmStore(a, 8, R12, word(jumpPC));
+        asmLoad(a, 8, 8, false, R12, baseAt(R14, gStackHi));
+        asmAluRM(a, aluSub, 8, R12, baseAt(ctxReg, offBase));
+        asmAluRR(a, aluSub, 8, R12, RBP);
+        asmAluRI(a, aluSub, 8, R12, 16);
+        asmStore(a, 8, R12, word(jumpSP));
+        asmLoad(a, 8, 8, false, R11, baseAt(RBP, 0));
+        asmLoad(a, 8, 8, false, R12, baseAt(R14, gStackHi));
+        asmAluRM(a, aluSub, 8, R12, baseAt(ctxReg, offBase));
+        asmAluRR(a, aluSub, 8, R12, R11);
+        asmStore(a, 8, R12, word(jumpBP));
+        asmLoad(a, 8, 8, false, R12, baseAt(R11, -8));
+        asmTest(a, 8, R12, R12);
         i32 have = asmJcc8(a, ccNE);
-        asmLoad(a, 8, 8, false, RAX, baseAt(ctxReg, offTokens));
-        asmAluRI(a, aluAdd, 8, RAX, 1);
-        asmStore(a, 8, RAX, baseAt(ctxReg, offTokens));
-        asmStore(a, 8, RAX, baseAt(RDX, -8));
+        asmLoad(a, 8, 8, false, R12, baseAt(ctxReg, offTokens));
+        asmAluRI(a, aluAdd, 8, R12, 1);
+        asmStore(a, 8, R12, baseAt(ctxReg, offTokens));
+        asmStore(a, 8, R12, baseAt(R11, -8));
         asmHere8(a, have);
-        asmStore(a, 8, RAX, word(jumpToken));
+        asmStore(a, 8, R12, word(jumpToken));
     }
 
     // resolve fills the displacements within the text and turns the others
@@ -17700,48 +17795,47 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         asmAluRM(a, aluSub, 8, RDX, word(resumeSize));
         asmAluRM(a, aluCmp, 8, RDX, baseAt(R14, gStackguard0));
         i32 grow = asmJccRel(a, ccBE);
+        // RDX is the copied frames' base, RSI the top frame's offset; the
+        // callee-saved registers come last, from the request.
         asmPush(a, RBP);
         asmMovRR(a, 8, RBP, RSP);
         asmMovRR(a, 8, RDI, RSP);
         asmAluRM(a, aluSub, 8, RDI, word(resumeSize));
-        asmMovRR(a, 8, RBX, RDI);
+        asmMovRR(a, 8, RDX, RDI);
         asmLoad(a, 8, 8, false, RSI, word(resumeBuf));
         asmLoad(a, 8, 8, false, RCX, word(resumeSize));
         asmRepMovsb(a);
         asmLoad(a, 8, 8, false, R8, word(resumeBP));
-        asmLoad(a, 8, 8, false, R11, word(resumeTop));
+        asmLoad(a, 8, 8, false, RSI, word(resumeTop));
         i32 relink = asmPos(a);
-        asmAluRR(a, aluCmp, 8, R8, R11);
+        asmAluRR(a, aluCmp, 8, R8, RSI);
         i32 last = asmJcc8(a, ccE);
-        asmLoad(a, 8, 8, false, RCX, indexed(RBX, R8));
-        asmLea(a, 8, R9, indexed(RBX, RCX));
-        asmStore(a, 8, R9, indexed(RBX, R8));
+        asmLoad(a, 8, 8, false, RCX, indexed(RDX, R8));
+        asmLea(a, 8, RDI, indexed(RDX, RCX));
+        asmStore(a, 8, RDI, indexed(RDX, R8));
         asmMovRR(a, 8, R8, RCX);
         asmPatch8(a, asmJmp8(a), relink);
         asmHere8(a, last);
-        asmStore(a, 8, RBP, indexed(RBX, R11));
-        asmRex(a, true, 9, -1, -1, false);
-        asmBytes(a, {u8(u8(141LL)), u8(u8(shiftLeft(lo3(9), 3) | 5))});
+        asmStore(a, 8, RBP, indexed(RDX, RSI));
+        asmRex(a, true, 7, -1, -1, false);
+        asmBytes(a, {u8(u8(141LL)), u8(u8(shiftLeft(lo3(7), 3) | 5))});
         i32 contAt = asmPos(a);
         asmU32(a, 0);
-        asmLea(a, 8, RCX, indexed(RBX, R11));
-        asmStore(a, 8, R9, baseAt(RCX, 8));
-        asmLoad(a, 8, 8, false, R9, baseAt(R14, gStackHi));
-        asmAluRR(a, aluSub, 8, R9, RBX);
-        asmAluRM(a, aluSub, 8, R9, word(resumeSP));
-        asmStore(a, 8, R9, baseAt(ctxReg, offBase));
+        asmLea(a, 8, RCX, indexed(RDX, RSI));
+        asmStore(a, 8, RDI, baseAt(RCX, 8));
+        asmLoad(a, 8, 8, false, RDI, baseAt(R14, gStackHi));
+        asmAluRR(a, aluSub, 8, RDI, RDX);
+        asmAluRM(a, aluSub, 8, RDI, word(resumeSP));
+        asmStore(a, 8, RDI, baseAt(ctxReg, offBase));
         asmLoad(a, 8, 8, false, memReg, baseAt(ctxReg, offMem));
-        auto range1090 = Array<VReg, 3>{{R10, R11, R12}};
-        for (Int index1091 = 0, rangeEnd1092 = length(range1090); index1091 < rangeEnd1092; ++index1091) {
-            Int k = index1091;
-            VReg r = range1090[index1091];
-            asmLoad(a, 8, 8, false, r, word(resumeR10 + 8 * convert<i32>(k)));
+        for (Int k = 0; k < length(calleeSaved); ++k) {
+            asmLoad(a, 8, 8, false, calleeSaved[k], word(resumeRegs + 8 * convert<i32>(k)));
         }
-        asmLoad(a, 8, 8, false, R9, word(resumePC));
-        asmMovRR(a, 8, RBP, RBX);
+        asmLoad(a, 8, 8, false, RDI, word(resumePC));
+        asmMovRR(a, 8, RBP, RDX);
         asmAluRM(a, aluAdd, 8, RBP, word(resumeBP));
-        asmLea(a, 8, R8, baseAt(RBX, -8));
-        asmStore(a, 8, R9, baseAt(R8, 0));
+        asmLea(a, 8, R8, baseAt(RDX, -8));
+        asmStore(a, 8, RDI, baseAt(R8, 0));
         asmAluRR(a, aluXor, 4, RAX, RAX);
         asmMovRR(a, 8, RSP, R8);
         asmRet(a);
@@ -17878,23 +17972,31 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         asmStore(a, 8, ctxReg, baseAt(R14, gInstance));
         asmLoad(a, 8, 8, false, memReg, baseAt(ctxReg, offMem));
         i32 goArgs = total + 8;
+        // The parameters move from Go's convention to the internal one, as
+        // the adapter moves the other way (goCall), R12 the scratch; a
+        // 32-bit value Go passed is zero-extended.
+        Slice<RegMove> moves = {};
         for (Int i = 0; i < length(params); ++i) {
             ValType t = params[i];
             GoLoc src = g.params[i];
-            if (pregs[i] != noReg && src.reg == pregs[i]) {
-                if (t == I32) {
-                    asmMovRR(a, 4, src.reg, src.reg);
-                }
-            } else if (pregs[i] == noReg && src.reg != noReg) {
+            if (pregs[i] == noReg && src.reg != noReg) {
                 if (t == I32) {
                     asmMovRR(a, 4, src.reg, src.reg);
                 }
                 asmStore(a, 8, src.reg, rspAt(convert<i32>(8 * pslots[i])));
-            } else if (pregs[i] == noReg) {
-                asmLoad(a, convert<u8>(goSize(t)), 8, false, RDX, rspAt(goArgs + src.off));
-                asmStore(a, 8, RDX, rspAt(convert<i32>(8 * pslots[i])));
-            } else {
-                compilerError(String("internal error: parameter %d of %s moves between registers"));
+            } else if (pregs[i] == noReg && src.reg == noReg) {
+                asmLoad(a, convert<u8>(goSize(t)), 8, false, R12, rspAt(goArgs + src.off));
+                asmStore(a, 8, R12, rspAt(convert<i32>(8 * pslots[i])));
+            } else if (pregs[i] != noReg && src.reg != noReg) {
+                moves = appendValues(moves, RegMove{pregs[i], src.reg, convert<u8>(t == I32 ? 4 : 8)});
+            }
+        }
+        asmMoveRegs(a, moves, R12);
+        for (Int i = 0; i < length(params); ++i) {
+            ValType t = params[i];
+            GoLoc src = g.params[i];
+            if (pregs[i] != noReg && src.reg == noReg) {
+                asmLoad(a, convert<u8>(goSize(t)), 8, false, pregs[i], rspAt(goArgs + src.off));
             }
         }
         if (index >= 0) {
@@ -17902,17 +18004,24 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         } else {
             body();
         }
+        moves = {};
         for (Int i = 0; i < length(results); ++i) {
             ValType t = results[i];
             GoLoc dst = g.results[i];
-            if (rregs[i] != noReg && dst.reg == rregs[i]) {
-            } else if (rregs[i] == noReg && dst.reg != noReg) {
+            if (rregs[i] != noReg && dst.reg == noReg) {
+                asmStore(a, convert<u8>(goSize(t)), rregs[i], rspAt(goArgs + dst.off));
+            } else if (rregs[i] == noReg && dst.reg == noReg) {
+                asmLoad(a, 8, 8, false, R12, rspAt(convert<i32>(8 * rslots[i])));
+                asmStore(a, convert<u8>(goSize(t)), R12, rspAt(goArgs + dst.off));
+            } else if (rregs[i] != noReg && dst.reg != noReg) {
+                moves = appendValues(moves, RegMove{dst.reg, rregs[i], 8});
+            }
+        }
+        asmMoveRegs(a, moves, R12);
+        for (Int i = 0; i < length(results); ++i) {
+            GoLoc dst = g.results[i];
+            if (rregs[i] == noReg && dst.reg != noReg) {
                 asmLoad(a, 8, 8, false, dst.reg, rspAt(convert<i32>(8 * rslots[i])));
-            } else if (rregs[i] == noReg) {
-                asmLoad(a, 8, 8, false, RDX, rspAt(convert<i32>(8 * rslots[i])));
-                asmStore(a, convert<u8>(goSize(t)), RDX, rspAt(goArgs + dst.off));
-            } else {
-                compilerError(String("internal error: result %d of %s moves between registers"));
             }
         }
         asmLoad(a, 8, 8, false, RDX, rspAt(saved));
@@ -21319,7 +21428,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static Layout* newLayout(Module* m) {
         Layout* l = activePool->make<Layout>(Layout{offMemSize, {}, {}, {}, {}, {}, {}});
-        i32 off = 120;
+        i32 off = headerSize;
         if (m->memoryTail != 0) {
             l->memoryEnd = off;
             off += 8;

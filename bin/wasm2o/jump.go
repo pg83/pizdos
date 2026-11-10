@@ -78,7 +78,7 @@ type framesRequest struct {
 
 type resumeRequest struct {
 	ctx, buf, size, top, bp, sp, pc uint64
-	regs                            [3]uint64
+	regs                            [jumpSaved]uint64
 }
 
 // Frames are copied frames: top is the offset of the top one's saved RBP.
@@ -186,7 +186,7 @@ func (i *Instance) resume(f *Frames) uint64 {
 	j := &f.jump.frame
 	req := &f.req
 	*req = resumeRequest{ctx: uint64(i.ctx()), buf: uint64(uintptr(unsafe.Pointer(unsafe.SliceData(f.bytes)))), size: uint64(len(f.bytes)),
-		top: f.top, bp: j[jumpSP] - j[jumpBP], sp: j[jumpSP], pc: j[jumpPC], regs: [3]uint64{j[jumpR10], j[jumpR11], j[jumpR12]}}
+		top: f.top, bp: j[jumpSP] - j[jumpBP], sp: j[jumpSP], pc: j[jumpPC], regs: [jumpSaved]uint64(j[jumpRegs : jumpRegs+jumpSaved])}
 	stub := nativeFunc(reflect.TypeFor[func(uintptr) uint64](), i.symbol(symResume)).Interface().(func(uintptr) uint64)
 	r := stub(uintptr(unsafe.Pointer(req)))
 	runtime.KeepAlive(f)

@@ -35,12 +35,13 @@ const (
 	jumpPC    = 0 // the return address
 	jumpSP    = 1 // the stack pointer after the return
 	jumpBP    = 2 // the caller's RBP
-	jumpR10   = 3 // the callee-saved registers
-	jumpR11   = 4
-	jumpR12   = 5
-	jumpToken = 6
-	jumpWords = 7
+	jumpRegs  = 3 // the five callee-saved registers: RBX, R9, R10, R11, R12
+	jumpToken = 8
+	jumpWords = 9
 )
+
+// jumpSaved is how many callee-saved registers the jump frame keeps.
+const jumpSaved = 5
 
 // boundSlack is how far past a checked address an access may reach without
 // a check of its own: an access at address a, offset o and width n is in

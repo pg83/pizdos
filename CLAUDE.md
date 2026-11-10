@@ -70,9 +70,13 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
 - The object is ordinary x86-64 ELF: `aot.cpp` writes it, `elf.go` reads it,
   `symbols.go` parses typed boundary symbols and `meta.go` reads the note.
   `abi.go` and `format.go` hold the loader's shared ABI constants and types.
-  Generated code follows Go 1.25 amd64 ABIInternal: R14 is g, RBP the frame
-  pointer, X15 untouched, and the stack pointer table is exact at every
-  instruction. A stack check calls the `w2o.morestack` stub with what it
+  Generated code lives in Go 1.25 amd64 ABIInternal's world: R14 is g, RBP
+  the frame pointer, X15 untouched, and the stack pointer table is exact at
+  every instruction. Between the module's functions the convention is its
+  own: arguments and results in RAX, RCX, RDX, RSI, RDI and R8, then on
+  the stack; RBX and R9-R12 callee-saved; R13 the instance, R15 the memory
+  base. The thunks Go calls and the adapters of tables' and exports'
+  imports move between the conventions. A stack check calls the `w2o.morestack` stub with what it
   compared on the stack; the loader marks the stub assembly, which Go
   never preempts, and the stub compares that with `g.stackguard0` again
   before Go's morestack, so a preemption that completed after the check
@@ -140,8 +144,8 @@ README.md for the layout and the C ABI, STYLE.md and STYLE_PRJ.md for style.
   another goroutine's stack; it writes below its stack pointer, so the
   loader marks it assembly, which Go never preempts, and the header's base
   keeps jump frames valid in the child. The register allocator needs nothing
-  for it: values living across a call are in R10-R12, which the frame keeps,
-  or in their vreg's own spill slot.
+  for it: values living across a call are in the callee-saved registers,
+  which the frame keeps, or in their vreg's own spill slot.
 - The loader (`load.go`, `gort.go`, `wasi.go`, `run.go`, `jump.go`) is linux/amd64
   only and pinned to Go 1.25's moduledata. The C++ compiler targets WASI
   preview1. Code and its registration live as long as the process.
