@@ -6284,11 +6284,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 return aluOr;
             case OpXor:
                 return aluXor;
-            case OpMul:
-                return aluImul;
-            default:
-                return {};
         }
+        // lowererAlu accepts these six operations; stores accept five of them.
+        return aluImul;
     }
 
     static Slice<VReg> argGPRs{};
@@ -6327,11 +6325,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 return 84;
             case fOr:
                 return 86;
-            case fXor:
-                return 87;
-            default:
-                return {};
         }
+        // Lowering and the emitter supply only the nine FAluOp constants.
+        return 87;
     }
 
     static Array<Op, 7> floatUnary{};
@@ -6375,25 +6371,24 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static Slice<VReg> resultXMMs{};
 
-    static Tuple2<u8, bool> typeLetter(ValType op) {
-        switch (op) {
+    // Signatures contain readerValType's seven types or synthesized scalar
+    // types. The remaining type after these six cases is ExternRef.
+    static u8 typeLetter(ValType t) {
+        switch (t) {
             case I32:
-                return {'i', true};
+                return 'i';
             case I64:
-                return {'I', true};
+                return 'I';
             case F32:
-                return {'f', true};
+                return 'f';
             case F64:
-                return {'F', true};
+                return 'F';
             case V128:
-                return {'v', true};
+                return 'v';
             case FuncRef:
-                return {'r', true};
-            case ExternRef:
-                return {'e', true};
-            default:
-                return {0, false};
+                return 'r';
         }
+        return 'e';
     }
 
     static void initializeCompilerTables() {
@@ -10978,23 +10973,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void asmAluRI(Asm* a, AluOp op, u8 size, VReg dst, i64 x) {
         asmAluRIRaw(a, op, size, dst, x);
         if (dst == RSP) {
-            switch (op) {
-                case aluSub: {
-                    asmMoveSP(a, convert<i32>(x));
-                    break;
-                }
-                case aluAdd: {
-                    asmMoveSP(a, -convert<i32>(x));
-                    break;
-                }
-                case aluCmp: {
-                    break;
-                }
-                default: {
-                    compilerError(String("internal error: untracked change of rsp"));
-                    break;
-                }
-            }
+            // RSP is excluded from allocation. Its explicit immediate ALU
+            // calls allocate and release frames using only sub and add.
+            asmMoveSP(a, op == aluSub ? convert<i32>(x) : -convert<i32>(x));
         }
     }
 
@@ -14412,10 +14393,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // intersection returns the first position both intervals cover, or maxPos;
     // it starts from both cursors.
+    // coversAt increments only below the range count; split clamps after
+    // shortening. Both cursors are already at most their range counts.
     static i32 intervalIntersection(Interval* it, Interval* o) {
-        if (it->cursor > length(it->ranges)) {
-            it->cursor = length(it->ranges);
-        }
         Int i = it->cursor;
         Int j = o->cursor;
         while (i < length(it->ranges) && j < length(o->ranges)) {
@@ -24643,13 +24623,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Slice<u8> b = makeSlice<u8>(length(ts));
         for (Int i = 0; i < length(ts); ++i) {
             ValType t = ts[i];
-            auto temporary1640 = typeLetter(t);
-            u8 c = temporary1640.v0;
-            bool ok = temporary1640.v1;
-            if (!ok) {
-                compilerError(String("unsupported: a %s at the boundary"));
-            }
-            b[i] = c;
+            b[i] = typeLetter(t);
         }
         return asString(b);
     }
@@ -25479,10 +25453,8 @@ namespace {
                 const LineRow row = rows[k - 1];
                 const u32 pc = r.start + convert<u32>(mark.pc);
                 const Int n = length(out);
-                if (n && out[n - 1].pc == pc) {
-                    out[n - 1] = LineEntry{pc, row.file, row.line};
-                    continue;
-                }
+                // asmMarkPos coalesces equal PCs. Region marks and the
+                // non-overlapping regions themselves have increasing PCs.
                 if (n && out[n - 1].file == row.file && out[n - 1].line == row.line) {
                     continue;
                 }
