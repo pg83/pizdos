@@ -344,7 +344,13 @@ func (p *Process) handleSignals() bool {
 // first process stops vm, so the host's shell gets the terminal back.
 func (p *Process) stop(sig int) {
 	if p == p.k.first {
-		syscall.Kill(os.Getpid(), syscall.SIGSTOP)
+		// A process-directed stop can reach another thread after this one
+		// resumes the guest. Stop this thread before returning to its code.
+		runtime.LockOSThread()
+
+		defer runtime.UnlockOSThread()
+
+		throw(syscall.Tgkill(os.Getpid(), syscall.Gettid(), syscall.SIGSTOP))
 
 		return
 	}
