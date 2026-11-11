@@ -149,11 +149,20 @@ def program():
             add([32], 32, body, samples,
                 lambda a: ((signed(a, 32) if extend == 0xac else a) << amount) & 0xffffffff)
 
+    image = bytes((i * 37 + 129) % 256 for i in range(1024))
+    for width, opcode in ((2, 0x2f), (4, 0x28)):
+        for amount in ((8,) if width == 2 else (16, 24)):
+            body = x + bytes([opcode, 0, 0]) + constant(amount) + b"\x76"
+            add([32], 32, body, [(1024 + i,) for i in range(0, len(image) - width, 7)],
+                lambda address: int.from_bytes(image[address - 1024:address - 1024 + width], "little") >> amount)
+
     functions.append((signature([], None), b"\0" + bytes(entry) + b"\x0b"))
     module = b"\0asm\1\0\0\0" + section(1, leb(len(types)) + b"".join(types))
     module += section(3, leb(len(functions)) + b"".join(leb(typ) for typ, _ in functions))
+    module += section(5, b"\1\0\1")
     module += section(7, b"\1\6_start\0" + leb(len(functions) - 1))
     module += section(10, leb(len(functions)) + b"".join(leb(len(body)) + body for _, body in functions))
+    module += section(11, b"\1\0" + constant(1024) + b"\x0b" + leb(len(image)) + image)
     return module, checks
 
 
