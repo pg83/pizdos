@@ -15,6 +15,9 @@
 #ifndef MSG_CMSG_CLOEXEC
 #define MSG_CMSG_CLOEXEC 0x40000000
 #endif
+#ifndef SO_PASSCRED
+#define SO_PASSCRED 16
+#endif
 
 int main() {
     int pair[2];
@@ -142,6 +145,35 @@ int main() {
     assert(getsockopt(pair[1], SOL_SOCKET, SO_RCVTIMEO, buffer, &length) == 0 && length == 1);
     length = 0;
     assert(getsockopt(pair[1], SOL_SOCKET, SO_RCVTIMEO, nullptr, &length) == 0 && length == 0);
+    assert(close(pair[0]) == 0 && close(pair[1]) == 0);
+
+    assert(socketpair(AF_UNIX, SOCK_DGRAM, 0, pair) == 0);
+    assert(setsockopt(pair[1], SOL_SOCKET, SO_PASSCRED, &enabled, sizeof(enabled)) == 0);
+    alignas(cmsghdr) unsigned char credentialsControl[CMSG_SPACE(sizeof(ucred))];
+    iovec credentialVector{buffer, sizeof(buffer)};
+    const bool capacities[] = {true, false};
+    for (bool shortBuffer : capacities) {
+        assert(send(pair[0], "cred", 4, 0) == 4);
+        memset(credentialsControl, 0x5a, sizeof(credentialsControl));
+        incoming = {};
+        incoming.msg_iov = &credentialVector;
+        incoming.msg_iovlen = 1;
+        incoming.msg_control = credentialsControl;
+        incoming.msg_controllen = shortBuffer ? sizeof(cmsghdr) - 1 : sizeof(credentialsControl);
+        assert(recvmsg(pair[1], &incoming, 0) == 4 && memcmp(buffer, "cred", 4) == 0);
+        if (shortBuffer) {
+            assert((incoming.msg_flags & MSG_CTRUNC) && incoming.msg_controllen == 0);
+            for (unsigned char byte : credentialsControl) {
+                assert(byte == 0x5a);
+            }
+        } else {
+            received = CMSG_FIRSTHDR(&incoming);
+            assert(received && received->cmsg_level == SOL_SOCKET && received->cmsg_type == SCM_CREDENTIALS);
+            assert(received->cmsg_len == CMSG_LEN(sizeof(ucred)));
+            memcpy(&credentials, CMSG_DATA(received), sizeof(credentials));
+            assert(credentials.pid > 0 && credentials.uid == getuid() && credentials.gid == getgid());
+        }
+    }
     assert(close(pair[0]) == 0 && close(pair[1]) == 0);
     puts("socket messages: ok");
 }
