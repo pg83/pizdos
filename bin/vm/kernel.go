@@ -334,8 +334,7 @@ func (p *Process) runImage(img *execImage, i *Instance, enter func()) (next *exe
 			p.asanStart()
 			i.start()
 			p.asanInit()
-			start, _ := i.export("_start")
-			start.Interface().(func(uintptr))(i.ctx())
+			i.startCommand()
 		}
 	}
 

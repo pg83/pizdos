@@ -50,8 +50,7 @@ func runObject(path, root string, argv []string, asan bool) (code int) {
 	}()
 
 	i.start()
-	start, _ := i.export("_start")
-	start.Interface().(func(uintptr))(i.ctx())
+	i.startCommand()
 
 	return 0
 }

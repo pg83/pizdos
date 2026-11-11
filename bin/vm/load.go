@@ -670,6 +670,17 @@ func (i *Instance) start() {
 	nativeFunc(reflect.TypeFor[func(uintptr)](), i.symbol(i.obj.meta.init)).Interface().(func(uintptr))(i.ctx())
 }
 
+// startCommand calls a command's entry with the parameterless Wasm ABI.
+func (i *Instance) startCommand() {
+	start, entry := i.export("_start")
+
+	if len(entry.params) != 0 || len(entry.results) != 0 {
+		throwFmt("_start must have no parameters or results")
+	}
+
+	start.Interface().(func(uintptr))(i.ctx())
+}
+
 // export returns an exported function as a Go function value,
 // func(instance uintptr, params...) (results...).
 func (i *Instance) export(name string) (reflect.Value, *ExportMeta) {

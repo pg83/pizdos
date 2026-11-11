@@ -214,7 +214,19 @@ func (f *elfFile) relocations(of int) []objReloc {
 			}
 
 			target := f.symbols[info>>32]
-			r := objReloc{at: uint32(le.Uint64(e)), typ: uint32(info), addend: int64(le.Uint64(e[16:])), value: target.value}
+			offset, width := le.Uint64(e), uint64(4)
+
+			if uint32(info) == rX86_64_64 {
+				width = 8
+			}
+
+			size := uint64(len(f.sections[of].data))
+
+			if offset >= 1<<32 || offset > size || width > size-offset {
+				throwFmt("relocation out of section %s at %#x", f.sectionName(of), offset)
+			}
+
+			r := objReloc{at: uint32(offset), typ: uint32(info), addend: int64(le.Uint64(e[16:])), value: target.value}
 
 			switch target.section {
 			case 0:
@@ -224,6 +236,10 @@ func (f *elfFile) relocations(of int) []objReloc {
 			case f.rodata:
 				r.in = inRodata
 			default:
+				if target.section >= len(f.sections) {
+					throwFmt("relocation into section %d", target.section)
+				}
+
 				throwFmt("relocation into section %s", f.sectionName(target.section))
 			}
 

@@ -145,10 +145,15 @@ def main():
     bad("metadata-lines", obj.note(prefix + b"\10\0\1\0\0\1"), "invalid line table")
     eh = obj.contents(".eh_frame")
     bad("eh-length", obj.replaced(".eh_frame", changed(eh, 0, "I", 0xffffffff)), "malformed .eh_frame")
-    bad("eh-short-record", obj.replaced(".eh_frame", b"\1\0\0\0\0"), "malformed .eh_frame")
-    bad("eh-short-leb", obj.replaced(".eh_frame", struct.pack("<II", 6, 0) + b"\1\0"), "malformed .eh_frame")
+
+    def short_eh(contents):
+        # These CIE-only fixtures have no FDE to relocate.
+        return Object(obj.replaced(".eh_frame", contents)).replaced(".rela.eh_frame", b"")
+
+    bad("eh-short-record", short_eh(b"\1\0\0\0\0"), "malformed .eh_frame")
+    bad("eh-short-leb", short_eh(struct.pack("<II", 6, 0) + b"\1\0"), "malformed .eh_frame")
     cie = struct.pack("<I", 0) + b"\1zR\0\1\x78\x10\1"
-    bad("eh-short-augmentation", obj.replaced(".eh_frame", struct.pack("<I", len(cie)) + cie), "malformed .eh_frame")
+    bad("eh-short-augmentation", short_eh(struct.pack("<I", len(cie)) + cie), "malformed .eh_frame")
     valid = [("original", data)]
     duplicate = changed(relocs[:24], 8, "I", 65535) + relocs
     valid.append(("later-relocation-wins", obj.replaced(".rela.text", duplicate)))
