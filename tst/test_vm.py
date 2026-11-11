@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 def main():
-    vm, native, reactor, command, aot, relinked, wazero, busybox, _links = sys.argv[1:]
+    vm, native, reactor, command, aot, relinked, wazero, fixture = sys.argv[1:]
     compilers = {
         "self-compiled AOT": [vm, "run", "--", aot],
         "relinked AOT": [vm, "run", "--", relinked],
@@ -24,7 +24,7 @@ def main():
         isolated.chmod(0o755)
         env = dict(os.environ, PATH="")
 
-        for source in [reactor, busybox]:
+        for source in [reactor, fixture]:
             data = Path(source).read_bytes()
             want = subprocess.run([native], input=data, capture_output=True, check=True).stdout
             subprocess.run([str(isolated), "-o", str(out), source], cwd=work, env=env, check=True)

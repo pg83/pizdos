@@ -754,15 +754,12 @@ host_syscalls_filter = command(
     descr="CC", color="green",
 )
 
-TESTED = {
-    "aot": [aot, aot_command, wazero, vm, busybox],
+E2E_TESTED = {
+    "aot": [aot, aot_command, wazero, vm, chaos_check],
     "asan": [vm, asan_check_o, libc_check_o],
     "asan_bounds": [vm, aot_native, wazero],
     "bounded_copy_loops": [vm, aot_native, wazero],
-    "busybox_abi": [busybox],
-    "busybox": [vm, busybox_o, busybox],
     "chaos": [vm, vm_chaos, aot_native, aot_native_chaos, chaos_check],
-    "clang": [vm, clang_o, clang, libc, libc_headers, libcxx],
     "cli_errors": [vm, aot_native],
     "compiler_modes": [vm, aot_native],
     "compiler_rejections": [vm, aot_native, wazero],
@@ -792,7 +789,6 @@ TESTED = {
     "host_resources": [vm, aot_native, host_resources_check],
     "host_syscalls": [vm, aot_native, host_syscalls_check, host_syscalls_filter],
     "host_signals": [vm, aot_native, wazero],
-    "doom": [vm, doom_o, doom_wad],
     "libc": [vm, libc_check_o],
     "large_functions": [vm, aot_native],
     "large_switches": [vm, aot_native, wazero],
@@ -803,16 +799,24 @@ TESTED = {
     "runtime_safety": [vm, aot_native, wazero],
     "spec_cli": [vm, aot_native],
     "sparse_values": [vm, aot_native, wazero],
-    "python": [vm, python_o, python, python_tarball, busybox_o, busybox],
     "stand": [vm, aot_native, stand_fixture],
     "terminal": [vm, aot_native, terminal_check, host_syscalls_filter],
     "table_defaults": [vm, aot_native, wazero],
     "unary_loops": [vm, aot_native, wazero],
     "vfork_traps": [vm, aot_native, wazero],
     "wide_results": [vm, aot_native, wazero],
-    "vm": [vm, aot_native, aot, aot_command, aot_command_aot, aot_relinked, wazero, busybox],
+    "vm": [vm, aot_native, aot, aot_command, aot_command_aot, aot_relinked, wazero, chaos_check],
 }
+APPLICATION_TESTED = {
+    "busybox_abi": [busybox],
+    "busybox": [vm, busybox_o, busybox],
+    "clang": [vm, clang_o, clang, libc, libc_headers, libcxx],
+    "doom": [vm, doom_o, doom_wad],
+    "python": [vm, python_o, python, python_tarball, busybox_o, busybox],
+}
+TESTED = {**E2E_TESTED, **APPLICATION_TESTED}
 tests = []
+e2e_tests = []
 
 UNIT_TOOLS = json.dumps({
     "cc": CLANG,
@@ -862,7 +866,7 @@ for test in build.glob("$(S)/tst/test_*.py"):
     name = test.rsplit("/", 1)[-1][len("test_"):-len(".py")]
     stamp = f"$(B)/tst/{name}.stamp"
     tested = TESTED[name]
-    tests.append(command(
+    case_test = command(
         name=f"test_{name}",
         inputs=[test, "$(S)/dev/wasm_info.py"],
         outputs=[stamp],
@@ -874,7 +878,11 @@ for test in build.glob("$(S)/tst/test_*.py"):
         env={"PYTHONDONTWRITEBYTECODE": "1"},
         descr="TS",
         color="green",
-    ))
+    )
+    tests.append(case_test)
+    if name not in E2E_TESTED:
+        continue
+    e2e_tests.append(case_test)
     coverage_arguments = []
     for node in tested:
         if node is vm:
@@ -926,5 +934,6 @@ coverage_check = command(
 
 group("install", libcxx, libc_headers, clang, clang_o, busybox, busybox_abi, busybox_o, doom, doom_o, python, python_o, vm, aot_native, aot, aot_aot, wazero)
 group("unit", *unit_tests)
+group("e2e", *e2e_tests, *unit_tests, vm_spec_test)
 group("test", *tests, *unit_tests, vm_spec_test)
 group("stand", vm, aot_native, aot, aot_aot, busybox, stand_corpus, *decode_stand, python, python_o, stand_python_native)

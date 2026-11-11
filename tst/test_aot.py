@@ -13,7 +13,7 @@ def run(command, data):
 
 
 def main():
-    aot, command, wazero, vm, busybox, _links = sys.argv[1:]
+    aot, command, wazero, vm, fixture = sys.argv[1:]
     env = dict(os.environ, W2X_MEMORY_TAIL="optimized", W2X_TAIL_PROFILE="")
 
     with tempfile.TemporaryDirectory(prefix="aot-") as directory:
@@ -25,7 +25,7 @@ def main():
         names.write_bytes(empty.read_bytes() + b"\0\x0b\x04name\x01\x04\x01\0\x01\xff")
         references = {}
 
-        for source in (empty, names, Path(busybox), Path(aot), Path(command)):
+        for source in (empty, names, Path(fixture), Path(aot), Path(command)):
             output = directory / "reference.o"
             subprocess.run([vm, "-o", str(output), str(source)], env=env, capture_output=True, check=True)
             expected = output.read_bytes()
@@ -40,7 +40,7 @@ def main():
         # loader and stack/runtime ABI that ordinary compiled modules use.
         self_object = directory / "aot-command.o"
         self_object.write_bytes(references[Path(command)])
-        for source in (Path(busybox), Path(command)):
+        for source in (Path(fixture), Path(command)):
             result = run([vm, "run", "--", str(self_object)], source.read_bytes())
             assert result.stdout == references[source], f"self-compiled aot differs for {source.name}"
             print(f"self-compiled aot: {source.name}, identical")

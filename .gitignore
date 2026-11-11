@@ -42,6 +42,7 @@ __pycache__/
 /doomgeneric_tarball
 /test_*
 /unit
+/e2e
 /unit_*
 /stand_*
 /python
