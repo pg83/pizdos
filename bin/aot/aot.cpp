@@ -191,7 +191,6 @@ namespace {
 
     struct HeapSegment {
         u32 freeMask;
-        u32 prev;
         u32 next;
         bool linked;
         bool registered;
@@ -215,7 +214,6 @@ namespace {
         HeapPage* pageOf(const void* object);
         uptr pageAddress(const HeapPage* page);
         void linkSegment(u32 index);
-        void unlinkSegment(u32 index);
         void registerSegment(u32 index);
         void mapSegment();
         HeapPage* takePage();
@@ -276,25 +274,8 @@ uptr Heap::pageAddress(const HeapPage* page) {
 void Heap::linkSegment(u32 index) {
     auto& segment = segments[index];
     segment.linked = true;
-    segment.prev = heapNoSegment;
     segment.next = freeSegments;
-    if (freeSegments != heapNoSegment) {
-        segments[freeSegments].prev = index;
-    }
     freeSegments = index;
-}
-
-void Heap::unlinkSegment(u32 index) {
-    auto& segment = segments[index];
-    if (segment.prev != heapNoSegment) {
-        segments[segment.prev].next = segment.next;
-    } else {
-        freeSegments = segment.next;
-    }
-    if (segment.next != heapNoSegment) {
-        segments[segment.next].prev = segment.prev;
-    }
-    segment.linked = false;
 }
 
 void Heap::registerSegment(u32 index) {
@@ -304,7 +285,7 @@ void Heap::registerSegment(u32 index) {
     segment.registered = true;
     segment.freeMask = 0;
     segment.linked = false;
-    segment.prev = segment.next = heapNoSegment;
+    segment.next = heapNoSegment;
     for (usize i = 0; i < heapPagesPerSegment; ++i) {
         pages[usize(index) * heapPagesPerSegment + i].cls = heapUnavailablePage;
     }
@@ -353,7 +334,9 @@ HeapPage* Heap::takePage() {
     const unsigned slot = __builtin_ctz(segment.freeMask);
     segment.freeMask &= ~(u32(1) << slot);
     if (segment.freeMask == 0) {
-        unlinkSegment(index);
+        // takePage always consumes the head of the free-segment list.
+        freeSegments = segment.next;
+        segment.linked = false;
     }
     auto* page = pages + usize(index) * heapPagesPerSegment + slot;
     require(page->cls == heapFreePage, "allocator page is not free");
@@ -2271,7 +2254,8 @@ namespace {
         Int mask = m.data->buckets.count - 1;
         Int at = Int(hashValue(key) & mask);
         Span<MapEntry<K, V>> buckets(m.data->buckets);
-        for (Int probe = 0; probe <= mask; ++probe, at = (at + 1) & mask) {
+        // setMap keeps at least one never-occupied bucket, even after erasure.
+        for (;; at = (at + 1) & mask) {
             auto& entry = buckets[at];
             if (entry.state == 0) {
                 return -1;
@@ -2280,7 +2264,6 @@ namespace {
                 return at;
             }
         }
-        return -1;
     }
 
     // Find an existing key or the first reusable slot in one probe walk.
@@ -2291,7 +2274,8 @@ namespace {
         Int at = Int(hashValue(key) & mask);
         Int free = -1;
         Span<MapEntry<K, V>> buckets(m.data->buckets);
-        for (Int probe = 0; probe <= mask; ++probe, at = (at + 1) & mask) {
+        // setMap keeps at least one never-occupied bucket, even after erasure.
+        for (;; at = (at + 1) & mask) {
             auto& entry = buckets[at];
             if (entry.state == 1) {
                 if (entry.key == key) {
@@ -2306,7 +2290,6 @@ namespace {
                 }
             }
         }
-        return free;
     }
 
     template <typename K, typename V>
@@ -2996,9 +2979,7 @@ namespace {
     }
 
     static bool bitsetAddWord(Bitset set, usize index, u64 bits) {
-        if (bits == 0) {
-            return false;
-        }
+        // bitsetSet supplies one bit at an index reduced modulo 64.
         require(set.data && index < (set.data->bits + 63) / 64, "bitset index");
         if (set.data->bits <= denseBitsetLimit) {
             u64& word = bitsetDenseWords(set.data)[index];
@@ -3307,7 +3288,6 @@ namespace {
         Slice<Fn<void()>> late{};
         i32 incoming{};
         i32 profile{};
-        bool cold{};
         // Emission positions of blocks, the last position control falls into
         // from the end of each position, and the final target of each block
         // that only forwards (-1 for others): see objCodeEmitFunction.
@@ -13448,7 +13428,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void funcEmitterBlock(FuncEmitter* e, MBlock* blk, Int at) {
-        e->cold = blk->cold;
         Span<MInst> insts = blk->insts.view();
         Int n = length(insts);
         Int i = 0;
@@ -13505,10 +13484,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             funcEmitterTrapJcc(e, ccG, trapMemoryOOB);
             return;
         }
-        if (e->cold) {
-            funcEmitterExactCheck(e, src, end);
-            return;
-        }
         asmAluRM(a, aluCmp, 8, src, baseAt(ctxReg, offMemBound));
         i32 at = asmJccRel(a, ccG);
         i32 resume = asmPos(a);
@@ -13554,8 +13529,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         asmHere8(a, done);
     }
 
-    // A fallback is already cold: use the exact limit directly, without
-    // another fast comparison and an out-of-line slow path returning here.
+    // The strict-mode slow path checks the exact logical limit.
     static void funcEmitterExactCheck(FuncEmitter* e, VReg src, i64 end) {
         Asm* a = e->a;
         VReg s = RAX;
