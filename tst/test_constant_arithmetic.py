@@ -96,6 +96,9 @@ def program():
         mask = (1 << bits) - 1
         values = (0, 1, 2, 17, bits, (1 << (bits - 1)) - 1, 1 << (bits - 1), mask - 1, mask)
         kinds = ("add", "sub", "mul", "divs", "divu", "rems", "remu", "and", "or", "xor", "shl", "shrs", "shru", "rotl", "rotr")
+        for condition in (0, 1):
+            code = constant(15, bits) + constant(27, bits) + constant(condition, 32) + b"\x1c\1" + bytes([0x7f if bits == 32 else 0x7e])
+            add(bits, code, 15 if condition else 27)
         for a in values:
             for b in values:
                 for offset, kind in enumerate(kinds):
