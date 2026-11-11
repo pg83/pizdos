@@ -34,8 +34,10 @@ int main() {
     time_t epoch = 0;
     assert(gmtime_r(&epoch, &value) == &value);
     formatted(value, "%^A|%10B|%P", "THURSDAY|   January|am");
+    formatted(value, "%k|%l|%s|%Q", " 0|12|0|%Q");
     value.tm_hour = 13;
     formatted(value, "%P", "pm");
+    formatted(value, "%k|%l|%s", "13| 1|46800");
     formatted(value, "prefix%_", "prefix");
     formatted(value, "prefix%E", "prefix");
     formatted(value, "prefix%O", "prefix");
