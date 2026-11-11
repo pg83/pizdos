@@ -596,6 +596,7 @@ func (p *Process) resizeRun(page int32, n uint64) bool {
 	count := pagesFor(n)
 
 	if count <= run {
+		p.shadowFree(h.address(page+int32(count)), (run-count)<<heapPageShift)
 		h.releasePages(page+int32(count), run-count)
 		h.pages[page].run = count
 
