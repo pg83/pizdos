@@ -734,6 +734,7 @@ TESTED = {
     "copy_loops": [vm, aot_native],
     "cxx": [vm, cxx_check_o],
     "data_segments": [vm, aot_native],
+    "dead_instructions": [vm, aot_native, wazero],
     "debug_lines": [vm, aot_native],
     "import_abi": [vm, aot_native],
     "doom": [vm, doom_o, doom_wad],
