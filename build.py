@@ -771,6 +771,7 @@ TESTED = {
     "dispatch_loops": [vm, aot_native, wazero],
     "fork_modes": [vm, aot_native, wazero],
     "float_boundaries": [vm, aot_native, wazero],
+    "float_integer_phis": [vm, aot_native, wazero],
     "float_permutations": [vm, aot_native, wazero],
     "debug_lines": [vm, aot_native],
     "debug_names": [vm, aot_native],
