@@ -32,13 +32,13 @@ def names(entries):
     return section(1, body)
 
 
-def program(payload, alias=False):
+def program(payload, alias=None):
     body = b"\0" + b"\1" * 64 + b"\0\x0b"
     module = b"\0asm\1\0\0\0" + section(1, b"\1\x60\0\0") + section(3, b"\1\0")
     exports = text("_start") + b"\0\0"
-    if alias:
-        exports += text("café.λ_🚀") + b"\0\0"
-    module += section(7, bytes([2 if alias else 1]) + exports)
+    if alias is not None:
+        exports += text(alias) + b"\0\0"
+    module += section(7, bytes([2 if alias is not None else 1]) + exports)
     module += section(10, b"\1" + leb(len(body)) + body)
     return module + section(0, text("name") + payload)
 
@@ -51,10 +51,14 @@ def main():
                  ("large-name", section(1, b"\1\0\x7f")), ("invalid-UTF8", section(1, b"\1\0\1\xff"))]
     cases = [(label, program(payload), "f0") for label, payload in malformed]
     cases += [("partial-" + label, program(names([(0, "kept")]) + payload), "kept") for label, payload in malformed]
-    cases += [("unicode", program(names([(0, "café.λ_🚀")]), alias=True), "café.λ_🚀"),
+    cases += [("unicode", program(names([(0, "café.λ_🚀")]), alias="café.λ_🚀"), "café.λ_🚀"),
               ("unknown-subsection", program(section(42, b"arbitrary") + names([(0, "named")])), "named"),
               ("unknown-index", program(names([(99999, "ignored")])), "f0"),
-              ("last-name-wins", program(names([(0, "old"), (0, "new")])), "new")]
+              ("last-name-wins", program(names([(0, "old"), (0, "new")])), "new"),
+              ("empty-name", program(names([(0, "")])), "f0"),
+              ("empty-alias", program(names([(0, "named")]), alias=""), "named"),
+              ("controls", program(names([(0, "ctrl\0\n\t\1\x7f")]), alias="alias\0\n\t"), "ctrl_00_0A_09_01_7F"),
+              ("percent", program(names([(0, "percent%02X%%")])), "percent%02X%%")]
     env = dict(os.environ, W2X_MEMORY_TAIL="strict", W2X_TAIL_PROFILE="")
     with tempfile.TemporaryDirectory(prefix="pizdos-debug-names-") as directory:
         work = Path(directory)
