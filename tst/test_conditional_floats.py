@@ -55,13 +55,15 @@ def program():
         operations = (0x95, 0x91, 0x96, 0x97) if bits == 32 else (0xa3, 0x9f, 0xa4, 0xa5)
         for operation, opcode in zip(("div", "sqrt", "min", "max"), operations):
             index = len(functions)
-            code = b"\x20\0\x04" + bytes([typ]) + b"\x20\1" + (b"" if operation == "sqrt" else b"\x20\2")
+            code = b"\x20\0\x41\3\x71\x04" + bytes([typ]) + b"\x20\1" + (b"" if operation == "sqrt" else b"\x20\2")
             code += bytes([opcode]) + b"\x05\x20\1\x0b"
             functions.append((0 if bits == 32 else 1, b"\0" + code + b"\x0b"))
             for a, b in samples:
-                for enabled in (False, True):
+                for flags in (0, 1, 2, 3, 4, 0x80000000, 0xffffffff):
+                    enabled = flags & 3 != 0
                     expected = calculate(operation, a, b) if enabled else a
-                    entry += b"\x41" + bytes([int(enabled)]) + floating(a, bits) + floating(b, bits) + b"\x10" + leb(index)
+                    entry += b"\x41" + leb(flags - (1 << 32) if flags >= 1 << 31 else flags, True)
+                    entry += floating(a, bits) + floating(b, bits) + b"\x10" + leb(index)
                     entry += b"\x21" + leb(local) + b"\x20" + leb(local)
                     if math.isnan(expected):
                         entry += b"\x20" + leb(local) + bytes([0x5c if bits == 32 else 0x62]) + b"\x45"
