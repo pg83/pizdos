@@ -13575,22 +13575,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // shadow emits the check of an access against the shadow map: the map's
     // base from the instance, then the map's bytes of the access compared
-    // with shadowOK in one compare of the access's width, two of eight bytes
-    // for a vector. A compare that fails traps with the access's address.
+    // with shadowOK in one compare of the access's width. A compare that
+    // fails traps with the access's address.
     static void funcEmitterShadow(FuncEmitter* e, MInst* in) {
         Asm* a = e->a;
         VReg t = mInstTemps(in)[0];
         asmLoad(a, 8, 8, false, t, baseAt(ctxReg, e->oc->lay->shadow));
         const i32 disp = convert<i32>(in->imm);
         Mem m = in->src == noReg ? memAt(t, disp) : memIndexed(t, in->src, disp);
-        if (in->size == 16) {
-            asmAluMI(a, aluCmp, 8, funcEmitterMem(e, m), shadowOK);
-            funcEmitterTrapJccAt(e, ccNE, trapAsan, in->src, disp, 16, in->aux);
-            m.disp += 8;
-            asmAluMI(a, aluCmp, 8, funcEmitterMem(e, m), shadowOK);
-            funcEmitterTrapJccAt(e, ccNE, trapAsan, in->src, disp, 16, in->aux);
-            return;
-        }
         asmAluMI(a, aluCmp, in->size, funcEmitterMem(e, m), shadowOK);
         funcEmitterTrapJccAt(e, ccNE, trapAsan, in->src, disp, in->size, in->aux);
     }
