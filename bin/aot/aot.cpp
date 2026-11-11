@@ -6020,7 +6020,7 @@ namespace {
 
     static Tuple2<u64, bool> foldInt(Op op, ValType t, u64 a, u64 b);
 
-    static Tuple2<u64, bool> foldUnary(Op op, ValType t, ValType from, u64 a);
+    static u64 foldUnary(Op op, ValType t, ValType from, u64 a);
 
     static bool globalMutability(Reader* r);
 
@@ -10956,14 +10956,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (size == 2) {
             asmBytes(a, {u8(u8(102LL))});
         }
+        // The only 16-bit uses are load tests against zero and shadow checks
+        // against -1. General folded operands and memory updates are 32/64-bit.
         if (x == convert<i64>(convert<i8>(x))) {
             asmOpRM(a, size == 8, Span<const u8>({u8(131LL)}), convert<i64>(op), m, 1, false);
             asmBytes(a, {u8(convert<u8>(x))});
-            return;
-        }
-        if (size == 2) {
-            asmOpRM(a, false, Span<const u8>({u8(129LL)}), convert<i64>(op), m, 2, false);
-            asmBytes(a, {u8(convert<u8>(x)), u8(convert<u8>(shiftRight(x, 8)))});
             return;
         }
         asmOpRM(a, size == 8, Span<const u8>({u8(129LL)}), convert<i64>(op), m, 4, false);
@@ -20724,13 +20721,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 return false;
             }
             if (optimizerIsConst(o, a)) {
-                auto temporary1323 = foldUnary(val->op, t, from, convert<u64>(optimizerConstOf(o, a)));
-                u64 r = temporary1323.v0;
-                bool ok = temporary1323.v1;
-                if (ok) {
-                    optimizerReplace(o, v, optimizerConstant(o, t, convert<i64>(r)));
-                    return true;
-                }
+                u64 r = foldUnary(val->op, t, from, convert<u64>(optimizerConstOf(o, a)));
+                optimizerReplace(o, v, optimizerConstant(o, t, convert<i64>(r)));
+                return true;
             }
             return optimizerUnaryIdentity(o, v, val->op, a);
         } else if (val->op == OpSelect) {
@@ -21147,7 +21140,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     if (!a.v1) {
                         return {0, false};
                     }
-                    return foldUnary(val.op, val.typ, f->values[args[0]].typ, a.v0);
+                    return {foldUnary(val.op, val.typ, f->values[args[0]].typ, a.v0), true};
                 }
                 return {0, false};
             };
@@ -23276,50 +23269,49 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return {u64(0LL), false};
     }
 
-    static Tuple2<u64, bool> foldUnary(Op op, ValType t, ValType from, u64 a) {
+    static u64 foldUnary(Op op, ValType t, ValType from, u64 a) {
         u64 m = mask(t);
         switch (op) {
             case OpEqz: {
                 if ((a & mask(from)) == 0) {
-                    return {u64(1LL), true};
+                    return u64(1LL);
                 }
-                return {u64(0LL), true};
+                return u64(0LL);
             }
             case OpClz: {
                 if (t == I32) {
-                    return {convert<u64>(bitsLeadingZeros32(convert<u32>(a))), true};
+                    return convert<u64>(bitsLeadingZeros32(convert<u32>(a)));
                 }
-                return {convert<u64>(bitsLeadingZeros64(a)), true};
+                return convert<u64>(bitsLeadingZeros64(a));
             }
             case OpCtz: {
                 if (t == I32) {
-                    return {convert<u64>(bitsTrailingZeros32(convert<u32>(a))), true};
+                    return convert<u64>(bitsTrailingZeros32(convert<u32>(a)));
                 }
-                return {convert<u64>(bitsTrailingZeros64(a)), true};
+                return convert<u64>(bitsTrailingZeros64(a));
             }
             case OpPopcnt: {
-                return {convert<u64>(bitsOnesCount64(a & m)), true};
+                return convert<u64>(bitsOnesCount64(a & m));
             }
             case OpExtend8S: {
-                return {convert<u64>(convert<i64>(convert<i8>(a))) & m, true};
+                return convert<u64>(convert<i64>(convert<i8>(a))) & m;
             }
             case OpExtend16S: {
-                return {convert<u64>(convert<i64>(convert<i16>(a))) & m, true};
+                return convert<u64>(convert<i64>(convert<i16>(a))) & m;
             }
             case OpExtend32S: {
-                return {convert<u64>(convert<i64>(convert<i32>(a))) & m, true};
+                return convert<u64>(convert<i64>(convert<i32>(a))) & m;
             }
             case OpWrap: {
-                return {a & u64(4294967295LL), true};
+                return a & u64(4294967295LL);
             }
             case OpExtendU: {
-                return {a & u64(4294967295LL), true};
-            }
-            case OpExtendS: {
-                return {convert<u64>(convert<i64>(convert<i32>(a))), true};
+                return a & u64(4294967295LL);
             }
         }
-        return {u64(0LL), false};
+        // Both callers select the integer unary operations explicitly;
+        // OpExtendS is the only remaining operation and cannot trap.
+        return convert<u64>(convert<i64>(convert<i32>(a)));
     }
 
     static bool globalMutability(Reader* r) {
