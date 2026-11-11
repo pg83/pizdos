@@ -33,10 +33,15 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
   tools (`aot_coverage`, `vm_coverage`), including the Python and spec suites.
   The host supplies GCC 12–15, its assembler, gcov and gcov-tool; select the
   compiler with `COVERAGE_CXX` if g++ is not on PATH. `COVERAGE_TESTS` selects
-  case names by a regular expression for a focused measurement. Production
-  builds use clang and carry no profiling. Reports in `.build/coverage`
-  list AOT line/branch coverage, VM statement coverage, every case run and
-  uncovered locations. `coverage_check` enforces 99% AOT lines and VM
+  case names by a regular expression for a focused measurement. Clang 23,
+  llvm-profdata and llvm-cov measure the actual embedded Wasm compiler;
+  `LLVM_PROFDATA` and `LLVM_COV` can select those tools. Its counters are
+  extracted by a coverage-only VM helper, without a guest profiling runtime.
+  Production builds use clang and carry no profiling. Reports in
+  `.build/coverage` list native AOT and Wasm AOT lines separately, native
+  branches, VM statements, every case run and uncovered locations. GCC and
+  LLVM count executable source lines differently; their percentages are not
+  merged. `coverage_check` enforces 99% lines in each AOT build and 99% VM
   statements; an ordinary report remains available below that threshold.
   Reports union source lines and Go statement blocks across the normal
   and chaos builds. AOT branch counts stay separate because those builds

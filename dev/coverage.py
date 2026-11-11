@@ -4,7 +4,8 @@
     coverage.py <output-directory> <suite-json>
     coverage.py --check <summary.json> [minimum-percent]
 
-GCC/gcov measures aot.cpp; go build -cover measures the VM executable.
+GCC/gcov measures native aot.cpp, LLVM measures the embedded Wasm reactor,
+and go build -cover measures the VM executable.
 Per-process profiles survive children that deliberately replace their
 environment. All tests invoke executables, never internal compiler APIs.
 """
@@ -18,14 +19,17 @@ import sys
 import tempfile
 import time
 
+import coverage_wasm
+
 
 def output(command, **options):
     return subprocess.check_output(list(map(str, command)), text=True, **options)
 
 
-def wrapper(path, binary, variable, directory):
+def wrapper(path, binary, variables):
+    variables = {key: str(value) for key, value in variables.items()}
     path.write_text(f"#!{sys.executable}\nimport os, sys\n"
-                    f"os.environ[{variable!r}] = {str(directory)!r}\n"
+                    f"os.environ.update({variables!r})\n"
                     f"os.execv({binary!r}, [{binary!r}, *sys.argv[1:]])\n")
     path.chmod(0o755)
 
@@ -76,6 +80,9 @@ def vm_report(suite, raw, destination):
         name, coordinates = location.rsplit(":", 1)
         if not name.startswith("pizdos/vm/"):
             continue
+        # This file is staged from dev/ only into measurement builds.
+        if name == "pizdos/vm/coverage_collect.go":
+            continue
         name = "bin/vm/" + name[len("pizdos/vm/"):]
         statements, count = int(statements), int(count)
         key = name, coordinates, statements
@@ -100,17 +107,18 @@ def run(destination, suite):
     source_root = Path(suite["source_root"])
     with tempfile.TemporaryDirectory(prefix="pizdos-coverage-") as directory:
         work = Path(directory)
-        go_raw, aot_raw = work / "go", work / "aot"
+        go_raw, aot_raw, wasm_raw = work / "go", work / "aot", work / "wasm"
         aot_chaos_raw = work / "aot-chaos"
         go_raw.mkdir()
         aot_raw.mkdir()
         aot_chaos_raw.mkdir()
+        wasm_raw.mkdir()
         vm, aot = work / "vm", work / "aot-command"
         vm_chaos, aot_chaos = work / "vm-chaos", work / "aot-command-chaos"
-        wrapper(vm, suite["vm"], "GOCOVERDIR", go_raw)
-        wrapper(aot, suite["aot"], "GCOV_PREFIX", aot_raw)
-        wrapper(vm_chaos, suite["vm_chaos"], "GOCOVERDIR", go_raw)
-        wrapper(aot_chaos, suite["aot_chaos"], "GCOV_PREFIX", aot_chaos_raw)
+        wrapper(vm, suite["vm"], {"GOCOVERDIR": go_raw, "PIZDOS_WASM_COVERDIR": wasm_raw})
+        wrapper(aot, suite["aot"], {"GCOV_PREFIX": aot_raw})
+        wrapper(vm_chaos, suite["vm_chaos"], {"GOCOVERDIR": go_raw, "PIZDOS_WASM_COVERDIR": wasm_raw})
+        wrapper(aot_chaos, suite["aot_chaos"], {"GCOV_PREFIX": aot_chaos_raw})
         failures = []
         for case in suite["cases"]:
             name = case["name"]
@@ -136,12 +144,15 @@ def run(destination, suite):
         aot_counts = {"lines": metric(sum(count > 0 for count in aot_lines.values()), len(aot_lines)),
                       "branches": metric(sum(count > 0 for count in aot_branches.values()), len(aot_branches)),
                       "chaos_branches": metric(sum(count > 0 for count in chaos_branches.values()), len(chaos_branches))}
+        wasm_lines = coverage_wasm.report(suite, wasm_raw, destination)
+        aot_counts["wasm_lines"] = metric(sum(count > 0 for count in wasm_lines.values()), len(wasm_lines))
         vm_counts, vm_missing = vm_report(suite, go_raw, destination)
 
     summary = {"aot": aot_counts, "vm": vm_counts, "tests": [case["name"] for case in suite["cases"]], "failures": failures}
     (destination / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     rows = []
-    for name, counts in (("AOT lines", aot_counts["lines"]), ("AOT branches (normal)", aot_counts["branches"]),
+    for name, counts in (("AOT lines (native)", aot_counts["lines"]), ("AOT lines (Wasm)", aot_counts["wasm_lines"]),
+                         ("AOT branches (normal)", aot_counts["branches"]),
                          ("AOT branches (chaos)", aot_counts["chaos_branches"]),
                          ("VM statements", vm_counts["statements"])):
         rows.append(f"{name}: {counts['hit']}/{counts['total']} = {counts['percent']:.2f}%")
@@ -154,6 +165,9 @@ def run(destination, suite):
     for line, count in sorted(aot_lines.items()):
         if not count:
             missed.append(f"bin/aot/aot.cpp:{line}: {sources['bin/aot/aot.cpp'][line - 1].strip()}")
+    for line, count in sorted(wasm_lines.items()):
+        if not count:
+            missed.append(f"bin/aot/aot.cpp:{line}: [Wasm] {sources['bin/aot/aot.cpp'][line - 1].strip()}")
     for name, line, statements in sorted(vm_missing):
         if name not in sources:
             sources[name] = (source_root / name).read_text().splitlines()
@@ -167,7 +181,8 @@ def check(path, minimum):
     summary = json.loads(Path(path).read_text())
     if summary["failures"]:
         raise RuntimeError("the coverage suite has failing tests")
-    for name, counts in (("AOT lines", summary["aot"]["lines"]), ("VM statements", summary["vm"]["statements"])):
+    for name, counts in (("AOT lines (native)", summary["aot"]["lines"]),
+                         ("AOT lines (Wasm)", summary["aot"]["wasm_lines"]), ("VM statements", summary["vm"]["statements"])):
         if counts["percent"] < minimum:
             raise RuntimeError(f"{name}: {counts['percent']:.2f}% < {minimum:.2f}%")
 

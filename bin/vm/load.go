@@ -633,6 +633,7 @@ func (i *Instance) clone(imports Imports, stack uint64, from, to uint64) *Instan
 // release unmaps the instance block and the memory the instance made; the
 // instance is not used again.
 func (i *Instance) release() {
+	compilerCoverage(i)
 	i.writeTailProfile()
 
 	if i.memory != nil && !i.obj.meta.memory.imported && len(i.memory.users) == 1 {

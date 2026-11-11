@@ -339,6 +339,31 @@ aot_chaos_aot = command(
     descr="AO", color="light-cyan",
 )
 
+# Keep LLVM's coverage mapping in the Wasm module. Only coverage VMs embed
+# these reactors; the production and chaos executables use the usual ones.
+wasm_coverage = []
+for chaos in (False, True):
+    variant = "chaos/" if chaos else ""
+    prefix = f"$(B)/coverage/{variant}compiler"
+    reactor = command(
+        name="aot_wasm_chaos_coverage" if chaos else "aot_wasm_coverage",
+        inputs=["$(S)/bin/aot/aot.cpp", "$(S)/dev/coverage_wasm.c", "$(S)/dev/coverage_wasm_build.py"],
+        outputs=[prefix + "/aot.wasm"],
+        cmd=["python3", "$(S)/dev/coverage_wasm_build.py", CLANG, WASM_LD,
+             "$(S)/bin/aot/aot.cpp", "$(S)/dev/coverage_wasm.c", prefix + "/aot.wasm",
+             json.dumps({"flags": AOT_WASM_FLAGS, "chaos": chaos})],
+        descr="CC", color="green",
+    )
+    embedded = command(
+        name="aot_chaos_coverage_aot" if chaos else "aot_coverage_aot",
+        inputs=["$(S)/dev/aot.py"],
+        outputs=[prefix + "/aot.aot"],
+        deps=[aot_native, reactor],
+        cmd=["python3", "$(S)/dev/aot.py", aot_native.outputs[0], reactor.outputs[0], prefix + "/aot.aot"],
+        descr="AO", color="light-cyan",
+    )
+    wasm_coverage.append((reactor, embedded))
+
 aot_command_aot = command(
     name="aot_command_aot",
     inputs=["$(S)/dev/aot.py"],
@@ -363,11 +388,12 @@ vm = command(
 
 vm_coverage = command(
     name="vm_coverage",
-    inputs=[*WASM2O_SOURCES, *GO_RUNTIME],
+    inputs=[*WASM2O_SOURCES, *GO_RUNTIME, "$(S)/dev/coverage_collect.go"],
     outputs=["$(B)/coverage/bin/vm"],
-    deps=[aot_aot, libstr],
+    deps=[wasm_coverage[0][1], libstr],
     cmd=["python3", "$(S)/dev/go.py", "build", GO, "$(S)/bin/vm", "$(B)/coverage/bin/vm",
-         "--cover", "--runtime", "$(S)/lib/goruntime", "--embed", aot_aot.outputs[0], "--embed", libstr.outputs[0]],
+         "--cover", "--tags", "pizdoscoverage", "--runtime", "$(S)/lib/goruntime",
+         "--embed", wasm_coverage[0][1].outputs[0], "--embed", libstr.outputs[0], "--embed", "$(S)/dev/coverage_collect.go"],
     descr="GO", color="light-blue",
 )
 
@@ -383,11 +409,12 @@ vm_chaos = command(
 
 vm_chaos_coverage = command(
     name="vm_chaos_coverage",
-    inputs=[*WASM2O_SOURCES, *GO_RUNTIME],
+    inputs=[*WASM2O_SOURCES, *GO_RUNTIME, "$(S)/dev/coverage_collect.go"],
     outputs=["$(B)/coverage/chaos/vm"],
-    deps=[aot_chaos_aot, libstr],
-    cmd=["python3", "$(S)/dev/go.py", "build", GO, "$(S)/bin/vm", "$(B)/coverage/chaos/vm", "--cover", "--tags", "pizdoschaos",
-         "--runtime", "$(S)/lib/goruntime", "--embed", aot_chaos_aot.outputs[0], "--embed", libstr.outputs[0]],
+    deps=[wasm_coverage[1][1], libstr],
+    cmd=["python3", "$(S)/dev/go.py", "build", GO, "$(S)/bin/vm", "$(B)/coverage/chaos/vm", "--cover", "--tags", "pizdoschaos,pizdoscoverage",
+         "--runtime", "$(S)/lib/goruntime", "--embed", wasm_coverage[1][1].outputs[0], "--embed", libstr.outputs[0],
+         "--embed", "$(S)/dev/coverage_collect.go"],
     descr="GO", color="light-blue",
 )
 
@@ -734,7 +761,7 @@ UNIT_TOOLS = json.dumps({
 unit_tests = []
 coverage_cases = []
 coverage_dependencies = []
-coverage_inputs = ["$(S)/dev/coverage.py", "$(S)/tst/unit/run.py", "$(S)/dev/wasm.py", "$(S)/dev/wasm_info.py"]
+coverage_inputs = ["$(S)/dev/coverage.py", "$(S)/dev/coverage_wasm.py", "$(S)/tst/unit/run.py", "$(S)/dev/wasm.py", "$(S)/dev/wasm_info.py"]
 coverage_filter = os.environ.get("COVERAGE_TESTS", "")
 
 
@@ -803,8 +830,10 @@ coverage = command(
     name="coverage",
     inputs=[*dict.fromkeys(coverage_inputs), *WASM2O_SOURCES, "$(S)/bin/aot/aot.cpp"],
     outputs=["$(B)/coverage/" + name for name in ("summary.json", "summary.txt", "uncovered.txt", "aot.json", "aot-chaos.json", "vm.out")]
+            + ["$(B)/coverage/" + stem + suffix for stem in ("aot-wasm", "aot-wasm-chaos") for suffix in (".proftext", ".profdata", ".lcov")]
             + ["$(B)/coverage/" + case["name"] + ".log" for case in coverage_cases],
-    deps=[aot_coverage, vm_coverage, aot_chaos_coverage, vm_chaos_coverage, *dict.fromkeys(coverage_dependencies)],
+    deps=[aot_coverage, vm_coverage, aot_chaos_coverage, vm_chaos_coverage,
+          *[reactor for reactor, embedded in wasm_coverage], *dict.fromkeys(coverage_dependencies)],
     cmd=["python3", "$(S)/dev/coverage.py", "$(B)/coverage", json.dumps({
         "source_root": "$(S)", "aot": aot_coverage.outputs[0], "vm": vm_coverage.outputs[0],
         "aot_chaos": aot_chaos_coverage.outputs[0], "vm_chaos": vm_chaos_coverage.outputs[0],
@@ -812,6 +841,9 @@ coverage = command(
         "gcno": aot_coverage.outputs[1], "go": GO,
         "gcov": os.environ.get("GCOV") or os.path.join(os.path.dirname(coverage_cxx), "gcov"),
         "gcov_tool": os.environ.get("GCOV_TOOL") or os.path.join(os.path.dirname(coverage_cxx), "gcov-tool"),
+        "aot_wasm": wasm_coverage[0][0].outputs[0], "aot_wasm_chaos": wasm_coverage[1][0].outputs[0],
+        "llvm_cov": os.environ.get("LLVM_COV") or shutil.which("llvm-cov") or "llvm-cov",
+        "llvm_profdata": os.environ.get("LLVM_PROFDATA") or shutil.which("llvm-profdata") or "llvm-profdata",
         "cases": coverage_cases,
     })],
     descr="CV", color="cyan",
