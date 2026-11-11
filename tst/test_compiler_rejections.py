@@ -27,7 +27,7 @@ def section(kind, body):
     return bytes([kind]) + leb(len(body)) + body
 
 
-def program(code, *, elements=None, data=None, exports=None, import_name=None, addressable=False, global_import=False, globals=None):
+def program(code, *, elements=None, data=None, exports=None, import_name=None, addressable=False, global_import=False, globals=None, start=None):
     types = b"\2\x60\0\0" + (b"\x60\1\x7f\1\x7f" if import_name == "__kernel_strlen" else b"\x60\0\1\x7f")
     module = b"\0asm\1\0\0\0" + section(1, types)
     if import_name:
@@ -41,6 +41,8 @@ def program(code, *, elements=None, data=None, exports=None, import_name=None, a
     if addressable:
         exports += text("alias") + b"\0\0"
     module += section(7, leb(2 if addressable else 1) + exports)
+    if start is not None:
+        module += section(8, leb(start))
     if elements is not None:
         module += section(9, elements)
     body = b"\0" + code + b"\x0b"
@@ -69,6 +71,8 @@ def main():
              ("computed-element-offset", program(b"", global_import=True, elements=b"\1\0\x23\0\x0b\1\0"), "unsupported: element segment"),
              ("low-data", program(b"", data=b"\1\0\x41\0\x0b\1x"), "unsupported: data or the stack in the first KiB"),
              ("low-stack", program(b"", globals=b"\1\x7f\1\x41\x10\x0b"), "unsupported: data or the stack in the first KiB"),
+             ("unknown-start", program(b"", start=33), "unknown function"),
+             ("nonvoid-start", program(b"", import_name="getpid", start=0), "type mismatch"),
              ("bad-export-kind", program(b"", exports=text("_start") + b"\4\0"), "malformed export kind"),
              ("undeclared-import-reference", program(b"\x41\0\xd2\0\x26\0", import_name="getpid"), "ref.func of a function no element, export or global names"),
              ("undeclared-intrinsic-reference", program(b"\x41\0\xd2\0\x26\0", import_name="__kernel_strlen"), "unsupported: the address of an import compiled at its calls"),
