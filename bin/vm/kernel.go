@@ -389,6 +389,13 @@ func (p *Process) runImage(img *execImage, i *Instance, enter func()) (next *exe
 		i.release()
 	}()
 
+	// A signal can arrive before this image has an interrupt token.
+	p.raiseInterrupt()
+
+	if p.sig.deliverable() != 0 {
+		p.chase()
+	}
+
 	enter()
 
 	return nil, 0
