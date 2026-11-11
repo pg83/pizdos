@@ -423,6 +423,10 @@ func specArg(v specValue) (reflect.Value, bool) {
 // invoke prepares an action: a call of an export or a read of a global,
 // returning the values it produces; ok is false when it cannot be run.
 func (r *specRunner) invoke(a *specAction) (func() []reflect.Value, bool) {
+	if a == nil {
+		return nil, false
+	}
+
 	i := r.moduleOf(a)
 
 	if i == nil {
@@ -460,18 +464,18 @@ func (r *specRunner) invoke(a *specAction) (func() []reflect.Value, bool) {
 	f, _ := i.export(e.name)
 	args := []reflect.Value{reflect.ValueOf(i.ctx())}
 
-	for _, v := range a.Args {
+	if len(a.Args) != len(e.params) {
+		return nil, false
+	}
+
+	for k, v := range a.Args {
 		x, ok := specArg(v)
 
-		if !ok {
+		if !ok || x.Type() != goType(e.params[k]) {
 			return nil, false
 		}
 
 		args = append(args, x)
-	}
-
-	if len(args) != len(e.params)+1 {
-		return nil, false
 	}
 
 	return func() []reflect.Value {
