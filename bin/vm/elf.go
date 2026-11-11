@@ -416,7 +416,13 @@ func readEhFrame(data []byte, relocs []objReloc, defined map[string]uint32) []Re
 		pc := uint32(int64(r.value) + r.addend)
 		size := le.Uint32(e[8:])
 		at := 12
-		at += int(uleb(e, &at))
+		augmentation := uleb(e, &at)
+
+		if augmentation > uint64(len(e)-at) {
+			throwFmt("malformed .eh_frame")
+		}
+
+		at += int(augmentation)
 		var sp []spEntry
 		cfaProgram(e[at:], c.code, c.cfa, &sp, size)
 		regions = append(regions, Region{start: pc, end: pc + size, sp: sp})
@@ -449,6 +455,18 @@ func readEhFrame(data []byte, relocs []objReloc, defined map[string]uint32) []Re
 func cfaProgram(b []byte, code uint64, cfa int64, sp *[]spEntry, size uint32) int64 {
 	le := binary.LittleEndian
 	loc := uint64(0)
+	at := 0
+	take := func(n int) []byte {
+		if n > len(b)-at {
+			throwFmt("malformed .eh_frame")
+		}
+
+		part := b[at : at+n]
+		at += n
+
+		return part
+	}
+
 	record := func() {
 		if sp == nil {
 			return
@@ -469,16 +487,14 @@ func cfaProgram(b []byte, code uint64, cfa int64, sp *[]spEntry, size uint32) in
 
 	record()
 
-	for at := 0; at < len(b); {
-		op := b[at]
-		at++
+	for at < len(b) {
+		op := take(1)[0]
 		next := func() uint64 {
 			var x uint64
 			var shift uint
 
 			for {
-				c := b[at]
-				at++
+				c := take(1)[0]
 				x |= uint64(c&0x7f) << shift
 				shift += 7
 
@@ -498,14 +514,11 @@ func cfaProgram(b []byte, code uint64, cfa int64, sp *[]spEntry, size uint32) in
 		case op&0xc0 == 0xc0, op == 0:
 			continue
 		case op == 2:
-			loc += uint64(b[at]) * code
-			at++
+			loc += uint64(take(1)[0]) * code
 		case op == 3:
-			loc += uint64(le.Uint16(b[at:])) * code
-			at += 2
+			loc += uint64(le.Uint16(take(2))) * code
 		case op == 4:
-			loc += uint64(le.Uint32(b[at:])) * code
-			at += 4
+			loc += uint64(le.Uint32(take(4))) * code
 		case op == 0x0c:
 			if next() != 7 {
 				throwFmt("a CFA not on rsp")
