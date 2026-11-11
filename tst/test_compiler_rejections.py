@@ -64,6 +64,8 @@ def main():
              ("else-without-if", program(b"\5"), "else without if"),
              ("unknown-block-type", program(b"\x02\2\x0b"), "unknown type"),
              ("unknown-table", program(b"\x41\0\x25\1\x1a"), "unknown table"),
+             ("unknown-memarg-memory", program(b"\x41\0\x28\x42\1\0\x1a"), "unknown memory"),
+             ("bad-memarg-flags", program(b"\x41\0\x28\x20\0\x1a"), "malformed memop flags"),
              ("unknown-table-init-segment", program(b"\x41\0" * 3 + b"\xfc\14\0\0"), "unknown elem segment"),
              ("unknown-element-drop", program(b"\xfc\15\0"), "unknown elem segment"),
              ("unknown-bulk-operator", program(b"\xfc\22"), "illegal opcode 0xfc"),
@@ -79,6 +81,7 @@ def main():
              ("unknown-start", program(b"", start=33), "unknown function"),
              ("nonvoid-start", program(b"", import_name="getpid", start=0), "type mismatch"),
              ("bad-export-kind", program(b"", exports=text("_start") + b"\4\0"), "malformed export kind"),
+             ("duplicate-export", program(b"", exports=text("alias") + b"\0\0", addressable=True), "duplicate export name"),
              ("undeclared-import-reference", program(b"\x41\0\xd2\0\x26\0", import_name="getpid"), "ref.func of a function no element, export or global names"),
              ("undeclared-intrinsic-reference", program(b"\x41\0\xd2\0\x26\0", import_name="__kernel_strlen"), "unsupported: the address of an import compiled at its calls"),
              ("intrinsic-import-address", program(b"\xd2\0\x1a", import_name="__kernel_strlen", addressable=True), "unsupported: the address of an import compiled at its calls")]
