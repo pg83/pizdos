@@ -178,6 +178,22 @@ extern "C" __attribute__((export_name("_start"))) void _start() {
     CHECK(path_open(3, 1, "/dev/null", 9, 0, rights, 0, 0, &other) == 0);
     CHECK(fd_fdstat_get(other, status) == 0 && status[0] == 2 && fd_close(other) == 0);
     CHECK(fd_fdstat_get(1, status) == 0 && status[0] == 0);
+    CHECK(fd_readdir(1, buffer, sizeof(buffer), 0, &used) == 70);
+    CHECK(path_filestat_get(3, 0, "/proc/self/fd/0", 15, status) == 0 && status[16] == 7);
+    CHECK(path_readlink(3, "/proc/self/fd/0", 15, buffer, sizeof(buffer), &used) == 0 && used > 0);
+    char first = buffer[0];
+    CHECK(path_readlink(3, "/proc/self/fd/0", 15, buffer, 1, &used) == 0 && used == 1 && buffer[0] == first);
+    CHECK(path_open(3, 1, "/proc/self/fd", 13, 2, 0, 0, 0, &other) == 0);
+    CHECK(fd_readdir(other, buffer, sizeof(buffer), 0, &used) == 0 && fd_close(other) == 0);
+    bool sawLink = false;
+    for (u32 at = 0; at + 24 <= used;) {
+        auto entry = reinterpret_cast<u8*>(buffer + at);
+        u32 size = u32(integer(entry + 16));
+        CHECK(at + 24 + size <= used);
+        sawLink = sawLink || entry[20] == 7;
+        at += 24 + size;
+    }
+    CHECK(sawLink);
     CHECK(path_create_directory(directory, "sub", 3) == 0);
     CHECK(fd_readdir(directory, buffer, sizeof(buffer), 0, &used) == 0);
     bool sawFile = false, sawDirectory = false;
