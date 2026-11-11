@@ -59,6 +59,8 @@ def main():
               ("empty-alias", program(names([(0, "named")]), alias=""), "named"),
               ("controls", program(names([(0, "ctrl\0\n\t\1\x7f")]), alias="alias\0\n\t"), "ctrl_00_0A_09_01_7F"),
               ("percent", program(names([(0, "percent%02X%%")])), "percent%02X%%")]
+    long_name = "long-" + "n" * 40000
+    cases.append(("cross-page-name", program(section(42, b"padding" * 5000) + names([(0, long_name)])), long_name))
     env = dict(os.environ, W2X_MEMORY_TAIL="strict", W2X_TAIL_PROFILE="")
     with tempfile.TemporaryDirectory(prefix="pizdos-debug-names-") as directory:
         work = Path(directory)
