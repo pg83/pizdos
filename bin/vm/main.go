@@ -11,7 +11,7 @@ import (
 )
 
 func usage() {
-	throwFmt("usage: vm [-v] -o output.o input.wasm\n       vm run [--root dir] [-a argv0] object.o [-- arg...]\n       vm spec test.json\n       vm stand [--repeat N] im|pdf|djvu|svg|magic object.o file...")
+	throwFmt("usage: vm [-v] [--asan] -o output.o input.wasm\n       vm run [--root dir] [-a argv0] [--asan] -- object.o [arg...]\n       vm spec test.json\n       vm stand [--repeat N] im|pdf|djvu|svg|magic object.o file...")
 }
 
 func main() {
@@ -49,7 +49,7 @@ func main() {
 
 func compileCommand(args []string) {
 	var input, output string
-	verbose := false
+	verbose, asan := false, false
 
 	for len(args) > 0 {
 		arg := args[0]
@@ -65,6 +65,8 @@ func compileCommand(args []string) {
 			args = args[1:]
 		case "-v":
 			verbose = true
+		case "--asan":
+			asan = true
 		default:
 			if input != "" {
 				usage()
@@ -94,8 +96,14 @@ func compileCommand(args []string) {
 		defer pprof.StopCPUProfile()
 	}
 
+	options := compileOptions()
+
+	if asan {
+		options = CompileOptions{asan: true}
+	}
+
 	start := time.Now()
-	compileStreams(source, destination, compileOptions())
+	compileStreams(source, destination, options)
 	elapsed := time.Since(start)
 	throw(destination.Chmod(0o644))
 	throw(destination.Close())
@@ -107,34 +115,40 @@ func compileCommand(args []string) {
 }
 
 // runCommand runs object.o, a program of the kernel inside the root
-// directory, by default /, or a WASI command. Its arguments are argv0, by
-// default the object's path, and those after --.
+// directory, by default /, or a WASI command: the options come first, then
+// -- and the object with its arguments. argv0 is by default the object's
+// path. --asan runs an object compiled with --asan under the kernel's
+// address sanitizer (kernel_asan.go).
 func runCommand(args []string) int {
-	root, argv0 := "/", ""
+	root, argv0, asan := "/", "", false
 
-	for len(args) > 1 && (args[0] == "--root" || args[0] == "-a") {
-		if args[0] == "--root" {
+	for len(args) > 0 && args[0] != "--" {
+		switch {
+		case args[0] == "--asan":
+			asan = true
+			args = args[1:]
+		case len(args) > 1 && args[0] == "--root":
 			root = args[1]
-		} else {
+			args = args[2:]
+		case len(args) > 1 && args[0] == "-a":
 			argv0 = args[1]
+			args = args[2:]
+		default:
+			usage()
 		}
-
-		args = args[2:]
 	}
 
-	if len(args) == 0 || len(args) > 1 && args[1] != "--" {
+	if len(args) < 2 {
 		usage()
 	}
+
+	args = args[1:]
 
 	if argv0 == "" {
 		argv0 = args[0]
 	}
 
-	argv := []string{argv0}
+	argv := append([]string{argv0}, args[1:]...)
 
-	if len(args) > 1 {
-		argv = append(argv, args[2:]...)
-	}
-
-	return runObject(args[0], root, argv)
+	return runObject(args[0], root, argv, asan)
 }

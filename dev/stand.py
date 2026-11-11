@@ -229,7 +229,7 @@ def python_work(build, vm, runs, minimum, work, only=None):
 
         commands = {
             "A": [str(native / "usr/bin/python3"), "-S", str(native / "pybench.py"), bench],
-            "C": [str(vm), "run", "--root", str(aot), "-a", "/usr/bin/python3", str(aot / "usr/bin/python3"), "--", "-S", "/pybench.py", bench],
+            "C": [str(vm), "run", "--root", str(aot), "-a", "/usr/bin/python3", "--", str(aot / "usr/bin/python3"), "-S", "/pybench.py", bench],
         }
         native_time, _ = python_run(commands["A"], 1)
         repeat = max(1, math.ceil(minimum / max(native_time, 0.000001)))

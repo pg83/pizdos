@@ -45,6 +45,9 @@ type Kernel struct {
 	// sockets are bound by (kernel_socket.go).
 	abstract  string
 	unixNames sync.Map
+	// asan is `vm run --asan`: the first program is an asan object, and so
+	// may be any it execs (kernel_asan.go); without it they are refused.
+	asan bool
 }
 
 // fileKey identifies a version of a file: device, inode, size, mtime.
@@ -202,13 +205,18 @@ func importsKernel(obj *Object) bool {
 
 // runKernel runs an object as the first process and returns the exit code
 // of vm: the process's, or 128 and the signal that ended it.
-func runKernel(path, root string, argv []string) int {
+func runKernel(path, root string, argv []string, asan bool) int {
 	k := newKernel(root)
+	k.asan = asan
 	fd := throw2(syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC, 0))
 	code, err := k.code(fd, path)
 	program := k.programPath(fd)
 	syscall.Close(fd)
 	throw(err)
+
+	if asan && !code.obj.meta.asan() {
+		throwFmt("%s: not compiled with --asan", path)
+	}
 	p := k.newProcess(nil)
 	p.cwd = k.guestPath(throw2(os.Getwd()))
 	env := []string{"PWD=" + p.cwd}
@@ -323,7 +331,9 @@ func (p *Process) runImage(img *execImage, i *Instance, enter func()) (next *exe
 		p.envStrings, p.mappings = map[uint32]bool{}, map[uint32]mapping{}
 		p.jumps, p.stackAt = map[uint32]*jump{}, 0
 		enter = func() {
+			p.asanStart()
 			i.start()
+			p.asanInit()
 			start, _ := i.export("_start")
 			start.Interface().(func(uintptr))(i.ctx())
 		}
@@ -351,7 +361,13 @@ func (p *Process) runImage(img *execImage, i *Instance, enter func()) (next *exe
 		case *execImage:
 			next = e
 		case *Trap:
-			fmt.Fprintf(os.Stderr, "%s[%d]: %s\n", img.argv[0], who.pid, e.message())
+			msg := e.message()
+
+			if e.code == trapAsan {
+				msg = who.asanReport(e)
+			}
+
+			who.crash(msg, e.stack)
 			status = trapSignal(e.code)
 		default:
 			panic(e)
@@ -371,7 +387,7 @@ func (p *Process) runImage(img *execImage, i *Instance, enter func()) (next *exe
 // trapSignal is the signal a trap ends a process with.
 func trapSignal(code uint32) int {
 	switch code {
-	case trapMemoryOOB, trapTableOOB, trapNullRef, trapUndefinedElem, trapUninitElem:
+	case trapMemoryOOB, trapTableOOB, trapNullRef, trapUndefinedElem, trapUninitElem, trapAsan:
 		return int(syscall.SIGSEGV)
 	case trapIntOverflow, trapDivByZero, trapConversion:
 		return int(syscall.SIGFPE)
@@ -561,15 +577,20 @@ func (p *Process) mem() []byte {
 }
 
 func oob() {
-	panic(&Trap{trapMemoryOOB})
+	panic(newTrap(trapMemoryOOB, 1))
 }
 
-// span is n bytes of memory at at.
+// span is n bytes of memory at at, which the shadow map of an asan object
+// must allow.
 func (p *Process) span(at, n uint32) []byte {
 	m := p.mem()
 
 	if uint64(at)+uint64(n) > uint64(len(m)) {
 		oob()
+	}
+
+	if p.inst.memory.shadow != nil {
+		p.asanCheck(at, n)
 	}
 
 	return m[at : at+n]
@@ -615,6 +636,10 @@ func (p *Process) cstr(at uint32) []byte {
 
 	if n < 0 {
 		oob()
+	}
+
+	if p.inst.memory.shadow != nil {
+		p.asanCheck(at, uint32(n)+1)
 	}
 
 	return m[at : at+uint32(n)]

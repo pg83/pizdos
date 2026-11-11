@@ -171,7 +171,7 @@ def make_root(root, python, zipped, tarball, busybox, links):
 
 
 def python(vm, root, args, timeout):
-    command = [vm, "run", "--root", str(root), "-a", "/usr/bin/python3", str(root / "usr" / "bin" / "python3"), "--", *args]
+    command = [vm, "run", "--root", str(root), "-a", "/usr/bin/python3", "--", str(root / "usr" / "bin" / "python3"), *args]
     environment = {"PATH": "/usr/bin:/bin", "HOME": "/tmp", "TZ": "UTC"}
 
     return subprocess.run(command, capture_output=True, text=True, cwd=root / "tmp", env=environment, timeout=timeout)

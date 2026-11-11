@@ -19,6 +19,11 @@ func resumeStub() uintptr
 
 func resumeReturnStub() uintptr
 
+// asanRangeStub is w2o.asan_range, which an asan object calls as it calls
+// a function of lib/str, with the host address of a range of the shadow
+// map and its length: how many bytes from its start are accessible.
+func asanRangeStub() uintptr
+
 // moveMemory copies src to the start of dst, which holds it, through
 // lib/str's memmove: the copy the code's memcpy makes.
 func moveMemory(dst, src []byte) {

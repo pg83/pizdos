@@ -121,7 +121,6 @@ multibyte/mbrlen.c
 multibyte/mbrtowc.c
 multibyte/mbsinit.c
 multibyte/mbsnrtowcs.c
-multibyte/mbsrtowcs.c
 multibyte/mbstowcs.c
 multibyte/mbtowc.c
 multibyte/wcrtomb.c

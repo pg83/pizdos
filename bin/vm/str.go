@@ -107,7 +107,7 @@ func linkStr(data []byte) *strLibrary {
 
 	throw(syscall.Mprotect(code[:rodataAt], syscall.PROT_READ|syscall.PROT_EXEC))
 	throw(syscall.Mprotect(code[rodataAt:], syscall.PROT_READ))
-	registerCode("str", base, uintptr(len(text)), regions, true)
+	registerCode("str", base, uintptr(len(text)), regions, true, nil, nil)
 	choose, ok := defined["str_choose"]
 
 	if !ok {

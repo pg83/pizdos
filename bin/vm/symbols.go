@@ -30,6 +30,8 @@ const (
 	symImport        = "w2o.import."
 	symExport        = "w2o.export."
 	symTrap          = "w2o.trap"
+	symTrapAt        = "w2o.trap_at"
+	symAsanRange     = "w2o.asan_range"
 	symMemoryGrow    = "w2o.memory_grow"
 	symTableGrow     = "w2o.table_grow"
 	symInterruptCall = "w2o.interrupt_call"

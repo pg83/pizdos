@@ -39,7 +39,7 @@ def main():
 
     with tempfile.TemporaryDirectory() as root:
         os.mkdir(os.path.join(root, "tmp"))
-        r = subprocess.run([vm, "run", "--root", root, "-a", "check", check], capture_output=True, text=True,
+        r = subprocess.run([vm, "run", "--root", root, "-a", "check", "--", check], capture_output=True, text=True,
                            env={"PATH": "/bin"}, timeout=120)
 
     if r.returncode != 0 or r.stdout != EXPECTED:

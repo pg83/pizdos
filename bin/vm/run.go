@@ -12,11 +12,15 @@ import (
 // of the kernel as its first process, inside root, or a WASI command on
 // this goroutine, whose code is proc_exit's, or 128 and the trap code after
 // a trap.
-func runObject(path, root string, argv []string) (code int) {
+func runObject(path, root string, argv []string, asan bool) (code int) {
 	obj := readObject(throw2(os.ReadFile(path)))
 
 	if importsKernel(obj) {
-		return runKernel(path, root, argv)
+		return runKernel(path, root, argv, asan)
+	}
+
+	if asan || obj.meta.asan() {
+		throwFmt("--asan runs programs of the kernel")
 	}
 
 	w := newWASI(argv)
@@ -32,6 +36,11 @@ func runObject(path, root string, argv []string) (code int) {
 			code = int(e.code)
 		case *Trap:
 			fmt.Fprintln(os.Stderr, e.message())
+
+			for _, line := range traceLines(e.stack) {
+				fmt.Fprintln(os.Stderr, "    "+line)
+			}
+
 			code = 128 + int(e.code)
 		default:
 			panic(e)

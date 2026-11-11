@@ -427,6 +427,28 @@ libc_check_o = command(
     color="light-cyan",
 )
 
+# test_asan's program: lib/c's allocator, string functions and calls misused,
+# one memory error a case, built as test_libc's is but with -g, so the
+# object's traces name the lines, and compiled with --asan.
+asan_check = command(
+    name="asan_check",
+    inputs=[*LIBC_HEADERS, "$(S)/tst/asan/check.c", "$(S)/tst/libc/make.py", "$(S)/dev/wasm.py"],
+    outputs=["$(B)/tst/asan/check.wasm"],
+    deps=[libc],
+    cmd=["python3", "$(S)/tst/libc/make.py", CLANG, WASM_LD, "$(S)/tst/asan/check.c", "$(S)/lib/c/include", libc.outputs[0], "$(B)/tst/asan/check.wasm", "-g"],
+    descr="CC",
+    color="green",
+)
+
+asan_check_o = command(
+    name="asan_check_o",
+    outputs=["$(B)/tst/asan/check.o"],
+    deps=[vm, asan_check],
+    cmd=[vm.outputs[0], "--asan", "-o", "$(B)/tst/asan/check.o", asan_check.outputs[0]],
+    descr="AO",
+    color="light-cyan",
+)
+
 # test_cxx's program: lib/cxx's library over lib/c with deterministic results.
 cxx_check = command(
     name="cxx_check",
@@ -594,6 +616,7 @@ stand_corpus = fetch(
 # What each test runs against: its arguments are the outputs of these nodes.
 TESTED = {
     "aot": [aot, aot_command, wazero, vm, busybox, aot_selftest],
+    "asan": [vm, asan_check_o, libc_check_o],
     "busybox_abi": [busybox],
     "busybox": [vm, busybox_o, busybox],
     "clang": [vm, clang_o, clang, libc, libc_headers, libcxx],

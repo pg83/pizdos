@@ -11,8 +11,8 @@ from pathlib import Path
 def main():
     vm, native, reactor, command, aot, relinked, wazero, busybox, _links = sys.argv[1:]
     compilers = {
-        "self-compiled AOT": [vm, "run", aot, "--"],
-        "relinked AOT": [vm, "run", relinked, "--"],
+        "self-compiled AOT": [vm, "run", "--", aot],
+        "relinked AOT": [vm, "run", "--", relinked],
         "WASI reactor": [wazero, "-aot", reactor],
         "WASI command": [wazero, command],
     }

@@ -10,6 +10,7 @@ import (
 	"math/bits"
 	"os"
 	"slices"
+	"strings"
 	"syscall"
 )
 
@@ -485,14 +486,27 @@ func (p *Process) malloc(n uint32) uint32 {
 	}
 
 	if n <= smallLimit {
-		return p.mallocSmall(h, classOf(n))
+		cls := classOf(n)
+		at := p.mallocSmall(h, cls)
+
+		if at != 0 {
+			p.shadowBlock(at, n, classSizes[cls])
+		}
+
+		return at
 	}
 
 	if n > heapMax {
 		return 0
 	}
 
-	return p.mallocRun(h, uint64(n))
+	at := p.mallocRun(h, uint64(n))
+
+	if at != 0 {
+		p.shadowBlock(at, n, pagesFor(uint64(n))<<heapPageShift)
+	}
+
+	return at
 }
 
 // usedBlock finds the block ptr is the start of: its page, slot and size,
@@ -542,9 +556,10 @@ func (p *Process) free(ptr uint32) {
 		return
 	}
 
-	page, slot, _ := p.block(ptr, "free")
+	page, slot, size := p.block(ptr, "free")
 	h := p.heap
 	pg := &h.pages[page]
+	p.shadowFree(ptr, size)
 
 	if pg.kind == pageRun {
 		h.releasePages(page, pg.run)
@@ -633,19 +648,26 @@ func (p *Process) realloc(ptr, n uint32) uint32 {
 
 	page, _, size := p.block(ptr, "realloc")
 	run := p.heap.pages[page].kind == pageRun
+	// What the program asked for, which the copy keeps to; without the
+	// shadow map, the block.
+	asked := p.blockAsked(ptr, size)
 
 	if n <= size && !run {
+		p.shadowBlock(ptr, n, size)
+
 		return ptr
 	}
 
 	if run && n > smallLimit && n <= heapMax && p.resizeRun(page, uint64(n)) {
+		p.shadowBlock(ptr, n, pagesFor(uint64(n))<<heapPageShift)
+
 		return ptr
 	}
 
 	moved := p.malloc(n)
 
 	if moved != 0 {
-		keep := min(size, n)
+		keep := min(asked, n)
 		copy(p.span(moved, keep), p.span(ptr, keep))
 		p.free(ptr)
 	}
@@ -653,17 +675,31 @@ func (p *Process) realloc(ptr, n uint32) uint32 {
 	return moved
 }
 
-// fatal ends the process as abort does, with a message on the host's
-// standard error.
+// fatal ends the process as abort does, with a message and the trace of its
+// caller on the host's standard error.
 func (p *Process) fatal(msg string) {
+	p.crash(msg, callers(1))
+	p.exitWith(int(syscall.SIGABRT))
+}
+
+// crash reports what ends the process on the host's standard error: the
+// message, then the trace (trace.go), each line marked with the program
+// and the pid, as the lines of processes interleave.
+func (p *Process) crash(msg string, stack []uintptr) {
 	name := "?"
 
 	if p.image != nil && len(p.image.argv) > 0 {
 		name = p.image.argv[0]
 	}
 
-	fmt.Fprintf(os.Stderr, "%s[%d]: %s\n", name, p.pid, msg)
-	p.exitWith(int(syscall.SIGABRT))
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s[%d]: %s\n", name, p.pid, msg)
+
+	for _, line := range traceLines(stack) {
+		fmt.Fprintf(&b, "%s[%d]:     %s\n", name, p.pid, line)
+	}
+
+	os.Stderr.WriteString(b.String())
 }
 
 const (
@@ -697,14 +733,28 @@ func (p *Process) memalign(align, n uint32) uint32 {
 	}
 
 	if size := max(n, align); size <= smallLimit {
-		return p.mallocSmall(h, classOf(1<<bits.Len32(size-1)))
-	}
+		cls := classOf(1 << bits.Len32(size-1))
+		at := p.mallocSmall(h, cls)
 
-	if align <= heapPageSize {
-		return p.mallocRun(h, uint64(n))
+		if at != 0 {
+			p.shadowBlock(at, n, classSizes[cls])
+		}
+
+		return at
 	}
 
 	count := pagesFor(uint64(n))
+
+	if align <= heapPageSize {
+		at := p.mallocRun(h, uint64(n))
+
+		if at != 0 {
+			p.shadowBlock(at, n, count<<heapPageShift)
+		}
+
+		return at
+	}
+
 	slack := align/heapPageSize - 1
 	first, ok := p.takePages(h, count+slack)
 
@@ -718,6 +768,7 @@ func (p *Process) memalign(align, n uint32) uint32 {
 	h.releasePages(first, lead)
 	h.releasePages(first+int32(lead+count), slack-lead)
 	h.markRun(first+int32(lead), count)
+	p.shadowBlock(uint32(aligned), n, count<<heapPageShift)
 
 	return uint32(aligned)
 }
@@ -1065,7 +1116,9 @@ func (p *Process) libcMalloc_usable_size(ptr uint32) uint32 {
 
 	_, _, size := p.block(ptr, "malloc_usable_size")
 
-	return size
+	// Under the shadow map the usable bytes are the ones asked for: the
+	// rest is a red zone.
+	return p.blockAsked(ptr, size)
 }
 
 // The heap gives no memory back.

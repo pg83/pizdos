@@ -40,7 +40,8 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
 - Our own libc. Musl sources are used only for stdio, sorting, libm, getopt,
   number parsing and multibyte conversion (`lib/c/musl/files.txt`); every
   other function is our code in `lib/c/src`, most of them calls of the
-  kernel's imports.
+  kernel's imports. `mbsrtowcs` is ours, a character at a time: musl's
+  reads words past a string's end, which the address sanitizer reports.
 - Programs see only lib/c's functions. An import is lib/c's alone, declared
   `__KERNEL(name)` under the C name `__kernel_<name>`, and the function
   `name` calls it: `src/kernel.c` defines those by one line each, a
@@ -241,8 +242,9 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
   interrupt word is set. The kernel delivers signals there, below the
   shadow stack's 128-byte red zone, and repeats Interrupt every
   millisecond until they are taken.
-- `vm run` runs an object importing module `kernel` in the kernel of
-  lib/c (`kernel*.go`). `libc.go` is its table: every function lib/c imports
+- `vm run [--root dir] [-a argv0] [--asan] -- object.o arg...` runs an
+  object importing module `kernel` in the kernel of lib/c (`kernel*.go`):
+  the options, then `--`, the object and its arguments. `libc.go` is its table: every function lib/c imports
   is a function `libcX(ctx, …)` there, a call of the Process method `libcX`
   that does the work, the process taken from ctx. A process is a goroutine with its own pid, group,
   descriptors (host descriptors the kernel owns), cwd, umask, limits and
@@ -265,6 +267,43 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
   frames: the code that runs handlers holds no lock and defers nothing.
   `test_busybox` builds a root from busybox.links and runs applets and the
   shell in it: pipes, jobs, SIGINT, and Ctrl-Z, jobs and fg on a pty.
+- A trap or a `fatal` of the kernel (an invalid pointer freed, say) ends
+  the process with a trace through the module's and the kernel's frames as
+  one stack (`trace.go`): Go's unwinder walks the registered functions, so
+  `runtime.Callers` at the fault has them all. A line is a function of the
+  module, named as the name section does, with the offset of its
+  instruction and, when the module was linked with `-g`, its `file:line`;
+  or a function of the kernel with its `file:line`. The loader's thunks,
+  adapters and stubs (`w2o.*`) and the harness above the module's entry are
+  left out; each line is marked `program[pid]`. The lines come from the
+  module's DWARF line table: the compiler reads `.debug_line` (versions 2
+  to 5, `moduleReadLines`), carries each value's and instruction's wasm
+  position through lowering and emission (`asmMarkPos`), and writes the
+  text's `pc → file:line` table into the note (`objCodeLines`), which the
+  loader puts into Go's pcfile and pcln tables (`registerCode`); a trap's
+  pad is of its check's instruction.
+- `--asan` is the kernel's address sanitizer (`kernel_asan.go`): `vm --asan
+  -o` compiles an object whose every access is checked against the shadow
+  map, a byte for each byte of memory, instead of the memory's bounds
+  (`lowererAsanAddress`: `cmp [shadow + address + offset], -1` with the
+  map's base from an instance slot, the map covering every 32-bit address
+  and boundSlack past them; the ranges of string functions and bulk
+  operations through the loader's stub `w2o.asan_range`; a failed check
+  calls `w2o.trap_at` with the address, width and kind), and `vm run
+  --asan` runs it: the kernel keeps the map beside the memory from what it
+  knows of the process, the stack and data from the first KiB to
+  `__heap_base` accessible, a block of the heap accessible for the bytes
+  asked for from when it is handed out, the rest of it a red zone, poisoned
+  from when it is freed, and everything else never allocated; it checks
+  the buffers of the program's calls against the map too (`span`), and
+  reports a fault with what the map says of its first inaccessible byte.
+  An asan object is refused without the flag and a plain one as the first
+  program under it; exec of a plain object in an asan run runs it as ever.
+  The code of plain objects is unchanged (their `.text` is identical);
+  an asan object is about twice the code and the map doubles the memory
+  touched. The compiler's output holds 512 MiB of code, which clang's
+  multicall object exceeds under asan. `test_asan` runs tst/asan/check.c's
+  memory errors and reads the reports and their lines.
 - `test_vm_go` runs `bin/vm/*_test.go`: modules built in the test
   run through the loader while Go collects, copies stacks, parks, preempts a
   call-free loop on one processor and unwinds traps through native frames;

@@ -191,11 +191,11 @@ func (p *Process) strtok(s, delim uint32, save uint32) (token, next uint32) {
 // overflow.
 func divide(a, b, minimum int64) (int64, int64) {
 	if b == 0 {
-		panic(&Trap{trapDivByZero})
+		panic(newTrap(trapDivByZero, 0))
 	}
 
 	if a == minimum && b == -1 {
-		panic(&Trap{trapIntOverflow})
+		panic(newTrap(trapIntOverflow, 0))
 	}
 
 	return a / b, a % b

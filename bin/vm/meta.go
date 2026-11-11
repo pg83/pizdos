@@ -19,6 +19,14 @@ type MemoryMeta struct {
 	tailEnd      uint32 // instance slot holding the accessible end
 	profile      uint32 // optional diagnostic counters in the instance
 	profileFuncs uint32
+	// shadow is the instance slot holding the shadow map's base: an asan
+	// object (kernel_asan.go), which has no tail.
+	shadow uint32
+}
+
+// asan tells an object compiled with --asan.
+func (m *Meta) asan() bool {
+	return m.memory != nil && m.memory.shadow != 0
 }
 
 type TableMeta struct {
@@ -64,6 +72,14 @@ type Region struct {
 	sp         []spEntry
 }
 
+// lineEntry says that from pc of the text on the code is of line of the
+// file, an index of Meta's files: the module's DWARF line table, carried
+// over (aot.cpp objCodeLines) into Go's tables (registerCode), so a trace
+// names the source line of a frame of the module.
+type lineEntry struct {
+	pc, file, line uint32
+}
+
 type Meta struct {
 	instanceSize uint32
 	memory       *MemoryMeta
@@ -75,6 +91,10 @@ type Meta struct {
 	// calls the start function.
 	init    string
 	regions []Region
+	// files and lines are the source lines of the text, in order of pc;
+	// empty for a module without a DWARF line table.
+	files []string
+	lines []lineEntry
 }
 
 type metaReader struct {
@@ -158,19 +178,56 @@ func decodeNote(data []byte) *Meta {
 		m.exports[i] = ExportMeta{kind: byte(r.u()), name: r.str(), index: r.u32()}
 	}
 
-	if len(r.data) != 0 && m.memory != nil {
+	// What follows is optional, by its flags: the accessible tail and its
+	// slot, the tail's profile counters, the shadow map's slot, the source
+	// lines.
+	flags := r.u()
+
+	if flags&7 != 0 && m.memory == nil {
+		throwFmt("memory metadata without a memory")
+	}
+
+	if flags&1 != 0 {
 		m.memory.tail = r.u()
 		m.memory.tailEnd = r.u32()
 
 		if m.memory.tail != boundSlack || m.memory.tailEnd&7 != 0 || uint64(m.memory.tailEnd)+8 > uint64(m.instanceSize) {
 			throwFmt("unsupported memory tail %d", m.memory.tail)
 		}
+	}
 
-		if len(r.data) != 0 {
-			m.memory.profile, m.memory.profileFuncs = r.u32(), r.u32()
+	if flags&2 != 0 {
+		m.memory.profile, m.memory.profileFuncs = r.u32(), r.u32()
 
-			if m.memory.profile < headerSize || m.memory.profile&7 != 0 || uint64(m.memory.profile)+uint64(m.memory.profileFuncs)*tailCounterBytes > uint64(m.instanceSize) {
-				throwFmt("invalid memory tail profile")
+		if m.memory.tail == 0 || m.memory.profile < headerSize || m.memory.profile&7 != 0 || uint64(m.memory.profile)+uint64(m.memory.profileFuncs)*tailCounterBytes > uint64(m.instanceSize) {
+			throwFmt("invalid memory tail profile")
+		}
+	}
+
+	if flags&4 != 0 {
+		m.memory.shadow = r.u32()
+
+		if m.memory.tail != 0 || m.memory.shadow < headerSize || m.memory.shadow&7 != 0 || uint64(m.memory.shadow)+8 > uint64(m.instanceSize) {
+			throwFmt("invalid shadow slot %d", m.memory.shadow)
+		}
+	}
+
+	if flags&8 != 0 {
+		m.files = make([]string, r.count())
+
+		for i := range m.files {
+			m.files[i] = r.str()
+		}
+
+		m.lines = make([]lineEntry, r.count())
+		pc := uint32(0)
+
+		for i := range m.lines {
+			pc += r.u32()
+			m.lines[i] = lineEntry{pc: pc, file: r.u32(), line: r.u32()}
+
+			if uint64(m.lines[i].file) >= uint64(len(m.files)) || i > 0 && pc == m.lines[i-1].pc {
+				throwFmt("invalid line table")
 			}
 		}
 	}

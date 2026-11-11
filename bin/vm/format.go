@@ -41,6 +41,16 @@ const (
 	trapStack         = 9
 	trapTableOOB      = 10
 	trapNullRef       = 11
+	// trapAsan is an access the shadow map refused (kernel_asan.go): the
+	// trap carries the access's address, width and kind.
+	trapAsan = 12
+)
+
+// The kinds of access an asan trap reports.
+const (
+	asanLoad  = 0
+	asanStore = 1
+	asanRange = 2
 )
 
 // spEntry records that from pc on the stack pointer is delta bytes below

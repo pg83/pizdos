@@ -368,8 +368,8 @@ def python(cc, ld, vm, tarball, pyconfig, libc_include, libc, libpython, freeze,
     out.mkdir()
 
     for name, source, header in frozen_modules(tree):
-        subprocess.run([vm, "run", "--root", str(tree), "-a", "_freeze_module", str(freezer),
-                        "--", name, "/" + source, "/frozen/" + header], check=True, env={"PATH": "/bin"})
+        subprocess.run([vm, "run", "--root", str(tree), "-a", "_freeze_module", "--", str(freezer),
+                        name, "/" + source, "/frozen/" + header], check=True, env={"PATH": "/bin"})
         shutil.copy(out / header, frozen / header)
 
     (work / "gen" / "Python").mkdir()

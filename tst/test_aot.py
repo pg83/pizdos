@@ -42,7 +42,7 @@ def main():
         self_object = directory / "aot-command.o"
         self_object.write_bytes(references[Path(command)])
         for source in (Path(busybox), Path(command)):
-            result = run([vm, "run", str(self_object), "--"], source.read_bytes())
+            result = run([vm, "run", "--", str(self_object)], source.read_bytes())
             assert result.stdout == references[source], f"self-compiled aot differs for {source.name}"
             print(f"self-compiled aot: {source.name}, identical")
 

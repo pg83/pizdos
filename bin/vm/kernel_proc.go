@@ -84,6 +84,10 @@ func (k *Kernel) code(fd int, name string) (*Code, error) {
 			throwFmt("not a program of the kernel")
 		}
 
+		if obj.meta.asan() && !k.asan {
+			throwFmt("compiled with --asan: run with --asan")
+		}
+
 		c = link(name, obj, k)
 	}); e != nil {
 		fmt.Fprintf(os.Stderr, "vm: %s: %s\n", name, e)

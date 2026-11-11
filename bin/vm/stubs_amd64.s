@@ -413,9 +413,40 @@ TEXT ·strMove(SB), 0, $8-32
 	CALL	BX
 	RET
 
+// w2oAsanRange is what an asan object calls, as it calls a function of
+// lib/str, with the host address of a range of the shadow map in AX and
+// its length in CX: it returns in AX how many bytes from the start are
+// shadowOK, the length when all are. A word at a time, then the bytes
+// left. It writes AX, CX, DX and SI only, and no stack.
+TEXT ·w2oAsanRange(SB), NOSPLIT|NOFRAME, $0-0
+	MOVQ	AX, DX
+	XORL	AX, AX
+words:
+	LEAQ	8(AX), SI
+	CMPQ	SI, CX
+	JA	bytes
+	CMPQ	(DX)(AX*1), $-1
+	JNE	bytes
+	MOVQ	SI, AX
+	JMP	words
+bytes:
+	CMPQ	AX, CX
+	JAE	done
+	CMPB	(DX)(AX*1), $-1
+	JNE	done
+	INCQ	AX
+	JMP	bytes
+done:
+	RET
+
 // The addresses of the stubs (stubs.go).
 TEXT ·morestackStub(SB), NOSPLIT, $0-8
 	LEAQ	·w2oMorestack(SB), AX
+	MOVQ	AX, ret+0(FP)
+	RET
+
+TEXT ·asanRangeStub(SB), NOSPLIT, $0-8
+	LEAQ	·w2oAsanRange(SB), AX
 	MOVQ	AX, ret+0(FP)
 	RET
 

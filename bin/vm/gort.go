@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"unsafe"
@@ -195,6 +196,16 @@ func append32(dst []byte, values ...uint32) []byte {
 	return dst
 }
 
+// appendValue adds a value from pc on to a pc-value table in the making,
+// unless the value before it is the same.
+func appendValue(values []spEntry, pc, value int32) []spEntry {
+	if values[len(values)-1].delta == value {
+		return values
+	}
+
+	return append(values, spEntry{pc, value})
+}
+
 // pcTable appends a pc-value table: the values from their offsets on, up
 // to size; neighbours differ, as the encoding requires.
 func (m *goModule) pcTable(values []spEntry, size uint32) uint32 {
@@ -228,8 +239,11 @@ func (m *goModule) pcTable(values []spEntry, size uint32) uint32 {
 const funcFlagAsm = 4
 
 // registerCode tells Go about the regions of code at base; code registered
-// as assembly is never preempted asynchronously.
-func registerCode(name string, base uintptr, size uintptr, regions []Region, assembly bool) {
+// as assembly is never preempted asynchronously. The source lines, when the
+// object has them (Meta lines), become the functions' file and line tables:
+// a region without any keeps the object's name for its file and its index
+// for its line.
+func registerCode(name string, base uintptr, size uintptr, regions []Region, assembly bool, files []string, lines []lineEntry) {
 	checkGo()
 
 	if len(regions) == 0 {
@@ -240,7 +254,7 @@ func registerCode(name string, base uintptr, size uintptr, regions []Region, ass
 	img := &goImage{stackMap: append32(nil, 1, 0)}
 	m := &img.module
 	end := regions[len(regions)-1].end
-	img.header = goPCHeader{magic: 0xfffffff1, minLC: 1, ptrSize: 8, nfunc: len(regions), nfiles: 1, textStart: base}
+	img.header = goPCHeader{magic: 0xfffffff1, minLC: 1, ptrSize: 8, nfunc: len(regions), nfiles: uint(1 + len(files)), textStart: base}
 	m.header = &img.header
 	m.text, m.minpc, m.maxpc, m.etext = base, base, base+uintptr(end), base+size
 	m.modulename = name
@@ -249,6 +263,11 @@ func registerCode(name string, base uintptr, size uintptr, regions []Region, ass
 	m.pctab = []byte{0}
 	m.files, m.cutab = append([]byte(name), 0), []uint32{0}
 
+	for _, f := range files {
+		m.cutab = append(m.cutab, uint32(len(m.files)))
+		m.files = append(append(m.files, f...), 0)
+	}
+
 	for index, r := range regions {
 		size := r.end - r.start
 
@@ -256,15 +275,31 @@ func registerCode(name string, base uintptr, size uintptr, regions []Region, ass
 			throwFmt("invalid code region %s", r.name)
 		}
 
-		line := uint32(index + 1)
+		fileValues, lineValues := []spEntry{{0, 0}}, []spEntry{{0, int32(index + 1)}}
+
+		// The region's entries: the first one holds from the region's start,
+		// and neighbours of one value merge, as the tables require.
+		for k := sort.Search(len(lines), func(k int) bool { return lines[k].pc >= r.start }); k < len(lines) && lines[k].pc < r.end; k++ {
+			e := lines[k]
+			pc := int32(e.pc - r.start)
+
+			if k > 0 && lines[k-1].pc >= r.start {
+				fileValues = appendValue(fileValues, pc, int32(e.file+1))
+				lineValues = appendValue(lineValues, pc, int32(e.line))
+			} else {
+				fileValues, lineValues = []spEntry{{0, int32(e.file + 1)}}, []spEntry{{0, int32(e.line)}}
+			}
+		}
+
+		line := uint32(lineValues[0].delta)
 		flag := uint32(0)
 
 		if assembly {
 			flag = funcFlagAsm
 		}
 		pcsp := m.pcTable(r.sp, size)
-		pcfile := m.pcTable([]spEntry{{0, 0}}, size)
-		pcln := m.pcTable([]spEntry{{0, int32(line)}}, size)
+		pcfile := m.pcTable(fileValues, size)
+		pcln := m.pcTable(lineValues, size)
 		m.ftab = append(m.ftab, goFuncTab{r.start, uint32(len(m.pcln))})
 		// _func: entry, name, args, deferreturn, pcsp, pcfile, pcln,
 		// npcdata, cu, start line, funcID 0, flag 0, pad, two funcdata;
@@ -288,6 +323,7 @@ func registerCode(name string, base uintptr, size uintptr, regions []Region, ass
 
 	m.findfunctab = uintptr(unsafe.Pointer(unsafe.SliceData(img.buckets)))
 	writePerfMap(base, regions)
+	noteCode(name, base, base+size)
 	r := registration{img, make(chan struct{})}
 	registrations <- r
 	<-r.done

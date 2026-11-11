@@ -78,7 +78,7 @@ def main():
         (root / "etc" / "services").write_text(SERVICES)
         (root / "bin").mkdir()
         shutil.copy(check, root / "bin" / "check")
-        r = subprocess.run([vm, "run", "--root", str(root), "-a", "check", str(root / "bin" / "check")],
+        r = subprocess.run([vm, "run", "--root", str(root), "-a", "check", "--", str(root / "bin" / "check")],
                            capture_output=True, text=True, env={"PATH": "/bin"}, timeout=120)
 
     if r.returncode != 0 or r.stdout != EXPECTED:

@@ -122,7 +122,7 @@ func (r *specRunner) fail(line int, format string, args ...any) {
 // do nothing, globals of 666, a memory of one to two pages, a table of 10 to
 // 20 elements.
 func (r *specRunner) spectest() {
-	r.testMemory = newMemory(1, 2)
+	r.testMemory = newMemory(1, 2, false)
 	r.testTable = make([]uintptr, 21)
 	r.testHeader = &[2]uint64{uint64(uintptr(unsafe.Pointer(&r.testTable[0]))), 10 | 20<<32}
 	cell := func(bits uint64) *uint64 {

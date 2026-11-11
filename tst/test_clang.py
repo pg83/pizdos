@@ -62,7 +62,7 @@ LINK = ["-nostdlib", "-Wl,--stack-first", "-Wl,-z,stack-size=1049600", "-Wl,--ma
 
 
 def run(vm, root, name, program, *args):
-    r = subprocess.run([vm, "run", "--root", str(root), "-a", name, str(program), "--", *args], capture_output=True,
+    r = subprocess.run([vm, "run", "--root", str(root), "-a", name, "--", str(program), *args], capture_output=True,
                        text=True, env={"PATH": "/bin"}, timeout=600)
 
     if r.returncode != 0:

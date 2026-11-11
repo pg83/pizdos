@@ -26,6 +26,9 @@ type CompileOptions struct {
 	memoryTail  bool
 	tailRanges  bool
 	tailProfile bool
+	// asan compiles every access with a check of the shadow map
+	// (kernel_asan.go) in place of the tail's checks.
+	asan bool
 }
 
 func compileOptions() CompileOptions {
@@ -182,6 +185,10 @@ func compileStreams(input io.Reader, output io.Writer, options CompileOptions) {
 
 	if options.tailProfile {
 		flags |= 4
+	}
+
+	if options.asan {
+		flags |= 8
 	}
 
 	if flags == 3 {

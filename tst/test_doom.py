@@ -36,8 +36,8 @@ def timedemo(vm, root, work):
 
     for _ in range(2):
         r = subprocess.run(
-            [vm, "run", "--root", str(root), "-a", "doom", str(root / "bin" / "doom"),
-             "--", "-iwad", IWAD, "-nosound", "-timedemo", "demo1"],
+            [vm, "run", "--root", str(root), "-a", "doom", "--", str(root / "bin" / "doom"),
+             "-iwad", IWAD, "-nosound", "-timedemo", "demo1"],
             capture_output=True, cwd=work, timeout=300,
             env={"PATH": "/bin:/usr/bin", "DG_HEADLESS": "1", "HOME": "/tmp"},
         )
@@ -62,8 +62,8 @@ def terminal(vm, root):
 
     if pid == 0:
         os.chdir(root / "tmp")
-        os.execve(vm, [vm, "run", "--root", str(root), "-a", "doom", str(root / "bin" / "doom"),
-                           "--", "-iwad", IWAD, "-nosound"],
+        os.execve(vm, [vm, "run", "--root", str(root), "-a", "doom", "--", str(root / "bin" / "doom"),
+                           "-iwad", IWAD, "-nosound"],
                   {"PATH": "/bin:/usr/bin", "TERM": "xterm-256color", "HOME": "/tmp",
                    "DG_COLS": "80", "DG_ROWS": "50"})
 

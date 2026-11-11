@@ -98,13 +98,34 @@ type LinearMemory struct {
 	pages    uint64
 	max      uint64
 	tailUsed bool
+	// shadow is the shadow map of an asan object's memory, a byte for each
+	// byte of every 32-bit address and boundSlack past them, so an access
+	// of a checked address with a static offset within boundSlack indexes
+	// it without a check of its own (aot.cpp lowererAsanAddress); nil for
+	// other objects. The kernel keeps it (kernel_asan.go).
+	shadow []byte
 	// users are the instances whose headers describe it.
 	users []*Instance
 }
 
-// Trap is the panic of a trapping instance.
+// shadowSize is the size of a shadow map.
+const shadowSize = 1<<32 + 2*boundSlack
+
+// Trap is the panic of a trapping instance, with the stack of the trap
+// (trace.go). An asan trap tells the access the shadow map refused: its
+// address, width and kind.
 type Trap struct {
-	code uint32
+	code  uint32
+	addr  uint64
+	width uint8
+	kind  uint8
+	stack []uintptr
+}
+
+// newTrap is a trap of code with the stack from the caller up, less skip
+// frames above the caller.
+func newTrap(code uint32, skip int) *Trap {
+	return &Trap{code: code, stack: callers(skip + 1)}
 }
 
 var trapNames = map[uint32]string{
@@ -112,7 +133,7 @@ var trapNames = map[uint32]string{
 	trapDivByZero: "integer divide by zero", trapConversion: "invalid conversion to integer",
 	trapIndirectType: "indirect call type mismatch", trapUndefinedElem: "undefined element",
 	trapUninitElem: "uninitialized element", trapStack: "call stack exhausted", trapTableOOB: "out of bounds table access",
-	trapNullRef: "null reference",
+	trapNullRef: "null reference", trapAsan: "inaccessible memory",
 }
 
 func (t *Trap) Error() string {
@@ -120,6 +141,10 @@ func (t *Trap) Error() string {
 }
 
 func (t *Trap) message() string {
+	if t.code == trapAsan {
+		return "wasm trap: " + trapNames[t.code] + ": " + t.access()
+	}
+
 	if name, ok := trapNames[t.code]; ok {
 		return "wasm trap: " + name
 	}
@@ -127,11 +152,23 @@ func (t *Trap) message() string {
 	return fmt.Sprintf("wasm trap %d", t.code)
 }
 
+// access describes the access of an asan trap.
+func (t *Trap) access() string {
+	switch t.kind {
+	case asanLoad:
+		return fmt.Sprintf("%d-byte load at %#x", t.width, t.addr)
+	case asanStore:
+		return fmt.Sprintf("%d-byte store at %#x", t.width, t.addr)
+	}
+
+	return fmt.Sprintf("access of a range at %#x", t.addr)
+}
+
 func mmap(size int, prot int) []byte {
 	return throw2(syscall.Mmap(-1, 0, size, prot, syscall.MAP_PRIVATE|syscall.MAP_ANON|syscall.MAP_NORESERVE))
 }
 
-func newMemory(least, most uint64) *LinearMemory {
+func newMemory(least, most uint64, shadow bool) *LinearMemory {
 	if most > 65536 || least > most {
 		throwFmt("memory of %d..%d pages", least, most)
 	}
@@ -145,6 +182,13 @@ func newMemory(least, most uint64) *LinearMemory {
 	// stops there at the latest.
 	mapping := mmap(int(boundSlack+most*pageSize+boundSlack+1), syscall.PROT_READ|syscall.PROT_WRITE)
 	m := &LinearMemory{mapping: mapping, data: mapping[boundSlack:], max: most}
+
+	if shadow {
+		// Zero, inaccessible everywhere, until the kernel marks what the
+		// program may access.
+		m.shadow = mmap(shadowSize, syscall.PROT_READ|syscall.PROT_WRITE)
+	}
+
 	m.grow(uint32(least))
 
 	return m
@@ -199,6 +243,10 @@ func (i *Instance) setMemory() {
 	if i.obj.meta.memory.tail != 0 {
 		i.put64(i.obj.meta.memory.tailEnd, size+i.obj.meta.memory.tail)
 	}
+
+	if i.obj.meta.memory.shadow != 0 {
+		i.put64(i.obj.meta.memory.shadow, uint64(uintptr(unsafe.Pointer(unsafe.SliceData(i.memory.shadow)))))
+	}
 }
 
 // instanceAt is the instance of a context the code passes: its header holds
@@ -210,7 +258,15 @@ func instanceAt(ctx uintptr) *Instance {
 }
 
 func helperTrap(ctx uintptr, code uint32) {
-	panic(&Trap{code})
+	panic(newTrap(code, 1))
+}
+
+// helperTrapAt is the trap of an asan check: the access's address, and its
+// width in the low byte of info with its kind above.
+func helperTrapAt(ctx uintptr, code uint32, addr uint64, info uint32) {
+	t := newTrap(code, 1)
+	t.addr, t.width, t.kind = addr, uint8(info), uint8(info>>8)
+	panic(t)
 }
 
 func helperMemoryGrow(ctx uintptr, delta uint32) uint32 {
@@ -300,6 +356,10 @@ func (c *Code) resolve(sym string, imports Imports) uintptr {
 		return interruptStub()
 	case symTrap:
 		return c.keepFunc(helperTrap)
+	case symTrapAt:
+		return c.keepFunc(helperTrapAt)
+	case symAsanRange:
+		return asanRangeStub()
 	case symMemoryGrow:
 		return c.keepFunc(helperMemoryGrow)
 	case symTableGrow:
@@ -407,7 +467,7 @@ func link(name string, obj *Object, imports Imports) *Code {
 
 	throw(syscall.Mprotect(c.text[:textSize], syscall.PROT_READ|syscall.PROT_EXEC))
 	throw(syscall.Mprotect(c.text[textSize:], syscall.PROT_READ))
-	registerCode(name, c.base, uintptr(len(obj.text)), obj.meta.regions, false)
+	registerCode(name, c.base, uintptr(len(obj.text)), obj.meta.regions, false, obj.meta.files, obj.meta.lines)
 
 	return c
 }
@@ -469,7 +529,7 @@ func newInstance(c *Code, imports Imports, stack uint64) *Instance {
 	}
 
 	if meta.memory != nil && i.memory == nil {
-		i.memory = newMemory(meta.memory.min, meta.memory.max)
+		i.memory = newMemory(meta.memory.min, meta.memory.max, meta.memory.shadow != 0)
 	}
 
 	if i.memory != nil {
@@ -479,6 +539,10 @@ func newInstance(c *Code, imports Imports, stack uint64) *Instance {
 			}
 
 			i.memory.tailUsed = true
+		}
+
+		if meta.memory.shadow != 0 && i.memory.shadow == nil {
+			throwFmt("imported memory has no shadow map")
 		}
 
 		i.memory.users = append(i.memory.users, i)
@@ -519,12 +583,23 @@ func (i *Instance) clone(imports Imports, stack uint64, from, to uint64) *Instan
 			start := i.memory.pages * pageSize
 			copy(c.memory.data[start:start+boundSlack], i.memory.data[start:start+boundSlack])
 		}
+
+		if i.memory.shadow != nil {
+			// The whole map up to the copied memory's end: what the stack
+			// below the copy may access is marked as in the parent.
+			copy(c.memory.shadow[:to], i.memory.shadow[:to])
+		}
 	}
 
 	copy(c.block[headerSize:], i.block[headerSize:])
 
 	if meta := i.obj.meta.memory; meta != nil && meta.profile != 0 {
 		clear(c.block[meta.profile : uint64(meta.profile)+uint64(meta.profileFuncs)*tailCounterBytes])
+	}
+
+	if meta := i.obj.meta.memory; meta != nil && meta.shadow != 0 {
+		// The copy of the block brought the parent's shadow map.
+		c.put64(meta.shadow, uint64(uintptr(unsafe.Pointer(unsafe.SliceData(c.memory.shadow)))))
 	}
 
 	c.put64(offTokens, binary.LittleEndian.Uint64(i.block[offTokens:]))
@@ -558,6 +633,10 @@ func (i *Instance) release() {
 
 	if i.memory != nil && !i.obj.meta.memory.imported && len(i.memory.users) == 1 {
 		throw(syscall.Munmap(i.memory.mapping))
+
+		if i.memory.shadow != nil {
+			throw(syscall.Munmap(i.memory.shadow))
+		}
 	}
 
 	throw(syscall.Munmap(i.block))

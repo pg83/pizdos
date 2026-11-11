@@ -3185,11 +3185,35 @@ namespace {
         S Swap;
     };
 
+    // LineMark says that from pc on the code is of the wasm instruction at
+    // pos, an address of the module's line table (moduleReadLines); LineRow
+    // is a row of that table, the source line of the code from address on,
+    // or its end when end is set; LineEntry is what the object records: a
+    // file and line from a pc of the text on.
+    struct LineMark {
+        i32 pc{};
+        u32 pos{};
+    };
+
+    struct LineRow {
+        u32 address{};
+        u32 file{};
+        u32 line{};
+        bool end{};
+    };
+
+    struct LineEntry {
+        u32 pc{};
+        u32 file{};
+        u32 line{};
+    };
+
     struct Region {
         String name{};
         u32 start{};
         u32 end{};
         Slice<SpEntry> sp{};
+        Slice<LineMark> lines{};
     };
 
     struct Anonymous49 {
@@ -3395,6 +3419,19 @@ namespace {
         u64 memoryTail{};
         bool tailRanges{};
         bool tailProfile{};
+        // asan compiles every access with a check of the shadow map
+        // (lowererAsanAddress) instead of a bounds check.
+        bool asan{};
+        // codeOffset is where the code section's contents begin in the
+        // module, which DWARF's addresses count from; debugLine, debugLineStr
+        // and debugStr are its DWARF sections, when it has them, and
+        // sourceFiles and lineRows what moduleReadLines made of them.
+        Int codeOffset{};
+        Slice<u8> debugLine{};
+        Slice<u8> debugLineStr{};
+        Slice<u8> debugStr{};
+        Slice<String> sourceFiles{};
+        Slice<LineRow> lineRows{};
         Slice<FuncType> types{};
         Slice<Import> imports{};
         Slice<Func> funcs{};
@@ -3731,6 +3768,8 @@ namespace {
     struct Layout {
         i32 memoryEnd{};
         i32 tailProfile{};
+        // shadow is the slot holding the shadow map's base, in an asan object.
+        i32 shadow{};
         Slice<i32> globals{};
         Slice<i32> tables{};
         i32 descs{};
@@ -3807,6 +3846,10 @@ namespace {
         Slice<RipFixup> fixups{};
         i32 sp{};
         Slice<SpEntry> sps{};
+        // lines marks where the code of another wasm instruction begins,
+        // lastPos the instruction the code is of (asmMarkPos).
+        Slice<LineMark> lines{};
+        u32 lastPos{};
     };
 
     struct Anonymous93 {
@@ -3873,6 +3916,16 @@ namespace {
         i64 code{};
         i32 sp{};
         bool small{};
+        // An asan trap reports the access: its address is reg + disp, or
+        // disp alone without a register, of width bytes, kind a load, a
+        // store or a range (asanLoad and kin).
+        VReg reg = -1;
+        i32 disp{};
+        u8 width{};
+        u8 kind{};
+        // pos is the wasm instruction of the check, which its pad is of
+        // too, placed after the function's code as it is.
+        u32 pos{};
     };
 
     static bool operator==(const TrapFixup& a, const TrapFixup& b) {
@@ -3936,6 +3989,9 @@ namespace {
         Vec<bool> rawTrunc{};
         ValueRanges* addresses{};
         ObjCode* oc{};
+        // pos is the position of the value being lowered (Function
+        // positions), stamped on the instructions it emits.
+        u32 pos{};
     };
 
     struct AddressExpressions {
@@ -4035,6 +4091,9 @@ namespace {
         Map<ConstKey, i32> consts{};
         Map<i32, Slice<i32>> phiOps{};
         Slice<Int> explicitValue{};
+        // pos is the address of the instruction being decoded in the
+        // module's line table: its offset in the code section's contents.
+        u32 pos{};
     };
 
     struct Export {
@@ -4110,10 +4169,13 @@ namespace {
         u32 tailEnd{};
         u32 profile{};
         u32 profileFuncs{};
+        // shadow is the instance slot of the shadow map's base: an asan
+        // object, which has no tail.
+        u32 shadow{};
     };
 
     static bool operator==(const MemoryMeta& a, const MemoryMeta& b) {
-        return a.min == b.min && a.max == b.max && a.imported == b.imported && a.tail == b.tail && a.tailEnd == b.tailEnd && a.profile == b.profile && a.profileFuncs == b.profileFuncs;
+        return a.min == b.min && a.max == b.max && a.imported == b.imported && a.tail == b.tail && a.tailEnd == b.tailEnd && a.profile == b.profile && a.profileFuncs == b.profileFuncs && a.shadow == b.shadow;
     }
 
     static u64 hashValue(const MemoryMeta& value) {
@@ -4125,6 +4187,7 @@ namespace {
         result = combineHash(result, hashValue(value.tailEnd));
         result = combineHash(result, hashValue(value.profile));
         result = combineHash(result, hashValue(value.profileFuncs));
+        result = combineHash(result, hashValue(value.shadow));
         return result;
     }
 
@@ -4301,6 +4364,11 @@ namespace {
         Slice<ExportMeta> exports{};
         String init{};
         Slice<Region> regions{};
+        // files and lines are the source lines of the text, from the
+        // module's DWARF line table: each entry a file and a line from a pc
+        // on (objCodeLines).
+        Slice<String> files{};
+        Slice<LineEntry> lines{};
     };
 
     struct CfgInfo {
@@ -4485,10 +4553,14 @@ namespace {
         bool memoryTail{};
         bool tailRanges{};
         bool tailProfile{};
+        // asan checks every access against the shadow map the loader keeps
+        // beside the memory, a byte for each byte of it (lowererAsanAddress);
+        // it excludes the tail.
+        bool asan{};
     };
 
     static bool operator==(const CompileOptions& a, const CompileOptions& b) {
-        return a.memoryTail == b.memoryTail && a.tailRanges == b.tailRanges && a.tailProfile == b.tailProfile;
+        return a.memoryTail == b.memoryTail && a.tailRanges == b.tailRanges && a.tailProfile == b.tailProfile && a.asan == b.asan;
     }
 
     static u64 hashValue(const CompileOptions& value) {
@@ -4496,6 +4568,7 @@ namespace {
         result = combineHash(result, hashValue(value.memoryTail));
         result = combineHash(result, hashValue(value.tailRanges));
         result = combineHash(result, hashValue(value.tailProfile));
+        result = combineHash(result, hashValue(value.asan));
         return result;
     }
 
@@ -4570,6 +4643,10 @@ namespace {
         Int index{};
         FuncType* typ{};
         PageVec<Value> values{};
+        // positions holds, for each value, the address of the wasm
+        // instruction it came from in the module's line table, or 0 for a
+        // value a pass made (frontendEmit).
+        PageVec<u32> positions{};
         PageVec<i32> pool{};
         ObjPool blockPool;
         NodeVec<Block> blocks;
@@ -4768,6 +4845,9 @@ namespace {
         };
 
         MInstExtra* extra = nullptr;
+        // pos is the wasm instruction the instruction is of, in the module's
+        // line table, or 0 for one of the lowering's own (lowererEmit).
+        u32 pos{};
     };
 
     struct MBlock {
@@ -5266,6 +5346,22 @@ namespace {
 
     static constexpr Int trapNullRef = 11;
 
+    // trapAsan is an access of memory the shadow map marks inaccessible; the
+    // trap reports the access's address, width and kind: a load, a store, or
+    // a range a bulk operation or a string function would read or write.
+    static constexpr Int trapAsan = 12;
+
+    static constexpr u8 asanLoad = 0;
+
+    static constexpr u8 asanStore = 1;
+
+    static constexpr u8 asanRange = 2;
+
+    // shadowOK is the shadow map's byte of an accessible byte of memory:
+    // every other value is inaccessible, so a check compares the shadow of
+    // the access's bytes with all ones (funcEmitterShadow).
+    static constexpr i64 shadowOK = -1;
+
     static constexpr Int calleeFunc = 0;
 
     static constexpr Int calleeJump = 2;
@@ -5495,6 +5591,13 @@ namespace {
 
     static constexpr MOp mCounter = MOp(66LL);
 
+    // shadow checks the shadow map of an access of size bytes at src + imm,
+    // or at imm without a register, aux its kind; trapAt traps on cc with
+    // the asan report of the access at src + mem.disp (funcEmitterTrapJccAt).
+    static constexpr MOp mShadow = MOp(69LL);
+
+    static constexpr MOp mTrapAt = MOp(70LL);
+
     // aluMemImm and aluMemReg update a memory operand with an immediate or a
     // register: mem op= imm, mem op= src.
     static constexpr MOp mAluMemImm = MOp(67LL);
@@ -5636,6 +5739,14 @@ namespace {
     static const String symExport = String("w2o.export.");
 
     static const String symTrap = String("w2o.trap");
+
+    // trap_at is the trap of an asan check, with the access's address and
+    // its width and kind; asan_range is the loader's stub that counts the
+    // accessible bytes of a range of the shadow map (stubs_amd64.s), called
+    // as a function of lib/str is.
+    static const String symTrapAt = String("w2o.trap_at");
+
+    static const String symAsanRange = String("w2o.asan_range");
 
     static const String symMemoryGrow = String("w2o.memory_grow");
 
@@ -5960,6 +6071,14 @@ namespace {
 
     static Slice<SpEntry> asmSpTable(Asm* a, i32 start, i32 end);
 
+    static void asmMarkPos(Asm* a, u32 pos);
+
+    static Slice<LineMark> asmLineTable(Asm* a, i32 start, i32 end);
+
+    static void moduleReadLines(Module* m);
+
+    static void objCodeLines(ObjCode* oc, Meta* meta);
+
     static void asmStore(Asm* a, u8 width, VReg src, Amem m);
 
     static void asmStoreImm(Asm* a, u8 width, Amem m, i64 x);
@@ -6096,6 +6215,10 @@ namespace {
 
     static void funcEmitterCheck(FuncEmitter* e, MInst* in);
 
+    static void funcEmitterShadow(FuncEmitter* e, MInst* in);
+
+    static void funcEmitterTrapJccAt(FuncEmitter* e, u8 cc, i64 code, VReg reg, i32 disp, u8 width, u8 kind);
+
     static void funcEmitterCvtU64F(FuncEmitter* e, MInst* in);
 
     static void funcEmitterExactCheck(FuncEmitter* e, VReg src, i64 end);
@@ -6158,7 +6281,13 @@ namespace {
 
     static i32 intervalStart(Interval* it);
 
-    static Mem lowererAddress(Lowerer* l, i32 addr, i64 offset, Int width, bool proven);
+    static Mem lowererAddress(Lowerer* l, i32 addr, i64 offset, Int width, bool proven, bool store);
+
+    static Mem lowererAsanAddress(Lowerer* l, i32 addr, i64 offset, Int width, bool store);
+
+    static void lowererAsanRange(Lowerer* l, VReg a, VReg n);
+
+    static VReg lowererShadowAddress(Lowerer* l, VReg a);
 
     static void lowererAlu(Lowerer* l, i32 v, Op op, i32 a, i32 b, u8 size);
 
@@ -6369,6 +6498,8 @@ namespace {
     static i32 objCodeThunk(ObjCode* oc, String name, Slice<ValType> params, Slice<ValType> results, Int index, Fn<void()> body);
 
     static void objCodeTrapCall(ObjCode* oc, i64 code);
+
+    static void objCodeTrapAtCall(ObjCode* oc, const TrapFixup& t);
 
     static void optimizerApply(Optimizer* o);
 
@@ -7389,6 +7520,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         i32 start = convert<i32>(length(f->pool));
         appendSpan(f->pool, args);
         f->values.pushBack(Value{op, typ, convert<u16>(length(args)), start, aux, {}, block});
+        f->positions.pushBack(0);
         return id;
     }
 
@@ -7650,11 +7782,18 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             case mCmpImm:
             case mTestImm:
             case mCheck:
+            case mTrapAt:
             case mSwitch:
             case mCallInd:
             case mStackArg:
             case mStoreRet: {
                 cb(&in->src, roleUse);
+                break;
+            }
+            case mShadow: {
+                if (in->src != noReg) {
+                    cb(&in->src, roleUse);
+                }
                 break;
             }
             case mCmpMem: {
@@ -12070,6 +12209,40 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // spTable returns the deltas of the region [start, end): the one at its
     // start, then every change, at offsets from start.
+    // markPos notes that the code from here on is of the wasm instruction at
+    // pos: nothing for 0, the lowering's own instructions, which stay with
+    // the one before them.
+    static void asmMarkPos(Asm* a, u32 pos) {
+        if (pos == 0 || pos == a->lastPos) {
+            return;
+        }
+        a->lastPos = pos;
+        const i32 pc = asmPos(a);
+        if (length(a->lines) && a->lines[length(a->lines) - 1].pc == pc) {
+            a->lines[length(a->lines) - 1].pos = pos;
+            return;
+        }
+        a->lines = appendValues(a->lines, LineMark{pc, pos});
+    }
+
+    // lineTable is the marks of a region, from its start: the region's
+    // prologue counts as its first instruction's.
+    static Slice<LineMark> asmLineTable(Asm* a, i32 start, i32 end) {
+        Int k = sortSearch(length(a->lines), [&](Int i) mutable -> bool {
+            return a->lines[i].pc >= start;
+        });
+        Slice<LineMark> out = {};
+        for (Int i = k; i < length(a->lines) && a->lines[i].pc < end; ++i) {
+            const LineMark m = a->lines[i];
+            if (length(out) == 0) {
+                out = appendValues(out, LineMark{0, m.pos});
+            } else {
+                out = appendValues(out, LineMark{m.pc - start, m.pos});
+            }
+        }
+        return out;
+    }
+
     static Slice<SpEntry> asmSpTable(Asm* a, i32 start, i32 end) {
         Int k = sortSearch(length(a->sps), [&](Int i) mutable -> bool {
             return a->sps[i].pc > start;
@@ -12507,7 +12680,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void frontendBody(Frontend* fe) {
         Reader* r = &fe->r;
+        // The function's body in the code section's contents: the module's
+        // line table counts addresses from them.
+        const Int body = fe->m->funcs[fe->f->index].offset - fe->m->codeOffset;
         while (length(fe->ctrls) > Int(0LL)) {
+            fe->pos = convert<u32>(body + r->pos);
             u8 op = readerByte(r);
             if (fe->cur < 0) {
                 frontendSkip(fe, op);
@@ -13180,6 +13357,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // emit appends an instruction to the current block.
     static i32 frontendEmit(Frontend* fe, Op op, ValType t, i64 aux, Span<const i32> args) {
         i32 v = functionNewValue(fe->f, op, t, fe->cur, aux, args);
+        fe->f->positions[usize(v)] = fe->pos;
         Block* blk = &fe->f->blocks[fe->cur];
         blk->instrs.pushBack(v);
         return v;
@@ -13953,6 +14131,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Int i = 0;
         for (; i < n; i++) {
             MInst* in = &insts[i];
+            asmMarkPos(e->a, in->pos);
             switch (in->op) {
                 case mJmp: {
                     if (!funcEmitterLands(e, at, in->target)) {
@@ -14015,6 +14194,28 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             funcEmitterExactCheck(e, src, end);
             asmPatch32(a, asmJmpRel(a), resume);
         });
+    }
+
+    // shadow emits the check of an access against the shadow map: the map's
+    // base from the instance, then the map's bytes of the access compared
+    // with shadowOK in one compare of the access's width, two of eight bytes
+    // for a vector. A compare that fails traps with the access's address.
+    static void funcEmitterShadow(FuncEmitter* e, MInst* in) {
+        Asm* a = e->a;
+        VReg t = mInstTemps(in)[0];
+        asmLoad(a, 8, 8, false, t, baseAt(ctxReg, e->oc->lay->shadow));
+        const i32 disp = convert<i32>(in->imm);
+        Mem m = in->src == noReg ? memAt(t, disp) : memIndexed(t, in->src, disp);
+        if (in->size == 16) {
+            asmAluMI(a, aluCmp, 8, funcEmitterMem(e, m), shadowOK);
+            funcEmitterTrapJccAt(e, ccNE, trapAsan, in->src, disp, 16, in->aux);
+            m.disp += 8;
+            asmAluMI(a, aluCmp, 8, funcEmitterMem(e, m), shadowOK);
+            funcEmitterTrapJccAt(e, ccNE, trapAsan, in->src, disp, 16, in->aux);
+            return;
+        }
+        asmAluMI(a, aluCmp, in->size, funcEmitterMem(e, m), shadowOK);
+        funcEmitterTrapJccAt(e, ccNE, trapAsan, in->src, disp, in->size, in->aux);
     }
 
     static void funcEmitterCvtU64F(FuncEmitter* e, MInst* in) {
@@ -14354,6 +14555,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 funcEmitterCheck(e, in);
                 break;
             }
+            case mShadow: {
+                funcEmitterShadow(e, in);
+                break;
+            }
+            case mTrapAt: {
+                funcEmitterTrapJccAt(e, in->cc, in->imm, in->src, in->mem.disp, in->size, in->aux);
+                break;
+            }
             case mParMove: {
                 funcEmitterParMove(e, mInstMoves(in));
                 break;
@@ -14647,13 +14856,31 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void funcEmitterTrapJcc(FuncEmitter* e, u8 cc, i64 code) {
         const Int k = length(e->traps);
         const bool small = k < length(e->trapShorts) && e->trapShorts[k] != 0;
-        e->traps = appendValues(e->traps, TrapFixup{small ? asmJcc8(e->a, cc) : asmJccRel(e->a, cc), code, e->a->sp, small});
+        TrapFixup t{small ? asmJcc8(e->a, cc) : asmJccRel(e->a, cc), code, e->a->sp, small};
+        t.pos = e->a->lastPos;
+        e->traps = appendValues(e->traps, t);
     }
 
     static void funcEmitterTrapJmp(FuncEmitter* e, i64 code) {
         const Int k = length(e->traps);
         const bool small = k < length(e->trapShorts) && e->trapShorts[k] != 0;
-        e->traps = appendValues(e->traps, TrapFixup{small ? asmJmp8(e->a) : asmJmpRel(e->a), code, e->a->sp, small});
+        TrapFixup t{small ? asmJmp8(e->a) : asmJmpRel(e->a), code, e->a->sp, small};
+        t.pos = e->a->lastPos;
+        e->traps = appendValues(e->traps, t);
+    }
+
+    // trapJccAt is trapJcc of an asan trap, which reports the access at
+    // reg + disp, or disp alone when reg is noReg, of width bytes and kind.
+    static void funcEmitterTrapJccAt(FuncEmitter* e, u8 cc, i64 code, VReg reg, i32 disp, u8 width, u8 kind) {
+        const Int k = length(e->traps);
+        const bool small = k < length(e->trapShorts) && e->trapShorts[k] != 0;
+        TrapFixup t{small ? asmJcc8(e->a, cc) : asmJccRel(e->a, cc), code, e->a->sp, small};
+        t.reg = reg;
+        t.disp = disp;
+        t.width = width;
+        t.kind = kind;
+        t.pos = e->a->lastPos;
+        e->traps = appendValues(e->traps, t);
     }
 
     static void funcEmitterTruncF(FuncEmitter* e, MInst* in) {
@@ -14995,7 +15222,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // address returns the memory operand of an access of width bytes at addr
     // plus the static offset, emitting its bounds check.
-    static Mem lowererAddress(Lowerer* l, i32 addr, i64 offset, Int width, bool proven) {
+    static Mem lowererAddress(Lowerer* l, i32 addr, i64 offset, Int width, bool proven, bool store) {
+        if (l->m->asan) {
+            return lowererAsanAddress(l, addr, offset, width, store);
+        }
         i64 end = offset + convert<i64>(width);
         bool checked = proven;
         if (length(l->m->mems) > 0 && !l->m->mems[0].imported) {
@@ -15184,6 +15414,86 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         add.aux = 0;
         lowererEmit(l, add);
         return memIndexed(memReg, p, 0);
+    }
+
+    // asanAddress is address in an asan object: every access checks the
+    // shadow map of its own bytes (mShadow), none is covered by another's
+    // check, and the memory is addressed as the checked bytes are. The map
+    // has a byte for every 32-bit address and boundSlack past them, so an
+    // address with a static offset within boundSlack is checked and
+    // addressed as it is; a larger offset is summed first and the sum
+    // checked against the memory's size, so neither the map nor the memory
+    // is indexed past what the loader mapped.
+    static Mem lowererAsanAddress(Lowerer* l, i32 addr, i64 offset, Int width, bool store) {
+        const u8 kind = store ? asanStore : asanLoad;
+        if (lowererIsConst(l, addr)) {
+            const i64 at = convert<i64>(convert<u32>(lowererConstBits(l, addr))) + offset;
+            if (at + convert<i64>(width) <= i64(4294967296LL) && at < 2147483647) {
+                MInst in = inst(mShadow);
+                in.imm = at;
+                in.size = convert<u8>(width);
+                in.aux = kind;
+                mInstExtra(&in)->temps.assign(Span<const VReg>({mFuncNewReg(l->mf, classGPR)}));
+                lowererEmit(l, in);
+                return memAt(memReg, convert<i32>(at));
+            }
+        }
+        VReg ra = lowererUse(l, addr);
+        if (offset + convert<i64>(width) > boundSlack) {
+            VReg t = lowererSum(l, ra, lowererConstReg(l, offset, 8));
+            lowererCheckEnd(l, t, lowererConstReg(l, convert<i64>(width), 8), ccA);
+            ra = t;
+            offset = 0;
+        }
+        MInst in = inst(mShadow);
+        in.src = ra;
+        in.imm = offset;
+        in.size = convert<u8>(width);
+        in.aux = kind;
+        mInstExtra(&in)->temps.assign(Span<const VReg>({mFuncNewReg(l->mf, classGPR)}));
+        lowererEmit(l, in);
+        return memIndexed(memReg, ra, convert<i32>(offset));
+    }
+
+    // shadowAddress is the host address of the shadow map's byte of a: the
+    // map's base, which the instance keeps, plus the 32-bit address.
+    static VReg lowererShadowAddress(Lowerer* l, VReg a) {
+        VReg h = mFuncNewReg(l->mf, classGPR);
+        MInst ld = inst(mLoad);
+        ld.dst = h;
+        ld.mem = memAt(ctxReg, l->lay->shadow);
+        ld.size = 8;
+        ld.dsize = 8;
+        lowererEmit(l, ld);
+        MInst add = inst(mAlu);
+        add.dst = h;
+        add.src = a;
+        add.size = 8;
+        add.aux = convert<u8>(aluAdd);
+        lowererEmit(l, add);
+        return h;
+    }
+
+    // asanRange traps unless the n bytes at a are accessible, a + n within
+    // the memory already: the loader's stub counts the accessible bytes at
+    // the start of the range's shadow, and the first inaccessible byte is
+    // the trap's address.
+    static void lowererAsanRange(Lowerer* l, VReg a, VReg n) {
+        lowererStrCall(l, symAsanRange, Span<const VReg>({lowererShadowAddress(l, a), n}));
+        VReg ok = lowererStrResult(l);
+        VReg bad = lowererSum(l, a, ok);
+        MInst c = inst(mCmp);
+        c.src = ok;
+        c.src2 = n;
+        c.size = 8;
+        lowererEmit(l, c);
+        MInst in = inst(mTrapAt);
+        in.cc = ccNE;
+        in.imm = trapAsan;
+        in.src = bad;
+        in.size = 1;
+        in.aux = asanRange;
+        lowererEmit(l, in);
     }
 
     static void lowererAlu(Lowerer* l, i32 v, Op op, i32 a, i32 b, u8 size) {
@@ -16106,6 +16416,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static MInst* lowererEmit(Lowerer* l, MInst in) {
         MBlock* blk = &l->mf->blocks[l->cur];
+        in.pos = l->pos;
         blk->insts.pushBack(in);
         return &blk->insts[length(blk->insts) - 1];
     }
@@ -16402,7 +16713,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void lowererLoad(Lowerer* l, i32 v, i32 addr) {
         Value* val = &l->f->values[v];
         MemKind kind = convert<MemKind>(val->aux2);
-        Mem mem = lowererAddress(l, addr, val->aux, memKindWidth(kind), MemKind(kind & memProven) != MemKind(0LL));
+        Mem mem = lowererAddress(l, addr, val->aux, memKindWidth(kind), MemKind(kind & memProven) != MemKind(0LL), false);
         MInst in = inst(mLoad);
         if (isFloat(val->typ)) {
             in.op = mFLoad;
@@ -16454,7 +16765,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         const i32 addr = functionArgs(f, a)[0];
         MInst in = inst(mLoad);
-        in.mem = lowererAddress(l, addr, lv->aux + shift / 8, narrow, MemKind(kind & memProven) != MemKind(0LL));
+        in.mem = lowererAddress(l, addr, lv->aux + shift / 8, narrow, MemKind(kind & memProven) != MemKind(0LL), false);
         in.dst = lowererDef(l, v);
         in.size = convert<u8>(narrow);
         in.dsize = 4;
@@ -16761,6 +17072,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 break;
             }
             case OpCopyForward: {
+                if (l->m->asan) {
+                    // The ranges are within the memory by the branch that
+                    // chose the copy; the shadow map decides the rest.
+                    lowererAsanRange(l, lowererUse(l, args[0]), lowererUse(l, args[2]));
+                    lowererAsanRange(l, lowererUse(l, args[1]), lowererUse(l, args[2]));
+                }
                 VReg dst = mFuncNewReg(l->mf, classGPR);
                 VReg src = mFuncNewReg(l->mf, classGPR);
                 lowererMemAddr(l, dst, lowererUse(l, args[0]));
@@ -17247,7 +17564,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         l->deferred[v] = false;
         Value* val = &l->f->values[v];
         MemKind kind = convert<MemKind>(val->aux2);
-        return {lowererAddress(l, functionArgs(l->f, v)[0], val->aux, memKindWidth(kind), MemKind(kind & memProven) != MemKind(0LL)), true};
+        return {lowererAddress(l, functionArgs(l->f, v)[0], val->aux, memKindWidth(kind), MemKind(kind & memProven) != MemKind(0LL), false), true};
     }
 
     static void lowererMemAddr(Lowerer* l, VReg dst, VReg a) {
@@ -17320,7 +17637,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         for (Int i = count - 1; i >= 0; --i) {
             MInst in = inst(mLoad);
             in.dst = mFuncNewReg(l->mf, classGPR);
-            in.mem = lowererAddress(l, args[1], chunks[i].at, chunks[i].width, false);
+            in.mem = lowererAddress(l, args[1], chunks[i].at, chunks[i].width, false, false);
             in.size = chunks[i].width;
             in.dsize = 8;
             lowererEmit(l, in);
@@ -17328,7 +17645,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         for (Int i = count - 1; i >= 0; --i) {
             MInst in = inst(mStore);
-            in.mem = lowererAddress(l, args[0], chunks[i].at, chunks[i].width, false);
+            in.mem = lowererAddress(l, args[0], chunks[i].at, chunks[i].width, false, true);
             in.src = loaded[i];
             in.size = chunks[i].width;
             lowererEmit(l, in);
@@ -17349,7 +17666,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Array<MemChunk, 5> chunks{};
         Int count = memChunks(n, &chunks);
         for (Int i = count - 1; i >= 0; --i) {
-            Mem mem = lowererAddress(l, args[0], chunks[i].at, chunks[i].width, false);
+            Mem mem = lowererAddress(l, args[0], chunks[i].at, chunks[i].width, false, true);
             if (value == noReg) {
                 MInst in = inst(mStoreImm);
                 in.mem = mem;
@@ -17376,6 +17693,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         VReg n = lowererUse(l, args[2]);
         lowererCheckRange(l, d, n, memAt(ctxReg, l->lay->memoryEnd), 8, trapMemoryOOB);
         lowererCheckRange(l, s, n, memAt(ctxReg, l->lay->memoryEnd), 8, trapMemoryOOB);
+        if (l->m->asan) {
+            lowererAsanRange(l, d, n);
+            lowererAsanRange(l, s, n);
+        }
         VReg dst = mFuncNewReg(l->mf, classGPR);
         lowererMemAddr(l, dst, d);
         VReg src = mFuncNewReg(l->mf, classGPR);
@@ -17391,6 +17712,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         VReg val = lowererUse(l, args[1]);
         VReg n = lowererUse(l, args[2]);
         lowererCheckRange(l, d, n, memAt(ctxReg, l->lay->memoryEnd), 8, trapMemoryOOB);
+        if (l->m->asan) {
+            lowererAsanRange(l, d, n);
+        }
         VReg dst = mFuncNewReg(l->mf, classGPR);
         lowererMemAddr(l, dst, d);
         lowererStrCall(l, symMemset, Span<const VReg>({dst, val, n}));
@@ -17519,6 +17843,18 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         lowererStrCall(l, symStrlen, Span<const VReg>({lowererHostAddress(l, s)}));
         VReg n = lowererStrResult(l);
         lowererCheckEnd(l, s, n, ccAE);
+        if (l->m->asan) {
+            // The string and its NUL.
+            VReg size = mFuncNewReg(l->mf, classGPR);
+            lowererMov(l, size, n, 8);
+            MInst nul = inst(mAluImm);
+            nul.dst = size;
+            nul.imm = 1;
+            nul.size = 8;
+            nul.aux = convert<u8>(aluAdd);
+            lowererEmit(l, nul);
+            lowererAsanRange(l, s, size);
+        }
         return n;
     }
 
@@ -17532,6 +17868,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         const Mem end = memAt(ctxReg, l->lay->memoryEnd);
         lowererCheckRange(l, a, n, end, 8, trapMemoryOOB);
         lowererCheckRange(l, b, n, end, 8, trapMemoryOOB);
+        if (l->m->asan) {
+            lowererAsanRange(l, a, n);
+            lowererAsanRange(l, b, n);
+        }
         lowererStrCall(l, symMemcmp, Span<const VReg>({lowererHostAddress(l, a), lowererHostAddress(l, b), n}));
         lowererSign(l, v);
     }
@@ -17602,6 +17942,41 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         lowererEmit(l, least);
         lowererStrCall(l, symMemchr, Span<const VReg>({lowererHostAddress(l, s), c, m}));
         VReg p = lowererStrResult(l);
+        if (l->m->asan) {
+            // The bytes it read: up to the one found, or all m of them.
+            VReg read = mFuncNewReg(l->mf, classGPR);
+            lowererMov(l, read, p, 8);
+            MInst host = inst(mAlu);
+            host.dst = read;
+            host.src = memReg;
+            host.size = 8;
+            host.aux = convert<u8>(aluSub);
+            lowererEmit(l, host);
+            MInst start = inst(mAlu);
+            start.dst = read;
+            start.src = s;
+            start.size = 8;
+            start.aux = convert<u8>(aluSub);
+            lowererEmit(l, start);
+            MInst last = inst(mAluImm);
+            last.dst = read;
+            last.imm = 1;
+            last.size = 8;
+            last.aux = convert<u8>(aluAdd);
+            lowererEmit(l, last);
+            MInst any = inst(mTest);
+            any.src = p;
+            any.src2 = p;
+            any.size = 8;
+            lowererEmit(l, any);
+            MInst all = inst(mCmov);
+            all.dst = read;
+            all.src = m;
+            all.cc = ccE;
+            all.size = 8;
+            lowererEmit(l, all);
+            lowererAsanRange(l, s, read);
+        }
         // x is n when the byte was found and m when not: below n it trapped
         VReg x = mFuncNewReg(l->mf, classGPR);
         lowererMov(l, x, n, 8);
@@ -17683,6 +18058,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         nul.size = 8;
         nul.aux = convert<u8>(aluAdd);
         lowererEmit(l, nul);
+        if (l->m->asan) {
+            lowererAsanRange(l, at, size);
+        }
         lowererStrCall(l, symMemmove, Span<const VReg>({lowererHostAddress(l, at), lowererHostAddress(l, s), size}));
         if (v >= 0 && l->uses[v] > 0) {
             lowererMov(l, lowererDef(l, v), d, 4);
@@ -17728,6 +18106,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         lowererEmit(l, c);
         lowererTrapIf(l, ccA, trapMemoryOOB);
         lowererCheckRange(l, d, n, memAt(ctxReg, l->lay->memoryEnd), 8, trapMemoryOOB);
+        if (l->m->asan) {
+            lowererAsanRange(l, d, n);
+        }
         VReg dst = mFuncNewReg(l->mf, classGPR);
         lowererMemAddr(l, dst, d);
         VReg src = mFuncNewReg(l->mf, classGPR);
@@ -18114,7 +18495,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void lowererStore(Lowerer* l, i32 v, i32 addr, i32 value) {
         Value* val = &l->f->values[v];
         MemKind kind = convert<MemKind>(val->aux2);
-        Mem mem = lowererAddress(l, addr, val->aux, memKindWidth(kind), MemKind(kind & memProven) != MemKind(0LL));
+        Mem mem = lowererAddress(l, addr, val->aux, memKindWidth(kind), MemKind(kind & memProven) != MemKind(0LL), true);
         u8 width = convert<u8>(memKindWidth(kind));
         if (l->rmw[v] >= 0) {
             const i32 y = l->rmw[v];
@@ -18879,6 +19260,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 meta->memory->profile = convert<u32>(lay->tailProfile);
                 meta->memory->profileFuncs = convert<u32>(length(m->funcs));
             }
+            if (m->asan) {
+                meta->memory->shadow = convert<u32>(lay->shadow);
+            }
         }
         auto tables = m->tables;
         for (Int i = 0; i < length(tables); ++i) {
@@ -18908,6 +19292,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 meta->exports = appendValues(meta->exports, ExportMeta{e.kind, e.name, e.index, {}, {}, {}});
             }
         }
+        objCodeLines(oc, meta);
         return meta;
     }
 
@@ -19025,6 +19410,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         const Int sps = length(a->sps);
         const SpEntry lastSp = sps ? a->sps[sps - 1] : SpEntry{};
         const i32 sp = a->sp;
+        const Int lines = length(a->lines);
+        a->lastPos = 0;
         const Int calls = length(oc->calls);
         const Int jumpCalls = length(oc->jumpCalls);
         const Int addresses = length(oc->addresses);
@@ -19045,6 +19432,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 a->sps[sps - 1] = lastSp;
             }
             a->sp = sp;
+            a->lines = subslice(a->lines, 0, lines);
+            a->lastPos = 0;
             oc->calls = subslice(oc->calls, 0, calls);
             oc->jumpCalls = subslice(oc->jumpCalls, 0, jumpCalls);
             oc->addresses = subslice(oc->addresses, 0, addresses);
@@ -19240,8 +19629,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             auto temporary1010 = lookupMap(stubs, key);
             i32 at = temporary1010.v0;
             bool ok = temporary1010.v1;
-            if (!ok) {
+            if (t.code == trapAsan) {
+                // An asan trap reports its own access: no pad is shared.
                 at = asmPos(a);
+                asmMarkPos(a, t.pos);
+                asmSetSP(a, t.sp);
+                objCodeTrapAtCall(oc, t);
+            } else if (!ok) {
+                // A pad shared by traps is of the first one's instruction.
+                at = asmPos(a);
+                asmMarkPos(a, t.pos);
                 setMap(stubs, key, at);
                 asmSetSP(a, t.sp);
                 objCodeTrapCall(oc, t.code);
@@ -19292,7 +19689,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void objCodeEndRegion(ObjCode* oc, i32 start) {
         PoolScope persistent(*oc->pool);
         i32 end = asmPos(&oc->a);
-        oc->regions = appendValues(oc->regions, Region{oc->regionName, convert<u32>(start), convert<u32>(end), asmSpTable(&oc->a, start, end)});
+        oc->regions = appendValues(oc->regions, Region{oc->regionName, convert<u32>(start), convert<u32>(end), asmSpTable(&oc->a, start, end), asmLineTable(&oc->a, start, end)});
     }
 
     // exportThunks gives every exported function a thunk Go calls, global.
@@ -20041,6 +20438,27 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         asmMovRR(a, 8, RAX, ctxReg);
         asmMovImm(a, 4, RBX, code);
         objCodeCallGo(oc, symTrap);
+        asmUd2(a);
+        asmSetSP(a, sp);
+    }
+
+    // trapAtCall calls Go's trap_at with the instance, the code, the
+    // address of the access the fixup describes and its width and kind, in
+    // Go's registers; it does not return. The address is taken first: the
+    // register holding it may be one of those.
+    static void objCodeTrapAtCall(ObjCode* oc, const TrapFixup& t) {
+        Asm* a = &oc->a;
+        i32 sp = a->sp;
+        asmAluRI(a, aluSub, 8, RSP, convert<i64>(goAssign(sliceOf<ValType>({I32, I64, I32}), {}).size));
+        if (t.reg == noReg) {
+            asmMovImm(a, 8, RCX, convert<i64>(convert<u32>(t.disp)));
+        } else {
+            asmLea(a, 8, RCX, baseAt(t.reg, t.disp));
+        }
+        asmMovRR(a, 8, RAX, ctxReg);
+        asmMovImm(a, 4, RBX, t.code);
+        asmMovImm(a, 4, RDI, convert<i64>(t.width) | convert<i64>(t.kind) << 8);
+        objCodeCallGo(oc, symTrapAt);
         asmUd2(a);
         asmSetSP(a, sp);
     }
@@ -22979,7 +23397,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static Module* decodeModule(Slice<u8> data) {
         Reader* r = activePool->make<Reader>(Reader{data, {}});
-        Module* m = activePool->make<Module>(Module{{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, i64(-1LL), {}, {}, i64(-1LL), {}, {}, {}, {}});
+        Module* m = activePool->make<Module>(Module{{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, i64(-1LL), {}, {}, i64(-1LL), {}, {}, {}, {}});
         if ((asString(readerBytes(r, 4)) != String("\000asm"))) {
             compilerError(String("magic header not detected"));
         }
@@ -23067,6 +23485,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         compilerError(String("function and code section have inconsistent lengths"));
                     }
                     Int i = 0;
+                    m->codeOffset = base;
                     for (; i < n; i++) {
                         Int size = convert<i64>(readerU32(body));
                         Int offset = base + body->pos;
@@ -23252,12 +23671,38 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             metaWriterStr(w, e.name);
             metaWriterU(w, convert<u64>(e.index));
         }
-        if (!isNil(m->memory) && m->memory->tail != 0) {
+        // What follows is optional, by its flags: the accessible tail and its
+        // slot, the tail's profile counters, the shadow map's slot, the
+        // source lines.
+        const bool tail = !isNil(m->memory) && m->memory->tail != 0;
+        const bool profile = tail && m->memory->profile != 0;
+        const bool asan = !isNil(m->memory) && m->memory->shadow != 0;
+        const bool lines = length(m->lines) != 0;
+        metaWriterU(w, (tail ? 1 : 0) | (profile ? 2 : 0) | (asan ? 4 : 0) | (lines ? 8 : 0));
+        if (tail) {
             metaWriterU(w, m->memory->tail);
             metaWriterU(w, convert<u64>(m->memory->tailEnd));
-            if (m->memory->profile != 0) {
-                metaWriterU(w, convert<u64>(m->memory->profile));
-                metaWriterU(w, convert<u64>(m->memory->profileFuncs));
+        }
+        if (profile) {
+            metaWriterU(w, convert<u64>(m->memory->profile));
+            metaWriterU(w, convert<u64>(m->memory->profileFuncs));
+        }
+        if (asan) {
+            metaWriterU(w, convert<u64>(m->memory->shadow));
+        }
+        if (lines) {
+            metaWriterU(w, convert<u64>(length(m->files)));
+            for (Int i = 0; i < length(m->files); ++i) {
+                metaWriterStr(w, m->files[i]);
+            }
+            metaWriterU(w, convert<u64>(length(m->lines)));
+            u32 pc = 0;
+            for (Int i = 0; i < length(m->lines); ++i) {
+                const LineEntry e = m->lines[i];
+                metaWriterU(w, e.pc - pc);
+                metaWriterU(w, e.file);
+                metaWriterU(w, e.line);
+                pc = e.pc;
             }
         }
         return w->out;
@@ -24001,9 +24446,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             for (Int i = 0; i < length(instrs); ++i) {
                 i32 v = instrs[i];
                 if (!l->deferred[v]) {
+                    l->pos = f->positions[usize(v)];
                     lowererLowerValue(l, v);
                 }
             }
+            l->pos = 0;
             lowererTerminator(l, b);
             visits.pushBack({b, true, undo});
             for (i32 child = children.first[usize(b)]; child >= 0; child = children.next[usize(child)]) {
@@ -24182,6 +24629,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         i32 off = headerSize;
         if (m->memoryTail != 0) {
             l->memoryEnd = off;
+            off += 8;
+        }
+        if (m->asan) {
+            l->shadow = off;
             off += 8;
         }
         auto globals = m->globals;
@@ -25409,10 +25860,411 @@ namespace {
         }
     }
 
+    // A reader of DWARF's encodings over a section; ok goes false at its end.
+    struct DwarfReader {
+        Slice<u8> data{};
+        Int pos{};
+        bool ok = true;
+
+        u8 byte() {
+            if (pos >= length(data)) {
+                ok = false;
+                return 0;
+            }
+            return data[pos++];
+        }
+
+        u64 fixed(Int n) {
+            u64 v = 0;
+            for (Int i = 0; i < n; ++i) {
+                v |= u64(byte()) << (8 * i);
+            }
+            return v;
+        }
+
+        u64 uleb() {
+            u64 v = 0;
+            Int shift = 0;
+            for (;;) {
+                const u8 b = byte();
+                if (shift < 64) {
+                    v |= u64(b & 127) << shift;
+                }
+                shift += 7;
+                if (!(b & 128) || !ok) {
+                    return v;
+                }
+            }
+        }
+
+        i64 sleb() {
+            i64 v = 0;
+            Int shift = 0;
+            u8 b = 0;
+            do {
+                b = byte();
+                if (shift < 64) {
+                    v |= i64(u64(b & 127) << shift);
+                }
+                shift += 7;
+            } while ((b & 128) && ok);
+            if (shift < 64 && (b & 64)) {
+                v |= -(i64(1) << shift);
+            }
+            return v;
+        }
+
+        String cstr() {
+            const Int start = pos;
+            while (pos < length(data) && data[pos] != 0) {
+                pos++;
+            }
+            String s = asString(subslice(data, start, pos));
+            if (pos < length(data)) {
+                pos++;
+            } else {
+                ok = false;
+            }
+            return s;
+        }
+    };
+
+    // dwarfString is the string at off of a string section, or empty.
+    static String dwarfString(Slice<u8> section, u64 off) {
+        if (off >= u64(length(section))) {
+            return String("");
+        }
+        DwarfReader r{section, convert<Int>(off), true};
+        return r.cstr();
+    }
+
+    // dwarfPath joins a directory of the table and a file name.
+    static String dwarfPath(Slice<String> dirs, u64 dir, String name) {
+        if (length(name) && name[0] == '/') {
+            return name;
+        }
+        if (dir < u64(length(dirs)) && length(dirs[convert<Int>(dir)])) {
+            return dirs[convert<Int>(dir)] + String("/") + name;
+        }
+        return name;
+    }
+
+    // dwarfForm reads a value of a DWARF 5 entry format: a string, from the
+    // entry or a string section, or a number; ok goes false for a form
+    // it does not know.
+    static Tuple2<String, u64> dwarfForm(DwarfReader* r, u64 form, Int offsetSize, Module* m) {
+        switch (form) {
+            case 0x08: {
+                return {r->cstr(), 0};
+            }
+            case 0x1f: {
+                return {dwarfString(m->debugLineStr, r->fixed(offsetSize)), 0};
+            }
+            case 0x0e: {
+                return {dwarfString(m->debugStr, r->fixed(offsetSize)), 0};
+            }
+            case 0x0f: {
+                return {String(""), r->uleb()};
+            }
+            case 0x0b: {
+                return {String(""), r->fixed(1)};
+            }
+            case 0x05: {
+                return {String(""), r->fixed(2)};
+            }
+            case 0x06: {
+                return {String(""), r->fixed(4)};
+            }
+            case 0x07: {
+                return {String(""), r->fixed(8)};
+            }
+            case 0x1e: {
+                r->pos += 16;
+                return {String(""), 0};
+            }
+            case 0x09: {
+                r->pos += convert<Int>(r->uleb());
+                return {String(""), 0};
+            }
+        }
+        r->ok = false;
+        return {String(""), 0};
+    }
+
+    // readLines runs the module's DWARF line programs (.debug_line, versions
+    // 2 to 5) into one table of rows sorted by address, the offset of a wasm
+    // instruction in the code section's contents, and the files they name:
+    // a unit's files follow the units' before, so a row's file is an index
+    // of the module's list. A program the reader does not understand ends
+    // the table where it is.
+    static void moduleReadLines(Module* m) {
+        if (length(m->debugLine) == 0) {
+            return;
+        }
+        DwarfReader r{m->debugLine, 0, true};
+        Slice<LineRow> rows = {};
+        Slice<String> files = {};
+        while (r.ok && r.pos < length(r.data)) {
+            u64 unitLength = r.fixed(4);
+            Int offsetSize = 4;
+            if (unitLength == 0xffffffffu) {
+                unitLength = r.fixed(8);
+                offsetSize = 8;
+            }
+            const Int unitEnd = r.pos + convert<Int>(unitLength);
+            if (!r.ok || unitEnd > length(r.data) || unitEnd < r.pos) {
+                break;
+            }
+            const u64 version = r.fixed(2);
+            if (version < 2 || version > 5) {
+                break;
+            }
+            if (version >= 5) {
+                r.fixed(1);
+                r.fixed(1);
+            }
+            const u64 headerLength = r.fixed(offsetSize);
+            const Int programStart = r.pos + convert<Int>(headerLength);
+            const u64 minInst = maximum(r.fixed(1), u64(1));
+            if (version >= 4) {
+                r.fixed(1);
+            }
+            r.fixed(1);
+            const i64 lineBase = i64(i8(r.fixed(1)));
+            const u64 lineRange = maximum(r.fixed(1), u64(1));
+            const u64 opcodeBase = maximum(r.fixed(1), u64(1));
+            Slice<u8> stdLengths = makeSlice<u8>(convert<Int>(opcodeBase - 1));
+            for (Int i = 0; i < length(stdLengths); ++i) {
+                stdLengths[i] = r.byte();
+            }
+            const Int fileBase = length(files);
+            Slice<String> dirs = {};
+            if (version <= 4) {
+                // Directory 0 is the compilation directory, which only
+                // .debug_info knows; file numbers count from 1.
+                dirs = appendValues(dirs, String(""));
+                for (;;) {
+                    String d = r.cstr();
+                    if (length(d) == 0 || !r.ok) {
+                        break;
+                    }
+                    dirs = appendValues(dirs, d);
+                }
+                files = appendValues(files, String(""));
+                for (;;) {
+                    String name = r.cstr();
+                    if (length(name) == 0 || !r.ok) {
+                        break;
+                    }
+                    const u64 dir = r.uleb();
+                    r.uleb();
+                    r.uleb();
+                    files = appendValues(files, dwarfPath(dirs, dir, name));
+                }
+            } else {
+                Slice<Array<u64, 2>> formats = {};
+                const u64 dirFormats = r.fixed(1);
+                for (u64 i = 0; i < dirFormats; ++i) {
+                    const u64 type = r.uleb();
+                    formats = appendValues(formats, Array<u64, 2>{{type, r.uleb()}});
+                }
+                const u64 dirCount = r.uleb();
+                for (u64 i = 0; i < dirCount && r.ok; ++i) {
+                    String path = String("");
+                    for (Int k = 0; k < length(formats); ++k) {
+                        auto value = dwarfForm(&r, formats[k][1], offsetSize, m);
+                        if (formats[k][0] == 1) {
+                            path = value.v0;
+                        }
+                    }
+                    dirs = appendValues(dirs, path);
+                }
+                formats = {};
+                const u64 fileFormats = r.fixed(1);
+                for (u64 i = 0; i < fileFormats; ++i) {
+                    const u64 type = r.uleb();
+                    formats = appendValues(formats, Array<u64, 2>{{type, r.uleb()}});
+                }
+                const u64 fileCount = r.uleb();
+                for (u64 i = 0; i < fileCount && r.ok; ++i) {
+                    String name = String("");
+                    u64 dir = 0;
+                    for (Int k = 0; k < length(formats); ++k) {
+                        auto value = dwarfForm(&r, formats[k][1], offsetSize, m);
+                        if (formats[k][0] == 1) {
+                            name = value.v0;
+                        } else if (formats[k][0] == 2) {
+                            dir = value.v1;
+                        }
+                    }
+                    files = appendValues(files, dwarfPath(dirs, dir, name));
+                }
+            }
+            if (!r.ok) {
+                break;
+            }
+            r.pos = programStart;
+            u64 address = 0;
+            u64 file = 1;
+            i64 line = 1;
+            auto row = [&](bool end) mutable -> void {
+                rows = appendValues(rows, LineRow{convert<u32>(address), convert<u32>(fileBase + convert<Int>(file)), convert<u32>(line), end});
+            };
+            while (r.ok && r.pos < unitEnd) {
+                const u8 op = r.byte();
+                if (op >= opcodeBase) {
+                    const u64 adjusted = op - opcodeBase;
+                    address += (adjusted / lineRange) * minInst;
+                    line += lineBase + i64(adjusted % lineRange);
+                    row(false);
+                } else if (op == 0) {
+                    const u64 len = r.uleb();
+                    if (len == 0) {
+                        continue;
+                    }
+                    const Int next = r.pos + convert<Int>(len);
+                    const u8 sub = r.byte();
+                    switch (sub) {
+                        case 1: {
+                            row(true);
+                            address = 0;
+                            file = 1;
+                            line = 1;
+                            break;
+                        }
+                        case 2: {
+                            address = r.fixed(convert<Int>(len) - 1);
+                            break;
+                        }
+                        case 3: {
+                            String name = r.cstr();
+                            const u64 dir = r.uleb();
+                            r.uleb();
+                            r.uleb();
+                            files = appendValues(files, dwarfPath(dirs, dir, name));
+                            break;
+                        }
+                        default: {
+                            break;
+                        }
+                    }
+                    r.pos = next;
+                } else {
+                    switch (op) {
+                        case 1: {
+                            row(false);
+                            break;
+                        }
+                        case 2: {
+                            address += r.uleb() * minInst;
+                            break;
+                        }
+                        case 3: {
+                            line += r.sleb();
+                            break;
+                        }
+                        case 4: {
+                            file = r.uleb();
+                            break;
+                        }
+                        case 5:
+                        case 12: {
+                            r.uleb();
+                            break;
+                        }
+                        case 8: {
+                            address += ((255 - opcodeBase) / lineRange) * minInst;
+                            break;
+                        }
+                        case 9: {
+                            address += r.fixed(2);
+                            break;
+                        }
+                        case 6:
+                        case 7:
+                        case 10:
+                        case 11: {
+                            break;
+                        }
+                        default: {
+                            for (u64 i = 0; i < stdLengths[op - 1]; ++i) {
+                                r.uleb();
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            r.pos = unitEnd;
+        }
+        // The rows in order of address; of rows at one address the last
+        // written holds, so the order is kept among them.
+        Slice<Int> order = makeSlice<Int>(length(rows));
+        for (Int i = 0; i < length(order); ++i) {
+            order[i] = i;
+        }
+        sortValues(order, [&](Int x, Int y) mutable -> bool {
+            return rows[order[x]].address < rows[order[y]].address || (rows[order[x]].address == rows[order[y]].address && order[x] < order[y]);
+        });
+        Slice<LineRow> sorted = makeSlice<LineRow>(length(rows));
+        for (Int i = 0; i < length(order); ++i) {
+            sorted[i] = rows[order[i]];
+        }
+        m->sourceFiles = files;
+        m->lineRows = sorted;
+    }
+
+    // lines gives the description the source lines of the text: for every
+    // mark of every region, the row of the module's line table at its
+    // instruction, an entry where the file or line changes.
+    static void objCodeLines(ObjCode* oc, Meta* meta) {
+        Module* m = oc->m;
+        moduleReadLines(m);
+        auto rows = m->lineRows;
+        if (length(rows) == 0) {
+            return;
+        }
+        meta->files = m->sourceFiles;
+        Slice<LineEntry> out = {};
+        auto regions = oc->regions;
+        for (Int i = 0; i < length(regions); ++i) {
+            const Region r = regions[i];
+            for (Int j = 0; j < length(r.lines); ++j) {
+                const LineMark mark = r.lines[j];
+                const Int k = sortSearch(length(rows), [&](Int x) mutable -> bool {
+                    return rows[x].address > mark.pos;
+                });
+                if (k == 0 || rows[k - 1].end) {
+                    continue;
+                }
+                const LineRow row = rows[k - 1];
+                const u32 pc = r.start + convert<u32>(mark.pc);
+                const Int n = length(out);
+                if (n && out[n - 1].pc == pc) {
+                    out[n - 1] = LineEntry{pc, row.file, row.line};
+                    continue;
+                }
+                if (n && out[n - 1].file == row.file && out[n - 1].line == row.line) {
+                    continue;
+                }
+                out = appendValues(out, LineEntry{pc, row.file, row.line});
+            }
+        }
+        meta->lines = out;
+    }
+
     static void moduleCustom(Module* module, Reader* reader) {
         String name = readerName(reader);
         if (name == String("name")) {
             readOptionalNames(module, *reader);
+        }
+        Slice<u8> rest = subslice(reader->data, reader->pos, length(reader->data));
+        if (name == String(".debug_line")) {
+            module->debugLine = rest;
+        } else if (name == String(".debug_line_str")) {
+            module->debugLineStr = rest;
+        } else if (name == String(".debug_str")) {
+            module->debugStr = rest;
         }
         reader->pos = length(reader->data);
     }
@@ -25473,6 +26325,13 @@ namespace {
         PoolScope scope(modulePool);
         initializeCompilerTables();
         Module* module = decodeModule(readInput(modulePool));
+        if (options.asan) {
+            // The shadow map's checks take the place of the tail's.
+            options.memoryTail = false;
+            options.tailRanges = false;
+            options.tailProfile = false;
+            module->asan = length(module->mems) > 0;
+        }
         if (options.memoryTail && length(module->mems) > 0) {
             module->memoryTail = boundSlack;
             module->tailRanges = options.tailRanges;
@@ -25486,6 +26345,7 @@ namespace {
         code->m = module;
         code->a.fixups = makeSlice<RipFixup>(0);
         code->a.sps = makeSlice<SpEntry>(0);
+        code->a.lines = makeSlice<LineMark>(0);
         code->funcAt = makeSlice<i32>(0);
         code->calls = makeSlice<CallFixup>(0);
         code->jumpAt = makeMap<i32, i32>();
@@ -25542,8 +26402,8 @@ extern "C"
     __attribute__((export_name("compileOptions")))
 #endif
     void compileOptions(u32 flags) {
-    require((flags & ~u32(7)) == 0, "invalid compile options");
-    compileWithOptions(CompileOptions{bool(flags & 1), bool(flags & 2), bool(flags & 4)});
+    require((flags & ~u32(15)) == 0, "invalid compile options");
+    compileWithOptions(CompileOptions{bool(flags & 1), bool(flags & 2), bool(flags & 4), bool(flags & 8)});
 }
 
 namespace {
@@ -25572,19 +26432,26 @@ int main() {
 }
         #endif
     #elif !defined(__wasm__) && !defined(wasm)
+static bool sameString(const char* a, const char* b) {
+    usize i = 0;
+    while (a[i] && a[i] == b[i]) {
+        ++i;
+    }
+    return a[i] == 0 && b[i] == 0;
+}
+
 int main(int count, char** arguments) {
+    const char* usage = "usage: aot [--strict|--asan] < input.wasm > output.o";
+    if (count == 2 && sameString(arguments[1], "--asan")) {
+        compileWithOptions(CompileOptions{false, false, false, true});
+        return 0;
+    }
     bool strict = false;
     if (count == 2) {
-        const char* a = arguments[1];
-        const char* b = "--strict";
-        usize i = 0;
-        while (a[i] && a[i] == b[i]) {
-            ++i;
-        }
-        require(a[i] == 0 && b[i] == 0, "usage: aot [--strict] < input.wasm > output.o");
+        require(sameString(arguments[1], "--strict"), usage);
         strict = true;
     } else {
-        require(count == 1, "usage: aot [--strict] < input.wasm > output.o");
+        require(count == 1, usage);
     }
     compilerCommand(strict);
     return 0;

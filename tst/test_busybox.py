@@ -122,14 +122,14 @@ def make_root(root, obj, links):
 
 
 def run(vm, root, argv, stdin, env=None):
-    command = [vm, "run", "--root", str(root), "-a", argv[0], str(root / "bin" / "busybox"), "--", *argv[1:]]
+    command = [vm, "run", "--root", str(root), "-a", argv[0], "--", str(root / "bin" / "busybox"), *argv[1:]]
     environment = {"PATH": "/bin:/usr/bin", "TZ": "UTC", **(env or {})}
 
     return subprocess.run(command, input=stdin.encode(), capture_output=True, cwd=root / "tmp", env=environment, timeout=60)
 
 
 def interrupt(vm, root, first):
-    command = [vm, "run", "--root", str(root), "-a", "sh", str(root / "bin" / "busybox"), "--", "-i"]
+    command = [vm, "run", "--root", str(root), "-a", "sh", "--", str(root / "bin" / "busybox"), "-i"]
     p = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=root / "tmp",
                          env={"PATH": "/bin:/usr/bin", "PS1": "$ "})
 
@@ -159,7 +159,7 @@ def job_control(vm, root):
 
     if pid == 0:
         os.chdir(root / "tmp")
-        os.execve(vm, [vm, "run", "--root", str(root), "-a", "sh", str(root / "bin" / "busybox"), "--", "-i"],
+        os.execve(vm, [vm, "run", "--root", str(root), "-a", "sh", "--", str(root / "bin" / "busybox"), "-i"],
                   {"PATH": "/bin:/usr/bin", "PS1": "$ ", "TERM": "dumb"})
 
     out = b""
