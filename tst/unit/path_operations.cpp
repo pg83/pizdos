@@ -88,6 +88,7 @@ int main() {
     assert(mktemp(bad) == bad && bad[0] == 0 && errno == EINVAL);
     char absent[] = "absent/file-XXXXXX";
     assert(mkstemp(absent) == -1 && errno == ENOENT);
+    assert(creat("absent/file", 0600) == -1 && errno == ENOENT);
     char absentDirectory[] = "absent/dir-XXXXXX";
     assert(mkdtemp(absentDirectory) == nullptr && errno == ENOENT);
     char notDirectory[256];
