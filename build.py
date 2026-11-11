@@ -796,6 +796,7 @@ TESTED = {
     "runtime_errors": [vm, aot_native],
     "runtime_safety": [vm, aot_native, wazero],
     "spec_cli": [vm, aot_native],
+    "sparse_values": [vm, aot_native, wazero],
     "python": [vm, python_o, python, python_tarball, busybox_o, busybox],
     "stand": [vm, aot_native, stand_fixture],
     "terminal": [vm, aot_native, terminal_check],
