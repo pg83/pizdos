@@ -678,12 +678,21 @@ stand_fixture = command(
 )
 
 # What each test runs against: its arguments are the outputs of these nodes.
+chaos_check = command(
+    name="chaos_check",
+    inputs=[*LIBC_HEADERS, "$(S)/tst/chaos/check.c", "$(S)/tst/libc/make.py", "$(S)/dev/wasm.py"],
+    outputs=["$(B)/tst/chaos/check.wasm"],
+    deps=[libc],
+    cmd=["python3", "$(S)/tst/libc/make.py", CLANG, WASM_LD, "$(S)/tst/chaos/check.c", "$(S)/lib/c/include", libc.outputs[0], "$(B)/tst/chaos/check.wasm", "-g"],
+    descr="CC", color="green",
+)
+
 TESTED = {
     "aot": [aot, aot_command, wazero, vm, busybox],
     "asan": [vm, asan_check_o, libc_check_o],
     "busybox_abi": [busybox],
     "busybox": [vm, busybox_o, busybox],
-    "chaos": [vm, vm_chaos, aot_native, aot_native_chaos],
+    "chaos": [vm, vm_chaos, aot_native, aot_native_chaos, chaos_check],
     "clang": [vm, clang_o, clang, libc, libc_headers, libcxx],
     "cxx": [vm, cxx_check_o],
     "doom": [vm, doom_o, doom_wad],

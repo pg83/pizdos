@@ -45,7 +45,9 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
   C++ uses `AOT_CHAOS`, Go uses the `pizdoschaos` build tag; ordinary
   builds erase the hooks and ignore those environment variables.
   `test_chaos` checks the actual commands, failures, subsequent recovery
-  and atomic compiler output.
+  and atomic compiler output. Its guest also retries file I/O, opens,
+  forks and memory.grow after one injected failure, through objects from
+  both compilers; production runs ignore the same rules.
 - `sh dev/stand/build.sh` supplies the pinned ix revision's libraries and
   tools and runs `./build stand`: decode's im, pdf, djvu, svg and magic
   modules through vm, and their wrappers against the native
