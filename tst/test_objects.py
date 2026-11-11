@@ -123,6 +123,13 @@ def main():
     bad("relative-overflow", changed(relative, relocs_at + 16, "q", 1 << 50), "relocation out of range")
     bad("missing-init", obj.renamed("w2o.init", "w2o.gone"), "no w2o.init")
     bad("unresolved-external", obj.renamed("w2o.morestack", "unknown.external"), "unresolved symbol unknown.external")
+    bad("unknown-string-function", obj.renamed("w2o.morestack", "str.missing"), "no function of lib/str for str.missing")
+    string_table = obj.contents(obj.sections[obj.named[".symtab"]][6])
+    export = next(at for at in range(0, len(symbols), 24)
+                  if string_table[struct.unpack_from("<I", symbols, at)[0]:].split(b"\0", 1)[0] == b"w2o.export._5Fstart..")
+    for kind in (0, 1):
+        bad(f"export-symbol-type-{kind}", changed(data, symbols_at + export + 4, "B", (symbols[export + 4] & 0xf0) | kind),
+            "no symbol w2o.export._5Fstart..")
     for name in ("w2o.export._..", "w2o.export._GG..", "w2o.export._5Fstart...", "w2o.export._5Fstart.z."):
         bad("export-" + name, obj.renamed("w2o.export._5Fstart..", name), "no exported function _start")
     for name in ("w2o.export._5Fstart.i.", "w2o.export._5Fstart..i"):
@@ -171,7 +178,7 @@ def main():
     for code in (b"\x0e", b"\x0e\x80", b"\x02", b"\x03\1", b"\x04\1\2\3", b"\x0c\7"):
         record = struct.pack("<I", 0) + b"\1\0\1\x78\x10" + code
         bad("eh-truncated-cfa-" + code.hex(), short_eh(struct.pack("<I", len(record)) + record), "malformed .eh_frame")
-    valid = [("original", data)]
+    valid = [("original", data), ("unnamed-function", obj.renamed("f0", ""))]
     valid.append(("eh-terminator", obj.replaced(".eh_frame", eh + bytes(4))))
     # Insert transient changes at one PC, restoring the original rule.
     # The final stack map must be identical after adjacent rules merge.
@@ -185,7 +192,7 @@ def main():
             valid.append(("eh-repeated-cfa-pc", obj.replaced(".eh_frame", eh[:off] + rewritten + eh[off + 4 + size:])))
             break
         off += 4 + size
-    assert len(valid) == 3, "fixture has no padded stack map"
+    assert len(valid) == 4, "fixture has no padded stack map"
     duplicate = changed(relocs[:24], 8, "I", 65535) + relocs
     valid.append(("later-relocation-wins", obj.replaced(".rela.text", duplicate)))
     valid.append(("unsorted-relocations", obj.replaced(".rela.text", b"".join(relocs[i:i + 24] for i in reversed(range(0, len(relocs), 24))))))
