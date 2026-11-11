@@ -38,7 +38,7 @@ def constant(value, typ=0x7f):
     return bytes([0x41 if typ == 0x7f else 0x42]) + leb(value, True)
 
 
-def program(name, args, *, wide=False, returns=True, expected=None, memory=True):
+def program(name, args, *, wide=False, returns=True, expected=None, memory=True, error=None):
     params = bytes(0x7e if wide and i else 0x7f for i in range(len(args)))
     signature = b"\x60" + leb(len(params)) + params + (b"\1\x7f" if returns else b"\0")
     module = b"\0asm\1\0\0\0" + section(1, b"\2\x60\0\0" + signature)
@@ -52,6 +52,8 @@ def program(name, args, *, wide=False, returns=True, expected=None, memory=True)
         code += (b"\x1a" if returns else b"") + b"\0"
     elif returns:
         code += constant(expected) + b"\x47\x04\x40\0\x0b"
+    if error is not None:
+        code += constant(0) + b"\x28\2\0" + constant(error) + b"\x47\x04\x40\0\x0b"
     body = b"\0" + code + b"\x0b"
     module += section(10, b"\1" + leb(len(body)) + body)
     return module + (section(11, b"\1\0" + constant(65520) + b"\x0b\x10" + b"A" * 16) if memory else b"")
@@ -84,11 +86,16 @@ def main():
               ("no-linear-memory", "getpid", [], {"memory": False, "expected": 1}, 0, ""),
               ("environment-without-CRT", "getenv", [4096], {"expected": 0}, 0, ""),
               ("exec-without-CRT", "execv", [4096, 4096], {"expected": 0xffffffff}, 0, "")]
+    cases += [("program-short-buffer", "__kernel_program", [4096, 0], {"expected": 0, "error": 34}, 0, ""),
+              ("program-outside-root", "__kernel_program", [4096, 1024], {"expected": 0, "error": 2, "rooted": True}, 0, "")]
     env = dict(os.environ, W2X_MEMORY_TAIL="strict", W2X_TAIL_PROFILE="")
     with tempfile.TemporaryDirectory(prefix="pizdos-runtime-safety-") as directory:
         work = Path(directory)
+        (work / "root").mkdir()
         source, compiled, embedded = [work / name for name in ("input.wasm", "native.o", "embedded.o")]
         for label, name, args, options, status, diagnostic in cases:
+            options = dict(options)
+            rooted = options.pop("rooted", False)
             data = program(name, args, **options)
             source.write_bytes(data)
             result = subprocess.run([wazero, "-compile", str(source)], capture_output=True, timeout=30)
@@ -99,7 +106,8 @@ def main():
             result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
             assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), (label, result)
             for obj in (compiled, embedded):
-                result = subprocess.run([vm, "run", "-a", "runtime-safety", "--", str(obj)], capture_output=True, env=env, timeout=30)
+                result = subprocess.run([vm, "run", *(["--root", str(work / "root")] if rooted else []), "-a", "runtime-safety", "--", str(obj)],
+                                        capture_output=True, env=env, timeout=30)
                 assert result.returncode == status and result.stdout == b"" and b"panic:" not in result.stderr, (label, result)
                 if status:
                     lines = result.stderr.decode().splitlines()
