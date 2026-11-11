@@ -42,8 +42,12 @@ def check(actual, expected):
 
 def program(kind, variable, start, limit, stride, overlapping):
     dest, source = (8193, 8192) if overlapping else (32768, 8192)
-    biased = kind == "biased"
-    condition = get(2) + get(3) + (b"\x6a\x45\x45" if biased else b"\x4d" if kind == "inclusive" else b"\x49")
+    biased = kind.startswith("biased")
+    stop = 1 if kind == "biased-limit" else 0
+    if biased:
+        condition = get(2) + get(3) + b"\x6a" + constant(stop) + b"\x4b"
+    else:
+        condition = get(2) + get(3) + (b"\x4d" if kind == "inclusive" else b"\x49")
     code = condition + b"\x45\x04\x40" + get(2) + b"\x0f\x0b\x03\x40"
     index = 5 if biased else 2
     for byte in range(2):
@@ -59,7 +63,7 @@ def program(kind, variable, start, limit, stride, overlapping):
 
     def continues(position):
         if biased:
-            return ((position + limit) & MASK) != 0
+            return ((position + limit) & MASK) > stop
         return position <= limit if kind == "inclusive" else position < limit
 
     while continues(position):
@@ -84,7 +88,8 @@ def main():
     cases = [(kind, variable, start, start + distance, stride, overlapping)
              for kind in ("exclusive", "inclusive") for variable, stride in ((False, 1), (False, 3), (True, 3), (True, 65537))
              for start, overlapping in ((1, False), (250, True)) for distance in (-1, 0, 1, 17, 97)]
-    cases += [("biased", False, (count - bias) & MASK, bias, 1, overlapping)
+    cases += [(kind, False, (count + stop - bias) & MASK, bias, 1, overlapping)
+              for kind, stop in (("biased-zero", 0), ("biased-limit", 1))
               for count in (0, 1, 17, 97) for bias in (1, 31, 0xfffffff0) for overlapping in (False, True)]
     with tempfile.TemporaryDirectory(prefix="pizdos-loop-limits-") as directory:
         work = Path(directory)
