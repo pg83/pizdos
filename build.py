@@ -736,6 +736,7 @@ TESTED = {
     "debug_lines": [vm, aot_native],
     "doom": [vm, doom_o, doom_wad],
     "libc": [vm, libc_check_o],
+    "large_functions": [vm, aot_native],
     "objects": [vm, aot_native],
     "profile_artifacts": [vm, aot_native],
     "runtime_errors": [vm, aot_native],
