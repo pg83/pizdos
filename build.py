@@ -735,6 +735,7 @@ host_resources_check = command(
 TESTED = {
     "aot": [aot, aot_command, wazero, vm, busybox],
     "asan": [vm, asan_check_o, libc_check_o],
+    "asan_bounds": [vm, aot_native, wazero],
     "busybox_abi": [busybox],
     "busybox": [vm, busybox_o, busybox],
     "chaos": [vm, vm_chaos, aot_native, aot_native_chaos, chaos_check],
