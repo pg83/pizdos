@@ -24,6 +24,14 @@ int main() {
     struct stat metadata{};
     assert(stat(temporary, &metadata) == 0 && S_ISDIR(metadata.st_mode) && (metadata.st_mode & 0777) == 0700);
     assert(chdir(temporary) == 0);
+    assert(mkdir("rename-directory", 0700) == 0);
+    assert(rename("rename-directory////", "moved-directory") == 0);
+    assert(stat("moved-directory", &metadata) == 0 && S_ISDIR(metadata.st_mode));
+    assert(rmdir("moved-directory") == 0);
+    assert(rename("", "missing") == -1 && errno == ENOENT);
+    assert(rename("missing", "") == -1 && errno == ENOENT);
+    assert(link("", "bad-link") == -1 && errno == ENOENT);
+    assert(symlink("target", "") == -1 && errno == ENOENT);
     char file[] = "created-XXXXXX";
     int fd = mkostemp(file, O_CLOEXEC);
     assert(fd >= 0 && fcntl(fd, F_GETFD) & FD_CLOEXEC);
