@@ -20,6 +20,9 @@ extern "C" EXPORT("malloc") u32 allocate(u32 size) {
     if (size == 9999) {
         return 0;
     }
+    if (size == 9998) {
+        return __builtin_wasm_memory_size(0) * 65536 - 2;
+    }
     if (!next) {
         next = reinterpret_cast<u32>(&__heap_base);
     }

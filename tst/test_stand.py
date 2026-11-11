@@ -41,7 +41,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="pizdos-stand-") as directory:
         work = Path(directory)
         files = []
-        for name, data in (("ok", b"ok"), ("fail", b"fail"), ("trap", b"trap"), ("long", b"long")):
+        for name, data in (("ok", b"ok"), ("fail", b"fail"), ("trap", b"trap"), ("long", b"long"), ("empty", b"")):
             path = work / name
             path.write_bytes(data)
             files.append(str(path))
@@ -56,11 +56,11 @@ def main():
             for kind in ("im", "pdf", "djvu", "svg", "magic"):
                 result = call([vm, "stand", "--repeat", "2", kind, str(obj), *files])
                 if kind == "im":
-                    outcomes = [f"2x1 {image_digest}", "fail", "trap", f"2x1 {image_digest}"]
+                    outcomes = [f"2x1 {image_digest}", "fail", "trap", f"2x1 {image_digest}", "fail"]
                 elif kind == "magic":
-                    outcomes = ["application/x-fixture", "fail", "trap", "application/x-fixture"]
+                    outcomes = ["application/x-fixture", "fail", "trap", "application/x-fixture", "fail"]
                 else:
-                    outcomes = [document(4), "fail", "trap", document(18)]
+                    outcomes = [document(4), "fail", "trap", document(18), "fail"]
                 expected = "".join(f"{Path(path).name} {outcome}\n" for path, outcome in zip(files, outcomes)).encode()
                 assert result.returncode == 0 and result.stdout == expected, (mode, kind, result, expected)
                 assert re.fullmatch(rb"time [0-9]+\.[0-9]+\n", result.stderr), result.stderr
@@ -75,6 +75,11 @@ def main():
         too_large.write_bytes(bytes(9999))
         result = call([vm, "stand", "magic", str(obj), str(too_large)])
         assert result.returncode != 0 and b"malloc of 9999 bytes failed" in result.stderr, result
+        short_allocation = work / "short-allocation"
+        short_allocation.write_bytes(bytes(9998))
+        result = call([vm, "stand", "magic", str(obj), str(short_allocation)])
+        assert result.returncode == 1 and result.stdout == b"", result
+        assert re.fullmatch(rb"vm: a copy of 9998 bytes into [0-9]+\n", result.stderr), result
         stateful = work / "stateful"
         stateful.write_bytes(b"stateful")
         result = call([vm, "stand", "--repeat", "2", "magic", str(obj), str(stateful)])
