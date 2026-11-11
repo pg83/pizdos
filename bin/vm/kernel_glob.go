@@ -136,7 +136,7 @@ func (g *globber) walk(dir string, comps []string) {
 
 	if comp == "" {
 		if len(rest) > 0 {
-			g.walk(dir, rest)
+			g.walk(dir+"/", rest)
 		} else if g.exists(dir + ".") {
 			g.found = append(g.found, dir)
 		}
@@ -201,7 +201,7 @@ func (g *globber) tilde(pattern string) (string, bool) {
 		return pattern, true
 	}
 
-	user, rest, _ := strings.Cut(pattern[1:], "/")
+	user, rest, slash := strings.Cut(pattern[1:], "/")
 	home := ""
 
 	if user == "" {
@@ -212,6 +212,10 @@ func (g *globber) tilde(pattern string) (string, bool) {
 
 	if home == "" {
 		return pattern, g.flags&globTildeChk == 0
+	}
+
+	if !slash {
+		return home, true
 	}
 
 	return strings.TrimSuffix(home, "/") + "/" + rest, true
