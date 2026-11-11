@@ -74,6 +74,7 @@ def main():
              ("bad-elements-mode", program(b"", elements=b"\1\10"), "malformed elements segment kind"),
              ("bad-data-mode", program(b"", data=b"\1\3"), "malformed data segment kind"),
              ("bad-simd-constant", program(b"", globals=b"\1\x7b\0\xfd\x0d" + b"\0" * 16 + b"\x0b"), "constant expression required at offset"),
+             ("bad-global-mutability", program(b"", globals=b"\1\x7f\2\x41\0\x0b"), "malformed mutability"),
              ("computed-element-offset", program(b"", global_import=True, elements=b"\1\0\x23\0\x0b\1\0"), "unsupported: element segment"),
              ("low-data", program(b"", data=b"\1\0\x41\0\x0b\1x"), "unsupported: data or the stack in the first KiB"),
              ("low-stack", program(b"", globals=b"\1\x7f\1\x41\x10\x0b"), "unsupported: data or the stack in the first KiB"),
