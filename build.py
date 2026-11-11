@@ -801,6 +801,7 @@ TESTED = {
     "python": [vm, python_o, python, python_tarball, busybox_o, busybox],
     "stand": [vm, aot_native, stand_fixture],
     "terminal": [vm, aot_native, terminal_check, host_syscalls_filter],
+    "unary_loops": [vm, aot_native, wazero],
     "vfork_traps": [vm, aot_native, wazero],
     "wide_results": [vm, aot_native, wazero],
     "vm": [vm, aot_native, aot, aot_command, aot_command_aot, aot_relinked, wazero, busybox],
