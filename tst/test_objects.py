@@ -139,6 +139,11 @@ def main():
     bad("metadata-memory", obj.note(prefix + b"\1"), "memory metadata without a memory")
     bad("metadata-trailing", obj.note(prefix + b"\0\0"), "trailing object metadata")
     memory = uleb(128) + b"\1\1\1\0" + b"\0" * 4
+    for least, most in ((2, 1), (1, 65537), (1 << 40, 1 << 40)):
+        descriptor = uleb(128) + b"\1" + uleb(least) + uleb(most) + b"\0" * 6
+        bad(f"metadata-memory-limits-{least}-{most}", obj.note(descriptor), f"memory of {least}..{most} pages")
+    table = uleb(128) + b"\0\1" + uleb(96) + uleb((1 << 24) + 1) + uleb((1 << 24) + 1) + b"\0" * 5
+    bad("metadata-table-limits", obj.note(table), "table of 16777217 elements")
     bad("metadata-tail", obj.note(memory + b"\1" + uleb(512) + uleb(96)), "unsupported memory tail")
     bad("metadata-profile", obj.note(memory + b"\2" + uleb(64) + b"\1"), "invalid memory tail profile")
     bad("metadata-shadow", obj.note(memory + b"\4\1"), "invalid shadow slot")
