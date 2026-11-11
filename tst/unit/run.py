@@ -6,6 +6,8 @@
 Directives use trustme's //@ spelling. stdout/stderr are JSON strings;
 compile-flags, aot-flags, run-flags and args use shell quoting. host: false
 disables the native reference for programs that depend on this kernel.
+$ROOT in an env directive names the reference's working directory or the
+VM's isolated root, so host services can read files the guest creates.
 """
 import json
 import os
@@ -105,7 +107,8 @@ def run(source, prefix, tools):
             reference = work / "reference"
             successful([tools["cc"], *tools["host_cflags"], "-x", "c++", *cflags, source,
                         "-o", reference, *tools["host_ldflags"]], env=env, timeout=timeout)
-            check(invoke([reference, *args], env=env, timeout=timeout, cwd=work), case, "native reference")
+            host_env = dict(env, **{name: value.replace("$ROOT", str(work)) for name, value in case.get("env", {}).items()})
+            check(invoke([reference, *args], env=host_env, timeout=timeout, cwd=work), case, "native reference")
 
         with tarfile.open(tools["cxx_headers"]) as archive:
             archive.extractall(work / "cxx", filter="data")
@@ -134,8 +137,9 @@ def run(source, prefix, tools):
                 shutil.copyfile(program, executable)
                 executable.chmod(0o755)
                 run_args = [argument.replace("$ROOT", str(root)) for argument in args]
+                run_env = dict(env, **{name: value.replace("$ROOT", str(root)) for name, value in case.get("env", {}).items()})
                 result = invoke([tools["vm"], "run", "--root", root, "-a", "check", *run_flags,
-                                 "--", executable, *run_args], env=env, timeout=timeout)
+                                 "--", executable, *run_args], env=run_env, timeout=timeout)
                 check(result, case, name)
 
     Path(str(prefix) + ".stamp").write_text("native reference, native AOT, Wasm AOT: passed\n")
