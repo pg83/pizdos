@@ -4,8 +4,8 @@
     coverage.py <output-directory> <suite-json>
     coverage.py --check <summary.json> [minimum-percent]
 
-GCC/gcov measures native aot.cpp, LLVM measures the embedded Wasm reactor,
-and go build -cover measures the VM executable. The Wasm goal counts source
+Clang/LLVM measures native aot.cpp and the embedded Wasm reactor;
+go build -cover measures the VM executable. The AOT goal counts source
 lines other than standalone block braces; raw LLVM totals remain alongside
 that metric and in the unmodified LCOV files.
 Per-process profiles survive children that deliberately replace their
@@ -15,7 +15,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -40,7 +39,7 @@ def metric(hit, total):
     return {"hit": hit, "total": total, "percent": 100 * hit / total if total else 0.0}
 
 
-def executable_wasm_lines(lines, source):
+def executable_lines(lines, source):
     # LLVM maps block delimiters too, including unreachable closing braces
     # after return. Apply the same lexical rule to hit and missed lines;
     # the unfiltered LLVM metric and LCOV data are retained for comparison.
@@ -48,36 +47,48 @@ def executable_wasm_lines(lines, source):
 
 
 def aot_report(suite, raw, destination, *, chaos=False):
-    profiles = sorted(path.parent for path in raw.glob("*/aot.gcda"))
+    profiles = sorted(raw.glob("*.profraw"))
     report_name = "aot-chaos.json" if chaos else "aot.json"
+    stem = "aot-native-chaos" if chaos else "aot-native"
     if not profiles:
         if chaos:
             (destination / report_name).write_text('{"files": []}\n')
+            (destination / (stem + ".profdata")).write_bytes(b"")
+            (destination / (stem + ".lcov")).write_text("")
             return {}, {}
-        raise RuntimeError("native AOT produced no gcov profiles")
-    merged = destination / ("merged-chaos" if chaos else "merged")
-    shutil.copytree(profiles[0], merged)
-    for number, profile in enumerate(profiles[1:]):
-        target = destination / f"merge-{number}"
-        subprocess.run([suite["gcov_tool"], "merge", str(merged), str(profile), "-o", str(target)], check=True)
-        shutil.rmtree(merged)
-        target.rename(merged)
-    shutil.copyfile(suite["gcno_chaos" if chaos else "gcno"], merged / "aot.gcno")
-    raw_json = output([suite["gcov"], "--json-format", "--branch-probabilities", "--stdout", merged / "aot.gcno"])
-    (destination / report_name).write_text(raw_json)
+        raise RuntimeError("native AOT produced no LLVM profiles")
+    indexed = destination / (stem + ".profdata")
+    subprocess.run([suite["llvm_profdata"], "merge", "-sparse", *map(str, profiles), "-o", str(indexed)], check=True)
+    source = Path(suite["source_root"], "bin/aot/aot.cpp").resolve()
+    options = [suite["aot_chaos" if chaos else "aot"], "-instr-profile=" + str(indexed), str(source)]
+    (destination / report_name).write_text(output([suite["llvm_cov"], "export", *options]))
+    trace = output([suite["llvm_cov"], "export", "-format=lcov", *options])
+    (destination / (stem + ".lcov")).write_text(trace)
     lines, branches = {}, {}
-    for source in json.loads(raw_json)["files"]:
-        if Path(source["file"]).resolve() != Path(suite["source_root"], "bin/aot/aot.cpp").resolve():
-            continue
-        for line in source["lines"]:
-            number = line["line_number"]
-            lines[number] = lines.get(number, 0) + line["count"]
-            for index, branch in enumerate(line.get("branches", [])):
-                key = (number, line.get("function_name", ""), index)
-                branches[key] = branches.get(key, 0) + branch["count"]
+    selected = False
+    for row in trace.splitlines():
+        if row.startswith("SF:"):
+            selected = Path(row[3:]).resolve() == source
+        elif selected and row.startswith("DA:"):
+            number, count, *_ = row[3:].split(",")
+            number, count = int(number), int(count)
+            lines[number] = lines.get(number, 0) + count
+        elif selected and row.startswith("BRDA:"):
+            number, block, branch, count = row[5:].split(",")
+            key = int(number), block, branch
+            branches[key] = branches.get(key, 0) + (0 if count == "-" else int(count))
     if not lines:
-        raise RuntimeError("gcov profile contains no aot.cpp lines")
+        raise RuntimeError("LLVM profile contains no native aot.cpp lines")
     return lines, branches
+
+
+def codecov_aot(path, lines):
+    # Keep raw LCOV intact alongside this line report. Codecov and the local
+    # floor use the same brace-only filter and one record per source line.
+    rows = ["SF:bin/aot/aot.cpp"]
+    rows.extend(f"DA:{number},{count}" for number, count in sorted(lines.items()))
+    rows.extend((f"LF:{len(lines)}", f"LH:{sum(count > 0 for count in lines.values())}", "end_of_record"))
+    path.write_text("\n".join(rows) + "\n")
 
 
 def vm_report(suite, raw, destination):
@@ -104,6 +115,9 @@ def vm_report(suite, raw, destination):
             missing.append((name, start, statements))
     if not files:
         raise RuntimeError("Go profile contains no bin/vm statements")
+    rows = ["mode: atomic"]
+    rows.extend(f"{name}:{coordinates} {statements} {count}" for (name, coordinates, statements), count in sorted(blocks.items()))
+    (destination / "vm-codecov.out").write_text("\n".join(rows) + "\n")
     hit = sum(count[0] for count in files.values())
     total = sum(count[1] for count in files.values())
     return {"statements": metric(hit, total),
@@ -125,9 +139,9 @@ def run(destination, suite):
         vm, aot = work / "vm", work / "aot-command"
         vm_chaos, aot_chaos = work / "vm-chaos", work / "aot-command-chaos"
         wrapper(vm, suite["vm"], {"GOCOVERDIR": go_raw, "PIZDOS_WASM_COVERDIR": wasm_raw})
-        wrapper(aot, suite["aot"], {"GCOV_PREFIX": aot_raw})
+        wrapper(aot, suite["aot"], {"LLVM_PROFILE_FILE": aot_raw / "%8m.profraw"})
         wrapper(vm_chaos, suite["vm_chaos"], {"GOCOVERDIR": go_raw, "PIZDOS_WASM_COVERDIR": wasm_raw})
-        wrapper(aot_chaos, suite["aot_chaos"], {"GCOV_PREFIX": aot_chaos_raw})
+        wrapper(aot_chaos, suite["aot_chaos"], {"LLVM_PROFILE_FILE": aot_chaos_raw / "%8m.profraw"})
         failures = []
         for case in suite["cases"]:
             name = case["name"]
@@ -150,20 +164,25 @@ def run(destination, suite):
         chaos_lines, chaos_branches = aot_report(suite, aot_chaos_raw, destination, chaos=True)
         for number, count in chaos_lines.items():
             aot_lines[number] = aot_lines.get(number, 0) + count
-        aot_counts = {"lines": metric(sum(count > 0 for count in aot_lines.values()), len(aot_lines)),
+        source = (source_root / "bin/aot/aot.cpp").read_text().splitlines()
+        aot_counts = {"raw_lines": metric(sum(count > 0 for count in aot_lines.values()), len(aot_lines)),
                       "branches": metric(sum(count > 0 for count in aot_branches.values()), len(aot_branches)),
                       "chaos_branches": metric(sum(count > 0 for count in chaos_branches.values()), len(chaos_branches))}
+        aot_lines = executable_lines(aot_lines, source)
+        aot_counts["lines"] = metric(sum(count > 0 for count in aot_lines.values()), len(aot_lines))
+        codecov_aot(destination / "aot-native.info", aot_lines)
         wasm_raw_lines = coverage_wasm.report(suite, wasm_raw, destination)
         aot_counts["wasm_raw_lines"] = metric(sum(count > 0 for count in wasm_raw_lines.values()), len(wasm_raw_lines))
-        source = (source_root / "bin/aot/aot.cpp").read_text().splitlines()
-        wasm_lines = executable_wasm_lines(wasm_raw_lines, source)
+        wasm_lines = executable_lines(wasm_raw_lines, source)
         aot_counts["wasm_lines"] = metric(sum(count > 0 for count in wasm_lines.values()), len(wasm_lines))
+        codecov_aot(destination / "aot-wasm.info", wasm_lines)
         vm_counts, vm_missing = vm_report(suite, go_raw, destination)
 
     summary = {"aot": aot_counts, "vm": vm_counts, "tests": [case["name"] for case in suite["cases"]], "failures": failures}
     (destination / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     rows = []
-    for name, counts in (("AOT lines (native)", aot_counts["lines"]), ("AOT executable lines (Wasm)", aot_counts["wasm_lines"]),
+    for name, counts in (("AOT executable lines (native)", aot_counts["lines"]), ("AOT lines (native raw LLVM)", aot_counts["raw_lines"]),
+                         ("AOT executable lines (Wasm)", aot_counts["wasm_lines"]),
                          ("AOT lines (Wasm raw LLVM)", aot_counts["wasm_raw_lines"]),
                          ("AOT branches (normal)", aot_counts["branches"]),
                          ("AOT branches (chaos)", aot_counts["chaos_branches"]),
@@ -194,7 +213,7 @@ def check(path, minimum):
     summary = json.loads(Path(path).read_text())
     if summary["failures"]:
         raise RuntimeError("the coverage suite has failing tests")
-    for name, counts in (("AOT lines (native)", summary["aot"]["lines"]),
+    for name, counts in (("AOT executable lines (native)", summary["aot"]["lines"]),
                          ("AOT executable lines (Wasm)", summary["aot"]["wasm_lines"]), ("VM statements", summary["vm"]["statements"])):
         if counts["percent"] < minimum:
             raise RuntimeError(f"{name}: {counts['percent']:.2f}% < {minimum:.2f}%")

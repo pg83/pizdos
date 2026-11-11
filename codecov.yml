@@ -1,0 +1,38 @@
+codecov:
+  branch: main
+
+coverage:
+  precision: 2
+  round: down
+  range: "50...100"
+  status:
+    project:
+      aot-native:
+        flags: [aot-native]
+        target: auto
+        threshold: 0.5%
+      aot-wasm:
+        flags: [aot-wasm]
+        target: auto
+        threshold: 0.5%
+      vm:
+        flags: [vm]
+        target: auto
+        threshold: 0.5%
+    patch: off
+
+comment:
+  layout: "reach, diff, files"
+  require_changes: false
+
+flags:
+  aot-native:
+    paths: [bin/aot/]
+  aot-wasm:
+    paths: [bin/aot/]
+  vm:
+    paths: [bin/vm/]
+
+ignore:
+  - "tst/**/*"
+  - "dev/**/*"

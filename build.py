@@ -2,6 +2,7 @@ import build
 import json
 import os
 import re
+import shlex
 import shutil
 
 
@@ -275,22 +276,26 @@ aot_native = command(
     descr="CC", color="green",
 )
 
-coverage_cxx = os.environ.get("COVERAGE_CXX") or shutil.which("g++") or ""
+coverage_profile_runtime = os.environ.get("COVERAGE_PROFILE_RUNTIME", "")
+coverage_native_inputs = ["$(S)/bin/aot/aot.cpp", "$(S)/dev/coverage_build.py", "$(S)/dev/coverage_native.c", *([coverage_profile_runtime] if coverage_profile_runtime else [])]
+coverage_cppflags = shlex.split(os.environ["COVERAGE_CPPFLAGS"]) if "COVERAGE_CPPFLAGS" in os.environ else build.cppflags
+coverage_ldflags = shlex.split(os.environ["COVERAGE_LDFLAGS"]) if "COVERAGE_LDFLAGS" in os.environ else build.ldflags
+coverage_native_tools = {"cc": CLANG, "cppflags": coverage_cppflags, "cxxflags": build.cxxflags, "ldflags": coverage_ldflags, "flags": AOT_FLAGS, "profile_runtime": coverage_profile_runtime}
 aot_coverage = command(
     name="aot_coverage",
-    inputs=["$(S)/bin/aot/aot.cpp", "$(S)/dev/coverage_build.py", "$(S)/dev/gcov.c"],
-    outputs=["$(B)/coverage/bin/aot", "$(B)/coverage/bin/aot.gcno"],
-    cmd=["python3", "$(S)/dev/coverage_build.py", "$(S)/bin/aot/aot.cpp", "$(S)/dev/gcov.c",
-         "$(B)/coverage/bin/aot", json.dumps({"cc": coverage_cxx, "cppflags": build.cppflags, "ldflags": build.ldflags})],
+    inputs=coverage_native_inputs,
+    outputs=["$(B)/coverage/bin/aot"],
+    cmd=["python3", "$(S)/dev/coverage_build.py", "$(S)/bin/aot/aot.cpp", "$(S)/dev/coverage_native.c",
+         "$(B)/coverage/bin/aot", json.dumps(coverage_native_tools)],
     descr="CC", color="green",
 )
 
 aot_chaos_coverage = command(
     name="aot_chaos_coverage",
-    inputs=["$(S)/bin/aot/aot.cpp", "$(S)/dev/coverage_build.py", "$(S)/dev/gcov.c"],
-    outputs=["$(B)/coverage/chaos/aot", "$(B)/coverage/chaos/aot.gcno"],
-    cmd=["python3", "$(S)/dev/coverage_build.py", "$(S)/bin/aot/aot.cpp", "$(S)/dev/gcov.c",
-         "$(B)/coverage/chaos/aot", json.dumps({"cc": coverage_cxx, "cppflags": build.cppflags, "ldflags": build.ldflags, "chaos": True})],
+    inputs=coverage_native_inputs,
+    outputs=["$(B)/coverage/chaos/aot"],
+    cmd=["python3", "$(S)/dev/coverage_build.py", "$(S)/bin/aot/aot.cpp", "$(S)/dev/coverage_native.c",
+         "$(B)/coverage/chaos/aot", json.dumps({**coverage_native_tools, "chaos": True})],
     descr="CC", color="green",
 )
 
@@ -892,7 +897,8 @@ coverage_case("test_vm_spec",
 coverage = command(
     name="coverage",
     inputs=[*dict.fromkeys(coverage_inputs), *WASM2O_SOURCES, "$(S)/bin/aot/aot.cpp"],
-    outputs=["$(B)/coverage/" + name for name in ("summary.json", "summary.txt", "uncovered.txt", "aot.json", "aot-chaos.json", "vm.out")]
+    outputs=["$(B)/coverage/" + name for name in ("summary.json", "summary.txt", "uncovered.txt", "aot.json", "aot-chaos.json", "vm.out", "vm-codecov.out", "aot-native.info", "aot-wasm.info")]
+            + ["$(B)/coverage/" + stem + suffix for stem in ("aot-native", "aot-native-chaos") for suffix in (".profdata", ".lcov")]
             + ["$(B)/coverage/" + stem + suffix for stem in ("aot-wasm", "aot-wasm-chaos") for suffix in (".proftext", ".profdata", ".lcov")]
             + ["$(B)/coverage/" + case["name"] + ".log" for case in coverage_cases],
     deps=[aot_coverage, vm_coverage, aot_chaos_coverage, vm_chaos_coverage,
@@ -900,10 +906,7 @@ coverage = command(
     cmd=["python3", "$(S)/dev/coverage.py", "$(B)/coverage", json.dumps({
         "source_root": "$(S)", "aot": aot_coverage.outputs[0], "vm": vm_coverage.outputs[0],
         "aot_chaos": aot_chaos_coverage.outputs[0], "vm_chaos": vm_chaos_coverage.outputs[0],
-        "gcno_chaos": aot_chaos_coverage.outputs[1],
-        "gcno": aot_coverage.outputs[1], "go": GO,
-        "gcov": os.environ.get("GCOV") or os.path.join(os.path.dirname(coverage_cxx), "gcov"),
-        "gcov_tool": os.environ.get("GCOV_TOOL") or os.path.join(os.path.dirname(coverage_cxx), "gcov-tool"),
+        "go": GO,
         "aot_wasm": wasm_coverage[0][0].outputs[0], "aot_wasm_chaos": wasm_coverage[1][0].outputs[0],
         "llvm_cov": os.environ.get("LLVM_COV") or shutil.which("llvm-cov") or "llvm-cov",
         "llvm_profdata": os.environ.get("LLVM_PROFDATA") or shutil.which("llvm-profdata") or "llvm-profdata",
