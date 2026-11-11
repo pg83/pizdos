@@ -25238,14 +25238,26 @@ namespace {
         bool ok = true;
 
         u8 byte() {
-            if (pos >= length(data)) {
+            if (pos < 0 || pos >= length(data)) {
                 ok = false;
                 return 0;
             }
             return data[pos++];
         }
 
+        void skip(u64 count) {
+            if (pos < 0 || pos > length(data) || count > u64(length(data) - pos)) {
+                ok = false;
+                return;
+            }
+            pos += convert<Int>(count);
+        }
+
         u64 fixed(Int n) {
+            if (n < 0 || n > 8) {
+                ok = false;
+                return 0;
+            }
             u64 v = 0;
             for (Int i = 0; i < n; ++i) {
                 v |= u64(byte()) << (8 * i);
@@ -25350,11 +25362,11 @@ namespace {
                 return {String(""), r->fixed(8)};
             }
             case 0x1e: {
-                r->pos += 16;
+                r->skip(16);
                 return {String(""), 0};
             }
             case 0x09: {
-                r->pos += convert<Int>(r->uleb());
+                r->skip(r->uleb());
                 return {String(""), 0};
             }
         }
@@ -25382,10 +25394,10 @@ namespace {
                 unitLength = r.fixed(8);
                 offsetSize = 8;
             }
-            const Int unitEnd = r.pos + convert<Int>(unitLength);
-            if (!r.ok || unitEnd > length(r.data) || unitEnd < r.pos) {
+            if (!r.ok || unitLength > u64(length(r.data) - r.pos)) {
                 break;
             }
+            const Int unitEnd = r.pos + convert<Int>(unitLength);
             const u64 version = r.fixed(2);
             if (version < 2 || version > 5) {
                 break;
@@ -25395,6 +25407,9 @@ namespace {
                 r.fixed(1);
             }
             const u64 headerLength = r.fixed(offsetSize);
+            if (!r.ok || r.pos > unitEnd || headerLength > u64(unitEnd - r.pos)) {
+                break;
+            }
             const Int programStart = r.pos + convert<Int>(headerLength);
             const u64 minInst = maximum(r.fixed(1), u64(1));
             if (version >= 4) {
@@ -25471,7 +25486,7 @@ namespace {
                     files = appendValues(files, dwarfPath(dirs, dir, name));
                 }
             }
-            if (!r.ok) {
+            if (!r.ok || r.pos > programStart) {
                 break;
             }
             r.pos = programStart;
@@ -25492,6 +25507,10 @@ namespace {
                     const u64 len = r.uleb();
                     if (len == 0) {
                         continue;
+                    }
+                    if (!r.ok || len > u64(unitEnd - r.pos)) {
+                        r.ok = false;
+                        break;
                     }
                     const Int next = r.pos + convert<Int>(len);
                     const u8 sub = r.byte();
