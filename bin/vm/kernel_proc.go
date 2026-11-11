@@ -454,8 +454,8 @@ func (p *Process) libcUname(at uint32) uint32 {
 	return p.result(0, nil)
 }
 
-// sysconf's -1 for the buffers of the user and group databases
-// means no limit.
+// sysconf's -1 for timezone names and the buffers of the user and group
+// databases means no limit. Open streams share the descriptor limit.
 func (p *Process) libcSysconf(name uint32) uint32 {
 	switch name {
 	case 85:
@@ -466,7 +466,8 @@ func (p *Process) libcSysconf(name uint32) uint32 {
 
 	values := map[uint32]int64{
 		0: 131072, 1: int64(min64(p.limits[rlimitNproc].cur, 1<<30)), 2: 100, 3: 65536,
-		4: int64(min64(p.limits[rlimitNofile].cur, 1<<30)), 7: 1, 8: 1, 29: 200809, 30: 4096, 43: 2048, 60: 1024,
+		4: int64(min64(p.limits[rlimitNofile].cur, 1<<30)), 5: int64(min64(p.limits[rlimitNofile].cur, 1<<30)), 6: -1,
+		7: 1, 8: 1, 29: 200809, 30: 4096, 43: 2048, 60: 1024,
 		69: -1, 70: -1, 71: 256, 72: 32, 83: int64(runtime.NumCPU()), 84: int64(runtime.NumCPU()), 149: 200809, 173: 40, 180: 64,
 	}
 
