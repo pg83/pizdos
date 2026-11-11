@@ -285,7 +285,23 @@ func (p *Process) wait(selects func(*Process) bool, options uint32) (int32, int,
 
 // waitpid is wait4 without the usage of the child.
 func (p *Process) waitpid(pid int32, at, options uint32) (int, error) {
-	q, status, err := p.wait(p.pidSelector(pid), options&(wNohang|wUntraced|wContinued)|wExited)
+	const (
+		clone     = uint32(1 << 31)
+		all       = uint32(1 << 30)
+		notThread = uint32(1 << 29)
+		basic     = wNohang | wUntraced | wContinued
+	)
+
+	if options&^(basic|clone|all|notThread) != 0 {
+		return 0, syscall.EINVAL
+	}
+
+	// Every child is a fork child with SIGCHLD, and each process has one thread.
+	if options&clone != 0 && options&all == 0 {
+		return 0, syscall.ECHILD
+	}
+
+	q, status, err := p.wait(p.pidSelector(pid), options&basic|wExited)
 
 	if err == nil && q != 0 && at != 0 {
 		p.put32(at, uint32(status))
