@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/file.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
 #include <sys/statvfs.h>
@@ -58,6 +59,15 @@ int main() {
     assert(truncate("data", 4) == 0 && fstat(fd, &metadata) == 0 && metadata.st_size == 4);
     assert(ftruncate(-1, 0) == -1 && errno == EBADF);
     assert(ftruncate(fd, -1) == -1 && errno == EINVAL);
+    errno = 0;
+    assert(fstat(-1, &metadata) == -1 && errno == EBADF);
+    errno = 0;
+    assert(lseek(-1, 0, SEEK_SET) == -1 && errno == EBADF);
+    errno = 0;
+    assert(isatty(-1) == 0 && errno == EBADF);
+    errno = 0;
+    int available;
+    assert(ioctl(-1, FIONREAD, &available) == -1 && errno == EBADF);
 
     assert((fcntl(fd, F_GETFL) & O_ACCMODE) == O_RDWR);
     assert(fcntl(fd, F_SETFD, FD_CLOEXEC) == 0 && fcntl(fd, F_GETFD) == FD_CLOEXEC);
