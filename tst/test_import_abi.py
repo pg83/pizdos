@@ -61,7 +61,7 @@ def value(kind, index):
     return ((index * 13) % 61 - 30) / 4
 
 
-def modules(kinds, cookie):
+def modules(kinds, cookie, rounds=1):
     results = list(reversed(kinds)) + ["i64"]
     signature = b"\x60" + leb(len(kinds)) + bytes(TYPES[k] for k in kinds)
     signature += leb(len(results)) + bytes(TYPES[k] for k in results)
@@ -73,9 +73,18 @@ def modules(kinds, cookie):
 
     values = [value(kind, index) for index, kind in enumerate(kinds)]
     bits = [int.from_bytes(struct.pack("<" + FORMATS[kind], v), "little") for kind, v in zip(kinds, values)]
-    bits = list(reversed(bits)) + [cookie]
-    code = b"".join(constant(kind, v) for kind, v in zip(kinds, values)) + b"\x10\0"
-    code += b"".join(b"\x21" + leb(i) for i in reversed(range(len(results)))) + constant("i64", 0)
+    if rounds == 1:
+        code = b"".join(constant(kind, v) for kind, v in zip(kinds, values)) + b"\x10\0"
+        code += b"".join(b"\x21" + leb(i) for i in reversed(range(len(results))))
+    else:
+        assert len(set(kinds)) == 1
+        code = b"".join(constant(kind, v) + b"\x21" + leb(i) for i, (kind, v) in enumerate(zip(kinds, values)))
+        code += constant("i32", rounds) + b"\x21" + leb(len(results)) + b"\x03\x40"
+        code += b"".join(b"\x20" + leb(i) for i in range(len(kinds))) + b"\x10\0"
+        code += b"".join(b"\x21" + leb(i) for i in reversed(range(len(results))))
+        code += b"\x20" + leb(len(results)) + constant("i32", 1) + b"\x6b\x22" + leb(len(results)) + b"\x0d\0\x0b"
+    bits = (list(reversed(bits)) if rounds % 2 else bits) + [cookie]
+    code += constant("i64", 0)
     expected = 0
     for index, (kind, raw) in enumerate(zip(results, bits)):
         expected = ((expected * 33) ^ raw) & ((1 << 64) - 1)
@@ -83,7 +92,8 @@ def modules(kinds, cookie):
     consumer = b"\0asm\1\0\0\0" + section(1, b"\2" + signature + b"\x60\0\1\x7e")
     consumer += section(2, b"\1" + text("provider") + text("transform") + b"\0\0") + section(3, b"\1\1")
     consumer += section(7, b"\1" + text("run") + b"\0\1")
-    body = leb(len(results)) + b"".join(b"\1" + bytes([TYPES[kind]]) for kind in results) + code + b"\x0b"
+    locals = results + (["i32"] if rounds > 1 else [])
+    body = leb(len(locals)) + b"".join(b"\1" + bytes([TYPES[kind]]) for kind in locals) + code + b"\x0b"
     consumer += section(10, b"\1" + leb(len(body)) + body)
     return provider, consumer, expected
 
@@ -91,14 +101,16 @@ def modules(kinds, cookie):
 def main():
     vm, native = sys.argv[1:]
     patterns = [(kind,) for kind in TYPES] + [tuple(TYPES)]
-    cases = [(pattern, count) for pattern in patterns for count in (1, 8, 9, 10, 15, 16, 31, 32, 40)]
-    cases.append((tuple(TYPES), 0))
+    cases = [(pattern, count, 1) for pattern in patterns for count in (1, 8, 9, 10, 15, 16, 31, 32, 40)]
+    cases.append((tuple(TYPES), 0, 1))
+    cases += [((kind,), count, rounds) for kind in ("i64", "f32", "f64") for count in (7, 15, 16, 17, 31, 32, 40)
+              for rounds in (2, 3, 17)]
     env = dict(os.environ, W2X_MEMORY_TAIL="strict", W2X_TAIL_PROFILE="")
     with tempfile.TemporaryDirectory(prefix="pizdos-import-abi-") as directory:
         work = Path(directory)
-        for index, (pattern, count) in enumerate(cases):
+        for index, (pattern, count, rounds) in enumerate(cases):
             kinds = [pattern[i % len(pattern)] for i in range(count)]
-            provider, consumer, expected = modules(kinds, 0x1122334400000000 + index * 0x010101)
+            provider, consumer, expected = modules(kinds, 0x1122334400000000 + index * 0x010101, rounds)
             for name, data in (("provider", provider), ("consumer", consumer)):
                 source, embedded = work / (name + ".wasm"), work / "embedded.o"
                 source.write_bytes(data)
