@@ -851,6 +851,16 @@ func (p *Process) libcFtruncate(fd uint32, size uint64) uint32 {
 	return p.result(0, err)
 }
 
+// fileStat reads metadata for guest operations. Resource setup keeps using
+// Fstat directly, so a one-shot failure can be observed by the guest.
+func fileStat(fd int, st *syscall.Stat_t) error {
+	if chaosFail("file-stat") {
+		return syscall.EIO
+	}
+
+	return syscall.Fstat(fd, st)
+}
+
 func (p *Process) libcFstat(fd, at uint32) uint32 {
 	f, err := p.fd(fd)
 
@@ -860,7 +870,7 @@ func (p *Process) libcFstat(fd, at uint32) uint32 {
 
 	var st syscall.Stat_t
 
-	if err := syscall.Fstat(f.fd, &st); err != nil {
+	if err := fileStat(f.fd, &st); err != nil {
 		return p.result(0, err)
 	}
 

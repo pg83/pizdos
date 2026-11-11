@@ -471,7 +471,7 @@ func wasiFdFdstatGet(ctx uintptr, fd, at uint32) uint32 {
 
 	var st syscall.Stat_t
 
-	if err := syscall.Fstat(host, &st); err != nil {
+	if err := fileStat(host, &st); err != nil {
 		return wasiErrno(err)
 	}
 
@@ -561,7 +561,7 @@ func wasiFdFilestatGet(ctx uintptr, fd, at uint32) uint32 {
 
 	var st syscall.Stat_t
 
-	if err := syscall.Fstat(host, &st); err != nil {
+	if err := fileStat(host, &st); err != nil {
 		return wasiErrno(err)
 	}
 

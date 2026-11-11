@@ -90,13 +90,14 @@ def main():
             assert (result.returncode, result.stdout, result.stderr) == (0, expected, b""), (operation, rule, result)
 
         for image in (program, embedded):
-            for operation in ("read", "write", "openat", "fork", "memory-grow"):
+            for operation in ("read", "write", "openat", "fork", "memory-grow", "fstat", "fstatat", "stat", "lstat", "fdopendir", "msync"):
                 skip = 8 if operation == "openat" else 2
-                rule = f"{operation}@{skip}"
+                point = "file-stat" if operation in ("fstat", "fstatat", "stat", "lstat", "fdopendir", "msync") else operation
+                rule = f"{point}@{skip}"
                 run_guest(vm, image, operation, 0, rule)
                 run_guest(vm_chaos, image, operation, 0)
                 run_guest(vm_chaos, image, operation, 1, rule)
-                run_guest(vm_chaos, image, operation, 0, f"{operation}@4294967295")
+                run_guest(vm_chaos, image, operation, 0, f"{point}@4294967295")
 
     print("chaos: native/Wasm AOT and VM faults, guest recovery, atomic output and production no-ops passed")
 

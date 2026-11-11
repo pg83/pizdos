@@ -410,7 +410,7 @@ func (p *Process) libcOpenat(dirfd, path, flags, va uint32) uint32 {
 func (p *Process) libcFstatat(dirfd, path, at, flags uint32) uint32 {
 	var st syscall.Stat_t
 	err := p.onAt(int32(dirfd), p.str(path), flags, func(fd int) error {
-		return syscall.Fstat(fd, &st)
+		return fileStat(fd, &st)
 	})
 
 	if err == nil {
@@ -884,7 +884,7 @@ func (p *Process) timevals(at uint32) []syscall.Timespec {
 func (p *Process) stat(path, at uint32, follow bool) uint32 {
 	var st syscall.Stat_t
 	err := p.onPath(p.str(path), follow, func(fd int) error {
-		return syscall.Fstat(fd, &st)
+		return fileStat(fd, &st)
 	})
 
 	if err == nil {
@@ -1107,7 +1107,7 @@ func (p *Process) libcFdopendir(fd uint32) uint32 {
 
 	var st syscall.Stat_t
 
-	if err := syscall.Fstat(f.fd, &st); err != nil {
+	if err := fileStat(f.fd, &st); err != nil {
 		return p.pointer(0, err)
 	}
 

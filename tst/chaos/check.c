@@ -1,13 +1,71 @@
 #include <assert.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 static int attempt(const char* operation) {
+    if (strcmp(operation, "fstat") == 0 || strcmp(operation, "fstatat") == 0 || strcmp(operation, "stat") == 0 || strcmp(operation, "lstat") == 0) {
+        struct stat metadata;
+        memset(&metadata, 0x5a, sizeof(metadata));
+        int result;
+        if (strcmp(operation, "fstat") == 0) {
+            int fd = open("/dev/null", O_RDONLY);
+            assert(fd >= 0);
+            result = fstat(fd, &metadata);
+            int error = errno;
+            assert(close(fd) == 0);
+            errno = error;
+        } else if (strcmp(operation, "fstatat") == 0) {
+            result = fstatat(AT_FDCWD, "/dev/null", &metadata, 0);
+        } else if (strcmp(operation, "stat") == 0) {
+            result = stat("/dev/null", &metadata);
+        } else {
+            result = lstat("/dev/null", &metadata);
+        }
+        if (result < 0) {
+            assert(errno == EIO);
+            const unsigned char* bytes = (const unsigned char*)&metadata;
+            for (unsigned i = 0; i < sizeof(metadata); ++i) {
+                assert(bytes[i] == 0x5a);
+            }
+            return 1;
+        }
+        assert(result == 0 && S_ISCHR(metadata.st_mode));
+        return 0;
+    }
+    if (strcmp(operation, "fdopendir") == 0) {
+        int fd = open("/", O_RDONLY | O_DIRECTORY);
+        assert(fd >= 0);
+        DIR* dir = fdopendir(fd);
+        if (dir == NULL) {
+            assert(errno == EIO && close(fd) == 0);
+            return 1;
+        }
+        assert(closedir(dir) == 0);
+        return 0;
+    }
+    if (strcmp(operation, "msync") == 0) {
+        int fd = open("/mapping", O_CREAT | O_TRUNC | O_RDWR, 0600);
+        assert(fd >= 0 && ftruncate(fd, 4096) == 0);
+        char* mapping = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        assert(mapping != MAP_FAILED);
+        mapping[0] = 'x';
+        int result = msync(mapping, 4096, MS_SYNC);
+        int failed = result < 0;
+        assert(failed ? errno == EIO : result == 0);
+        assert(mapping[0] == 'x' && munmap(mapping, 4096) == 0);
+        char byte;
+        assert(pread(fd, &byte, 1, 0) == 1 && byte == 'x');
+        assert(close(fd) == 0 && unlink("/mapping") == 0);
+        return failed;
+    }
     if (strcmp(operation, "memory-grow") == 0) {
         size_t before = __builtin_wasm_memory_size(0);
         size_t old = __builtin_wasm_memory_grow(0, 1);
