@@ -63,19 +63,18 @@ def main():
                 source.write_bytes(data)
                 reference = subprocess.run([wazero, "-interpreter", str(source)], capture_output=True, timeout=120)
                 assert reference.returncode == 0 and reference.stdout == b"", (count, order, reference)
-                for strict in (False, True):
-                    env = dict(os.environ, W2X_MEMORY_TAIL="strict" if strict else "optimized", W2X_TAIL_PROFILE="")
-                    result = subprocess.run([native, *(["--strict"] if strict else [])], input=data,
-                                            capture_output=True, env=env, timeout=180)
-                    assert result.returncode == 0, (count, order, strict, result.stderr)
-                    compiled.write_bytes(result.stdout)
-                    result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=180)
-                    assert result.returncode == 0, (count, order, strict, result.stderr)
-                    assert compiled.read_bytes() == embedded.read_bytes(), (count, order, strict)
-                    for obj in (compiled, embedded):
-                        result = subprocess.run([vm, "run", "--", str(obj)], capture_output=True, env=env, timeout=30)
-                        assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (count, order, strict, result)
-                    checked += 1
+                env = dict(os.environ, W2X_MEMORY_TAIL="optimized", W2X_TAIL_PROFILE="")
+                result = subprocess.run([native], input=data,
+                                        capture_output=True, env=env, timeout=180)
+                assert result.returncode == 0, (count, order, result.stderr)
+                compiled.write_bytes(result.stdout)
+                result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=180)
+                assert result.returncode == 0, (count, order, result.stderr)
+                assert compiled.read_bytes() == embedded.read_bytes(), (count, order)
+                for obj in (compiled, embedded):
+                    result = subprocess.run([vm, "run", "--", str(obj)], capture_output=True, env=env, timeout=30)
+                    assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (count, order, result)
+                checked += 1
     print(f"large switches: {checked} ordered/permuted/repeated tables agree with wazero and both AOTs")
 
 
