@@ -338,9 +338,14 @@ func tmOf(t time.Time) tmFields {
 	return tm
 }
 
-// writeTm writes a time as a struct tm; its zone name is a constant.
-func (p *Process) writeTm(at uint32, t time.Time) {
+// writeTm writes a representable struct tm; its zone name is a constant.
+func (p *Process) writeTm(at uint32, t time.Time) bool {
 	tm := tmOf(t)
+
+	if tm.year != int(int32(tm.year)) {
+		return false
+	}
+
 	b := p.span(at, 44)
 
 	for i, v := range []int{tm.sec, tm.min, tm.hour, tm.mday, tm.mon, tm.year, tm.wday, tm.yday, tm.isdst, tm.gmtoff} {
@@ -348,6 +353,8 @@ func (p *Process) writeTm(at uint32, t time.Time) {
 	}
 
 	p.put32(at+40, p.constant(tm.zone))
+
+	return true
 }
 
 func (p *Process) libcTime(at uint32) uint64 {
@@ -372,16 +379,21 @@ func (p *Process) libcGettimeofday(tv, tz uint32) uint32 {
 }
 
 func (p *Process) libcLocaltime(t uint32) uint32 {
-	at := p.staticAt(staticTm)
-	p.tzset()
-	p.writeTm(at, time.Unix(int64(p.u64(t)), 0).In(p.location()))
-
-	return at
+	return p.localtime(t, p.staticAt(staticTm))
 }
 
 func (p *Process) libcLocaltime_r(t, at uint32) uint32 {
+	return p.localtime(t, at)
+}
+
+func (p *Process) localtime(t, at uint32) uint32 {
 	p.tzset()
-	p.writeTm(at, time.Unix(int64(p.u64(t)), 0).In(p.location()))
+
+	if !p.writeTm(at, time.Unix(int64(p.u64(t)), 0).In(p.location())) {
+		p.setErrno(syscall.EOVERFLOW)
+
+		return 0
+	}
 
 	return at
 }
@@ -438,13 +450,11 @@ func (p *Process) libcTimegm(at uint32) uint64 {
 	tm := p.readTm(at)
 	t := time.Date(tm.year+1900, time.Month(tm.mon+1), tm.mday, tm.hour, tm.min, tm.sec, 0, time.UTC)
 
-	if y := int64(t.Year()) - 1900; y != int64(int32(y)) {
+	if !p.writeTm(at, t) {
 		p.setErrno(syscall.EOVERFLOW)
 
 		return math.MaxUint64
 	}
-
-	p.writeTm(at, t)
 
 	return uint64(t.Unix())
 }
@@ -579,16 +589,18 @@ func (p *Process) libcMktime(at uint32) uint64 {
 	p.tzset()
 	tm := p.readTm(at)
 	t := time.Date(tm.year+1900, time.Month(tm.mon+1), tm.mday, tm.hour, tm.min, tm.sec, 0, p.location())
-	p.writeTm(at, t)
+
+	if !p.writeTm(at, t) {
+		p.setErrno(syscall.EOVERFLOW)
+
+		return math.MaxUint64
+	}
 
 	return uint64(t.Unix())
 }
 
 func (p *Process) libcCtime(t uint32) uint32 {
-	at := p.staticAt(staticCtime)
-	p.putString(at, time.Unix(int64(p.u64(t)), 0).In(p.location()).Format("Mon Jan _2 15:04:05 2006\n"))
-
-	return at
+	return p.libcCtime_r(t, p.staticAt(staticCtime))
 }
 
 func (p *Process) libcStrftime(s, max, format, tm uint32) uint32 {
@@ -687,13 +699,11 @@ func (p *Process) gmtime(t, at uint32) uint32 {
 	sec := int64(p.u64(t))
 	u := time.Unix(sec, 0).UTC()
 
-	if y := int64(u.Year()) - 1900; sec < -1<<55 || sec > 1<<55 || y != int64(int32(y)) {
+	if !p.writeTm(at, u) {
 		p.setErrno(syscall.EOVERFLOW)
 
 		return 0
 	}
-
-	p.writeTm(at, u)
 
 	return at
 }
