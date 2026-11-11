@@ -24,6 +24,12 @@ int main() {
     assert(user && strcmp(user->pw_name, "test") == 0 && user->pw_gid == 100);
     assert(strcmp(user->pw_gecos, "Test User") == 0 && strcmp(user->pw_dir, "/tmp/test-home") == 0);
     assert(getpwuid(9999) == nullptr);
+    passwd password{}, *passwordResult = reinterpret_cast<passwd*>(1);
+    char passwordBuffer[256];
+    assert(getpwnam_r("test", &password, passwordBuffer, 1, &passwordResult) == ERANGE && passwordResult == nullptr);
+    assert(getpwnam_r("test", &password, passwordBuffer, sizeof(passwordBuffer), &passwordResult) == 0);
+    assert(passwordResult == &password && password.pw_uid == 1234 && strcmp(password.pw_name, "test") == 0);
+    assert(getpwnam_r("missing", &password, passwordBuffer, sizeof(passwordBuffer), &passwordResult) == 0 && passwordResult == nullptr);
     group* entry = getgrgid(200);
     assert(entry && strcmp(entry->gr_name, "shared") == 0);
     assert(strcmp(entry->gr_mem[0], "test") == 0 && strcmp(entry->gr_mem[1], "other") == 0 && entry->gr_mem[2] == nullptr);
@@ -34,6 +40,22 @@ int main() {
     assert(getgrgid_r(200, &record, buffer, sizeof(buffer), &result) == 0 && result == &record);
     assert(strcmp(record.gr_name, "shared") == 0 && record.gr_gid == 200);
     assert(getgrgid_r(9999, &record, buffer, sizeof(buffer), &result) == 0 && result == nullptr);
+    assert(getgrnam_r("shared", &record, buffer, 1, &result) == ERANGE && result == nullptr);
+    assert(getgrnam_r("shared", &record, buffer, sizeof(buffer), &result) == 0 && result == &record);
+    assert(record.gr_gid == 200 && strcmp(record.gr_mem[1], "other") == 0 && record.gr_mem[2] == nullptr);
+    assert(getgrnam_r("missing", &record, buffer, sizeof(buffer), &result) == 0 && result == nullptr);
+    setgrent();
+    const char* names[] = {"base", "shared", "duplicate", "extra"};
+    for (const char* name : names) {
+        entry = getgrent();
+        assert(entry && strcmp(entry->gr_name, name) == 0);
+    }
+    assert(getgrent() == nullptr);
+    setgrent();
+    assert(strcmp(getgrent()->gr_name, "base") == 0);
+    endgrent();
+    assert(strcmp(getgrent()->gr_name, "base") == 0);
+    endgrent();
 
     gid_t groups[] = {999, 999, 999, 999};
     int count = 0;
