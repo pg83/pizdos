@@ -55,5 +55,9 @@ int main() {
     void* unchanged = reinterpret_cast<void*>(uintptr_t(1234));
     assert(posix_memalign(&unchanged, 3, 64) == EINVAL && uintptr_t(unchanged) == 1234);
     assert(posix_memalign(&unchanged, 0, 64) == EINVAL && uintptr_t(unchanged) == 1234);
+    errno = 0;
+    assert(memalign(3, 64) == nullptr && errno == EINVAL);
+    errno = 0;
+    assert(aligned_alloc(3, 64) == nullptr && errno == EINVAL);
     puts("large alignments: ok");
 }
