@@ -17929,6 +17929,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         MInst pm = inst(mParMove);
+        for (Int i = 0, end = length(dsts); i < end; ++i) {
+            if (regs[i] != noReg && dsts[i] != noReg) {
+                mInstExtra(&pm)->moves.pushBack(Move{dsts[i], regs[i]});
+            }
+        }
+        // Release fixed result registers before loading results from the
+        // stack, as the entry does for incoming arguments.
+        if (length(mInstMoves(&pm)) > 0) {
+            lowererEmit(l, pm);
+        }
         Int slot = stackArgs;
         auto range895 = dsts;
         for (Int index896 = 0, rangeEnd897 = length(range895); index896 < rangeEnd897; ++index896) {
@@ -17949,12 +17959,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 slot++;
                 continue;
             }
-            if (d != noReg) {
-                mInstExtra(&pm)->moves.pushBack(Move{d, regs[i]});
-            }
-        }
-        if (length(mInstMoves(&pm)) > 0) {
-            lowererEmit(l, pm);
         }
     }
 
