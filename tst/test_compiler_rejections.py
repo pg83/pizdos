@@ -27,14 +27,18 @@ def section(kind, body):
     return bytes([kind]) + leb(len(body)) + body
 
 
-def program(code, *, elements=None, data=None, exports=None, import_name=None, addressable=False, global_import=False, globals=None, start=None):
+def program(code, *, elements=None, data=None, exports=None, import_name=None, addressable=False, global_import=False, globals=None, start=None, memory_import=False):
     types = b"\2\x60\0\0" + (b"\x60\1\x7f\1\x7f" if import_name == "__kernel_strlen" else b"\x60\0\1\x7f")
     module = b"\0asm\1\0\0\0" + section(1, types)
     if import_name:
         module += section(2, b"\1" + text("kernel") + text(import_name) + b"\0\1")
     elif global_import:
         module += section(2, b"\1" + text("env") + text("base") + b"\3\x7f\0")
-    module += section(3, b"\1\0") + section(4, b"\1\x70\0\1") + section(5, b"\1\0\1")
+    elif memory_import:
+        module += section(2, b"\1" + text("env") + text("memory") + b"\2\0\1")
+    module += section(3, b"\1\0") + section(4, b"\1\x70\0\1")
+    if not memory_import:
+        module += section(5, b"\1\0\1")
     if globals is not None:
         module += section(6, globals)
     exports = exports if exports is not None else text("_start") + b"\0" + leb(bool(import_name))
@@ -71,6 +75,7 @@ def main():
              ("computed-element-offset", program(b"", global_import=True, elements=b"\1\0\x23\0\x0b\1\0"), "unsupported: element segment"),
              ("low-data", program(b"", data=b"\1\0\x41\0\x0b\1x"), "unsupported: data or the stack in the first KiB"),
              ("low-stack", program(b"", globals=b"\1\x7f\1\x41\x10\x0b"), "unsupported: data or the stack in the first KiB"),
+             ("imported-memory-mode", program(b"", memory_import=True), "unsupported: data or the stack in the first KiB"),
              ("unknown-start", program(b"", start=33), "unknown function"),
              ("nonvoid-start", program(b"", import_name="getpid", start=0), "type mismatch"),
              ("bad-export-kind", program(b"", exports=text("_start") + b"\4\0"), "malformed export kind"),
@@ -83,14 +88,15 @@ def main():
         source, output = work / "input.wasm", work / "output.o"
         for label, data, diagnostic in cases:
             low_memory = label in ("low-data", "low-stack")
-            env = dict(env, W2X_MEMORY_TAIL="optimized" if low_memory else "strict")
+            padded = low_memory or label in ("imported-memory-mode", "computed-element-offset")
+            env = dict(env, W2X_MEMORY_TAIL="optimized" if padded else "strict")
             source.write_bytes(data)
             reference = subprocess.run([wazero, "-compile", str(source)], capture_output=True, timeout=30)
-            if label not in ("intrinsic-import-address", "computed-element-offset", "low-data", "low-stack"):
+            if label not in ("intrinsic-import-address", "computed-element-offset", "low-data", "low-stack", "imported-memory-mode"):
                 assert reference.returncode != 0, (label, reference)
             else:
                 assert reference.returncode == 0, (label, reference)
-            result = subprocess.run([native, *([] if low_memory else ["--strict"])], input=data, capture_output=True, env=env, timeout=30)
+            result = subprocess.run([native, *([] if padded else ["--strict"])], input=data, capture_output=True, env=env, timeout=30)
             assert result.returncode != 0 and diagnostic.encode() in result.stderr, (label, result.returncode, result.stderr)
             output.write_bytes(b"previous object")
             result = subprocess.run([vm, "-o", str(output), str(source)], capture_output=True, env=env, timeout=30)
