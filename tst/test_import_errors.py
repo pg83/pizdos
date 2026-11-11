@@ -48,6 +48,29 @@ def program(kind, owner, name="value", *, kernel=False, parameter=False):
     return module + section(10, b"\1" + leb(len(body)) + body)
 
 
+def wide_program(kinds, named):
+    types = {"i32": 0x7f, "i64": 0x7e, "f32": 0x7d, "f64": 0x7c}
+    zero = {"i32": b"\x41\0", "i64": b"\x42\0", "f32": b"\x43" + bytes(4), "f64": b"\x44" + bytes(8)}
+    results = list(reversed(kinds))
+    signature = b"\x60" + leb(len(kinds)) + bytes(types[kind] for kind in kinds)
+    signature += leb(len(results)) + bytes(types[kind] for kind in results)
+    module = b"\0asm\1\0\0\0" + section(1, b"\2" + signature + b"\x60\0\0")
+    module += section(2, b"\1" + text("kernel") + text("getpid") + b"\0\0") + section(3, b"\1\1")
+    if results:
+        module += section(6, b"\1" + bytes([types[results[0]], 1]) + zero[results[0]] + b"\x0b")
+    exports = text("_start") + b"\0\1"
+    if named:
+        exports += text("alias") + b"\0\0"
+    module += section(7, bytes([2 if named else 1]) + exports)
+    code = b"".join(zero[kind] for kind in kinds) + b"\x10\0"
+    if results:
+        # Keep one result observable and discard the rest. A rejected ABI
+        # still has to produce a well-formed object in either call form.
+        code += b"\x1a" * (len(results) - 1) + b"\x24\0"
+    body = b"\0" + code + b"\x0b"
+    return module + section(10, b"\1" + leb(len(body)) + body)
+
+
 def main():
     vm, native, wazero = sys.argv[1:]
     cases = [("kernel-" + str(kind), program(kind, "kernel"), False, "unresolved import kernel.value") for kind in (1, 2, 3)]
@@ -57,6 +80,11 @@ def main():
               ("kernel-foreign-function", program(0, "foreign", kernel=True), False, "unresolved import foreign.value"),
               ("kernel-signature", program(0, "kernel", "getpid", parameter=True), False, "import kernel.getpid is"),
               ("wasi-signature", program(0, "wasi_snapshot_preview1", "fd_write"), False, "import wasi_snapshot_preview1.fd_write is")]
+    for pattern in (("i32",), ("i64",), ("f32",), ("f64",), ("i32", "f64", "i64", "f32")):
+        for count in (8, 9, 16, 17, 32, 40):
+            kinds = [pattern[index % len(pattern)] for index in range(count)]
+            for named in (False, True):
+                cases.append((f"wide-{pattern}-{count}-{named}", wide_program(kinds, named), False, "import kernel.getpid is"))
     env = dict(os.environ, W2X_MEMORY_TAIL="strict", W2X_TAIL_PROFILE="")
     with tempfile.TemporaryDirectory(prefix="pizdos-import-errors-") as directory:
         work = Path(directory)
