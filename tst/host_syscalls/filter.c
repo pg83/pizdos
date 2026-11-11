@@ -28,6 +28,17 @@ int main(int argc, char** argv) {
     };
     unsigned count = 4;
     char* next = argv[1];
+    unsigned error = EIO;
+    char* slash = strchr(next, '/');
+    if (slash != NULL) {
+        char* end;
+        long value = strtol(next, &end, 10);
+        if (end != slash || value <= 0 || value > 4095) {
+            return 2;
+        }
+        error = (unsigned)value;
+        next = slash + 1;
+    }
     while (*next) {
         char* end;
         long number = strtol(next, &end, 10);
@@ -35,7 +46,7 @@ int main(int argc, char** argv) {
             return 2;
         }
         filters[count++] = (struct Filter){0x15, 0, 1, (uint32_t)number};
-        filters[count++] = (struct Filter){0x06, 0, 0, 0x00050000 | EIO};
+        filters[count++] = (struct Filter){0x06, 0, 0, 0x00050000 | error};
         next = *end ? end + 1 : end;
     }
     filters[count++] = (struct Filter){0x06, 0, 0, 0x7fff0000};

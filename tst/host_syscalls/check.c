@@ -1,6 +1,11 @@
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <arpa/inet.h>
+#include <net/if.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -53,6 +58,49 @@ int main(int argc, char** argv) {
         assert(pread(fd, &byte, 1, 0) == 1 && byte == 'b');
         assert(pwrite(fd, "X", 1, 0) == -1 && errno == EIO);
         assert(close(fd) == 0 && unlink("/tmp/data") == 0);
+    } else if (strcmp(argv[1], "network") == 0 || strcmp(argv[1], "retry") == 0) {
+        int retry = strcmp(argv[1], "retry") == 0;
+        assert(socket(AF_INET, SOCK_DGRAM, 0) == -1 && errno == (retry ? EAGAIN : EIO));
+        struct addrinfo hints = {0}, *result = NULL;
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        assert(getaddrinfo("syscall-failure.invalid", "80", &hints, &result) == EAI_AGAIN);
+        assert(result == NULL);
+        assert(gethostbyname("syscall-failure.invalid") == NULL && h_errno == TRY_AGAIN);
+        if (!retry) {
+            assert(if_nameindex() == NULL && errno == EIO);
+            hints.ai_flags = AI_ADDRCONFIG;
+            assert(getaddrinfo("127.0.0.1", "80", &hints, &result) == EAI_NONAME && result == NULL);
+            hints.ai_flags = 0;
+            hints.ai_protocol = IPPROTO_UDP;
+            assert(getaddrinfo("127.0.0.1", "80", &hints, &result) == EAI_SOCKTYPE && result == NULL);
+            struct sockaddr_in address = {0};
+            address.sin_family = AF_INET;
+            assert(inet_pton(AF_INET, "203.0.113.253", &address.sin_addr) == 1);
+            char name[256];
+            assert(getnameinfo((struct sockaddr*)&address, sizeof(address), name, sizeof(name), NULL, 0, NI_NAMEREQD) == EAI_NONAME);
+            assert(gethostbyaddr(&address.sin_addr, sizeof(address.sin_addr), AF_INET) == NULL && h_errno == HOST_NOT_FOUND);
+        }
+    } else if (strcmp(argv[1], "socket-names") == 0) {
+        int fd = socket(AF_INET, SOCK_DGRAM, 0);
+        assert(fd >= 0);
+        struct sockaddr_in address;
+        socklen_t size = sizeof(address);
+        assert(getsockname(fd, (struct sockaddr*)&address, &size) == -1 && errno == EIO);
+        size = sizeof(address);
+        assert(getpeername(fd, (struct sockaddr*)&address, &size) == -1 && errno == EIO);
+        assert(close(fd) == 0);
+    } else if (strcmp(argv[1], "connect-status") == 0) {
+        int server = socket(AF_INET, SOCK_STREAM, 0), client = socket(AF_INET, SOCK_STREAM, 0);
+        assert(server >= 0 && client >= 0);
+        struct sockaddr_in address = {0};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        assert(bind(server, (struct sockaddr*)&address, sizeof(address)) == 0 && listen(server, 1) == 0);
+        socklen_t size = sizeof(address);
+        assert(getsockname(server, (struct sockaddr*)&address, &size) == 0);
+        assert(connect(client, (struct sockaddr*)&address, size) == -1 && errno == EIO);
+        assert(close(client) == 0 && close(server) == 0);
     } else if (strcmp(argv[1], "limits") == 0) {
         struct rlimit limit;
         assert(getrlimit(RLIMIT_NOFILE, &limit) == 0);
