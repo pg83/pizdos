@@ -5382,8 +5382,6 @@ namespace {
 
     static void asmFstore(Asm* a, u8 size, VReg src, Amem m);
 
-    static void asmFxor(Asm* a, VReg dst);
-
     static void asmHere8(Asm* a, i32 at);
 
     static void asmImul3(Asm* a, u8 size, VReg dst, VReg src, i64 x);
@@ -11222,11 +11220,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         asmVexRM(a, scalarPP(size), 1, false, 17, regNum(src), -1, m, 0);
     }
 
-    static void asmFxor(Asm* a, VReg dst) {
-        Int r = regNum(dst);
-        asmVexRR(a, ppNone, 1, false, 87, r, r, r);
-    }
-
     static void asmHere8(Asm* a, i32 at) {
         i32 d = asmPos(a) - (at + 1);
         if (d > 127) {
@@ -13803,11 +13796,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 break;
             }
             case mFConst: {
-                if (in->imm == 0) {
-                    asmFxor(a, in->dst);
-                } else {
-                    asmFload(a, in->size, in->dst, objCodeFloatConst(e->oc, convert<u64>(in->imm), in->size));
-                }
+                asmFload(a, in->size, in->dst, objCodeFloatConst(e->oc, convert<u64>(in->imm), in->size));
                 break;
             }
             case mFAlu: {
@@ -19735,13 +19724,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         asmMoveRegs(a, moves, R12);
-        for (Int i = 0; i < length(params); ++i) {
-            ValType t = params[i];
-            GoLoc src = g.params[i];
-            if (pregs[i] != noReg && src.reg == noReg) {
-                asmLoad(a, convert<u8>(goSize(t)), 8, false, pregs[i], rspAt(goArgs + src.off));
-            }
-        }
         if (index >= 0) {
             objCodeCallFunc(oc, index);
         } else {
@@ -19751,9 +19733,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         for (Int i = 0; i < length(results); ++i) {
             ValType t = results[i];
             GoLoc dst = g.results[i];
-            if (rregs[i] != noReg && dst.reg == noReg) {
-                asmStore(a, convert<u8>(goSize(t)), rregs[i], rspAt(goArgs + dst.off));
-            } else if (rregs[i] == noReg && dst.reg == noReg) {
+            if (rregs[i] == noReg && dst.reg == noReg) {
                 asmLoad(a, 8, 8, false, R12, rspAt(convert<i32>(8 * rslots[i])));
                 asmStore(a, convert<u8>(goSize(t)), R12, rspAt(goArgs + dst.off));
             } else if (rregs[i] != noReg && dst.reg != noReg) {
