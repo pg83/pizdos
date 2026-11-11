@@ -34,6 +34,8 @@ int main() {
         {"[A-C]", "b", REG_EXTENDED | REG_ICASE, 0},
         {"[[.a.]]", "a", REG_EXTENDED, 0, true},
         {"[[=a=]]", "a", REG_EXTENDED, 0, true},
+        {"[[.-.]]", "-", REG_EXTENDED, 0, true},
+        {"[[.é.]]", "é", REG_EXTENDED, 0, true},
         {"\\(ab\\)\\{2,3\\}", "ababab", 0, 0},
         {"a+b", "a+b", 0, 0},
         {"a+b", "aaab", REG_EXTENDED, 0},
@@ -56,6 +58,13 @@ int main() {
         regfree(&expression);
         if (result != cases[i].result) {
             fprintf(stderr, "case %u: regexec returned %d, expected %d\n", i, result, cases[i].result);
+            abort();
+        }
+    }
+    const char* invalidCollations[] = {"[[.ab.]]", "[[==]]"};
+    for (const char* pattern : invalidCollations) {
+        regex_t expression;
+        if (regcomp(&expression, pattern, REG_EXTENDED) != REG_ECOLLATE) {
             abort();
         }
     }

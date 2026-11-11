@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // POSIX regular expressions, basic and extended with GNU's escapes,
@@ -25,15 +26,16 @@ const (
 	regNoteol   = 2
 	regStartend = 4
 
-	regNomatch = 1
-	regBadpat  = 2
-	regEescape = 5
-	regEsubreg = 6
-	regEbrack  = 7
-	regEparen  = 8
-	regEbrace  = 9
-	regBadbr   = 10
-	regBadrpt  = 13
+	regNomatch  = 1
+	regBadpat   = 2
+	regEcollate = 3
+	regEescape  = 5
+	regEsubreg  = 6
+	regEbrack   = 7
+	regEparen   = 8
+	regEbrace   = 9
+	regBadbr    = 10
+	regBadrpt   = 13
 )
 
 var regMessages = map[uint32]string{
@@ -375,8 +377,12 @@ func translateBracket(pat []byte, newline bool) (string, int, uint32) {
 
 				out.WriteString("[:" + string(body) + ":]")
 			} else {
+				if !utf8.Valid(body) || utf8.RuneCount(body) != 1 {
+					return "", 0, regEcollate
+				}
+
 				for _, b := range body {
-					out.WriteString(`\` + string(b))
+					out.WriteString(classByte(b))
 				}
 			}
 
