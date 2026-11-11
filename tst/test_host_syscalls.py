@@ -10,6 +10,7 @@ import errno
 import os
 from pathlib import Path
 import resource
+import socket
 import subprocess
 import sys
 import tempfile
@@ -38,12 +39,34 @@ def wasi_clock(name):
     return module + section(10, b"\1" + leb(len(body)) + body)
 
 
-def wasi_descriptor(name):
+def wasi_descriptor(name, error=29, filetype=None):
     owner, function = b"wasi_snapshot_preview1", name.encode()
     module = b"\0asm\1\0\0\0" + section(1, b"\2\x60\2\x7f\x7f\1\x7f\x60\0\0")
     module += section(2, b"\1" + leb(len(owner)) + owner + leb(len(function)) + function + b"\0\0")
     module += section(3, b"\1\1") + section(5, b"\1\0\1") + section(7, b"\1\6_start\0\1")
-    body = b"\0\x41\0\x41\x80\10\x10\0\x41\x1d\x47\x04\x40\0\x0b\x0b"
+    body = b"\0\x41\0\x41\x80\10\x10\0\x41" + leb(error) + b"\x47\x04\x40\0\x0b"
+    if filetype is not None:
+        offset = 0 if name == "fd_fdstat_get" else 16
+        body += b"\x41\x80\10\x2d\0" + leb(offset) + b"\x41" + leb(filetype) + b"\x47\x04\x40\0\x0b"
+    body += b"\x0b"
+    return module + section(10, b"\1" + leb(len(body)) + body)
+
+
+def wasi_directory(name, filetype):
+    owner, function = b"wasi_snapshot_preview1", b"fd_readdir"
+    module = b"\0asm\1\0\0\0" + section(1, b"\2\x60\5\x7f\x7f\x7f\x7e\x7f\1\x7f\x60\0\0")
+    module += section(2, b"\1" + leb(len(owner)) + owner + leb(len(function)) + function + b"\0\0")
+    module += section(3, b"\1\1") + section(5, b"\1\0\1") + section(7, b"\1\6_start\0\1")
+    integer = lambda n: b"\x41" + leb(n)
+    code = integer(0) + integer(4096) + integer(60000) + b"\x42\0" + integer(2048) + b"\x10\0\x04\x40\0\x0b"
+    code += integer(4096) + b"\x21\0" + integer(4096) + integer(2048) + b"\x28\2\0\x6a\x21\1"
+    code += b"\x02\x40\x03\x40\x20\0\x20\1\x4f\x0d\1"
+    code += b"\x20\0\x28\2\x10" + integer(4) + b"\x46\x04\x40\x20\0\x28\2\x18"
+    code += integer(int.from_bytes(name, "little")) + b"\x46\x04\x40\x20\0\x2d\0\x14" + integer(filetype)
+    code += b"\x47\x04\x40\0\x0b" + integer(1) + b"\x21\2\x0b\x0b"
+    code += b"\x20\0\x20\0\x28\2\x10" + integer(24) + b"\x6a\x6a\x21\0\x0c\0\x0b\x0b"
+    code += b"\x20\2\x45\x04\x40\0\x0b\x0b"
+    body = b"\1\3\x7f" + code
     return module + section(10, b"\1" + leb(len(body)) + body)
 
 
@@ -62,6 +85,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix="pizdos-host-syscalls-") as directory:
         work = Path(directory)
         (work / "tmp").mkdir()
+        (work / "directory").mkdir()
+        os.mkfifo(work / "directory/pipe")
         compiled, embedded = work / "native.o", work / "embedded.o"
         result = subprocess.run([native, "--strict"], input=Path(fixture).read_bytes(), capture_output=True, env=env, timeout=60)
         assert result.returncode == 0, result
@@ -105,6 +130,36 @@ def main():
                 result = subprocess.run([wrapper, f"{errno.EIO}/{number}", "--", vm, "run", "--", str(obj)],
                                         capture_output=True, env=env, timeout=30)
                 assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (name, result)
+        for name in ("fd_fdstat_get", "fd_filestat_get"):
+            source = work / (name + ".wasm")
+            data = wasi_descriptor(name, error=0, filetype=6)
+            source.write_bytes(data)
+            result = subprocess.run([native, "--strict"], input=data, capture_output=True, env=env, timeout=60)
+            assert result.returncode == 0, result
+            compiled.write_bytes(result.stdout)
+            result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
+            assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), result
+            for obj in (compiled, embedded):
+                reader, writer = socket.socketpair()
+                with reader, writer:
+                    result = subprocess.run([vm, "run", "--", str(obj)], stdin=reader, capture_output=True, env=env, timeout=30)
+                    assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (name, result)
+        for directory, name, filetype in ((Path("/dev"), b"null", 2), (work / "directory", b"pipe", 0)):
+            source = work / "directory.wasm"
+            data = wasi_directory(name, filetype)
+            source.write_bytes(data)
+            result = subprocess.run([native, "--strict"], input=data, capture_output=True, env=env, timeout=60)
+            assert result.returncode == 0, result
+            compiled.write_bytes(result.stdout)
+            result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
+            assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), result
+            for obj in (compiled, embedded):
+                fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+                try:
+                    result = subprocess.run([vm, "run", "--", str(obj)], stdin=fd, capture_output=True, env=env, timeout=30)
+                    assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (directory, result)
+                finally:
+                    os.close(fd)
         # ENOTTY has no WASI preview1 equivalent and must become generic I/O error.
         for preset, error, names in (("stdin-stat", errno.EIO, ("fd_fdstat_get", "fd_filestat_get")),
                                      ("stdin-flags", errno.ENOTTY, ("fd_fdstat_get", "fd_fdstat_set_flags"))):
