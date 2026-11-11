@@ -48,7 +48,7 @@ def program(name, args, *, wide=False, returns=True, expected=None):
     code = b"".join(constant(value, typ) for value, typ in zip(args, params)) + b"\x10\0"
     if expected is None:
         code += (b"\x1a" if returns else b"") + b"\0"
-    else:
+    elif returns:
         code += constant(expected) + b"\x47\x04\x40\0\x0b"
     body = b"\0" + code + b"\x0b"
     module += section(10, b"\1" + leb(len(body)) + body)
@@ -78,6 +78,7 @@ def main():
               ("wide-empty-span", "wmemchr", [65536, 0, 0], {"expected": 0}, 0, ""),
               ("wide-early-match", "wmemchr", [65520, 0x41414141, 4], {"expected": 65520}, 0, ""),
               ("empty-write-bound", "write", [1, 65536, 0], {"expected": 0}, 0, "")]
+    cases.append(("timezone-without-CRT", "tzset", [], {"returns": False, "expected": 0}, 0, ""))
     env = dict(os.environ, W2X_MEMORY_TAIL="strict", W2X_TAIL_PROFILE="")
     with tempfile.TemporaryDirectory(prefix="pizdos-runtime-safety-") as directory:
         work = Path(directory)
