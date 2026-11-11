@@ -14,6 +14,14 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
   `aot.wasm`, `aot.aot` and the wazero runner.
 - `./build test` runs `tst/test_*.py`, each with the outputs of the nodes
   `TESTED` names for it in build.py.
+- `./build unit` runs every `tst/unit/**/*.cpp` as an end-to-end test:
+  the host executable is a reference, native AOT and the embedded Wasm AOT
+  compile the Wasm program to identical objects, and vm runs both. Each
+  case is its own `unit_<name>` target and also belongs to `test`.
+  `//@ compile-flags:`, `aot-flags:`, `run-flags:`, `args:` and `env:`
+  configure the commands; `stdout:` and `stderr:` are JSON strings,
+  `exit-code:` defaults to 0. `host: false` is for kernel-specific cases.
+  Tests exercise program behaviour; tests of internal code are forbidden.
 - `sh dev/stand/build.sh` supplies the pinned ix revision's libraries and
   tools and runs `./build stand`: decode's im, pdf, djvu, svg and magic
   modules through vm, and their wrappers against the native

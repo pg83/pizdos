@@ -616,6 +616,33 @@ TESTED = {
 }
 tests = []
 
+UNIT_TOOLS = json.dumps({
+    "cc": CLANG,
+    "ld": WASM_LD,
+    "aot": aot_native.outputs[0],
+    "vm": vm.outputs[0],
+    "c_headers": "$(S)/lib/c/include",
+    "libc": libc.outputs[0],
+    "cxx_headers": libcxx.outputs[1],
+    "libcxx": libcxx.outputs[0],
+    "host_cflags": [*build.cppflags, *build.cxxflags],
+    "host_ldflags": build.ldflags,
+}, sort_keys=True)
+unit_tests = []
+
+for source in build.glob("$(S)/tst/unit/**/*.cpp"):
+    name = source[len("$(S)/tst/unit/"):-len(".cpp")]
+    prefix = f"$(B)/tst/unit/{name}"
+    unit_tests.append(command(
+        name="unit_" + name.replace("/", "_"),
+        inputs=[source, "$(S)/tst/unit/run.py", "$(S)/dev/wasm.py", *LIBC_HEADERS],
+        outputs=[prefix + suffix for suffix in (".stamp", ".wasm", ".native.o", ".embedded.o")],
+        deps=[aot_native, vm, libc, libcxx],
+        cmd=["python3", "$(S)/tst/unit/run.py", source, prefix, UNIT_TOOLS],
+        env={"PYTHONDONTWRITEBYTECODE": "1"},
+        descr="EE", color="green",
+    ))
+
 for test in build.glob("$(S)/tst/test_*.py"):
     name = test.rsplit("/", 1)[-1][len("test_"):-len(".py")]
     stamp = f"$(B)/tst/{name}.stamp"
@@ -635,5 +662,6 @@ for test in build.glob("$(S)/tst/test_*.py"):
     ))
 
 group("install", libcxx, libc_headers, clang, clang_o, busybox, busybox_abi, busybox_o, doom, doom_o, python, python_o, vm, aot_native, aot, aot_aot, wazero)
-group("test", *tests, vm_spec_test)
+group("unit", *unit_tests)
+group("test", *tests, *unit_tests, vm_spec_test)
 group("stand", vm, aot_native, aot, aot_aot, busybox, stand_corpus, *decode_stand, python, python_o, stand_python_native)

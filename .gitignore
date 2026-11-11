@@ -28,6 +28,8 @@ __pycache__/
 /doom_wad
 /doomgeneric_tarball
 /test_*
+/unit
+/unit_*
 /stand_*
 /python
 /python_core

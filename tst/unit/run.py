@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""Compile a C++ program with both AOT executables and check its behaviour.
+
+    run.py <case.cpp> <output-prefix> <toolchain-json>
+
+Directives use trustme's //@ spelling. stdout/stderr are JSON strings;
+compile-flags, aot-flags, run-flags and args use shell quoting. host: false
+disables the native reference for programs that depend on this kernel.
+"""
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "dev"))
+import wasm
+
+LINK = ["--stack-first", "-z", "stack-size=1049600", "--max-memory=4294967296",
+        "--export=__heap_base", "--export=__stack_pointer", "--gc-sections"]
+DIRECTIVES = {"compile-flags", "aot-flags", "run-flags", "args", "env", "stdout", "stderr", "exit-code", "host", "timeout"}
+
+
+def directives(source):
+    result = {}
+
+    for key, value in re.findall(r"^//@\s*([a-z-]+):\s*(.*?)\s*$", source.read_text(), re.M):
+        if key not in DIRECTIVES:
+            raise ValueError(f"{source}: unknown directive {key}")
+        if key in result and key != "env":
+            raise ValueError(f"{source}: repeated directive {key}")
+        if key == "env":
+            name, separator, text = value.partition("=")
+            if not separator or not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", name):
+                raise ValueError(f"{source}: env requires NAME=VALUE")
+            result.setdefault(key, {})[name] = text
+        else:
+            result[key] = value
+
+    return result
+
+
+def invoke(command, *, env, timeout, stdin=None, cwd=None):
+    return subprocess.run(list(map(str, command)), input=stdin, capture_output=True,
+                          env=env, timeout=timeout, cwd=cwd)
+
+
+def successful(command, **options):
+    result = invoke(command, **options)
+    if result.returncode:
+        raise RuntimeError(f"{shlex.join(list(map(str, command)))}: exit {result.returncode}\n"
+                           + result.stdout.decode(errors="replace") + result.stderr.decode(errors="replace"))
+    return result
+
+
+def check(result, case, phase):
+    expected = (int(case.get("exit-code", "0")), json.loads(case.get("stdout", '""')).encode(),
+                json.loads(case.get("stderr", '""')).encode())
+    actual = result.returncode, result.stdout, result.stderr
+    if actual != expected:
+        raise RuntimeError(f"{phase}: got exit/stdout/stderr {actual!r}; expected {expected!r}")
+
+
+def run(source, prefix, tools):
+    case = directives(source)
+    timeout = float(case.get("timeout", "60"))
+    env = dict(os.environ, **case.get("env", {}))
+    # The native AOT command and the embedded reactor use the same mode.
+    env["W2X_MEMORY_TAIL"] = "optimized"
+    env["W2X_TAIL_PROFILE"] = ""
+    aot_flags = shlex.split(case.get("aot-flags", ""))
+    if aot_flags not in ([], ["--strict"], ["--asan"]):
+        raise ValueError("aot-flags must be empty, --strict or --asan")
+    if aot_flags == ["--strict"]:
+        env["W2X_MEMORY_TAIL"] = "strict"
+    run_flags = shlex.split(case.get("run-flags", ""))
+    args = shlex.split(case.get("args", ""))
+    cflags = ["-O2", "-std=c++23", "-fno-exceptions", "-fno-rtti", *shlex.split(case.get("compile-flags", ""))]
+    prefix.parent.mkdir(parents=True, exist_ok=True)
+    module = Path(str(prefix) + ".wasm")
+
+    with tempfile.TemporaryDirectory(prefix="pizdos-case-") as temporary:
+        work = Path(temporary)
+        if case.get("host", "true") not in ("true", "false"):
+            raise ValueError("host must be true or false")
+        if case.get("host", "true") == "true":
+            reference = work / "reference"
+            successful([tools["cc"], *tools["host_cflags"], "-x", "c++", *cflags, source,
+                        "-o", reference, *tools["host_ldflags"]], env=env, timeout=timeout)
+            check(invoke([reference, *args], env=env, timeout=timeout, cwd=work), case, "native reference")
+
+        with tarfile.open(tools["cxx_headers"]) as archive:
+            archive.extractall(work / "cxx", filter="data")
+        obj = work / "case.o"
+        successful([tools["cc"], *wasm.CFLAGS, *cflags, "-nostdinc++",
+                    "-isystem", work / "cxx/include/c++/v1", "-isystem", tools["c_headers"],
+                    "-c", source, "-o", obj], env=env, timeout=timeout)
+        successful([tools["ld"], *LINK, "-o", module, obj, tools["libcxx"], tools["libc"]], env=env, timeout=timeout)
+
+        native = Path(str(prefix) + ".native.o")
+        embedded = Path(str(prefix) + ".embedded.o")
+        compiled = successful([tools["aot"], *aot_flags], stdin=module.read_bytes(), env=env, timeout=timeout)
+        native.write_bytes(compiled.stdout)
+        successful([tools["vm"], *(["--asan"] if aot_flags == ["--asan"] else []), "-o", embedded, module],
+                   env=env, timeout=timeout)
+        if native.read_bytes() != embedded.read_bytes():
+            raise RuntimeError("native and Wasm AOT produced different objects")
+
+        for name, program in (("native AOT", native), ("Wasm AOT", embedded)):
+            with tempfile.TemporaryDirectory(prefix="pizdos-root-") as directory:
+                root = Path(directory)
+                (root / "bin").mkdir()
+                (root / "tmp").mkdir()
+                executable = root / "bin/check"
+                shutil.copyfile(program, executable)
+                executable.chmod(0o755)
+                result = invoke([tools["vm"], "run", "--root", root, "-a", "check", *run_flags,
+                                 "--", executable, *args], env=env, timeout=timeout)
+                check(result, case, name)
+
+    Path(str(prefix) + ".stamp").write_text("native reference, native AOT, Wasm AOT: passed\n")
+    print(f"{source.stem}: native/Wasm AOT behaviour agrees", flush=True)
+
+
+if __name__ == "__main__":
+    try:
+        run(Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve(), json.loads(sys.argv[3]))
+    except (RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
+        sys.exit(str(error))
