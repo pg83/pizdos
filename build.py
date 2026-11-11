@@ -761,6 +761,7 @@ TESTED = {
     "cli_errors": [vm, aot_native],
     "compiler_modes": [vm, aot_native],
     "compiler_rejections": [vm, aot_native, wazero],
+    "conditional_floats": [vm, aot_native, wazero],
     "constant_arithmetic": [vm, aot_native, wazero],
     "copy_loops": [vm, aot_native],
     "cxx": [vm, cxx_check_o],
