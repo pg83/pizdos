@@ -182,6 +182,15 @@ def main():
     for at, value in ((10, ord("X")), (15, 2), (16, 0)):
         bad(f"eh-augmentation-{at}", obj.replaced(".eh_frame", changed(eh, at, "B", value)), "unsupported .eh_frame augmentation")
     first_fde = struct.unpack_from("<I", eh)[0] + 4
+    frame_relocs = obj.contents(".rela.eh_frame")
+    assert len(frame_relocs) >= 48
+    # Two FDEs naming the same bytes overlap even when their individual CFA
+    # programs are valid. An empty FDE cannot define a PC-value interval.
+    overlapping = frame_relocs[:32] + frame_relocs[8:24] + frame_relocs[48:]
+    bad("eh-overlapping-functions", obj.replaced(".rela.eh_frame", overlapping), "invalid code region")
+    empty_fde = eh[:first_fde] + struct.pack("<IIII", 13, first_fde + 4, 0, 0) + b"\0"
+    empty_function = Object(obj.replaced(".eh_frame", empty_fde)).replaced(".rela.eh_frame", frame_relocs[:24])
+    bad("eh-empty-function", empty_function, "bad pc table")
     bad("eh-unknown-cie", obj.replaced(".eh_frame", changed(eh, first_fde + 4, "I", 0x7fffffff)), "unsupported FDE")
     bad("eh-missing-relocations", obj.replaced(".rela.eh_frame", b""), "unsupported FDE")
     bad("eh-wrong-register", obj.replaced(".eh_frame", changed(eh, 18, "B", 6)), "a CFA not on rsp")
@@ -206,6 +215,7 @@ def main():
             break
         off += 4 + size
     assert len(valid) == 4, "fixture has no padded stack map"
+    valid.append(("eh-cie-only", short_eh(eh[:first_fde])))
     duplicate = changed(relocs[:24], 8, "I", 65535) + relocs
     valid.append(("later-relocation-wins", obj.replaced(".rela.text", duplicate)))
     valid.append(("unsorted-relocations", obj.replaced(".rela.text", b"".join(relocs[i:i + 24] for i in reversed(range(0, len(relocs), 24))))))
