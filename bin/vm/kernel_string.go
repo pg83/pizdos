@@ -21,6 +21,16 @@ func lower(c byte) byte {
 	return c
 }
 
+func lowerBytes(s []byte) []byte {
+	out := make([]byte, len(s))
+
+	for i, c := range s {
+		out[i] = lower(c)
+	}
+
+	return out
+}
+
 func isDigit(c byte) bool {
 	return c >= '0' && c <= '9'
 }
@@ -115,7 +125,7 @@ func (p *Process) strstr(h, n uint32, fold bool) uint32 {
 	hay, needle := p.cstr(h), p.cstr(n)
 
 	if fold {
-		hay, needle = bytes.ToLower(hay), bytes.ToLower(needle)
+		hay, needle = lowerBytes(hay), lowerBytes(needle)
 	}
 
 	i := bytes.Index(hay, needle)
