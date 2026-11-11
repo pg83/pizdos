@@ -616,7 +616,7 @@ func (p *Process) libcReadlink(path, buf, size uint32) uint32 {
 	n := 0
 	err := p.onPath(p.str(path), false, func(fd int) error {
 		var e error
-		n, e = readlinkFd(fd, out)
+		n, e = readlinkFd(fd, out, true)
 
 		return e
 	})
@@ -629,7 +629,7 @@ func (p *Process) libcReadlinkat(dirfd, path, buf, size uint32) uint32 {
 	n := 0
 	err := p.onAt(int32(dirfd), p.str(path), atSymlinkNofollow|atEmptyPath, func(fd int) error {
 		var e error
-		n, e = readlinkFd(fd, out)
+		n, e = readlinkFd(fd, out, p.u8(path) != 0)
 
 		return e
 	})
@@ -938,7 +938,7 @@ func (p *Process) chdir(path string) error {
 	return nil
 }
 
-func readlinkFd(fd int, out []byte) (int, error) {
+func readlinkFd(fd int, out []byte, named bool) (int, error) {
 	var buf uintptr
 
 	if len(out) > 0 {
@@ -947,6 +947,12 @@ func readlinkFd(fd int, out []byte) (int, error) {
 
 	empty := [1]byte{}
 	r, _, e := syscall.Syscall6(syscall.SYS_READLINKAT, uintptr(fd), uintptr(unsafe.Pointer(&empty[0])), buf, uintptr(len(out)), 0, 0)
+
+	// Linux reports ENOENT for a non-symlink with an empty path. The
+	// original, named request reports EINVAL instead.
+	if e == syscall.ENOENT && named {
+		return 0, syscall.EINVAL
+	}
 
 	if e != 0 {
 		return 0, e

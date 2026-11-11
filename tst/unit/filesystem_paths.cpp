@@ -56,6 +56,14 @@ int main() {
         fprintf(stderr, "readlink regular file: result=%lld errno=%d\n", (long long)regularLink, errno);
         abort();
     }
+    assert(readlinkat(directory, "file", buffer, sizeof(buffer)) == -1 && errno == EINVAL);
+    int regularPath = open("file", O_PATH);
+    assert(regularPath >= 0);
+    assert(readlinkat(regularPath, "", buffer, sizeof(buffer)) == -1 && errno == ENOENT);
+    assert(close(regularPath) == 0);
+    int symlinkPath = openat(subdirectory, "link", O_PATH | O_NOFOLLOW);
+    assert(symlinkPath >= 0 && readlinkat(symlinkPath, "", buffer, sizeof(buffer)) == 7);
+    assert(memcmp(buffer, "../file", 7) == 0 && close(symlinkPath) == 0);
     struct stat linkMetadata{}, fileMetadata{};
     assert(fstatat(subdirectory, "link", &linkMetadata, AT_SYMLINK_NOFOLLOW) == 0 && S_ISLNK(linkMetadata.st_mode));
     assert(fstatat(subdirectory, "link", &fileMetadata, 0) == 0 && S_ISREG(fileMetadata.st_mode));
