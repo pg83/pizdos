@@ -769,6 +769,7 @@ TESTED = {
     "dispatch_loops": [vm, aot_native, wazero],
     "fork_modes": [vm, aot_native, wazero],
     "debug_lines": [vm, aot_native],
+    "debug_names": [vm, aot_native],
     "import_abi": [vm, aot_native],
     "import_errors": [vm, aot_native, wazero],
     "initializers": [vm, aot_native, wazero],
