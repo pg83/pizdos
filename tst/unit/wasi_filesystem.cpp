@@ -143,6 +143,8 @@ extern "C" __attribute__((export_name("_start"))) void _start() {
     CHECK(fd_write(file, &one, 1, &used) == 21);
     CHECK(fd_seek(99, 0, 0, &offset) == 8 && fd_seek(file, 0, 99, &offset) == 28);
     CHECK(fd_seek(file, 0, 0, static_cast<u64*>(bad)) == 21);
+    CHECK(fd_seek(file, ~u64(0), 0, &offset) == 28);
+    CHECK(fd_readdir(file, buffer, sizeof(buffer), 0, &used) == 54);
     CHECK(fd_sync(file) == 0 && fd_sync(99) == 8);
     CHECK(fd_filestat_get(file, status) == 0 && status[16] == 4 && integer(status + 32) == 6);
     CHECK(fd_filestat_get(file, bad) == 21 && fd_filestat_get(99, status) == 8);
@@ -157,7 +159,43 @@ extern "C" __attribute__((export_name("_start"))) void _start() {
     CHECK(path_open(directory, 1, "data", 4, 0, rights, rights, 0, bad32) == 21);
     CHECK(path_open(directory, 1, "data", 4, 1 | 4, rights, rights, 0, &other) == 20);
     CHECK(path_open(directory, 1, "missing", 7, 0, rights, rights, 0, &other) == 44);
+    CHECK(path_open(directory, 1, "data", 4, 0, u64(1) << 1, 0, 0, &other) == 0);
+    one = {"X", 1};
+    CHECK(fd_write(other, &one, 1, &used) == 8 && fd_close(other) == 0);
+    CHECK(path_open(directory, 1, "data", 4, 0, u64(1) << 6, 0, 1 | 4, &other) == 0);
+    CHECK(fd_fdstat_get(other, status) == 0 && (status[2] & 5) == 5);
+    one = {buffer, 1};
+    CHECK(fd_read(other, &one, 1, &used) == 8 && fd_close(other) == 0);
+    CHECK(path_open(directory, 0, "data", 4, 0, 0, 0, 0, &other) == 0 && fd_close(other) == 0);
+    CHECK(path_filestat_get(directory, 1, "missing", 7, status) == 44);
+    CHECK(path_open(directory, 1, static_cast<char*>(bad), 4, 0, rights, 0, 0, &other) == 21);
+    CHECK(path_create_directory(directory, static_cast<char*>(bad), 4) == 21);
+    CHECK(path_remove_directory(directory, static_cast<char*>(bad), 4) == 21);
+    CHECK(path_unlink_file(directory, static_cast<char*>(bad), 4) == 21);
+    CHECK(path_rename(directory, static_cast<char*>(bad), 4, directory, "data", 4) == 21);
+    CHECK(path_rename(directory, "data", 4, directory, static_cast<char*>(bad), 4) == 21);
+    CHECK(path_readlink(directory, static_cast<char*>(bad), 4, buffer, sizeof(buffer), &used) == 21);
+    CHECK(path_open(3, 1, "/dev/null", 9, 0, rights, 0, 0, &other) == 0);
+    CHECK(fd_fdstat_get(other, status) == 0 && status[0] == 2 && fd_close(other) == 0);
+    CHECK(fd_fdstat_get(1, status) == 0 && status[0] == 0);
     CHECK(path_create_directory(directory, "sub", 3) == 0);
+    CHECK(fd_readdir(directory, buffer, sizeof(buffer), 0, &used) == 0);
+    bool sawFile = false, sawDirectory = false;
+    for (u32 at = 0; at + 24 <= used;) {
+        auto entry = reinterpret_cast<u8*>(buffer + at);
+        u32 size = u32(integer(entry + 16));
+        CHECK(at + 24 + size <= used);
+        if (size == 4 && buffer[at + 24] == 'd' && buffer[at + 25] == 'a' && buffer[at + 26] == 't' && buffer[at + 27] == 'a') {
+            CHECK(entry[20] == 4);
+            sawFile = true;
+        }
+        if (size == 3 && buffer[at + 24] == 's' && buffer[at + 25] == 'u' && buffer[at + 26] == 'b') {
+            CHECK(entry[20] == 3);
+            sawDirectory = true;
+        }
+        at += 24 + size;
+    }
+    CHECK(sawFile && sawDirectory);
     CHECK(path_create_directory(directory, "sub", 3) == 20);
     CHECK(path_create_directory(99, "sub", 3) == 8);
     CHECK(path_open(directory, 1, "sub/item", 8, 1, rights, rights, 0, &other) == 0);
