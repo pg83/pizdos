@@ -695,6 +695,7 @@ TESTED = {
     "chaos": [vm, vm_chaos, aot_native, aot_native_chaos, chaos_check],
     "clang": [vm, clang_o, clang, libc, libc_headers, libcxx],
     "cxx": [vm, cxx_check_o],
+    "data_segments": [vm, aot_native],
     "doom": [vm, doom_o, doom_wad],
     "libc": [vm, libc_check_o],
     "objects": [vm, aot_native],
