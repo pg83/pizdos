@@ -2071,11 +2071,6 @@ namespace {
         return s.count;
     }
 
-    static String subslice(String s, Int low, Int high) {
-        require(low >= 0 && high >= low && Uint(high) <= s.count, "string bounds");
-        return {s.data + low, usize(high - low)};
-    }
-
     static String asString(Slice<u8> s) {
         if (!s.count) {
             return {};
@@ -3634,20 +3629,6 @@ namespace {
         bool shared{};
     };
 
-    static bool operator==(const Limits& a, const Limits& b) {
-        return a.min == b.min && a.max == b.max && a.hasMax == b.hasMax && a.is64 == b.is64 && a.shared == b.shared;
-    }
-
-    static u64 hashValue(const Limits& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.min));
-        result = combineHash(result, hashValue(value.max));
-        result = combineHash(result, hashValue(value.hasMax));
-        result = combineHash(result, hashValue(value.is64));
-        result = combineHash(result, hashValue(value.shared));
-        return result;
-    }
-
     struct Memory {
         Limits limits{};
         bool imported{};
@@ -3827,17 +3808,6 @@ namespace {
         Array<AddressTerm, 4> terms{};
         u32 offset{};
     };
-
-    static bool operator==(const AddressExpression& a, const AddressExpression& b) {
-        return a.terms == b.terms && a.offset == b.offset;
-    }
-
-    static u64 hashValue(const AddressExpression& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.terms));
-        result = combineHash(result, hashValue(value.offset));
-        return result;
-    }
 
     struct IntervalQueue {
         struct Entry {
