@@ -1010,6 +1010,10 @@ func strptime(s []byte, format string, tm *tmFields) (int, bool) {
 			i++
 		}
 
+		if i == len(format) {
+			return 0, false
+		}
+
 		var ok bool
 		var v int
 
