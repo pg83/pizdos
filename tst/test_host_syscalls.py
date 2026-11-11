@@ -53,7 +53,8 @@ def main():
     cases = [("system", errno.EIO, (63, 99, 98, 115, 100)), ("filesystem", errno.EIO, (138, 280, 306, 162, 18)),
              ("limits", errno.EIO, (302, 97)), ("network", errno.EIO, (41,)), ("retry", errno.EAGAIN, (41,)),
              ("socket-names", errno.EIO, (51, 52)), ("connect-status", errno.EIO, (55,)),
-             ("locks", errno.EIO, ("fcntl",)), ("poll", errno.EIO, (7,)), ("connect-poll", errno.EIO, (7,))]
+             ("locks", errno.EIO, ("fcntl",)), ("poll", errno.EIO, (7,)), ("connect-poll", errno.EIO, (7,)),
+             ("temp-files", errno.EEXIST, (437,)), ("temp-directories", errno.EEXIST, (258,))]
     env = dict(os.environ, W2X_MEMORY_TAIL="strict", W2X_TAIL_PROFILE="")
     with tempfile.TemporaryDirectory(prefix="pizdos-host-syscalls-") as directory:
         work = Path(directory)

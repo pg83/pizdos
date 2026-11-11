@@ -154,6 +154,14 @@ int main(int argc, char** argv) {
             }
         } while (waited == 0);
         assert(waited == child && WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL);
+    } else if (strcmp(argv[1], "temp-files") == 0) {
+        char path[] = "/tmp/collision-XXXXXX";
+        assert(mkstemp(path) == -1 && errno == EEXIST);
+        assert(strstr(path, "XXXXXX") == NULL);
+    } else if (strcmp(argv[1], "temp-directories") == 0) {
+        char path[] = "/tmp/collision-XXXXXX";
+        assert(mkdtemp(path) == NULL && errno == EEXIST);
+        assert(strstr(path, "XXXXXX") == NULL);
     } else if (strcmp(argv[1], "limits") == 0) {
         struct rlimit limit;
         assert(getrlimit(RLIMIT_NOFILE, &limit) == 0);
