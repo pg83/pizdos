@@ -82,7 +82,7 @@ int main(int argc, char** argv) {
     char* overridden[] = {inherited[0], inherited[1], const_cast<char*>("overridden"), nullptr};
     char* empty[] = {inherited[0], inherited[1], const_cast<char*>("empty"), nullptr};
     char* environment[] = {const_cast<char*>("MARK=overridden"), const_cast<char*>("PATH=/missing"), nullptr};
-    for (unsigned variant = 0; variant < 8; ++variant) {
+    for (unsigned variant = 0; variant < 11; ++variant) {
         pid_t child = fork();
         assert(child >= 0);
         if (child == 0) {
@@ -100,6 +100,15 @@ int main(int argc, char** argv) {
                     break;
                 }
                 case 7: execve("/bin/check", empty, nullptr); break;
+                case 8: execvp("/bin/check", inherited); break;
+                case 9:
+                    assert(unsetenv("PATH") == 0);
+                    execvp("check", inherited);
+                    break;
+                case 10:
+                    environ = nullptr;
+                    execv("/bin/check", empty);
+                    break;
             }
             abort();
         }
