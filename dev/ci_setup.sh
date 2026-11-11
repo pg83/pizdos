@@ -14,7 +14,7 @@ printf '%s\n' /usr/lib/llvm-23/bin >> "$GITHUB_PATH"
 # headers/libraries; executable C++ references use musl as in local runs.
 cat >> "$GITHUB_ENV" <<'EOF'
 CPPFLAGS=-nostdinc -isystem /usr/include/x86_64-linux-musl -isystem /usr/lib/llvm-23/lib/clang/23/include
-LDFLAGS=-static -nostdlib -fuse-ld=lld /usr/lib/x86_64-linux-musl/crt1.o /usr/lib/x86_64-linux-musl/crti.o -L/usr/lib/x86_64-linux-musl -lc /usr/lib/x86_64-linux-musl/crtn.o
+LDFLAGS=-static -nostdlib -fuse-ld=lld -x none /usr/lib/x86_64-linux-musl/crt1.o /usr/lib/x86_64-linux-musl/crti.o -L/usr/lib/x86_64-linux-musl -lc /usr/lib/x86_64-linux-musl/crtn.o
 COVERAGE_CPPFLAGS=
 COVERAGE_LDFLAGS=-static -fuse-ld=lld --rtlib=compiler-rt
 BUILD_JOBS=2
