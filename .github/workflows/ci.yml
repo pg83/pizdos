@@ -40,6 +40,7 @@ jobs:
           command -v clang clang++ wasm-ld llvm-ar llvm-ranlib llvm-profdata llvm-cov
           clang --version
           go version
+          echo "Build and coverage workers: $BUILD_JOBS"
           toolchain_id=$( { clang --version; llvm-cov --version; go version; cat dev/ci_setup.sh; } | sha256sum | cut -d' ' -f1)
           echo "id=$toolchain_id" >> "$GITHUB_OUTPUT"
 

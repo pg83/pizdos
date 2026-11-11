@@ -17,5 +17,5 @@ CPPFLAGS=-nostdinc -isystem /usr/include/x86_64-linux-musl -isystem /usr/lib/llv
 LDFLAGS=-static -nostdlib -fuse-ld=lld -x none /usr/lib/x86_64-linux-musl/crt1.o /usr/lib/x86_64-linux-musl/crti.o -L/usr/lib/x86_64-linux-musl -lc /usr/lib/x86_64-linux-musl/crtn.o
 COVERAGE_CPPFLAGS=
 COVERAGE_LDFLAGS=-static -fuse-ld=lld --rtlib=compiler-rt
-BUILD_JOBS=2
 EOF
+printf 'BUILD_JOBS=%s\n' "$(nproc)" >> "$GITHUB_ENV"

@@ -12,6 +12,7 @@ Per-process profiles survive children that deliberately replace their
 environment. All tests invoke executables, never internal compiler APIs.
 """
 import json
+from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
 import re
@@ -27,12 +28,48 @@ def output(command, **options):
     return subprocess.check_output(list(map(str, command)), text=True, **options)
 
 
-def wrapper(path, binary, variables):
+def wrapper(path, binary, variables, tools):
     variables = {key: str(value) for key, value in variables.items()}
-    path.write_text(f"#!{sys.executable}\nimport os, sys\n"
-                    f"os.environ.update({variables!r})\n"
-                    f"os.execv({binary!r}, [{binary!r}, *sys.argv[1:]])\n")
-    path.chmod(0o755)
+    # A dynamically linked interpreter can fail under the syscall-denial
+    # tests before it executes the VM. This static launcher injects the
+    # profiling environment without allocating or opening any files.
+    code = """#include <string.h>
+#include <unistd.h>
+extern char** environ;
+static char* const injected[] = {COVERAGE_ENV, 0};
+int main(int argc, char** argv) {
+    unsigned count = 0;
+    while (environ[count]) {
+        ++count;
+    }
+    char* env[count + sizeof(injected) / sizeof(injected[0])];
+    unsigned size = 0;
+    for (unsigned i = 0; i < count; ++i) {
+        int replaced = 0;
+        for (unsigned j = 0; injected[j]; ++j) {
+            size_t length = strchr(injected[j], '=') - injected[j] + 1;
+            if (!strncmp(environ[i], injected[j], length)) {
+                replaced = 1;
+            }
+        }
+        if (!replaced) {
+            env[size++] = environ[i];
+        }
+    }
+    for (unsigned i = 0; injected[i]; ++i) {
+        env[size++] = injected[i];
+    }
+    env[size] = 0;
+    argv[0] = COVERAGE_BINARY;
+    execve(argv[0], argv, env);
+    return 127;
+}
+"""
+    code = code.replace("COVERAGE_ENV", ", ".join(json.dumps(f"{key}={value}") for key, value in variables.items()))
+    code = code.replace("COVERAGE_BINARY", json.dumps(binary))
+    source = path.with_suffix(".c")
+    source.write_text(code)
+    subprocess.run([tools["cc"], *tools["cppflags"], "-std=c11", "-O2", "-fno-builtin", str(source), "-o", str(path), "-static", *tools["ldflags"]], check=True)
 
 
 def metric(hit, total):
@@ -138,28 +175,37 @@ def run(destination, suite):
         wasm_raw.mkdir()
         vm, aot = work / "vm", work / "aot-command"
         vm_chaos, aot_chaos = work / "vm-chaos", work / "aot-command-chaos"
-        wrapper(vm, suite["vm"], {"GOCOVERDIR": go_raw, "PIZDOS_WASM_COVERDIR": wasm_raw})
-        wrapper(aot, suite["aot"], {"LLVM_PROFILE_FILE": aot_raw / "%8m.profraw"})
-        wrapper(vm_chaos, suite["vm_chaos"], {"GOCOVERDIR": go_raw, "PIZDOS_WASM_COVERDIR": wasm_raw})
-        wrapper(aot_chaos, suite["aot_chaos"], {"LLVM_PROFILE_FILE": aot_chaos_raw / "%8m.profraw"})
-        failures = []
-        for case in suite["cases"]:
+        wrapper(vm, suite["vm"], {"GOCOVERDIR": go_raw, "PIZDOS_WASM_COVERDIR": wasm_raw}, suite["wrapper_tools"])
+        wrapper(aot, suite["aot"], {"LLVM_PROFILE_FILE": aot_raw / "%8m.profraw"}, suite["wrapper_tools"])
+        wrapper(vm_chaos, suite["vm_chaos"], {"GOCOVERDIR": go_raw, "PIZDOS_WASM_COVERDIR": wasm_raw}, suite["wrapper_tools"])
+        wrapper(aot_chaos, suite["aot_chaos"], {"LLVM_PROFILE_FILE": aot_chaos_raw / "%8m.profraw"}, suite["wrapper_tools"])
+        jobs = int(suite.get("jobs", 4))
+        if jobs < 1:
+            raise RuntimeError("coverage jobs must be positive")
+        print(f"coverage: {len(suite['cases'])} cases, {jobs} workers", flush=True)
+
+        def run_case(case):
             name = case["name"]
             command = [value.replace("$VM_CHAOS", str(vm_chaos)).replace("$AOT_CHAOS", str(aot_chaos))
                        .replace("$VM", str(vm)).replace("$AOT", str(aot)).replace("$OUT", str(work / name))
                        for value in case["command"]]
             started = time.monotonic()
+            failed = False
             print(f"coverage: {name}", flush=True)
             try:
                 result = subprocess.run(command, capture_output=True, text=True, timeout=900)
                 (destination / (name + ".log")).write_text(result.stdout + result.stderr)
                 if result.returncode:
-                    failures.append(name)
+                    failed = True
                     print(f"FAIL {name}: exit {result.returncode}\n{result.stdout[-4000:]}{result.stderr[-4000:]}", flush=True)
             except subprocess.TimeoutExpired:
-                failures.append(name)
+                failed = True
                 print(f"FAIL {name}: timeout", flush=True)
             print(f"coverage: {name} finished in {time.monotonic() - started:.1f}s", flush=True)
+            return name if failed else None
+
+        with ThreadPoolExecutor(max_workers=jobs) as workers:
+            failures = [name for name in workers.map(run_case, suite["cases"]) if name]
         aot_lines, aot_branches = aot_report(suite, aot_raw, destination)
         chaos_lines, chaos_branches = aot_report(suite, aot_chaos_raw, destination, chaos=True)
         for number, count in chaos_lines.items():

@@ -912,6 +912,8 @@ coverage = command(
     deps=[aot_coverage, vm_coverage, aot_chaos_coverage, vm_chaos_coverage,
           *[reactor for reactor, embedded in wasm_coverage], *dict.fromkeys(coverage_dependencies)],
     cmd=["python3", "$(S)/dev/coverage.py", "$(B)/coverage", json.dumps({
+        "jobs": int(os.environ.get("COVERAGE_JOBS") or os.environ.get("BUILD_JOBS") or "4"),
+        "wrapper_tools": {"cc": CLANG, "cppflags": build.cppflags, "ldflags": build.ldflags},
         "source_root": "$(S)", "aot": aot_coverage.outputs[0], "vm": vm_coverage.outputs[0],
         "aot_chaos": aot_chaos_coverage.outputs[0], "vm_chaos": vm_chaos_coverage.outputs[0],
         "go": GO,

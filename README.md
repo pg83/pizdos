@@ -12,6 +12,8 @@ to collect the reports and `./build coverage_check` to enforce the 99% floor.
 `./build e2e` runs the same AOT/VM cases against production builds.
 Application integration tests have separate `test_busybox`, `test_clang`,
 `test_doom` and `test_python` targets and are outside the coverage suite.
+CI uses the runner's available CPUs for builds and parallel coverage cases.
+Locally, `COVERAGE_JOBS` selects coverage workers (four by default).
 The host needs Clang's profiling runtime, matching `llvm-profdata` and
 `llvm-cov`, Go 1.25, WABT, CMake, Ninja and LLVM/Clang tablegen tools.
 
