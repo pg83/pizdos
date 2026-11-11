@@ -35,7 +35,7 @@ def get(index):
     return b"\x20" + leb(index)
 
 
-def program(count, bounded=False):
+def program(count, bounded=False, constant_steps=False):
     # Each case independently tests its remaining iterations. Its back
     # edge carries the next key to the same dispatch, with no shared latch.
     code = get(1) + b"\x45\x04\x40\x23\0\x0f\x0b"
@@ -44,7 +44,8 @@ def program(count, bounded=False):
     for index in range(count):
         depth = count - index - 1
         code += b"\x0b\x23\0" + constant(index + 1) + b"\x6a\x24\0"
-        code += get(0) + get(2) + constant(index + 3) + b"\x6c\x6a" + constant(count + 7) + b"\x73\x21\0"
+        next_key = constant((index + 1) % count) if constant_steps else get(0) + get(2) + constant(index + 3) + b"\x6c\x6a" + constant(count + 7) + b"\x73"
+        code += next_key + b"\x21\0"
         code += get(1) + constant(1) + b"\x6b\x22\1\x0d" + leb(depth)
         code += b"\x0c" + leb(depth + 1)
     code += b"\x0b\x0b\x23\0"
@@ -56,7 +57,7 @@ def program(count, bounded=False):
                 for _ in range(rounds):
                     index = (current & (count - 2)) if bounded else min(current, count - 1)
                     result = (result + index + 1) & MASK
-                    current = (((current + seed * (index + 3)) & MASK) ^ (count + 7)) & MASK
+                    current = (index + 1) % count if constant_steps else (((current + seed * (index + 3)) & MASK) ^ (count + 7)) & MASK
                 entry += constant(0) + b"\x24\0" + constant(key) + constant(rounds) + constant(seed) + b"\x10\0"
                 entry += constant(result) + b"\x47\x04\x40\0\x0b"
                 checks += 1
@@ -73,8 +74,9 @@ def main():
     with tempfile.TemporaryDirectory(prefix="pizdos-dispatch-loops-") as directory:
         work = Path(directory)
         source, compiled, embedded = [work / name for name in ("input.wasm", "native.o", "embedded.o")]
-        for count, bounded in ((count, bounded) for count in (17, 33) for bounded in (False, True)):
-            data, checks = program(count, bounded)
+        for count, bounded, constant_steps in ((count, bounded, constant_steps) for count in (17, 33)
+                                               for bounded in (False, True) for constant_steps in (False, True)):
+            data, checks = program(count, bounded, constant_steps)
             source.write_bytes(data)
             result = subprocess.run([wazero, "-interpreter", str(source)], capture_output=True, timeout=60)
             assert result.returncode == 0 and result.stdout == b"", result
