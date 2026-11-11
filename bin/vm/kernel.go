@@ -70,7 +70,7 @@ type Process struct {
 	policy    int32
 	pdeathsig int
 	// comm, undumpable and noNewPrivs are prctl's.
-	comm       string
+	comm       *string
 	undumpable bool
 	noNewPrivs bool
 	inst       *Instance
@@ -266,6 +266,7 @@ func (k *Kernel) newProcess(parent *Process) (*Process, error) {
 	} else {
 		p.ppid, p.pgid, p.sid = parent.pid, parent.pgid, parent.sid
 		p.nice, p.policy = parent.nice, parent.policy
+		p.comm, p.undumpable, p.noNewPrivs = parent.comm, parent.undumpable, parent.noNewPrivs
 		p.cwd, p.umask, p.limits, p.seed = parent.cwd, parent.umask, parent.limits, parent.seed
 	}
 

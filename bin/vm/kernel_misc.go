@@ -238,11 +238,15 @@ const (
 // name is the process's name of prctl: its program's file name, at most
 // 15 bytes, until it sets another.
 func (p *Process) name() string {
-	if p.comm == "" && p.image != nil && len(p.image.argv) > 0 {
+	if p.comm != nil {
+		return *p.comm
+	}
+
+	if p.image != nil && len(p.image.argv) > 0 {
 		return truncate(path.Base(p.image.argv[0]), 15)
 	}
 
-	return p.comm
+	return ""
 }
 
 func (p *Process) prctl(option, va uint32) uint32 {
@@ -271,8 +275,8 @@ func (p *Process) prctl(option, va uint32) uint32 {
 
 		p.undumpable = arg == 0
 	case prSetName:
-		name := p.cstr(arg)
-		p.comm = truncate(string(name), 15)
+		name := truncate(string(p.cstr(arg)), 15)
+		p.comm = &name
 	case prGetName:
 		b := p.span(arg, 16)
 		clear(b)

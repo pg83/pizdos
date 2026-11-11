@@ -254,7 +254,7 @@ func (p *Process) execReset() {
 
 	p.sig.altstack.sp, p.sig.altstack.size = 0, 0
 	p.sig.mu.Unlock()
-	p.comm = ""
+	p.comm = nil
 }
 
 // environment is the process's environ as it is now.
