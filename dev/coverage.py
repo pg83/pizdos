@@ -130,7 +130,8 @@ def codecov_aot(path, lines):
 
 def vm_report(suite, raw, destination):
     profile = destination / "vm.out"
-    subprocess.run([suite["go"], "tool", "covdata", "textfmt", "-i=" + str(raw), "-o=" + str(profile)], check=True)
+    directories = ",".join(str(path) for path in sorted(raw.iterdir()))
+    subprocess.run([suite["go"], "tool", "covdata", "textfmt", "-i=" + directories, "-o=" + str(profile)], check=True)
     files, missing, blocks = {}, [], {}
     for line in profile.read_text().splitlines()[1:]:
         location, statements, count = line.rsplit(" ", 2)
@@ -173,11 +174,9 @@ def run(destination, suite):
         aot_raw.mkdir()
         aot_chaos_raw.mkdir()
         wasm_raw.mkdir()
-        vm, aot = work / "vm", work / "aot-command"
-        vm_chaos, aot_chaos = work / "vm-chaos", work / "aot-command-chaos"
-        wrapper(vm, suite["vm"], {"GOCOVERDIR": go_raw, "PIZDOS_WASM_COVERDIR": wasm_raw}, suite["wrapper_tools"])
+        aot = work / "aot-command"
+        aot_chaos = work / "aot-command-chaos"
         wrapper(aot, suite["aot"], {"LLVM_PROFILE_FILE": aot_raw / "%8m.profraw"}, suite["wrapper_tools"])
-        wrapper(vm_chaos, suite["vm_chaos"], {"GOCOVERDIR": go_raw, "PIZDOS_WASM_COVERDIR": wasm_raw}, suite["wrapper_tools"])
         wrapper(aot_chaos, suite["aot_chaos"], {"LLVM_PROFILE_FILE": aot_chaos_raw / "%8m.profraw"}, suite["wrapper_tools"])
         jobs = int(suite.get("jobs", 4))
         if jobs < 1:
@@ -186,6 +185,14 @@ def run(destination, suite):
 
         def run_case(case):
             name = case["name"]
+            # Host syscall failures must not rewrite metadata another case
+            # is using. Go's runtime shares covmeta files within a directory.
+            profiles = go_raw / name
+            profiles.mkdir()
+            vm, vm_chaos = work / (name + "-vm"), work / (name + "-vm-chaos")
+            variables = {"GOCOVERDIR": profiles, "PIZDOS_WASM_COVERDIR": wasm_raw}
+            wrapper(vm, suite["vm"], variables, suite["wrapper_tools"])
+            wrapper(vm_chaos, suite["vm_chaos"], variables, suite["wrapper_tools"])
             command = [value.replace("$VM_CHAOS", str(vm_chaos)).replace("$AOT_CHAOS", str(aot_chaos))
                        .replace("$VM", str(vm)).replace("$AOT", str(aot)).replace("$OUT", str(work / name))
                        for value in case["command"]]
