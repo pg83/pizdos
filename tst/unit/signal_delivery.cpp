@@ -72,6 +72,11 @@ int main() {
     assert(sigaction(SIGSTOP, &install, nullptr) == -1 && errno == EINVAL);
     assert(sigaction(0, nullptr, &current) == -1 && errno == EINVAL);
     assert(kill(getpid(), NSIG) == -1 && errno == EINVAL);
+#ifdef __wasm__
+    assert(raise(0) == -1 && errno == EINVAL);
+    assert(sigqueue(0, 0, value) == -1 && errno == EINVAL);
+    assert(killpg(1, 0) == -1 && errno == EINVAL);
+#endif
     assert(kill(0x7fffffff, 0) == -1 && errno == ESRCH);
     assert(kill(0, 0) == 0);
 
@@ -118,6 +123,7 @@ int main() {
     }
     char byte;
     assert(read(ready[0], &byte, 1) == 1 && byte == 'r');
+    assert(kill(-1, 0) == 0);
     assert(killpg(child, SIGUSR1) == 0);
     int status;
     assert(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 17);
