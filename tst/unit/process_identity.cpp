@@ -56,16 +56,28 @@ int main() {
     check(getpid() > 0 && getsid(0) > 0 && getpgid(0) == getpgrp());
     check(getsid(0x7fffffff) == -1 && errno == ESRCH);
     check(getpgid(0x7fffffff) == -1 && errno == ESRCH);
+    check(setpgid(0x7fffffff, 0) == -1 && errno == ESRCH);
+    check(setpgid(0, 0x7fffffff) == -1 && errno == EPERM);
     check(setsid() == -1 && errno == EPERM);
+    int control[2];
+    check(pipe(control) == 0);
     pid_t child = fork();
     check(child >= 0);
     if (child == 0) {
         check(getppid() > 0 && setsid() == getpid());
         check(getsid(0) == getpid() && getpgrp() == getpid());
+        char byte;
+        check(read(control[0], &byte, 1) == 1 && byte == 'r');
+        check(getpriority(PRIO_PROCESS, 0) == 19);
         _exit(7);
     }
+    check(getpriority(PRIO_PROCESS, child) >= PRIO_MIN);
+    check(setpriority(PRIO_PROCESS, child, 19) == 0);
+    check(getpriority(PRIO_PROCESS, child) == 19);
+    check(write(control[1], "r", 1) == 1);
     int status = 0;
     check(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 7);
+    check(close(control[0]) == 0 && close(control[1]) == 0);
     check(setpgrp() == 0);
 
     int priority = getpriority(PRIO_PROCESS, 0);
@@ -81,6 +93,7 @@ int main() {
     check(setpriority(99, 0, 0) == -1 && errno == EINVAL);
     check(getpriority(PRIO_PROCESS, 0x7fffffff) == -1 && errno == ESRCH);
     check(getpriority(PRIO_USER, uid_t(-2)) == -1 && errno == ESRCH);
+    check(setpriority(PRIO_USER, uid_t(-2), 19) == -1 && errno == ESRCH);
     if (effective != 0) {
         check(nice(-1) == -1 && errno == EPERM);
         check(setpriority(PRIO_PROCESS, 0, 0) == -1 && errno == EACCES);
