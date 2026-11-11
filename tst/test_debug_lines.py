@@ -137,6 +137,9 @@ def main():
     malformed.append(("string-offset-outside-section", outside))
     original = table(4)
     start = 10 + struct.unpack_from("<I", original, 6)[0]
+    empty = bytearray(original[:start] + b"\0\0" + original[start:])
+    struct.pack_into("<I", empty, 0, len(empty) - 4)
+    malformed.append(("zero-length-extended-opcode", bytes(empty)))
     for name, program in (("extended-length", b"\0" + leb(1 << 31) + b"\2"),
                           ("address-width", b"\0\x11\2" + bytes(16))):
         data = bytearray(original[:start] + program)
