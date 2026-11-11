@@ -748,6 +748,7 @@ TESTED = {
     "fork_modes": [vm, aot_native, wazero],
     "debug_lines": [vm, aot_native],
     "import_abi": [vm, aot_native],
+    "import_errors": [vm, aot_native, wazero],
     "initializers": [vm, aot_native, wazero],
     "integer_identities": [vm, aot_native, wazero],
     "invariant_loops": [vm, aot_native, wazero],
