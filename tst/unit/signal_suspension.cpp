@@ -21,7 +21,7 @@ int main() {
     assert(sigemptyset(&action.sa_mask) == 0 && sigaction(SIGALRM, &action, nullptr) == 0);
     sigset_t blocked, previous, temporary, current;
     assert(sigemptyset(&blocked) == 0 && sigaddset(&blocked, SIGALRM) == 0);
-    assert(sigprocmask(SIG_BLOCK, &blocked, &previous) == 0);
+    assert(pthread_sigmask(SIG_BLOCK, &blocked, &previous) == 0);
     assert(sigemptyset(&temporary) == 0);
     itimerval timer{};
     timer.it_value.tv_usec = 10000;
