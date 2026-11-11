@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Drive the public VM through a controlling pseudoterminal, checking echo.
 
-    test_terminal.py <vm> <native-aot> <check.wasm>
+    test_terminal.py <vm> <native-aot> <check.wasm> <filter>
 """
 import errno
 import fcntl
@@ -55,7 +55,7 @@ def terminal(command, answers, expected, env):
 
 
 def main():
-    vm, native, module = sys.argv[1:]
+    vm, native, module, wrapper = sys.argv[1:]
     env = dict(os.environ, W2X_MEMORY_TAIL="optimized", W2X_TAIL_PROFILE="")
     with tempfile.TemporaryDirectory(prefix="pizdos-terminal-") as directory:
         root = Path(directory)
@@ -74,6 +74,8 @@ def main():
                                               (b"long: ", b"x" * 150 + b"\n"), (b"eof: ", b"\x04")],
                      b"first: \r\nempty: \r\nlong: \r\neof: \r\nterminal passwords: ok\r\n", env)
             terminal([*command, "interrupt"], [], b"interrupt: interrupted terminal: ok\r\n", env)
+            terminal([wrapper, f"{errno.ENOTTY}/16", "--", *command, "attributes"], [],
+                     b"terminal attributes: failed as expected\r\n", env)
     print("terminal: native/Wasm AOT agree, passwords remain unechoed, attributes restored and errors reported")
 
 

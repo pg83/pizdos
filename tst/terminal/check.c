@@ -20,6 +20,11 @@ int main(int argc, char** argv) {
         puts("missing terminal: ok");
         return 0;
     }
+    if (!strcmp(argv[1], "attributes")) {
+        assert(getpass("unreachable: ") == NULL && errno == ENOTTY);
+        puts("terminal attributes: failed as expected");
+        return 0;
+    }
     if (!strcmp(argv[1], "interrupt")) {
         struct sigaction action = {0};
         action.sa_handler = alarmHandler;
