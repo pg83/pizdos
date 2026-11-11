@@ -2377,15 +2377,6 @@ namespace {
     }
 
     template <typename K, typename V>
-    static Map<K, V> mapOf(InitialValues<Tuple2<K, V>> entries) {
-        auto map = makeMap<K, V>();
-        for (auto e : entries) {
-            setMap(map, e.v0, e.v1);
-        }
-        return map;
-    }
-
-    template <typename K, typename V>
     static void eraseMap(Map<K, V> m, K key) {
         Int at = findMap(m, key);
         if (at >= 0) {
@@ -5046,8 +5037,6 @@ namespace {
 
     static constexpr FAluOp fAnd = FAluOp(6LL);
 
-    static constexpr FAluOp fAndn = FAluOp(7LL);
-
     static constexpr FAluOp fOr = FAluOp(8LL);
 
     static constexpr FAluOp fXor = FAluOp(9LL);
@@ -6388,8 +6377,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 return 95;
             case fAnd:
                 return 84;
-            case fAndn:
-                return 85;
             case fOr:
                 return 86;
             case fXor:
@@ -7036,13 +7023,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return r;
     }
 
+    // lowererMov queries the class only after excluding physical registers.
     static u8 mFuncRegClass(MFunc* mf, VReg r) {
-        if (vRegIsPhys(r)) {
-            if (vRegIsXMM(r)) {
-                return classXMM;
-            }
-            return classGPR;
-        }
         return mf->classValue[r - firstVirtual];
     }
 
@@ -7575,7 +7557,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (depth > 24 || val.typ != I32) {
             return bad;
         }
-        CopyAddress out = CopyAddress{mapOf<i32, u32>({}), {}, {}, true};
+        CopyAddress out = CopyAddress{makeMap<i32, u32>(), {}, {}, true};
         auto temporary186 = lookupMap(invariants, v);
         i32 mapped = temporary186.v0;
         bool hoisted = temporary186.v1;
@@ -7750,7 +7732,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         u64 width = convert<u64>(length(loads));
-        Map<i32, CopyAddress> addresses = mapOf<i32, CopyAddress>({});
+        Map<i32, CopyAddress> addresses = makeMap<i32, CopyAddress>();
         auto contiguous = [&](Slice<i32> values) mutable -> bool {
             CopyAddress first = {};
             auto range218 = values;
@@ -7784,7 +7766,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (!contiguous(loads) || !contiguous(stores)) {
             return -1;
         }
-        Map<i32, i32> reverse = mapOf<i32, i32>({});
+        Map<i32, i32> reverse = makeMap<i32, i32>();
         auto range224 = f->blocks[l->header].params;
         for (Int index225 = 0, rangeEnd226 = length(range224); index225 < rangeEnd226; ++index225) {
             Int j = index225;
@@ -7918,7 +7900,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             setMap(cache, v, mapped);
             return mapped;
         };
-        Map<i32, i32> initial = mapOf<i32, i32>({});
+        Map<i32, i32> initial = makeMap<i32, i32>();
         i32 src = evaluate(source, false, initial);
         i32 dst = evaluate(dest, false, initial);
         {
@@ -7946,7 +7928,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         current = functionNewBlock(f);
         f->blocks[bulk].term = Term{TermIf, condition, sliceOf<Edge>({Edge{current, {}}, Edge{fast, appendSlice(Slice<i32>{}, f->blocks[bulk].params)}}), {}, {}};
         emit(OpCopyForward, TNone, i64(0LL), sliceOf<i32>({dst, src, lengthValue}));
-        Map<i32, i32> final = mapOf<i32, i32>({});
+        Map<i32, i32> final = makeMap<i32, i32>();
         Slice<i32> args = makeSlice<i32>(length(fastExit.args));
         auto range254 = fastExit.args;
         for (Int index255 = 0, rangeEnd256 = length(range254); index255 < rangeEnd256; ++index255) {
@@ -8155,10 +8137,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     }
                 }
             }
-            l->invariantCache = mapOf<i32, bool>({});
+            l->invariantCache = makeMap<i32, bool>();
             l->invariantNodes = {};
-            l->cache = mapOf<i32, LoopSpan>({});
-            l->noWrap = mapOf<i32, bool>({});
+            l->cache = makeMap<i32, LoopSpan>();
+            l->noWrap = makeMap<i32, bool>();
             i32 fast = memoryLoopVersionOne(l);
             if (fast >= 0) {
                 return fast;
@@ -8182,7 +8164,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         Slice<LoopSpan> writes = {};
-        Map<RangeKeyLoop_version570, Int> writeIndex = mapOf<RangeKeyLoop_version570, Int>({});
+        Map<RangeKeyLoop_version570, Int> writeIndex = makeMap<RangeKeyLoop_version570, Int>();
         auto keyOf = [&](LoopSpan bound) mutable -> RangeKeyLoop_version570 {
             return RangeKeyLoop_version570{bound.base, bound.base2, bound.stride, bound.mul, bound.mul2, bound.factor};
         };
@@ -8225,9 +8207,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
             }
         }
-        Map<RangeKeyLoop_version570, Int> indices = mapOf<RangeKeyLoop_version570, Int>({});
+        Map<RangeKeyLoop_version570, Int> indices = makeMap<RangeKeyLoop_version570, Int>();
         Slice<LoopSpan> guards = {};
-        Map<i32, bool> proven = mapOf<i32, bool>({});
+        Map<i32, bool> proven = makeMap<i32, bool>();
         bool unboundedWrite = false;
         // An access at an invariant address is usually checked once before
         // the loop already; the version must free one that moves.
@@ -8350,7 +8332,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 condition = emit(OpAnd, I32, sliceOf<i32>({condition, aligned}));
             }
         }
-        Map<i32, i32> invariants = mapOf<i32, i32>({});
+        Map<i32, i32> invariants = makeMap<i32, i32>();
         auto mapValue = [&](i32 v) mutable -> i32 {
             auto temporary319 = lookupMap(invariants, v);
             i32 mapped = temporary319.v0;
@@ -8361,7 +8343,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return v;
         };
         Slice<LoadRangeLoop_version741> reads = {};
-        Map<CseKey, i32> available = mapOf<CseKey, i32>({});
+        Map<CseKey, i32> available = makeMap<CseKey, i32>();
         if (length(l->invariantNodes) > 0) {
             i32 next = functionNewBlock(f);
             f->blocks[current].term = Term{TermIf, condition, sliceOf<Edge>({Edge{next, {}}, l->entry}), {}, {}};
@@ -8527,7 +8509,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         if (length(switches) >= 2) {
             i32 index = mapValue(f->blocks[switches[0]].term.value);
-            Map<i32, Int> cases = mapOf<i32, Int>({});
+            Map<i32, Int> cases = makeMap<i32, Int>();
             auto range343 = switches;
             for (Int index344 = 0, rangeEnd345 = length(range343); index344 < rangeEnd345; ++index344) {
                 i32 b = range343[index344];
@@ -8744,7 +8726,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void moduleExportSection(Module* m, Reader* r) {
         u32 n = readerU32(r);
-        Map<String, bool> seen = mapOf<String, bool>({});
+        Map<String, bool> seen = makeMap<String, bool>();
         u32 i = 0;
         for (; i < n; i++) {
             Export e = Export{readerName(r), readerByte(r), readerU32(r)};
@@ -9895,8 +9877,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 (void)x;
             }
         }
-        Map<i32, Slice<Move>> atEnd = mapOf<i32, Slice<Move>>({});
-        Map<i32, Slice<Move>> atStart = mapOf<i32, Slice<Move>>({});
+        Map<i32, Slice<Move>> atEnd = makeMap<i32, Slice<Move>>();
+        Map<i32, Slice<Move>> atStart = makeMap<i32, Slice<Move>>();
         // An unsplit interval has one location throughout the CFG. Only
         // split registers can need a move between predecessor and successor.
         if (split.data) {
@@ -15910,7 +15892,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             if ((val->op != OpTruncSatS && val->op != OpTruncSatU) || val->block < 0 || l->ci->rpoIndex[val->block] < 0 || l->uses[v] == 0) {
                 continue;
             }
-            FloatRanges* r = activePool->make<FloatRanges>(FloatRanges{f, mapOf<i32, FloatRange>({}), mapOf<i32, FloatRange>({})});
+            FloatRanges* r = activePool->make<FloatRanges>(FloatRanges{f, makeMap<i32, FloatRange>(), makeMap<i32, FloatRange>()});
             i32 b = val->block;
             i32 p = l->ci->idom[b];
             while (p != b) {
@@ -18335,7 +18317,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 };
 
                 BlockView original{mf->blocks[b].insts.view(), mf->blocks[b].succs, mf->blocks[b].depth};
-                Map<Array<AddressTerm, 4>, Slice<TailRangeGroup*>> active = mapOf<Array<AddressTerm, 4>, Slice<TailRangeGroup*>>({});
+                Map<Array<AddressTerm, 4>, Slice<TailRangeGroup*>> active = makeMap<Array<AddressTerm, 4>, Slice<TailRangeGroup*>>();
                 Slice<TailRangeGroup*> groups = {};
                 auto range921 = original.insts;
                 for (Int index922 = 0, rangeEnd923 = length(range921); index922 < rangeEnd923; ++index922) {
@@ -19021,7 +19003,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             asmSetSP(a, e->body);
             objCodeSlowPath(oc, bodyChecks[k][0], bodyChecks[k][1], 0, noReg);
         }
-        Map<Array<i64, 2>, i32> stubs = mapOf<Array<i64, 2>, i32>({});
+        Map<Array<i64, 2>, i32> stubs = makeMap<Array<i64, 2>, i32>();
         auto traps = e->traps;
         for (Int i = 0; i < length(traps); ++i) {
             TrapFixup t = traps[i];
@@ -20239,7 +20221,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 params = appendValues(params, p);
             }
         }
-        Map<i32, bool> seen = mapOf<i32, bool>({});
+        Map<i32, bool> seen = makeMap<i32, bool>();
         auto preds = blk->preds;
         for (Int k = 0; k < length(preds); ++k) {
             i32 p = preds[k];
@@ -20409,7 +20391,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (length(blk->params) == 0) {
             return true;
         }
-        Map<i32, i32> own = mapOf<i32, i32>({});
+        Map<i32, i32> own = makeMap<i32, i32>();
         Term* t = &blk->term;
         if (t->kind == TermIf || t->kind == TermSwitch) {
             setMap(own, optimizerResolve(o, t->value), own[optimizerResolve(o, t->value)] + 1);
@@ -20460,7 +20442,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // the original float values remain available to any other users.
     static bool optimizerNarrowFloatComparisons(Optimizer* o) {
         Function* f = o->f;
-        FloatIntegerNarrow* n = activePool->make<FloatIntegerNarrow>(FloatIntegerNarrow{o, makeSlice<u8>(length(f->values)), mapOf<i32, i32>({})});
+        FloatIntegerNarrow* n = activePool->make<FloatIntegerNarrow>(FloatIntegerNarrow{o, makeSlice<u8>(length(f->values)), makeMap<i32, i32>()});
         bool changed = false;
         for (Int v = 0, end = length(f->values); v < end; ++v) {
             Value val = f->values[v];
@@ -20527,8 +20509,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             const ParamIndex entry = o->repairIndex[usize(v)];
             return entry.epoch == epoch ? entry.index : -1;
         };
-        Map<Array<i32, 2>, i32> memo = mapOf<Array<i32, 2>, i32>({});
-        Map<i32, Slice<i32>> preds = mapOf<i32, Slice<i32>>({});
+        Map<Array<i32, 2>, i32> memo = makeMap<Array<i32, 2>, i32>();
+        Map<i32, Slice<i32>> preds = makeMap<i32, Slice<i32>>();
         auto seen = [&](auto& recur, i32 b, i32 v) -> i32 {
             v = optimizerResolve(o, v);
             i32 j = paramIndex(v);
@@ -20970,7 +20952,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 continue;
             }
             bool local = optimizerLocalParams(o, h);
-            Map<i32, Bypass> bypasses = mapOf<i32, Bypass>({});
+            Map<i32, Bypass> bypasses = makeMap<i32, Bypass>();
             TermKind kind = f->blocks[h].term.kind;
             Slice<Edge> targets = slicesClone(f->blocks[h].term.edges);
             auto preds = f->blocks[h].preds;
@@ -22282,7 +22264,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         f->module = m;
         f->index = index;
         f->typ = &m->types[fn->typ];
-        Frontend* fe = activePool->make<Frontend>(Frontend{m, f, Reader{fn->body, {}}, {}, {}, {}, {}, {}, {}, {}, {}, {}, mapOf<ConstKey, i32>({}), mapOf<i32, Slice<i32>>({}), {}});
+        Frontend* fe = activePool->make<Frontend>(Frontend{m, f, Reader{fn->body, {}}, {}, {}, {}, {}, {}, {}, {}, {}, {}, makeMap<ConstKey, i32>(), makeMap<i32, Slice<i32>>(), {}});
         frontendRun(fe);
         return f;
     }
@@ -23096,7 +23078,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static MemoryLoop* findMemoryLoop(Function* f, CfgInfo* ci, i32 h) {
-        MemoryLoop* l = activePool->make<MemoryLoop>(MemoryLoop{f, ci, h, -1, -1, -1, {}, makeSlice<bool>(length(f->blocks)), {}, {}, -1, u64(1LL), {}, {}, {}, -1, -1, {}, 0, -1, false, false, mapOf<i32, LoopSpan>({}), mapOf<i32, LoopSpan>({}), {}, {}, {}, {}, {}});
+        MemoryLoop* l = activePool->make<MemoryLoop>(MemoryLoop{f, ci, h, -1, -1, -1, {}, makeSlice<bool>(length(f->blocks)), {}, {}, -1, u64(1LL), {}, {}, {}, -1, -1, {}, 0, -1, false, false, makeMap<i32, LoopSpan>(), makeMap<i32, LoopSpan>(), {}, {}, {}, {}, {}});
         auto preds = f->blocks[h].preds;
         for (Int i = 0; i < length(preds); ++i) {
             i32 p = preds[i];
@@ -23738,7 +23720,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static MFunc* lowerFunction(ObjCode* oc, Function* f) {
-        Lowerer* l = activePool->make<Lowerer>(Lowerer{oc->m, f, oc->lay, {}, activePool->make<MFunc>(MFunc{}), {}, {}, {}, {}, {}, {}, {}, -1, {}, {}, mapOf<Array<i32, 2>, i32>({}), mapOf<i32, i64>({}), {}, {}, {}, {}});
+        Lowerer* l = activePool->make<Lowerer>(Lowerer{oc->m, f, oc->lay, {}, activePool->make<MFunc>(MFunc{}), {}, {}, {}, {}, {}, {}, {}, -1, {}, {}, makeMap<Array<i32, 2>, i32>(), makeMap<i32, i64>(), {}, {}, {}, {}});
         l->oc = oc;
         l->ci = f->cfg ? f->cfg : functionAnalyze(f);
         l->vregs.resize(f->values.size());
@@ -24047,7 +24029,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void optimize(Function* f) {
-        Optimizer* o = activePool->make<Optimizer>(Optimizer{f, {}, mapOf<ConstKey, i32>({}), {}});
+        Optimizer* o = activePool->make<Optimizer>(Optimizer{f, {}, makeMap<ConstKey, i32>(), {}});
         for (Int v = 0, end = length(f->values); v < end; ++v) {
             Value* val = &f->values[v];
             if (val->op == OpConst && val->block < 0) {
