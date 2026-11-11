@@ -858,6 +858,7 @@ func (p *Process) libcMktemp(template uint32) uint32 {
 
 	if err != nil {
 		p.span(template, 1)[0] = 0
+		p.setErrno(errnoOf(err))
 	}
 
 	return p.pointer(template, nil)
