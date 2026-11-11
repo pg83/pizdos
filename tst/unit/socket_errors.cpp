@@ -10,6 +10,7 @@
 #include <string.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -86,5 +87,16 @@ int main() {
         assert(close(client) == 0);
     }
     assert(close(listener) == 0);
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0);
+    message.msg_iovlen = 1025;
+    assert(sendmsg(pair[0], &message, 0) == -1 && (errno == EINVAL || errno == EMSGSIZE));
+    assert(recvmsg(pair[0], &message, MSG_DONTWAIT) == -1 && (errno == EINVAL || errno == EMSGSIZE));
+    timeval timeout{0, 10000};
+    assert(setsockopt(pair[0], SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == 0);
+    assert(send(pair[1], "x", 1, 0) == 1);
+    char received[2]{};
+    assert(recv(pair[0], received, sizeof(received), MSG_WAITALL) == 1 && received[0] == 'x');
+    assert(recv(pair[0], received, 1, 0) == -1 && (errno == EAGAIN || errno == EWOULDBLOCK));
+    assert(close(pair[0]) == 0 && close(pair[1]) == 0);
     puts("socket errors: ok");
 }
