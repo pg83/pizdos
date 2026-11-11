@@ -949,13 +949,22 @@ func (p *Process) libcGetpagesize() uint32 {
 func (p *Process) libcMmap(addr, n, prot, flags, fd uint32, off uint64) uint32 {
 	const failed = math.MaxUint32
 
-	if n == 0 {
+	if n == 0 || off&4095 != 0 || flags&15 < 1 || flags&15 > 3 {
 		p.setErrno(syscall.EINVAL)
 
 		return failed
 	}
 
-	at := p.malloc(n)
+	rounded := pageRound(n)
+
+	if rounded > math.MaxUint32 {
+		p.setErrno(syscall.ENOMEM)
+
+		return failed
+	}
+
+	n = uint32(rounded)
+	at := p.memalign(4096, n)
 
 	if at == 0 {
 		p.setErrno(syscall.ENOMEM)
@@ -1008,6 +1017,16 @@ func (p *Process) libcMunmap(addr, n uint32) uint32 {
 }
 
 func (p *Process) libcMsync(addr, n, flags uint32) uint32 {
+	const (
+		async      = 1
+		invalidate = 2
+		sync       = 4
+	)
+
+	if addr&4095 != 0 || flags&^(async|invalidate|sync) != 0 || flags&(async|sync) == async|sync {
+		return p.result(0, syscall.EINVAL)
+	}
+
 	at, m, ok := p.mappingOf(addr)
 
 	if !ok {
