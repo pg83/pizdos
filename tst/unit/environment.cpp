@@ -23,6 +23,10 @@ int main() {
     assert(unsetenv("") == -1 && errno == EINVAL);
     assert(unsetenv("bad=name") == -1 && errno == EINVAL);
     assert(unsetenv("missing") == 0);
+#ifdef __wasm__
+    char emptyName[] = "=value";
+    assert(putenv(emptyName) == -1 && errno == EINVAL);
+#endif
     assert(unsetenv("PIZDOS_ENV") == 0 && getenv("PIZDOS_ENV") == nullptr);
     char variable[] = "PIZDOS_COPY", value[] = "before";
     assert(setenv(variable, value, 1) == 0);
