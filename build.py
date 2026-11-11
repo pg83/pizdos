@@ -748,6 +748,7 @@ TESTED = {
     "objects": [vm, aot_native],
     "profile_artifacts": [vm, aot_native],
     "runtime_errors": [vm, aot_native],
+    "runtime_safety": [vm, aot_native, wazero],
     "spec_cli": [vm, aot_native],
     "python": [vm, python_o, python, python_tarball, busybox_o, busybox],
     "stand": [vm, aot_native, stand_fixture],
