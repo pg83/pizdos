@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math/bits"
 	"net"
 	"net/netip"
 	"strconv"
@@ -20,7 +21,8 @@ import (
 // service is the root's /etc/services' or, without that file, one of a few
 // well known; protocols are musl's table. The results of the functions
 // without _r are heap blocks the static area points at, as the user
-// databases' (kernel_users.go). The inet functions are musl's.
+// databases' (kernel_users.go). inet_aton accepts musl's number forms;
+// the classful helpers use network byte order for struct in_addr.
 
 const (
 	aiPassive     = 0x01
@@ -764,8 +766,8 @@ func (p *Process) protoent(number int, name string) uint32 {
 }
 
 // strtoulPart is strtoul's number of base 0 that a part of an address
-// is: hexadecimal after 0x, octal after 0, decimal else, its overflow
-// 32-bit unsigned long's largest.
+// is: hexadecimal after 0x, octal after 0, decimal else. A value outside
+// the 32-bit address range is invalid.
 func strtoulPart(s string) (uint64, bool) {
 	base, digits := uint64(10), s
 
@@ -794,7 +796,11 @@ func strtoulPart(s string) (uint64, bool) {
 			return 0, false
 		}
 
-		v = min(v*base+d, 0xffffffff)
+		if v > (0xffffffff-d)/base {
+			return 0, false
+		}
+
+		v = v*base + d
 	}
 
 	return v, true
@@ -1124,17 +1130,21 @@ func (p *Process) libcInet_ntop(family, src, dst, size uint32) uint32 {
 func (p *Process) libcInet_makeaddr(n, h uint32) uint32 {
 	switch {
 	case n < 256:
-		h |= n << 24
+		h = h&0xffffff | n<<24
 	case n < 65536:
-		h |= n << 16
+		h = h&0xffff | n<<16
+	case n < 1<<24:
+		h = h&0xff | n<<8
 	default:
-		h |= n << 8
+		h |= n
 	}
 
-	return h
+	return bits.ReverseBytes32(h)
 }
 
 func (p *Process) libcInet_lnaof(in uint32) uint32 {
+	in = bits.ReverseBytes32(in)
+
 	switch {
 	case in>>24 < 128:
 		return in & 0xffffff
@@ -1146,6 +1156,8 @@ func (p *Process) libcInet_lnaof(in uint32) uint32 {
 }
 
 func (p *Process) libcInet_netof(in uint32) uint32 {
+	in = bits.ReverseBytes32(in)
+
 	switch {
 	case in>>24 < 128:
 		return in >> 24

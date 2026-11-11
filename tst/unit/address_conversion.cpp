@@ -47,5 +47,7 @@ int main() {
 
     assert(inet_aton("4294967296", &address) == 0);
     assert(inet_aton("0x100000000", &address) == 0);
+    assert(inet_aton("999999999999999999999999999999999999", &address) == 0);
+    assert(inet_aton("4294967295", &address) == 1 && address.s_addr == INADDR_NONE);
     puts("address conversion: ok");
 }
