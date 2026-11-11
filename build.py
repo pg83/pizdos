@@ -753,6 +753,7 @@ TESTED = {
     "invariant_loops": [vm, aot_native, wazero],
     "host_io": [vm, aot_native],
     "host_resources": [vm, aot_native, host_resources_check],
+    "host_signals": [vm, aot_native, wazero],
     "doom": [vm, doom_o, doom_wad],
     "libc": [vm, libc_check_o],
     "large_functions": [vm, aot_native],
