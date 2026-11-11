@@ -53,7 +53,7 @@ int main() {
         wchar_t character;
         int columns;
     };
-    const Width widths[] = {{0, 0}, {L'A', 1}, {L'\n', -1}, {0x7f, -1}, {L'é', 1}, {0x301, 0}, {L'中', 2}, {0x20000, 2}, {0xe0020, 0}, {0xffff, -1}};
+    const Width widths[] = {{0, 0}, {L'A', 1}, {L'\n', -1}, {0x7f, -1}, {L'é', 1}, {L'Ā', 1}, {0x301, 0}, {L'中', 2}, {0x20000, 2}, {0x40000, 1}, {0xe0020, 0}, {0xe1000, 1}, {0xffff, -1}};
     for (const auto& width : widths) {
         assert(wcwidth(width.character) == width.columns);
     }
