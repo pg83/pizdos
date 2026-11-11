@@ -723,6 +723,15 @@ terminal_check = command(
     descr="CC", color="green",
 )
 
+host_resources_check = command(
+    name="host_resources_check",
+    inputs=[*LIBC_HEADERS, "$(S)/tst/host_resources/check.c", "$(S)/tst/libc/make.py", "$(S)/dev/wasm.py"],
+    outputs=["$(B)/tst/host_resources/check.wasm"],
+    deps=[libc],
+    cmd=["python3", "$(S)/tst/libc/make.py", CLANG, WASM_LD, "$(S)/tst/host_resources/check.c", "$(S)/lib/c/include", libc.outputs[0], "$(B)/tst/host_resources/check.wasm", "-g", "-D_GNU_SOURCE"],
+    descr="CC", color="green",
+)
+
 TESTED = {
     "aot": [aot, aot_command, wazero, vm, busybox],
     "asan": [vm, asan_check_o, libc_check_o],
@@ -741,6 +750,7 @@ TESTED = {
     "import_abi": [vm, aot_native],
     "invariant_loops": [vm, aot_native, wazero],
     "host_io": [vm, aot_native],
+    "host_resources": [vm, aot_native, host_resources_check],
     "doom": [vm, doom_o, doom_wad],
     "libc": [vm, libc_check_o],
     "large_functions": [vm, aot_native],
