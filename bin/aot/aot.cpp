@@ -2608,9 +2608,6 @@ namespace {
     }
 
     static String cloneString(String value) {
-        if (!value.count) {
-            return {};
-        }
         auto* bytes = static_cast<u8*>(activePool->allocate(value.count, 1));
         copyBytes(bytes, value.data, value.count);
         return {bytes, value.count};
@@ -2628,9 +2625,6 @@ namespace {
 
     template <typename T>
     static Slice<T> slicesClone(Slice<T> values) {
-        if (isNil(values)) {
-            return {};
-        }
         auto result = makeSlice<T>(values.count);
         copySlice(result, values);
         return result;
@@ -2962,9 +2956,6 @@ namespace {
     }
 
     static u64 bitsetWord(Bitset set, usize index) {
-        if (!set.data || index >= (usize(set.data->bits) + 63) / 64) {
-            return 0;
-        }
         if (set.data->bits <= denseBitsetLimit) {
             return set.data->storage ? static_cast<u64*>(set.data->storage)[index] : 0;
         }
@@ -3021,9 +3012,6 @@ namespace {
 
     template <typename F>
     static void visitBitsetWords(Bitset set, F visitor) {
-        if (!set.data) {
-            return;
-        }
         if (set.data->bits <= denseBitsetLimit) {
             auto* words = static_cast<u64*>(set.data->storage);
             for (u32 occupied = set.data->occupied; occupied; occupied &= occupied - 1) {
@@ -25710,6 +25698,7 @@ namespace {
     #endif
 #endif
 
+#if (!defined(__wasm__) && !defined(wasm)) || defined(AOT_COMMAND)
 namespace {
     static void compilerCommand(bool strict = false) {
         if (strict) {
@@ -25719,6 +25708,8 @@ namespace {
         }
     }
 }
+
+#endif
 
 #if !defined(__wasm__) && !defined(wasm)
 static bool sameString(const char* a, const char* b) {
