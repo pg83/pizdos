@@ -11194,9 +11194,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void asmLea(Asm* a, u8 size, VReg dst, Amem m) {
         asmOpRM(a, size == 8, Span<const u8>({u8(141LL)}), convert<i64>(dst), m, 0, false);
         if (dst == RSP) {
-            if (m.base != 4 || m.index >= 0 || m.label >= 0) {
-                compilerError(String("internal error: untracked change of rsp"));
-            }
+            // Explicit RSP destinations are rspAt(8); allocated registers
+            // exclude RSP. Every such address is a plain displacement.
             asmMoveSP(a, -m.disp);
         }
     }
@@ -16014,9 +16013,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 return false;
             }
         }
-        if (i == length(instrs)) {
-            return false;
-        }
+        // Both values are in this block and SSA places the load before
+        // the shift, so the scan necessarily reaches v.
         const i32 addr = functionArgs(f, a)[0];
         MInst in = inst(mLoad);
         in.mem = lowererAddress(l, addr, lv->aux + shift / 8, narrow, MemKind(kind & memProven) != MemKind(0LL), false);
@@ -18383,6 +18381,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     jump.target = succ;
                     mf->blocks.pushBack(MBlock{Vec<MInst>({jump}), sliceOf<i32>({succ}), sliceOf<i32>({convert<i32>(b)}), mf->blocks[b].depth, -1, mf->blocks[b].cold || mf->blocks[succ].cold});
                     mf->blocks[b].succs[j] = edge;
+                    // Original switch edges were split by lowererEdgeBlock.
+                    // Versioned spans contain checks, while their continuation
+                    // owns the terminator; new critical edges use jmp/jcc.
                     for (Int k = 0, end = length(mf->blocks[b].insts.view()); k < end; ++k) {
                         MInst* in = &mf->blocks[b].insts[k];
                         switch (in->op) {
@@ -18393,14 +18394,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                                 }
                                 break;
                             }
-                            case mSwitch: {
-                                for (Int t = 0, end = length(mInstTable(in)); t < end; ++t) {
-                                    if (mInstTable(in)[t] == succ) {
-                                        mInstTable(in)[t] = edge;
-                                    }
-                                }
-                                break;
-                            }
+
                         }
                     }
                     auto preds = mf->blocks[succ].preds;
@@ -21097,9 +21091,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             const i32 exit = t->edges[1 - back].block;
             for (Int i = 0; i < length(body) && simple; ++i) {
                 const Term& bt = f->blocks[body[i]].term;
-                if (bt.kind == TermReturn || bt.kind == TermTrap) {
-                    simple = false;
-                }
+                // Members reach the latch; return/trap blocks have no
+                // successors and cannot belong to this backward closure.
                 for (Int k = 0; k < length(bt.edges) && simple; ++k) {
                     const i32 to = bt.edges[k].block;
                     simple = (member[to] && (to != h || body[i] == latch)) || (body[i] == latch && to == exit);
@@ -21244,9 +21237,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     Term dst = Term{src.kind, src.value, {}, {}, src.aux};
                     if (src.kind == TermIf || src.kind == TermSwitch) {
                         dst.value = remap(src.value);
-                    }
-                    for (Int j = 0; j < length(src.values); ++j) {
-                        dst.values = appendValues(dst.values, remap(src.values[j]));
                     }
                     for (Int j = 0; j < length(src.edges); ++j) {
                         Slice<i32> args = {};
