@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"regexp"
+	"regexp/syntax"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -35,6 +36,7 @@ const (
 	regEparen   = 8
 	regEbrace   = 9
 	regBadbr    = 10
+	regErange   = 11
 	regBadrpt   = 13
 )
 
@@ -433,6 +435,10 @@ func (p *Process) libcRegcomp(preg, pattern, flags uint32) uint32 {
 	re, err := regexp.Compile(src)
 
 	if err != nil {
+		if parsed, ok := err.(*syntax.Error); ok && parsed.Code == syntax.ErrInvalidCharRange {
+			return regErange
+		}
+
 		return regBadpat
 	}
 
