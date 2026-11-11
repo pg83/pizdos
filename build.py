@@ -737,6 +737,7 @@ TESTED = {
     "doom": [vm, doom_o, doom_wad],
     "libc": [vm, libc_check_o],
     "large_functions": [vm, aot_native],
+    "large_switches": [vm, aot_native, wazero],
     "objects": [vm, aot_native],
     "profile_artifacts": [vm, aot_native],
     "runtime_errors": [vm, aot_native],
