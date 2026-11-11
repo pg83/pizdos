@@ -25,11 +25,23 @@
 #include <sys/statvfs.h>
 #include <sys/sysinfo.h>
 #include <sys/utsname.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 int main(int argc, char** argv) {
     assert(argc == 2);
-    if (strcmp(argv[1], "system") == 0) {
+    if (strcmp(argv[1], "host-abstract") == 0 || strcmp(argv[1], "host-pathname") == 0) {
+        struct sockaddr_un address;
+        socklen_t length = sizeof(address);
+        memset(&address, 0xff, sizeof(address));
+        assert(getsockname(0, (struct sockaddr*)&address, &length) == 0 && address.sun_family == AF_UNIX);
+        if (strcmp(argv[1], "host-abstract") == 0) {
+            assert(length > 15 && address.sun_path[0] == 0);
+            assert(memcmp(address.sun_path + 1, "pizdos-host-", 12) == 0);
+        } else {
+            assert(strcmp(address.sun_path, "host.socket") == 0);
+        }
+    } else if (strcmp(argv[1], "system") == 0) {
         struct utsname names;
         char buffer[256];
         struct sysinfo memory;

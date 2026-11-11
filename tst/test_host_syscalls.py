@@ -7,6 +7,7 @@ A seccomp filter restricts only each child VM process. It returns selected error
 selected syscalls, leaving the parent and later commands unaffected.
 """
 import errno
+import contextlib
 import os
 from pathlib import Path
 import resource
@@ -102,6 +103,18 @@ def main():
         result = subprocess.run([vm, "-o", str(embedded), fixture], capture_output=True, env=env, timeout=60)
         assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), result
         for obj in (compiled, embedded):
+            for operation in ("host-abstract", "host-pathname"):
+                with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as inherited:
+                    if operation == "host-abstract":
+                        inherited.bind("\0pizdos-host-" + work.name)
+                    else:
+                        with contextlib.chdir(work):
+                            inherited.bind("host.socket")
+                    result = subprocess.run([vm, "run", "--root", str(work), "--", str(obj), operation],
+                                            stdin=inherited, capture_output=True, env=env, timeout=30)
+                    assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), (operation, result)
+                if operation == "host-pathname":
+                    (work / "host.socket").unlink()
             reader, writer = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
             try:
                 # Keep the writer open and empty: reading this inherited
