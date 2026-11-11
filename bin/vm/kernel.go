@@ -315,13 +315,19 @@ func (p *Process) run(img *execImage) {
 func (p *Process) runFrom(img *execImage, i *Instance, enter func()) {
 	status := 0
 
-	for img != nil {
-		img, status = p.runImage(img, i, enter)
-		i, enter = nil, nil
+	if err := try(func() {
+		for img != nil {
+			p.image = img
+			img, status = p.runImage(img, i, enter)
+			i, enter = nil, nil
 
-		if img != nil {
-			p.execReset()
+			if img != nil {
+				p.execReset()
+			}
 		}
+	}); err != nil {
+		p.crash(err.message(), nil)
+		status = 1 << 8
 	}
 
 	p.terminate(status)

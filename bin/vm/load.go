@@ -496,6 +496,13 @@ func instantiate(name string, obj *Object, imports Imports, stack uint64) *Insta
 func newInstance(c *Code, imports Imports, stack uint64) *Instance {
 	meta := c.obj.meta
 	i := &Instance{name: c.name, obj: c.obj, code: c, block: mmap(int(max(meta.instanceSize, headerSize)), syscall.PROT_READ|syscall.PROT_WRITE)}
+	initialized := false
+
+	defer func() {
+		if !initialized {
+			i.release()
+		}
+	}()
 
 	if uint64(meta.instanceSize) > uint64(len(i.block)) {
 		throwFmt("instance of %d bytes", meta.instanceSize)
@@ -569,6 +576,8 @@ func newInstance(c *Code, imports Imports, stack uint64) *Instance {
 		binary.LittleEndian.PutUint32(i.block[t.offset+tableSize:], uint32(t.min))
 		binary.LittleEndian.PutUint32(i.block[t.offset+tableMax:], uint32(min(t.max, math.MaxUint32)))
 	}
+
+	initialized = true
 
 	return i
 }
