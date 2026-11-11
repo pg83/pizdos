@@ -53,5 +53,10 @@ int main() {
         value = {};
         assert(strptime("2024", format, &value) == nullptr);
     }
+    value = {};
+    value.tm_wday = -1;
+    value.tm_mon = 13;
+    const size_t length = strftime(text, sizeof(text), "%a|%A|%b|%B", &value);
+    assert(length < sizeof(text) && text[length] == 0);
     puts("calendar extensions: ok");
 }
