@@ -46,10 +46,10 @@ int main() {
     assert(glob("absent", GLOB_APPEND | GLOB_DOOFFS | GLOB_NOCHECK, nullptr, &paths) == 0 && paths.gl_pathc == 2);
     assert(strcmp(paths.gl_pathv[2], "a.txt") == 0 && strcmp(paths.gl_pathv[3], "absent") == 0 && paths.gl_pathv[4] == nullptr);
     globfree(&paths);
-    const char* patterns[] = {"sub/", "sub//*.txt", "star\\*", "slash\\*", ".*", "*.txt", ".h*"};
-    const int flags[] = {0, 0, 0, GLOB_NOESCAPE, 0, GLOB_NOSORT, GLOB_PERIOD};
-    const size_t counts[] = {1, 1, 1, 1, 3, 2, 1};
-    const char* first[] = {"sub/", "sub//x.txt", "star*", "slash\\name", ".", nullptr, ".hidden"};
+    const char* patterns[] = {"sub/", "sub//*.txt", "star\\*", "slash\\*", ".*", "*.txt", ".h*", "s*/*.txt"};
+    const int flags[] = {0, 0, 0, GLOB_NOESCAPE, 0, GLOB_NOSORT, GLOB_PERIOD, 0};
+    const size_t counts[] = {1, 1, 1, 1, 3, 2, 1, 1};
+    const char* first[] = {"sub/", "sub//x.txt", "star*", "slash\\name", ".", nullptr, ".hidden", "sub/x.txt"};
     for (unsigned i = 0; i < sizeof(patterns) / sizeof(patterns[0]); ++i) {
         paths = {};
         assert(glob(patterns[i], flags[i], nullptr, &paths) == 0 && paths.gl_pathc == counts[i]);
@@ -83,6 +83,10 @@ int main() {
     globfree(&paths);
     paths = {};
     assert(glob("loop/*", GLOB_ERR, nullptr, &paths) == GLOB_ABORTED);
+    globfree(&paths);
+    assert(symlink("loop-later", "loop-later") == 0);
+    paths = {};
+    assert(glob("l*/*", 0, inaccessible, &paths) == GLOB_ABORTED && errors == 3);
     globfree(&paths);
 #endif
     char home[1024], expected[1050];
