@@ -740,6 +740,7 @@ TESTED = {
     "debug_lines": [vm, aot_native],
     "import_abi": [vm, aot_native],
     "invariant_loops": [vm, aot_native, wazero],
+    "host_io": [vm, aot_native],
     "doom": [vm, doom_o, doom_wad],
     "libc": [vm, libc_check_o],
     "large_functions": [vm, aot_native],
