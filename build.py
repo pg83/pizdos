@@ -745,6 +745,7 @@ TESTED = {
     "cxx": [vm, cxx_check_o],
     "data_segments": [vm, aot_native],
     "dead_instructions": [vm, aot_native, wazero],
+    "deep_control": [vm, aot_native, wazero],
     "fork_modes": [vm, aot_native, wazero],
     "debug_lines": [vm, aot_native],
     "import_abi": [vm, aot_native],
