@@ -67,6 +67,16 @@ def main():
         result = subprocess.run([vm, "-o", str(embedded), fixture], capture_output=True, env=env, timeout=60)
         assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), result
         for obj in (compiled, embedded):
+            reader, writer = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
+            try:
+                # Keep the writer open and empty: reading this inherited
+                # nonblocking input must report EAGAIN rather than EOF.
+                result = subprocess.run([vm, "run", "--root", str(work), "--", str(obj), "nonblocking-input"],
+                                        stdin=reader, capture_output=True, env=env, timeout=30)
+                assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), result
+            finally:
+                os.close(reader)
+                os.close(writer)
             for operation, error, numbers in cases:
                 result = subprocess.run([wrapper, str(error) + "/" + ",".join(map(str, numbers)), "--", vm, "run", "--root", str(work), "--", str(obj), operation], capture_output=True,
                                         env=env, timeout=30)

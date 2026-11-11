@@ -154,6 +154,12 @@ int main(int argc, char** argv) {
             }
         } while (waited == 0);
         assert(waited == child && WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL);
+    } else if (strcmp(argv[1], "nonblocking-input") == 0) {
+        assert(fcntl(0, F_GETFL) & O_NONBLOCK);
+        char byte = 0;
+        assert(read(0, &byte, 1) == -1 && errno == EAGAIN && byte == 0);
+        struct pollfd input = {0, POLLIN, 0};
+        assert(poll(&input, 1, 0) == 0 && input.revents == 0);
     } else if (strcmp(argv[1], "descriptor-flags") == 0) {
         assert(fcntl(0, F_GETFL) == -1 && errno == EIO);
         assert(fcntl(0, F_SETFL, 0) == -1 && errno == EIO);
