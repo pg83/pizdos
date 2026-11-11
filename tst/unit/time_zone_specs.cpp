@@ -61,6 +61,18 @@ int main() {
     assert(localtime_r(&epoch, &local) == &local && mktime(&local) == epoch);
     assert(setenv("TZ", "UTC0", 1) == 0);
     tzset();
+#ifdef __wasm__
+    const char* malformedZones[] = {"<unfinished", "ABC", "ABC+", "ABC-"};
+    for (const char* malformed : malformedZones) {
+        assert(setenv("TZ", malformed, 1) == 0);
+        tzset();
+        tm fallback{};
+        assert(localtime_r(&epoch, &fallback) == &fallback && fallback.tm_gmtoff == 0);
+        assert(fallback.tm_year == 70 && fallback.tm_mon == 0 && fallback.tm_mday == 1 && fallback.tm_hour == 0);
+    }
+    assert(setenv("TZ", "UTC0", 1) == 0);
+    tzset();
+#endif
     const time_t limits[] = {INT64_MIN, INT64_MAX};
     for (time_t input : limits) {
         errno = 0;
