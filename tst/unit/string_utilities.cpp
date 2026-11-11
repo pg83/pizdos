@@ -98,9 +98,9 @@ int main() {
     assert(strverscmp("n123", "n12") > 0 && strverscmp("n12", "n123") < 0);
     assert(strverscmp("same", "same") == 0 && strverscmp("z", "a") > 0);
 
-    const char* paths[] = {"", "a", "/", "////", "/a/b/", "a//b", "a//b////"};
-    const char* directories[] = {".", ".", "/", "/", "/a", "a", "a"};
-    const char* bases[] = {".", "a", "/", "/", "b", "b", "b"};
+    const char* paths[] = {"", "a", "/", "////", "/a/b/", "a//b", "a//b////", "/a", "///a///"};
+    const char* directories[] = {".", ".", "/", "/", "/a", "a", "a", "/", "/"};
+    const char* bases[] = {".", "a", "/", "/", "b", "b", "b", "a", "a"};
     for (unsigned i = 0; i < sizeof(paths) / sizeof(paths[0]); ++i) {
         strcpy(result, paths[i]);
         assert(strcmp(dirname(result), directories[i]) == 0);
