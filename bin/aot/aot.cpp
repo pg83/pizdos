@@ -15821,7 +15821,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Slice<i32> params = f->blocks[l->ci->order[0]].params;
         Int gi = 0;
         Int xi = 0;
-        Int stack = 0;
+        Slice<i32> stacked;
         MInst pm = inst(mParMove);
         for (Int i = 0; i < length(params); ++i) {
             i32 p = params[i];
@@ -15838,17 +15838,22 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 gi++;
                 continue;
             }
-            MInst in = inst(mLoadArg);
-            in.dst = r;
-            in.imm = convert<i64>(stack);
-            in.size = typeSize(t);
-            lowererEmit(l, in);
-            stack++;
+            stacked = appendValues(stacked, p);
         }
+        // Release fixed incoming registers before loading stack arguments.
+        // All allocatable XMM registers can be occupied by those inputs.
         if (length(mInstMoves(&pm)) > 0) {
             lowererEmit(l, pm);
         }
-        l->mf->incoming = stack;
+        for (Int stack = 0; stack < length(stacked); ++stack) {
+            const i32 p = stacked[stack];
+            MInst in = inst(mLoadArg);
+            in.dst = l->vregs[p];
+            in.imm = convert<i64>(stack);
+            in.size = typeSize(f->values[p].typ);
+            lowererEmit(l, in);
+        }
+        l->mf->incoming = length(stacked);
     }
 
     // extracts lists the OpExtract values of a multi-value call; the frontend
