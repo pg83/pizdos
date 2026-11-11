@@ -75,6 +75,8 @@ int main() {
     assert((fcntl(fd, F_GETFL) & O_ACCMODE) == O_RDWR);
     assert(fcntl(fd, F_SETFD, FD_CLOEXEC) == 0 && fcntl(fd, F_GETFD) == FD_CLOEXEC);
     assert(fcntl(fd, F_SETFD, 0) == 0 && fcntl(fd, F_GETFD) == 0);
+    assert(ioctl(fd, FIOCLEX) == 0 && fcntl(fd, F_GETFD) == FD_CLOEXEC);
+    assert(ioctl(fd, FIONCLEX) == 0 && fcntl(fd, F_GETFD) == 0);
     assert(fcntl(fd, F_SETFL, O_NONBLOCK | O_APPEND) == 0);
     assert((fcntl(fd, F_GETFL) & (O_NONBLOCK | O_APPEND)) == (O_NONBLOCK | O_APPEND));
     assert(fcntl(fd, F_SETFL, 0) == 0);
@@ -92,6 +94,7 @@ int main() {
     assert(minimum >= 10 && cloexec >= 11 && fcntl(cloexec, F_GETFD) == FD_CLOEXEC);
     assert(fcntl(fd, F_DUPFD, -1) == -1 && errno == EINVAL);
     assert(close(duplicate) == 0 && close(20) == 0 && close(21) == 0 && close(minimum) == 0 && close(cloexec) == 0);
+    assert(close(duplicate) == -1 && errno == EBADF);
     struct flock lock{};
     lock.l_type = F_WRLCK;
     lock.l_whence = SEEK_SET;
