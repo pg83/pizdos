@@ -780,6 +780,7 @@ TESTED = {
     "integer_identities": [vm, aot_native, wazero],
     "kernel_exhaustion": [vm, aot_native, wazero],
     "invariant_loops": [vm, aot_native, wazero],
+    "invariant_results": [vm, aot_native, wazero],
     "host_io": [vm, aot_native],
     "host_resources": [vm, aot_native, host_resources_check],
     "host_syscalls": [vm, aot_native, host_syscalls_check, host_syscalls_filter],
