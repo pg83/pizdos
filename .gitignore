@@ -59,3 +59,5 @@ __pycache__/
 /libc_headers
 /clang
 /clang_o
+/host_syscalls_check
+/host_syscalls_filter

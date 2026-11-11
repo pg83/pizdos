@@ -14,6 +14,29 @@ import sys
 import tempfile
 
 
+def leb(value):
+    result = bytearray()
+    while value >= 128:
+        result.append(value & 127 | 128)
+        value >>= 7
+    return bytes(result + bytes([value]))
+
+
+def section(kind, data):
+    return bytes([kind]) + leb(len(data)) + data
+
+
+def wasi_clock(name):
+    signature = b"\x60\3\x7f\x7e\x7f\1\x7f" if name == "clock_time_get" else b"\x60\2\x7f\x7f\1\x7f"
+    owner, function = b"wasi_snapshot_preview1", name.encode()
+    module = b"\0asm\1\0\0\0" + section(1, b"\2" + signature + b"\x60\0\0")
+    module += section(2, b"\1" + leb(len(owner)) + owner + leb(len(function)) + function + b"\0\0")
+    module += section(3, b"\1\1") + section(5, b"\1\0\1") + section(7, b"\1\6_start\0\1")
+    body = b"\0\x41\0" + (b"\x42\0" if name == "clock_time_get" else b"")
+    body += b"\x41\x80\10\x10\0\x41\x1d\x47\x04\x40\0\x0b\x0b"
+    return module + section(10, b"\1" + leb(len(body)) + body)
+
+
 def main():
     vm, native, fixture, wrapper = sys.argv[1:]
     # Linux amd64 syscall numbers: uname, sysinfo, getrusage, getgroups;
@@ -38,7 +61,20 @@ def main():
                                         env=env, timeout=30)
                 expected = b"" if operation in ("poll", "connect-poll") else b"host syscall errors: ok\n"
                 assert (result.returncode, result.stdout, result.stderr) == (0, expected, b""), (operation, result)
-    print("host syscalls: system information, files, DNS, sockets and resource-limit failures propagate through both AOTs")
+        for name, number in (("clock_time_get", 228), ("clock_res_get", 229)):
+            source = work / (name + ".wasm")
+            data = wasi_clock(name)
+            source.write_bytes(data)
+            result = subprocess.run([native, "--strict"], input=data, capture_output=True, env=env, timeout=60)
+            assert result.returncode == 0, result
+            compiled.write_bytes(result.stdout)
+            result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
+            assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), result
+            for obj in (compiled, embedded):
+                result = subprocess.run([wrapper, f"{errno.EIO}/{number}", "--", vm, "run", "--", str(obj)],
+                                        capture_output=True, env=env, timeout=30)
+                assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (name, result)
+    print("host syscalls: kernel and WASI system, file, polling, DNS, socket, clock and limit errors propagate through both AOTs")
 
 
 if __name__ == "__main__":
