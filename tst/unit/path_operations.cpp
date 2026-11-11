@@ -29,6 +29,11 @@ int main() {
     assert(fd >= 0 && fcntl(fd, F_GETFD) & FD_CLOEXEC);
     assert(fstat(fd, &metadata) == 0 && (metadata.st_mode & 0777) == 0600);
     assert(close(fd) == 0 && chmod(file, 0640) == 0);
+    assert(rename(file, "renamed") == 0);
+    assert(access(file, F_OK) == -1 && errno == ENOENT);
+    assert(rename("renamed", file) == 0);
+    assert(chown(file, uid_t(-1), gid_t(-1)) == 0);
+    assert(chown("missing", uid_t(-1), gid_t(-1)) == -1 && errno == ENOENT);
     assert(stat(file, &metadata) == 0 && (metadata.st_mode & 0777) == 0640);
     assert(link(file, "hard") == 0 && symlink(file, "symbolic") == 0);
     int directory = open(".", O_RDONLY | O_DIRECTORY);
@@ -65,6 +70,12 @@ int main() {
     utimbuf times{123456, 234567};
     assert(utime(file, &times) == 0);
     assert(stat(file, &metadata) == 0 && metadata.st_atim.tv_sec == 123456 && metadata.st_mtim.tv_sec == 234567);
+    timeval fileTimes[] = {{234567, 123456}, {345678, 654321}};
+    assert(utimes(file, fileTimes) == 0);
+    assert(stat(file, &metadata) == 0 && metadata.st_atim.tv_sec == 234567 && metadata.st_atim.tv_nsec == 123456000);
+    assert(metadata.st_mtim.tv_sec == 345678 && metadata.st_mtim.tv_nsec == 654321000);
+    assert(utimes("missing", fileTimes) == -1 && errno == ENOENT);
+    assert(utimes(file, nullptr) == 0 && utime(file, &times) == 0);
     timeval linkTimes[] = {{345678, 123456}, {456789, 654321}};
     assert(lutimes("symbolic", linkTimes) == 0);
     assert(lstat("symbolic", &metadata) == 0 && metadata.st_mtim.tv_sec == 456789 && metadata.st_mtim.tv_nsec == 654321000);
