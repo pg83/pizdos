@@ -45,6 +45,7 @@ int main() {
     assert(!sigisemptyset(&intersection));
     assert(sigprocmask(SIG_BLOCK, &a, &saved) == 0);
     assert(sigprocmask(99, &a, nullptr) == -1 && errno == EINVAL);
+    assert(pthread_sigmask(99, &a, nullptr) == EINVAL);
     assert(kill(getpid(), SIGUSR1) == 0 && kill(getpid(), SIGUSR2) == 0);
     sigset_t pending;
     assert(sigpending(&pending) == 0 && sigismember(&pending, SIGUSR1) && sigismember(&pending, SIGUSR2));
