@@ -46,12 +46,13 @@ def argument(kind, index):
     return bytes([0x43 if bits == 32 else 0x44]) + raw.to_bytes(bits // 8, "little"), raw
 
 
-def program(kinds, indirect):
+def program(kinds, indirect, partial=False):
     cookie = 0x1122334455667788
     results = list(reversed(kinds)) + ["i64"]
-    signature = b"\x60" + leb(len(kinds)) + bytes(TYPES[kind] for kind in kinds)
-    signature += leb(len(results)) + bytes(TYPES[kind] for kind in results)
-    module = b"\0asm\1\0\0\0" + section(1, b"\2" + signature + b"\x60\0\0") + section(3, b"\3\0\0\1")
+    params = b"\x60" + leb(len(kinds)) + bytes(TYPES[kind] for kind in kinds)
+    signature = params + leb(len(results)) + bytes(TYPES[kind] for kind in results)
+    types = b"\3" + signature + params + b"\1\x7e\x60\0\0" if partial else b"\2" + signature + b"\x60\0\0"
+    module = b"\0asm\1\0\0\0" + section(1, types) + section(3, b"\3\0\1\2" if partial else b"\3\0\0\1")
     if indirect:
         module += section(4, b"\1\x70\0\1")
     module += section(6, b"\1\x7e\0" + integer(cookie) + b"\x0b") + section(7, b"\1\6_start\0\2")
@@ -59,18 +60,33 @@ def program(kinds, indirect):
         module += section(9, b"\1\0\x41\0\x0b\1\1")
     producer = b"\0" + b"".join(b"\x20" + leb(i) for i in reversed(range(len(kinds)))) + b"\x23\0\x0b"
     relay = b"\0" + b"".join(b"\x20" + leb(i) for i in range(len(kinds))) + b"\x10\0\x0b"
+    selected = {0, len(results) // 2, len(results) - 1} if partial else set(range(len(results)))
+    if partial:
+        relay = leb(len(results)) + b"".join(b"\1" + bytes([TYPES[kind]]) for kind in results)
+        relay += b"".join(b"\x20" + leb(i) for i in range(len(kinds))) + b"\x10\0"
+        for i in reversed(range(len(results))):
+            relay += b"\x21" + leb(len(kinds) + i) if i in selected else b"\x1a"
+        relay += integer(0)
+        for i, kind in enumerate(results):
+            if i in selected:
+                relay += integer(33) + b"\x7e\x20" + leb(len(kinds) + i) + EXTEND[kind] + b"\x85"
+        relay += b"\x0b"
     entry = b""
     for sample in (0, 1, 3):
         arguments = [argument(kind, i + sample) for i, kind in enumerate(kinds)]
         bits = list(reversed([raw for _, raw in arguments])) + [cookie]
         expected = 0
-        entry += b"".join(code for code, _ in arguments) + (b"\x41\0\x11\0\0" if indirect else b"\x10\1")
-        entry += b"".join(b"\x21" + leb(i) for i in reversed(range(len(results)))) + integer(0)
+        entry += b"".join(code for code, _ in arguments) + (b"\x41\0\x11" + leb(1 if partial else 0) + b"\0" if indirect else b"\x10\1")
+        if not partial:
+            entry += b"".join(b"\x21" + leb(i) for i in reversed(range(len(results)))) + integer(0)
         for i, (kind, raw) in enumerate(zip(results, bits)):
-            expected = ((expected * 33) ^ raw) & MASK
-            entry += integer(33) + b"\x7e\x20" + leb(i) + EXTEND[kind] + b"\x85"
+            if i in selected:
+                expected = ((expected * 33) ^ raw) & MASK
+                if not partial:
+                    entry += integer(33) + b"\x7e\x20" + leb(i) + EXTEND[kind] + b"\x85"
         entry += integer(expected) + b"\x52\x04\x40\0\x0b"
-    entry = leb(len(results)) + b"".join(b"\1" + bytes([TYPES[kind]]) for kind in results) + entry + b"\x0b"
+    local_types = b"\0" if partial else leb(len(results)) + b"".join(b"\1" + bytes([TYPES[kind]]) for kind in results)
+    entry = local_types + entry + b"\x0b"
     bodies = (producer, relay, entry)
     return module + section(10, b"\3" + b"".join(leb(len(body)) + body for body in bodies))
 
@@ -78,14 +94,15 @@ def program(kinds, indirect):
 def main():
     vm, native, wazero = sys.argv[1:]
     patterns = [(kind,) for kind in TYPES] + [tuple(TYPES)]
-    cases = [(pattern, count, indirect) for pattern in patterns for count in (0, 6, 7, 15, 16, 17, 31, 32, 40, 64)
+    cases = [(pattern, count, indirect, False) for pattern in patterns for count in (0, 6, 7, 15, 16, 17, 31, 32, 40, 64)
              for indirect in (False, True)]
+    cases += [(pattern, count, indirect, True) for pattern in patterns for count in (16, 17, 32, 64) for indirect in (False, True)]
     with tempfile.TemporaryDirectory(prefix="pizdos-wide-results-") as directory:
         work = Path(directory)
         source, compiled, embedded = [work / name for name in ("input.wasm", "native.o", "embedded.o")]
-        for pattern, count, indirect in cases:
+        for pattern, count, indirect, partial in cases:
             kinds = [pattern[i % len(pattern)] for i in range(count)]
-            data = program(kinds, indirect)
+            data = program(kinds, indirect, partial)
             source.write_bytes(data)
             result = subprocess.run([wazero, "-interpreter", str(source)], capture_output=True, timeout=30)
             assert result.returncode == 0 and result.stdout == b"", (pattern, count, indirect, result)
