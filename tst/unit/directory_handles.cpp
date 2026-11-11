@@ -30,7 +30,24 @@ int main() {
     assert(close(dirfd(stream)) == 0);
     errno = 0;
     assert(readdir(stream) == nullptr && errno == EBADF);
+    struct dirent copied{}, *result = &copied;
+    assert(readdir_r(stream, &copied, &result) == EBADF);
     assert(closedir(stream) == -1 && errno == EBADF);
+
+    assert(mkdir("changed", 0700) == 0);
+    int entry = open("changed/one", O_CREAT | O_WRONLY, 0600);
+    assert(entry >= 0 && close(entry) == 0);
+    entry = open("changed/two", O_CREAT | O_WRONLY, 0600);
+    assert(entry >= 0 && close(entry) == 0);
+    stream = opendir("changed");
+    assert(stream);
+    while (readdir(stream)) {
+    }
+    long end = telldir(stream);
+    assert(unlink("changed/one") == 0 && unlink("changed/two") == 0);
+    rewinddir(stream);
+    seekdir(stream, end);
+    assert(readdir(stream) == nullptr && closedir(stream) == 0 && rmdir("changed") == 0);
 
     int fd = open(".", O_RDONLY | O_DIRECTORY);
     assert(fd >= 0 && fcntl(fd, F_SETFD, 0) == 0);
