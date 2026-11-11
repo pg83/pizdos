@@ -26,6 +26,11 @@ int main() {
     assert(pselect(0, nullptr, nullptr, nullptr, &zero, nullptr) == 0);
     int ends[2];
     assert(pipe2(ends, O_NONBLOCK | O_CLOEXEC) == 0);
+    fd_set unread;
+    FD_ZERO(&unread);
+    FD_SET(ends[0], &unread);
+    assert(select(ends[0] + 1, &unread, nullptr, nullptr, &instant) == 0);
+    assert(!FD_ISSET(ends[0], &unread));
     pollfd descriptors[] = {{ends[0], POLLIN, 0}, {ends[1], POLLOUT, 0}, {-1, POLLIN, 123}};
     assert(poll(descriptors, 3, 0) == 1 && descriptors[0].revents == 0 && descriptors[2].revents == 0);
     assert(descriptors[1].revents & POLLOUT);
