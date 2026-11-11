@@ -45,7 +45,8 @@ jobs:
           echo "id=$toolchain_id" >> "$GITHUB_OUTPUT"
 
       - name: Restore build cache
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: build-cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: |
             .build/cas
@@ -124,3 +125,13 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14
+
+      # Keep completed dependency builds even when a test or upload fails.
+      - name: Save build cache
+        if: ${{ always() && steps.toolchain.outputs.id != '' && steps.build-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            .build/cas
+            .build/uid
+          key: pizdos-${{ runner.os }}-${{ steps.toolchain.outputs.id }}-${{ github.sha }}

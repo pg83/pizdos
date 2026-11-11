@@ -32,9 +32,10 @@ def build(source, runtime, output, tools):
                     *variant, "-c", source, "-o", str(obj)], check=True)
     subprocess.run([cc, "-x", "c", "-std=c11", "-O2",
                     "-c", runtime, "-o", str(profiling)], check=True)
-    # Explicitly link compiler-rt too when the host uses -nostdlib for musl.
+    # The shim owns initialization and flushing through LLVM's public API.
+    # Leave the archive's default initializer out, including under -nostdlib.
     subprocess.run([cc, "-o", str(output), str(obj), str(profiling), "-Wl,--wrap=_exit,--wrap=abort",
-                    "-Wl,--whole-archive", profile, "-Wl,--no-whole-archive", *tools["ldflags"]], check=True)
+                    profile, *tools["ldflags"]], check=True)
 
 
 if __name__ == "__main__":
