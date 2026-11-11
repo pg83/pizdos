@@ -48,7 +48,7 @@ def call(index):
 
 def program(imports, body, *, helper=None, stack=True, heap=True, table=False):
     types = [b"\x60\0\0", b"\x60\1\x7f\1\x7f", b"\x60\2\x7f\x7f\0",
-             b"\x60\1\x7f\0", b"\x60\2\x7f\x7f\1\x7f"]
+             b"\x60\1\x7f\0", b"\x60\2\x7f\x7f\1\x7f", b"\x60\0\1\x7f"]
     module = b"\0asm\1\0\0\0" + section(1, vector(types))
     module += section(2, vector([string("kernel") + string(name) + b"\0" + leb(typ) for name, typ in imports]))
     bodies = [body] + ([] if helper is None else [helper])
@@ -81,6 +81,9 @@ def main():
                       "setjmp: no __stack_pointer"))
     cases.append(("indirect-setjmp", program([("setjmp", 1)], constant(128) + constant(0) + b"\x11\1\0\x1a", table=True),
                   "setjmp: called through a pointer"))
+    for name in ("fork", "vfork"):
+        cases.append(("indirect-" + name, program([(name, 5)], constant(0) + b"\x11\5\0\x1a", table=True),
+                      name + ": called through a pointer"))
     cases.append(("returned-setjmp", program([("setjmp", 1), ("longjmp", 2)],
                   call(3) + constant(128) + constant(1) + call(1), helper=constant(128) + call(0) + b"\x1a"),
                   "longjmp: the function that set the jmp_buf has returned"))
