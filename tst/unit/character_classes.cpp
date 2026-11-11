@@ -89,6 +89,8 @@ int main() {
     }
     assert(iswspace(0x2003) && iswprint(0x2003) && !iswgraph(0x2003));
     assert(wctype("missing") == 0 && wctrans("missing") == nullptr);
+    assert(iswctype(L'A', wctype("missing")) == 0);
+    assert(towctrans(L'A', wctrans("missing")) == L'A');
     assert(towlower(0xc9) == 0xe9 && towupper(0xe9) == 0xc9);
     assert(towlower_l(0xc9, locale) == 0xe9 && towupper_l(0xe9, locale) == 0xc9);
     assert(towctrans(0xc9, wctrans("tolower")) == 0xe9);
