@@ -3,6 +3,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -37,6 +38,9 @@ int main(int argc, char** argv) {
     }
     struct termios before, after;
     assert(tcgetattr(0, &before) == 0);
+    pid_t foreground = -1;
+    assert(ioctl(0, TIOCGPGRP, &foreground) == 0);
+    assert(foreground == getpgrp() && foreground == tcgetpgrp(0));
     char* password = getpass("first: ");
     assert(password && !strcmp(password, "s3cr3t"));
     assert(tcgetattr(0, &after) == 0 && before.c_lflag == after.c_lflag);
