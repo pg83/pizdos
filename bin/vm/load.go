@@ -539,15 +539,7 @@ func newInstance(c *Code, imports Imports, stack uint64) *Instance {
 
 	if i.memory != nil {
 		if meta.memory.tail != 0 {
-			if uint64(len(i.memory.data)) < i.memory.max*pageSize+meta.memory.tail {
-				throwFmt("imported memory has no accessible tail")
-			}
-
 			i.memory.tailUsed = true
-		}
-
-		if meta.memory.shadow != 0 && i.memory.shadow == nil {
-			throwFmt("imported memory has no shadow map")
 		}
 
 		i.memory.users = append(i.memory.users, i)

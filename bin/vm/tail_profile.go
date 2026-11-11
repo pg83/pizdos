@@ -28,10 +28,6 @@ func (i *Instance) tailProfile() TailProfile {
 	out := TailProfile{Module: i.name}
 	meta := i.obj.meta.memory
 
-	if meta == nil || meta.profile == 0 {
-		return out
-	}
-
 	names := make(map[int]string)
 
 	for _, region := range i.obj.meta.regions {
