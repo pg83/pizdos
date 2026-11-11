@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import resource
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -151,6 +152,25 @@ def main():
                 with reader, writer:
                     result = subprocess.run([vm, "run", "--", str(obj)], stdin=reader, capture_output=True, env=env, timeout=30)
                     assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (name, result)
+        devices = [path for path in sorted(Path("/dev").iterdir()) if stat.S_ISBLK(path.lstat().st_mode)]
+        if devices:
+            for name in ("fd_fdstat_get", "fd_filestat_get"):
+                source = work / (name + "-block.wasm")
+                data = wasi_descriptor(name, error=0, filetype=1)
+                source.write_bytes(data)
+                result = subprocess.run([native, "--strict"], input=data, capture_output=True, env=env, timeout=60)
+                assert result.returncode == 0, result
+                compiled.write_bytes(result.stdout)
+                result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
+                assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), result
+                # O_PATH permits fstat without opening the device for I/O.
+                fd = os.open(devices[0], os.O_PATH | os.O_CLOEXEC)
+                try:
+                    for obj in (compiled, embedded):
+                        result = subprocess.run([vm, "run", "--", str(obj)], stdin=fd, capture_output=True, env=env, timeout=30)
+                        assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (name, result)
+                finally:
+                    os.close(fd)
         for directory, name, filetype in ((Path("/dev"), b"null", 2), (work / "directory", b"pipe", 0)):
             source = work / "directory.wasm"
             data = wasi_directory(directory, name, filetype)
