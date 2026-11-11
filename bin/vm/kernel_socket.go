@@ -361,6 +361,10 @@ func (p *Process) guestControl(host []byte, at, room uint32, cloexec bool) (uint
 				fds = binary.LittleEndian.AppendUint32(fds, uint32(guest))
 			}
 
+			if len(fds) == 0 {
+				continue
+			}
+
 			data = fds
 		}
 
@@ -470,7 +474,7 @@ func (p *Process) recvmsg(f *File, at, flags uint32) (int, error) {
 
 	length, truncated := p.guestControl(control[:m.controllen], p.u32(at+16), room, flags&msgCmsgCloexec != 0)
 	p.put32(at+20, length)
-	p.put32(at+24, uint32(m.flags)|truncated)
+	p.put32(at+24, uint32(m.flags)&^msgCmsgCloexec|flags&msgCmsgCloexec|truncated)
 
 	return n, nil
 }
@@ -488,8 +492,9 @@ func (p *Process) getsockopt(f *File, level, name, at, lenAt uint32) error {
 		var b [16]byte
 		binary.LittleEndian.PutUint64(b[:], uint64(ms/1000))
 		binary.LittleEndian.PutUint64(b[8:], uint64(ms%1000*1000))
-		copy(p.span(at, min(p.u32(lenAt), 16)), b[:])
-		p.put32(lenAt, 16)
+		length := min(p.u32(lenAt), 16)
+		copy(p.span(at, length), b[:])
+		p.put32(lenAt, length)
 
 		return nil
 	}
