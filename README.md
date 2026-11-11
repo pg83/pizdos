@@ -10,7 +10,7 @@ hardware, not a different kernel.
 CI builds the native and Wasm compilers with Clang 23, runs the AOT/VM e2e
 C++ cases, Python CLI checks and WebAssembly spec suite, and uploads native
 AOT, Wasm AOT and VM coverage to Codecov using OIDC. Run `./build coverage`
-to collect the reports and `./build coverage_check` to enforce the 99% floor.
+to collect the reports and `./build coverage_check` to enforce the 100% floor.
 `./build e2e` runs the same AOT/VM cases against production builds.
 Application integration tests have separate `test_busybox`, `test_clang`,
 `test_doom` and `test_python` targets and are outside the coverage suite.

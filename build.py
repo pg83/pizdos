@@ -930,7 +930,7 @@ coverage_check = command(
     inputs=["$(S)/dev/coverage.py"],
     outputs=["$(B)/coverage/check.stamp"],
     deps=[coverage],
-    cmd=[["python3", "$(S)/dev/coverage.py", "--check", coverage.outputs[0], "99"], touch("$(B)/coverage/check.stamp")],
+    cmd=[["python3", "$(S)/dev/coverage.py", "--check", coverage.outputs[0], "100"], touch("$(B)/coverage/check.stamp")],
     descr="CV", color="cyan",
 )
 

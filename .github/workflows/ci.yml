@@ -51,7 +51,7 @@ jobs:
           set -o pipefail
           ./build -j "$BUILD_JOBS" coverage 2>&1 | tee "$RUNNER_TEMP/coverage.log"
 
-      - name: Check the 99 percent floor
+      - name: Check the 100 percent floor
         run: ./build coverage_check
 
       - name: Summarize coverage

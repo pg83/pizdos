@@ -268,7 +268,7 @@ def check(path, minimum):
 if __name__ == "__main__":
     try:
         if sys.argv[1] == "--check":
-            check(sys.argv[2], float(sys.argv[3]) if len(sys.argv) > 3 else 99.0)
+            check(sys.argv[2], float(sys.argv[3]) if len(sys.argv) > 3 else 100.0)
         else:
             run(sys.argv[1], json.loads(sys.argv[2]))
     except (RuntimeError, subprocess.CalledProcessError) as error:
