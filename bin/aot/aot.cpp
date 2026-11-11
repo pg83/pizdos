@@ -3075,10 +3075,10 @@ namespace {
         }
     }
 
-    // Compute in |= gen | (out & ~kill), without materializing a dense
-    // temporary or scanning words with no live virtual registers.
-    static bool bitsetPropagate(Bitset in, Bitset gen, Bitset out, Bitset kill) {
-        if (!gen.data && in.data && out.data && kill.data && in.data->bits <= denseBitsetLimit && in.data->bits == out.data->bits && in.data->bits == kill.data->bits) {
+    // allocatorLiveness creates all three sets with the same nv. The local
+    // uses are already in in; add out & ~kill without a dense temporary.
+    static bool bitsetPropagate(Bitset in, Bitset out, Bitset kill) {
+        if (in.data->bits <= denseBitsetLimit) {
             auto* words = static_cast<u64*>(in.data->storage);
             const auto* source = static_cast<const u64*>(out.data->storage);
             const auto* mask = static_cast<const u64*>(kill.data->storage);
@@ -3099,25 +3099,9 @@ namespace {
             }
             return changed;
         }
-        if (!gen.data && in.data && out.data && kill.data && in.data->bits > denseBitsetLimit && in.data->bits == out.data->bits && in.data->bits == kill.data->bits) {
-            bool changed = false;
-            // The source iterator bounds every word and all three sets have
-            // the same representation, so per-word tag checks are redundant.
-            visitBitsetWords(out, [&](usize index, u64 word) {
-                if (bitsetAddSparseWord(in.data, index, word & ~bitsetSparseWord(kill.data, index))) {
-                    changed = true;
-                }
-            });
-            return changed;
-        }
         bool changed = false;
-        visitBitsetWords(gen, [&](usize index, u64 word) {
-            if (bitsetAddWord(in, index, word)) {
-                changed = true;
-            }
-        });
         visitBitsetWords(out, [&](usize index, u64 word) {
-            if (bitsetAddWord(in, index, word & ~bitsetWord(kill, index))) {
+            if (bitsetAddSparseWord(in.data, index, word & ~bitsetSparseWord(kill.data, index))) {
                 changed = true;
             }
         });
@@ -9802,7 +9786,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             for (Int j = 0; j < length(mf->blocks[b].succs); ++j) {
                 bitsetUnion(out, a->liveIn[mf->blocks[b].succs[j]]);
             }
-            if (bitsetPropagate(a->liveIn[b], {}, out, kill[b])) {
+            if (bitsetPropagate(a->liveIn[b], out, kill[b])) {
                 auto preds = mf->blocks[b].preds;
                 for (Int j = 0; j < length(preds); ++j) {
                     const i32 pred = preds[j];
@@ -22014,9 +21998,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         bitsetAddWord(s, usize(i) / 64, u64(1) << (usize(i) % 64));
     }
 
-    // union adds o to s and reports whether s changed.
+    // allocatorLiveness unions initialized sets of its one fixed nv.
     static bool bitsetUnion(Bitset s, Bitset o) {
-        if (s.data && o.data && s.data->bits <= denseBitsetLimit && s.data->bits == o.data->bits) {
+        if (s.data->bits <= denseBitsetLimit) {
             if (!o.data->occupied) {
                 return false;
             }
@@ -22038,18 +22022,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             s.data->occupied |= o.data->occupied;
             return changed;
         }
-        if (s.data && o.data && s.data->bits > denseBitsetLimit && s.data->bits == o.data->bits) {
-            bool changed = false;
-            visitBitsetWords(o, [&](usize index, u64 word) {
-                if (bitsetAddSparseWord(s.data, index, word)) {
-                    changed = true;
-                }
-            });
-            return changed;
-        }
         bool changed = false;
         visitBitsetWords(o, [&](usize index, u64 word) {
-            if (bitsetAddWord(s, index, word)) {
+            if (bitsetAddSparseWord(s.data, index, word)) {
                 changed = true;
             }
         });
