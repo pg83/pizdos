@@ -34,6 +34,9 @@ int main() {
     assert(memcmp(left, "abcd", 4) == 0 && memcmp(right, "efGHIJ", 6) == 0);
     assert(readv(fd, nullptr, 0) == 0 && writev(fd, nullptr, 0) == 0);
     assert(readv(fd, vectors, 1025) == -1 && errno == EINVAL);
+    all[0] = '!';
+    assert(read(-1, all, 1) == -1 && errno == EBADF && all[0] == '!');
+    assert(write(-1, all, 1) == -1 && errno == EBADF);
     assert(pread(-1, all, 1, 0) == -1 && errno == EBADF);
     assert(pwrite(-1, all, 1, 0) == -1 && errno == EBADF);
     assert(preadv(-1, buffers, 2, 0) == -1 && errno == EBADF);
