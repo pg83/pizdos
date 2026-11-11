@@ -669,6 +669,14 @@ stand_corpus = fetch(
     "$(B)/stand/decode-corpus-1.tgz",
 )
 
+stand_fixture = command(
+    name="stand_fixture",
+    inputs=["$(S)/tst/stand/fixture.cpp"],
+    outputs=["$(B)/tst/stand/fixture.wasm"],
+    cmd=[CLANG, *AOT_WASM_FLAGS, "$(S)/tst/stand/fixture.cpp", "-o", "$(B)/tst/stand/fixture.wasm"],
+    descr="CC", color="green",
+)
+
 # What each test runs against: its arguments are the outputs of these nodes.
 TESTED = {
     "aot": [aot, aot_command, wazero, vm, busybox],
@@ -681,6 +689,7 @@ TESTED = {
     "doom": [vm, doom_o, doom_wad],
     "libc": [vm, libc_check_o],
     "python": [vm, python_o, python, python_tarball, busybox_o, busybox],
+    "stand": [vm, aot_native, stand_fixture],
     "vm": [vm, aot_native, aot, aot_command, aot_command_aot, aot_relinked, wazero, busybox],
 }
 tests = []
