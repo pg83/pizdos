@@ -34,20 +34,24 @@ def metric(hit, total):
     return {"hit": hit, "total": total, "percent": 100 * hit / total if total else 0.0}
 
 
-def aot_report(suite, raw, destination):
+def aot_report(suite, raw, destination, *, chaos=False):
     profiles = sorted(path.parent for path in raw.glob("*/aot.gcda"))
+    report_name = "aot-chaos.json" if chaos else "aot.json"
     if not profiles:
+        if chaos:
+            (destination / report_name).write_text('{"files": []}\n')
+            return {}, {}
         raise RuntimeError("native AOT produced no gcov profiles")
-    merged = destination / "merged"
+    merged = destination / ("merged-chaos" if chaos else "merged")
     shutil.copytree(profiles[0], merged)
     for number, profile in enumerate(profiles[1:]):
         target = destination / f"merge-{number}"
         subprocess.run([suite["gcov_tool"], "merge", str(merged), str(profile), "-o", str(target)], check=True)
         shutil.rmtree(merged)
         target.rename(merged)
-    shutil.copyfile(suite["gcno"], merged / "aot.gcno")
+    shutil.copyfile(suite["gcno_chaos" if chaos else "gcno"], merged / "aot.gcno")
     raw_json = output([suite["gcov"], "--json-format", "--branch-probabilities", "--stdout", merged / "aot.gcno"])
-    (destination / "aot.json").write_text(raw_json)
+    (destination / report_name).write_text(raw_json)
     lines, branches = {}, {}
     for source in json.loads(raw_json)["files"]:
         if Path(source["file"]).resolve() != Path(suite["source_root"], "bin/aot/aot.cpp").resolve():
@@ -60,14 +64,13 @@ def aot_report(suite, raw, destination):
                 branches[key] = branches.get(key, 0) + branch["count"]
     if not lines:
         raise RuntimeError("gcov profile contains no aot.cpp lines")
-    return {"lines": metric(sum(count > 0 for count in lines.values()), len(lines)),
-            "branches": metric(sum(count > 0 for count in branches.values()), len(branches))}, lines
+    return lines, branches
 
 
 def vm_report(suite, raw, destination):
     profile = destination / "vm.out"
     subprocess.run([suite["go"], "tool", "covdata", "textfmt", "-i=" + str(raw), "-o=" + str(profile)], check=True)
-    files, missing = {}, []
+    files, missing, blocks = {}, [], {}
     for line in profile.read_text().splitlines()[1:]:
         location, statements, count = line.rsplit(" ", 2)
         name, coordinates = location.rsplit(":", 1)
@@ -75,6 +78,9 @@ def vm_report(suite, raw, destination):
             continue
         name = "bin/vm/" + name[len("pizdos/vm/"):]
         statements, count = int(statements), int(count)
+        key = name, coordinates, statements
+        blocks[key] = blocks.get(key, 0) + count
+    for (name, coordinates, statements), count in blocks.items():
         hit, total = files.get(name, (0, 0))
         files[name] = (hit + (statements if count else 0), total + statements)
         if not count and statements:
@@ -95,15 +101,21 @@ def run(destination, suite):
     with tempfile.TemporaryDirectory(prefix="pizdos-coverage-") as directory:
         work = Path(directory)
         go_raw, aot_raw = work / "go", work / "aot"
+        aot_chaos_raw = work / "aot-chaos"
         go_raw.mkdir()
         aot_raw.mkdir()
+        aot_chaos_raw.mkdir()
         vm, aot = work / "vm", work / "aot-command"
+        vm_chaos, aot_chaos = work / "vm-chaos", work / "aot-command-chaos"
         wrapper(vm, suite["vm"], "GOCOVERDIR", go_raw)
         wrapper(aot, suite["aot"], "GCOV_PREFIX", aot_raw)
+        wrapper(vm_chaos, suite["vm_chaos"], "GOCOVERDIR", go_raw)
+        wrapper(aot_chaos, suite["aot_chaos"], "GCOV_PREFIX", aot_chaos_raw)
         failures = []
         for case in suite["cases"]:
             name = case["name"]
-            command = [value.replace("$VM", str(vm)).replace("$AOT", str(aot)).replace("$OUT", str(work / name))
+            command = [value.replace("$VM_CHAOS", str(vm_chaos)).replace("$AOT_CHAOS", str(aot_chaos))
+                       .replace("$VM", str(vm)).replace("$AOT", str(aot)).replace("$OUT", str(work / name))
                        for value in case["command"]]
             started = time.monotonic()
             print(f"coverage: {name}", flush=True)
@@ -117,13 +129,20 @@ def run(destination, suite):
                 failures.append(name)
                 print(f"FAIL {name}: timeout", flush=True)
             print(f"coverage: {name} finished in {time.monotonic() - started:.1f}s", flush=True)
-        aot_counts, aot_lines = aot_report(suite, aot_raw, destination)
+        aot_lines, aot_branches = aot_report(suite, aot_raw, destination)
+        chaos_lines, chaos_branches = aot_report(suite, aot_chaos_raw, destination, chaos=True)
+        for number, count in chaos_lines.items():
+            aot_lines[number] = aot_lines.get(number, 0) + count
+        aot_counts = {"lines": metric(sum(count > 0 for count in aot_lines.values()), len(aot_lines)),
+                      "branches": metric(sum(count > 0 for count in aot_branches.values()), len(aot_branches)),
+                      "chaos_branches": metric(sum(count > 0 for count in chaos_branches.values()), len(chaos_branches))}
         vm_counts, vm_missing = vm_report(suite, go_raw, destination)
 
     summary = {"aot": aot_counts, "vm": vm_counts, "tests": [case["name"] for case in suite["cases"]], "failures": failures}
     (destination / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     rows = []
-    for name, counts in (("AOT lines", aot_counts["lines"]), ("AOT branches", aot_counts["branches"]),
+    for name, counts in (("AOT lines", aot_counts["lines"]), ("AOT branches (normal)", aot_counts["branches"]),
+                         ("AOT branches (chaos)", aot_counts["chaos_branches"]),
                          ("VM statements", vm_counts["statements"])):
         rows.append(f"{name}: {counts['hit']}/{counts['total']} = {counts['percent']:.2f}%")
     rows.extend(f"  {name}: {counts['hit']}/{counts['total']} = {counts['percent']:.2f}%"

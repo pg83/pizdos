@@ -37,10 +37,11 @@ def build(source, runtime, output, tools):
     output.parent.mkdir(parents=True, exist_ok=True)
     obj = output.with_suffix(".o")
     profiling = output.with_name("gcov.o")
+    variant = ["-DAOT_CHAOS"] if tools.get("chaos") else []
     subprocess.run([cc, *cppflags, "-x", "c++", "-std=c++20", "-O0", "-g", "-fmax-errors=5", "-fno-exceptions", "-fno-rtti",
                     "-D__is_trivially_destructible(T)=__has_trivial_destructor(T)",
                     "-fno-builtin", "-fwrapv", "-ffp-contract=off", "-mpopcnt", "-Wno-init-list-lifetime",
-                    "-fprofile-arcs", "-ftest-coverage", "-fprofile-update=atomic", "-c", source, "-o", str(obj)], check=True)
+                    "-fprofile-arcs", "-ftest-coverage", "-fprofile-update=atomic", *variant, "-c", source, "-o", str(obj)], check=True)
     subprocess.run([cc, *cppflags, "-x", "c", "-std=c11", "-O2", f"-DGCOV_COUNTERS={kinds}",
                     "-c", runtime, "-o", str(profiling)], check=True)
     subprocess.run([cc, "-o", str(output), str(obj), str(profiling), "-Wl,--wrap=_exit,--wrap=abort", *ldflags], check=True)

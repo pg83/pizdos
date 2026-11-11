@@ -73,6 +73,7 @@ def main():
         assert compile_with(vm_chaos, PIZDOS_AOT_CHAOS="read@4294967295,write@4294967295,grow@4294967295").returncode == 0
         result = compile_with(vm_chaos, PIZDOS_VM_CHAOS="missing@0")
         assert result.returncode != 0 and b"invalid chaos rule" in result.stderr
+        assert compile_with(vm_chaos, PIZDOS_VM_CHAOS="mmap@4294967295,compile-read@4294967295,compile-write@4294967295").returncode == 0
 
     print("chaos: native/Wasm AOT and VM faults, recovery, atomic output and production no-ops passed")
 

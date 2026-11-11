@@ -31,6 +31,9 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
   list AOT line/branch coverage, VM statement coverage, every case run and
   uncovered locations. `coverage_check` enforces 99% AOT lines and VM
   statements; an ordinary report remains available below that threshold.
+  Reports union source lines and Go statement blocks across the normal
+  and chaos builds. AOT branch counts stay separate because those builds
+  have different control-flow graphs; shared Go blocks are counted once.
 - Fault injection uses separate `aot_native_chaos`, `aot_wasm_chaos` and
   `vm_chaos` builds. `PIZDOS_AOT_CHAOS=read@N,write@N,grow@N` fails once
   after N visits; vm's rules use `PIZDOS_VM_CHAOS` and points `mmap`,

@@ -285,6 +285,15 @@ aot_coverage = command(
     descr="CC", color="green",
 )
 
+aot_chaos_coverage = command(
+    name="aot_chaos_coverage",
+    inputs=["$(S)/bin/aot/aot.cpp", "$(S)/dev/coverage_build.py", "$(S)/dev/gcov.c"],
+    outputs=["$(B)/coverage/chaos/aot", "$(B)/coverage/chaos/aot.gcno"],
+    cmd=["python3", "$(S)/dev/coverage_build.py", "$(S)/bin/aot/aot.cpp", "$(S)/dev/gcov.c",
+         "$(B)/coverage/chaos/aot", json.dumps({"cc": coverage_cxx, "cppflags": build.cppflags, "ldflags": build.ldflags, "chaos": True})],
+    descr="CC", color="green",
+)
+
 aot_measure = command(
     name="aot_measure",
     inputs=["$(S)/dev/aot_measure.c"],
@@ -368,6 +377,16 @@ vm_chaos = command(
     outputs=["$(B)/chaos/bin/vm"],
     deps=[aot_chaos_aot, libstr],
     cmd=["python3", "$(S)/dev/go.py", "build", GO, "$(S)/bin/vm", "$(B)/chaos/bin/vm", "--tags", "pizdoschaos",
+         "--runtime", "$(S)/lib/goruntime", "--embed", aot_chaos_aot.outputs[0], "--embed", libstr.outputs[0]],
+    descr="GO", color="light-blue",
+)
+
+vm_chaos_coverage = command(
+    name="vm_chaos_coverage",
+    inputs=[*WASM2O_SOURCES, *GO_RUNTIME],
+    outputs=["$(B)/coverage/chaos/vm"],
+    deps=[aot_chaos_aot, libstr],
+    cmd=["python3", "$(S)/dev/go.py", "build", GO, "$(S)/bin/vm", "$(B)/coverage/chaos/vm", "--cover", "--tags", "pizdoschaos",
          "--runtime", "$(S)/lib/goruntime", "--embed", aot_chaos_aot.outputs[0], "--embed", libstr.outputs[0]],
     descr="GO", color="light-blue",
 )
@@ -733,10 +752,14 @@ for test in build.glob("$(S)/tst/test_*.py"):
             coverage_arguments.append("$VM")
         elif node is aot_native:
             coverage_arguments.append("$AOT")
+        elif node is vm_chaos:
+            coverage_arguments.append("$VM_CHAOS")
+        elif node is aot_native_chaos:
+            coverage_arguments.append("$AOT_CHAOS")
         else:
             coverage_arguments.extend(node.outputs)
     coverage_case("test_" + name, ["python3", test, *coverage_arguments], [test],
-                  [node for node in tested if node is not vm and node is not aot_native])
+                  [node for node in tested if node not in (vm, aot_native, vm_chaos, aot_native_chaos)])
 
 coverage_case("test_vm_spec",
               ["python3", "$(S)/tst/vm_spec.py", "$VM", WAST2JSON, testsuite_tarball.outputs[0], "$OUT.stamp"],
@@ -745,11 +768,13 @@ coverage_case("test_vm_spec",
 coverage = command(
     name="coverage",
     inputs=[*dict.fromkeys(coverage_inputs), *WASM2O_SOURCES, "$(S)/bin/aot/aot.cpp"],
-    outputs=["$(B)/coverage/" + name for name in ("summary.json", "summary.txt", "uncovered.txt", "aot.json", "vm.out")]
+    outputs=["$(B)/coverage/" + name for name in ("summary.json", "summary.txt", "uncovered.txt", "aot.json", "aot-chaos.json", "vm.out")]
             + ["$(B)/coverage/" + case["name"] + ".log" for case in coverage_cases],
-    deps=[aot_coverage, vm_coverage, *dict.fromkeys(coverage_dependencies)],
+    deps=[aot_coverage, vm_coverage, aot_chaos_coverage, vm_chaos_coverage, *dict.fromkeys(coverage_dependencies)],
     cmd=["python3", "$(S)/dev/coverage.py", "$(B)/coverage", json.dumps({
         "source_root": "$(S)", "aot": aot_coverage.outputs[0], "vm": vm_coverage.outputs[0],
+        "aot_chaos": aot_chaos_coverage.outputs[0], "vm_chaos": vm_chaos_coverage.outputs[0],
+        "gcno_chaos": aot_chaos_coverage.outputs[1],
         "gcno": aot_coverage.outputs[1], "go": GO,
         "gcov": os.environ.get("GCOV") or os.path.join(os.path.dirname(coverage_cxx), "gcov"),
         "gcov_tool": os.environ.get("GCOV_TOOL") or os.path.join(os.path.dirname(coverage_cxx), "gcov-tool"),
