@@ -66,6 +66,10 @@ func hostDevice(path string) bool {
 
 // openat2 opens a guest path; the host descriptor is close-on-exec.
 func (p *Process) openat2(path string, flags int, mode uint32) (int, error) {
+	if chaosFail("openat") {
+		return -1, syscall.EIO
+	}
+
 	full, err := p.full(path)
 
 	if err != nil {

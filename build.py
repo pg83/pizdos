@@ -304,6 +304,32 @@ aot_aot = command(
     descr="AO", color="light-cyan",
 )
 
+aot_native_chaos = command(
+    name="aot_native_chaos",
+    inputs=["$(S)/bin/aot/aot.cpp"],
+    outputs=["$(B)/chaos/bin/aot"],
+    cmd=[CLANG, *build.cppflags, *build.cxxflags, *AOT_FLAGS, "-O3", "-DAOT_CHAOS", "$(S)/bin/aot/aot.cpp",
+         "-o", "$(B)/chaos/bin/aot", *build.ldflags],
+    descr="CC", color="green",
+)
+
+aot_wasm_chaos = command(
+    name="aot_wasm_chaos",
+    inputs=["$(S)/bin/aot/aot.cpp"],
+    outputs=["$(B)/chaos/bin/aot.wasm"],
+    cmd=[CLANG, *AOT_WASM_FLAGS, "-DAOT_CHAOS", "$(S)/bin/aot/aot.cpp", "-o", "$(B)/chaos/bin/aot.wasm"],
+    descr="CC", color="green",
+)
+
+aot_chaos_aot = command(
+    name="aot_chaos_aot",
+    inputs=["$(S)/dev/aot.py"],
+    outputs=["$(B)/chaos/compiler/aot.aot"],
+    deps=[aot_native, aot_wasm_chaos],
+    cmd=["python3", "$(S)/dev/aot.py", aot_native.outputs[0], aot_wasm_chaos.outputs[0], "$(B)/chaos/compiler/aot.aot"],
+    descr="AO", color="light-cyan",
+)
+
 aot_command_aot = command(
     name="aot_command_aot",
     inputs=["$(S)/dev/aot.py"],
@@ -333,6 +359,16 @@ vm_coverage = command(
     deps=[aot_aot, libstr],
     cmd=["python3", "$(S)/dev/go.py", "build", GO, "$(S)/bin/vm", "$(B)/coverage/bin/vm",
          "--cover", "--runtime", "$(S)/lib/goruntime", "--embed", aot_aot.outputs[0], "--embed", libstr.outputs[0]],
+    descr="GO", color="light-blue",
+)
+
+vm_chaos = command(
+    name="vm_chaos",
+    inputs=[*WASM2O_SOURCES, *GO_RUNTIME],
+    outputs=["$(B)/chaos/bin/vm"],
+    deps=[aot_chaos_aot, libstr],
+    cmd=["python3", "$(S)/dev/go.py", "build", GO, "$(S)/bin/vm", "$(B)/chaos/bin/vm", "--tags", "pizdoschaos",
+         "--runtime", "$(S)/lib/goruntime", "--embed", aot_chaos_aot.outputs[0], "--embed", libstr.outputs[0]],
     descr="GO", color="light-blue",
 )
 
@@ -620,6 +656,7 @@ TESTED = {
     "asan": [vm, asan_check_o, libc_check_o],
     "busybox_abi": [busybox],
     "busybox": [vm, busybox_o, busybox],
+    "chaos": [vm, vm_chaos, aot_native, aot_native_chaos],
     "clang": [vm, clang_o, clang, libc, libc_headers, libcxx],
     "cxx": [vm, cxx_check_o],
     "doom": [vm, doom_o, doom_wad],

@@ -165,6 +165,10 @@ func (t *Trap) access() string {
 }
 
 func mmap(size int, prot int) []byte {
+	if chaosFail("mmap") {
+		throw(syscall.ENOMEM)
+	}
+
 	return throw2(syscall.Mmap(-1, 0, size, prot, syscall.MAP_PRIVATE|syscall.MAP_ANON|syscall.MAP_NORESERVE))
 }
 
@@ -270,6 +274,10 @@ func helperTrapAt(ctx uintptr, code uint32, addr uint64, info uint32) {
 }
 
 func helperMemoryGrow(ctx uintptr, delta uint32) uint32 {
+	if chaosFail("memory-grow") {
+		return math.MaxUint32
+	}
+
 	return instanceAt(ctx).memory.grow(delta)
 }
 

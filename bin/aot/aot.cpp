@@ -33,6 +33,29 @@ namespace {
         const void* data;
         usize length;
     };
+
+    enum class ChaosFault: u32 { Read, Write, Grow, Count };
+#ifdef AOT_CHAOS
+    static u32 chaosSkips[u32(ChaosFault::Count)]{};
+    static bool chaosArmed[u32(ChaosFault::Count)]{};
+
+    static bool chaosFail(ChaosFault point) {
+        const u32 index = u32(point);
+        if (!chaosArmed[index]) {
+            return false;
+        }
+        if (chaosSkips[index] != 0) {
+            --chaosSkips[index];
+            return false;
+        }
+        chaosArmed[index] = false;
+        return true;
+    }
+#else
+    static constexpr bool chaosFail(ChaosFault) {
+        return false;
+    }
+#endif
 }
 
 #if defined(__wasm__) || defined(wasm)
@@ -102,7 +125,7 @@ namespace {
         while (length != 0) {
             const ConstIoVec vector{at, length};
             usize done = 0;
-            if (wasiFdWrite(fd, &vector, 1, &done) != 0 || done == 0) {
+            if (chaosFail(ChaosFault::Write) || wasiFdWrite(fd, &vector, 1, &done) != 0 || done == 0) {
                 wasiProcExit(1);
             }
             at += done;
@@ -291,7 +314,7 @@ void Heap::mapSegment() {
     const usize first = alignUp(before, heapPagesPerSegment);
     const u32 index = u32(first / heapPagesPerSegment);
     require(index < heapSegmentLimit, "allocator region exhausted");
-    if (__builtin_wasm_memory_grow(0, first - before + heapPagesPerSegment) == ~usize(0)) {
+    if (chaosFail(ChaosFault::Grow) || __builtin_wasm_memory_grow(0, first - before + heapPagesPerSegment) == ~usize(0)) {
         fail("out of memory");
     }
     // I/O blobs and host-owned input may separate segments in linear memory.
@@ -303,7 +326,7 @@ void Heap::mapSegment() {
     require(mappedSegments + 1 < heapSegmentLimit, "allocator region exhausted");
     const u32 index = mappedSegments + 1;
     void* wanted = reinterpret_cast<void*>(heapNativeBase + usize(index) * heapSegmentBytes);
-    void* got = ::mmap(wanted, heapSegmentBytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+    void* got = chaosFail(ChaosFault::Grow) ? MAP_FAILED : ::mmap(wanted, heapSegmentBytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
     require(got == wanted, "allocator mapping failed");
     #if defined(MADV_HUGEPAGE)
     (void)::madvise(got, heapSegmentBytes, MADV_HUGEPAGE);
@@ -26305,7 +26328,7 @@ namespace {
             const usize available = pageBytes - offset;
             IoVec vector{pages->pages.data()[before / pageBytes] + offset, available};
             usize count = 0;
-            require(wasiFdRead(0, &vector, 1, &count) == 0, "stdin read failed");
+            require(!chaosFail(ChaosFault::Read) && wasiFdRead(0, &vector, 1, &count) == 0, "stdin read failed");
             require(count <= available, "stdin read overflow");
             if (!count) {
                 break;
@@ -26411,6 +26434,54 @@ extern "C"
     compileWithOptions(CompileOptions{bool(flags & 1), bool(flags & 2), bool(flags & 4), bool(flags & 8)});
 }
 
+#ifdef AOT_CHAOS
+extern "C"
+    #if defined(__wasm__) || defined(wasm)
+    __attribute__((export_name("chaosConfigure")))
+    #endif
+void chaosConfigure(u32 point, u32 skip) {
+    require(point < u32(ChaosFault::Count), "unknown chaos point");
+    chaosSkips[point] = skip;
+    chaosArmed[point] = true;
+}
+
+    #if !defined(__wasm__) && !defined(wasm)
+namespace {
+    static void configureNativeChaos() {
+        const char* script = ::getenv("PIZDOS_AOT_CHAOS");
+        const char* names[] = {"read", "write", "grow"};
+        while (script && *script) {
+            u32 point = 0;
+            usize length = 0;
+            for (; point < u32(ChaosFault::Count); ++point) {
+                length = 0;
+                while (names[point][length] && names[point][length] == script[length]) {
+                    ++length;
+                }
+                if (!names[point][length] && script[length] == '@') {
+                    break;
+                }
+            }
+            require(point < u32(ChaosFault::Count) && !chaosArmed[point], "invalid PIZDOS_AOT_CHAOS");
+            script += length + 1;
+            require(*script >= '0' && *script <= '9', "invalid PIZDOS_AOT_CHAOS");
+            u64 skip = 0;
+            while (*script >= '0' && *script <= '9') {
+                skip = skip * 10 + u32(*script++ - '0');
+                require(skip <= 0xffffffffULL, "invalid PIZDOS_AOT_CHAOS");
+            }
+            require(*script == 0 || *script == ',', "invalid PIZDOS_AOT_CHAOS");
+            chaosConfigure(point, u32(skip));
+            if (*script == ',') {
+                ++script;
+                require(*script != 0, "invalid PIZDOS_AOT_CHAOS");
+            }
+        }
+    }
+}
+    #endif
+#endif
+
 namespace {
     static void compilerCommand(bool strict = false) {
         if (strict) {
@@ -26431,6 +26502,9 @@ static bool sameString(const char* a, const char* b) {
 }
 
 int main(int count, char** arguments) {
+#ifdef AOT_CHAOS
+    configureNativeChaos();
+#endif
     const char* usage = "usage: aot [--strict|--asan] < input.wasm > output.o";
     if (count == 2 && sameString(arguments[1], "--asan")) {
         compileWithOptions(CompileOptions{false, false, false, true});

@@ -31,6 +31,15 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
   list AOT line/branch coverage, VM statement coverage, every case run and
   uncovered locations. `coverage_check` enforces 99% AOT lines and VM
   statements; an ordinary report remains available below that threshold.
+- Fault injection uses separate `aot_native_chaos`, `aot_wasm_chaos` and
+  `vm_chaos` builds. `PIZDOS_AOT_CHAOS=read@N,write@N,grow@N` fails once
+  after N visits; vm's rules use `PIZDOS_VM_CHAOS` and points `mmap`,
+  `compile-read`, `compile-write`, `memory-grow`, `openat`, `read`, `write`
+  and `fork`. AOT's Wasm reactor is configured by its chaos-only export.
+  C++ uses `AOT_CHAOS`, Go uses the `pizdoschaos` build tag; ordinary
+  builds erase the hooks and ignore those environment variables.
+  `test_chaos` checks the actual commands, failures, subsequent recovery
+  and atomic compiler output.
 - `sh dev/stand/build.sh` supplies the pinned ix revision's libraries and
   tools and runs `./build stand`: decode's im, pdf, djvu, svg and magic
   modules through vm, and their wrappers against the native

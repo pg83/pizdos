@@ -18,6 +18,7 @@ func main() {
 	code := 0
 
 	if e := try(func() {
+		setupVmChaos()
 		args := os.Args[1:]
 
 		if len(args) > 0 && args[0] == "run" {

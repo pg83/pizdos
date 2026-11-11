@@ -261,12 +261,20 @@ func (p *Process) transferMode(f *File, events int16, mode ioMode, op func() (in
 }
 
 func (p *Process) readFile(f *File, b []byte) (int, error) {
+	if chaosFail("read") {
+		return 0, syscall.EIO
+	}
+
 	return p.transfer(f, pollIn, func() (int, error) {
 		return syscall.Read(f.fd, b)
 	})
 }
 
 func (p *Process) writeFile(f *File, b []byte) (int, error) {
+	if chaosFail("write") {
+		return 0, syscall.EIO
+	}
+
 	return p.transfer(f, pollOut, func() (int, error) {
 		return syscall.Write(f.fd, b)
 	})

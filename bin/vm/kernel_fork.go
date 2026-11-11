@@ -82,6 +82,10 @@ func (p *Process) startVfork() uint32 {
 // it runs. The call fork is in returns 0 in the child. A signal handler
 // cannot fork: Go's frames are in the way.
 func (p *Process) fork(setup func(c *Process)) (int32, error) {
+	if chaosFail("fork") {
+		return 0, syscall.EAGAIN
+	}
+
 	j := new(Jump)
 
 	if !p.inst.setjmp(j) {

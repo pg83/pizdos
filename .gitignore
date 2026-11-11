@@ -9,6 +9,7 @@ __pycache__/
 /busybox_o
 /vm
 /vm_coverage
+/vm_chaos
 /coverage
 /coverage_check
 /wazero
@@ -21,6 +22,9 @@ __pycache__/
 /aot_command_aot
 /aot_relinked
 /aot_native
+/aot_native_chaos
+/aot_wasm_chaos
+/aot_chaos_aot
 /aot_coverage
 /aot_measure
 /testsuite_tarball

@@ -125,9 +125,17 @@ func compilerTransfer(ctx uintptr, fd, iovs, count, done uint32, write bool) uin
 				out = &host.diagnostic
 			}
 
-			n, err = out.Write(b)
+			if chaosFail("compile-write") {
+				err = io.ErrShortWrite
+			} else {
+				n, err = out.Write(b)
+			}
 		} else {
-			n, err = host.input.Read(b)
+			if chaosFail("compile-read") {
+				err = io.ErrUnexpectedEOF
+			} else {
+				n, err = host.input.Read(b)
+			}
 		}
 
 		if err != nil && err != io.EOF {
@@ -173,6 +181,7 @@ func compileStreams(input io.Reader, output io.Writer, options CompileOptions) {
 
 	i.attach(&CompilerIO{input: input, output: output})
 	i.start()
+	setupCompilerChaos(i)
 	flags := uint32(0)
 
 	if options.memoryTail {
