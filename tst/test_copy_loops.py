@@ -47,7 +47,7 @@ def check(actual, expected):
     return actual + constant(expected) + b"\x47\x04\x40\0\x0b"
 
 
-def program(width, step, count, dest, source, wrapped, signed):
+def program(width, step, count, dest, source, wrapped, signed, kernel=False):
     arguments = [(dest - STORE_OFFSET) // width, (source - LOAD_OFFSET) // width, count,
                  (dest - STORE_OFFSET) % width, (source - LOAD_OFFSET) % width]
     if wrapped:
@@ -83,12 +83,22 @@ def program(width, step, count, dest, source, wrapped, signed):
             image[to] = image[at]
             locations.update(pos for start in (to, at) for pos in (start - 1, start, start + 1) if 0 <= pos < 65536)
     expected = (arguments[0] + arguments[1] + iterations * 2 + rest) & MASK
-    entry = check(b"".join(constant(arg) for arg in arguments) + b"\x10\0", expected)
+    entry = check(b"".join(constant(arg) for arg in arguments) + b"\x10" + leb(int(kernel)), expected)
     for at in sorted(locations):
         entry += check(constant(at) + b"\x2d\0\0", image[at])
+    if kernel:
+        entry = b"\x10\0\x45\x04\x40\0\x0b" + entry
 
-    module = b"\0asm\1\0\0\0" + section(1, b"\2\x60\5" + b"\x7f" * 5 + b"\1\x7f\x60\0\0")
-    module += section(3, b"\2\0\1") + section(5, b"\1\1\1\1") + section(7, b"\1\6_start\0\1")
+    types = b"\x60\5" + b"\x7f" * 5 + b"\1\x7f\x60\0\0"
+    module = b"\0asm\1\0\0\0" + section(1, bytes([3 if kernel else 2]) + types + (b"\x60\0\1\x7f" if kernel else b""))
+    if kernel:
+        module += section(2, b"\1\6kernel\6getpid\0\2")
+    module += section(3, b"\2\0\1") + section(5, b"\1\1\1\1")
+    exports = b"\6_start\0" + leb(1 + int(kernel))
+    if kernel:
+        module += section(6, b"\2\x7f\0" + constant(65536) + b"\x0b\x7f\1" + constant(32768) + b"\x0b")
+        exports += b"\x0b__heap_base\3\0\x0f__stack_pointer\3\1"
+    module += section(7, bytes([3 if kernel else 1]) + exports)
     bodies = [b"\1\3\x7f" + code + b"\x0b", b"\0" + entry + b"\x0b"]
     module += section(10, b"\2" + b"".join(leb(len(body)) + body for body in bodies))
     return module + section(11, b"\1\0" + constant(4096) + b"\x0b" + leb(len(IMAGE) - 4096) + IMAGE[4096:])
@@ -106,21 +116,28 @@ def main():
         work = Path(directory)
         source, compiled, embedded = [work / name for name in ("input.wasm", "native.o", "embedded.o")]
         for case in cases:
-            data = program(*case)
-            source.write_bytes(data)
-            modes = (False, True) if case[2] == 17 or case[3] != 32768 or case[5] or case[6] else (False,)
-            for strict in modes:
+            modes = ["optimized"]
+            if case[2] == 17 or case[3] != 32768 or case[5] or case[6]:
+                modes.append("strict")
+            if case[0] in (1, 4, 8) and case[1] in (1, 3) and case[2] == 97 and case[3] == 32768 and not case[5] and not case[6]:
+                modes.append("asan")
+            for mode in modes:
+                strict, asan = mode == "strict", mode == "asan"
+                data = program(*case, kernel=asan)
+                source.write_bytes(data)
                 env = dict(os.environ, W2X_MEMORY_TAIL="strict" if strict else "optimized", W2X_TAIL_PROFILE="")
-                result = subprocess.run([native, *(["--strict"] if strict else [])], input=data, capture_output=True, env=env, timeout=60)
-                assert result.returncode == 0, (case, strict, result.stderr)
+                flag = ["--strict"] if strict else ["--asan"] if asan else []
+                result = subprocess.run([native, *flag], input=data, capture_output=True, env=env, timeout=60)
+                assert result.returncode == 0, (case, mode, result.stderr)
                 compiled.write_bytes(result.stdout)
-                result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
-                assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), (case, strict, result)
+                run_flags = ["--asan"] if asan else []
+                result = subprocess.run([vm, *run_flags, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
+                assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), (case, mode, result)
                 for obj in (compiled, embedded):
-                    result = subprocess.run([vm, "run", "--", str(obj)], capture_output=True, env=env, timeout=30)
-                    assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (case, strict, result)
+                    result = subprocess.run([vm, "run", *run_flags, "--", str(obj)], capture_output=True, env=env, timeout=30)
+                    assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (case, mode, result)
                 checked += 1
-    print(f"copy loops: {checked} counted, overlapping and wrapping programs agree with the bytewise model and both AOTs")
+    print(f"copy loops: {checked} counted, overlapping, wrapping and ASAN programs agree with the bytewise model and both AOTs")
 
 
 if __name__ == "__main__":
