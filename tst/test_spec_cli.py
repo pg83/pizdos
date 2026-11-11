@@ -74,6 +74,7 @@ def main():
         for kind in range(4):
             modules[f"missing-module-{kind}"] = importing(kind, "unknown", "missing")
             modules[f"missing-field-{kind}"] = importing(kind, "shared", "missing")
+            modules[f"missing-spectest-{kind}"] = importing(kind, "spectest", "missing")
         modules["wrong-signature"] = importing(0, "shared", "id", True)
         for name, data in modules.items():
             source, embedded = work / f"{name}.wasm", work / "embedded.o"
