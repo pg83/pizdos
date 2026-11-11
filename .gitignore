@@ -28,6 +28,10 @@ __pycache__/
 /aot_chaos_aot
 /aot_coverage
 /aot_chaos_coverage
+/aot_wasm_coverage
+/aot_wasm_chaos_coverage
+/aot_coverage_aot
+/aot_chaos_coverage_aot
 /aot_measure
 /testsuite_tarball
 /musl_tarball
