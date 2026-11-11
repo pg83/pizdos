@@ -96,11 +96,11 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
   8 bytes only; an `.eh_frame` with the CFA at every instruction. The
   functions take host addresses and check nothing: the caller checks the
   ranges. `str_choose()` gives the host's configuration, whose table holds
-  the functions to call. `bin/wasm2o/str.go` links it.
+  the functions to call. `bin/vm/str.go` links it.
 - Changes to the functions or the convention are made in str and the
   revision moved here; the library is never edited in place.
 
-## bin/wasm2o
+## bin/vm
 
 - The compiler is `bin/aot/aot.cpp`, one freestanding C++ translation unit.
   `build.py` builds native `aot` and `aot.wasm`, then native aot compiles the
@@ -113,7 +113,7 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
   Freeze the compiler's wasm input across revisions with
   `dev/aot_perf.py --compiler-input`, save objects with `--objects`, and
   run the saved and candidate objects through the same stand loader.
-- `bin/wasm2o` is the Go loader, kernel and WASI host. `compile.go` links
+- `bin/vm` is wasm2o, the Go loader, kernel and WASI host. `compile.go` links
   embedded code once and gives each invocation its own instance, memory and
   fd streams. `compile()` reads fd 0 and writes ELF to fd 1;
   `compileOptions(flags)` selects tail, range optimization and profiling
@@ -262,7 +262,7 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
   frames: the code that runs handlers holds no lock and defers nothing.
   `test_busybox` builds a root from busybox.links and runs applets and the
   shell in it: pipes, jobs, SIGINT, and Ctrl-Z, jobs and fg on a pty.
-- `test_wasm2o_go` runs `bin/wasm2o/*_test.go`: modules built in the test
+- `test_wasm2o_go` runs `bin/vm/*_test.go`: modules built in the test
   run through the loader while Go collects, copies stacks, parks, preempts a
   call-free loop on one processor and unwinds traps through native frames;
   wide signatures cross both boundaries on the stack; longjmp lands across a

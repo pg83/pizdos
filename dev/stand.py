@@ -303,7 +303,7 @@ def main():
         parser.error("unknown workload in --only")
 
     build = args.build_dir.resolve()
-    wasm2o = build / "bin/wasm2o/wasm2o"
+    wasm2o = build / "bin/vm/wasm2o"
     rows = []
     print("A=native C=wasm2o; GOMAXPROCS=1, MAGICK/OMP threads=1; decode excludes startup, I/O and pixel hashing", flush=True)
 

@@ -40,7 +40,7 @@ def digest(path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--native", type=Path, default=ROOT / ".build/bin/aot/aot")
-    parser.add_argument("--embedded", type=Path, default=ROOT / ".build/bin/wasm2o/wasm2o")
+    parser.add_argument("--embedded", type=Path, default=ROOT / ".build/bin/vm/wasm2o")
     parser.add_argument("--measure", type=Path, default=ROOT / ".build/dev/aot_measure")
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--only", choices=INPUTS, nargs="+")

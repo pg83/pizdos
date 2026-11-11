@@ -1,7 +1,7 @@
 // The work of the stand (dev/stand.py) over files, with one pure module of
 // impulse-desktop/decode built natively: its wrapper against the native
 // libraries (native.py). It does what `wasm2o stand` does with wasm2o's
-// code (bin/wasm2o/stand.go), which says the work and the results: one line
+// code (bin/vm/stand.go), which says the work and the results: one line
 // per file on standard output, the time of the calls on standard error.
 //
 //     decode KIND FILE...

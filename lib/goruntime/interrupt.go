@@ -1,5 +1,5 @@
 // Interruption of native code that runs on a goroutine, for wasm2o's
-// kernel (bin/wasm2o): the goroutine names the code and a stub, and when
+// kernel (bin/vm): the goroutine names the code and a stub, and when
 // another goroutine asks, the next preemption signal that finds it at an
 // asynchronous safe point in that code injects a call of the stub there,
 // as one of asyncPreempt would be. The stub saves what the code needs and
