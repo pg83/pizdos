@@ -42,6 +42,7 @@ int main() {
     assert(strcmp(ptsname(master), name) == 0 && strncmp(name, "/dev/pts/", 9) == 0);
     int slave = open(name, O_RDWR | O_NOCTTY);
     assert(slave >= 0 && isatty(slave) == 1);
+    assert(tcsetpgrp(slave, 0x7fffffff) == -1 && errno == EPERM);
     assert(strcmp(ttyname(slave), name) == 0);
     assert(ttyname_r(slave, actual, 1) == ERANGE);
     assert(ttyname_r(slave, actual, sizeof(actual)) == 0 && strcmp(actual, name) == 0);
