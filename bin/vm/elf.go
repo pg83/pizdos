@@ -282,15 +282,15 @@ func readNote(data []byte) []byte {
 
 	for len(data) >= 12 {
 		namesz, descsz, typ := le.Uint32(data), le.Uint32(data[4:]), le.Uint32(data[8:])
-		name := alignTo(int32(namesz), 4)
-		desc := alignTo(int32(descsz), 4)
+		name := (uint64(namesz) + 3) &^ 3
+		desc := (uint64(descsz) + 3) &^ 3
 
-		if uint64(12+name)+uint64(desc) > uint64(len(data)) {
+		if 12+name+desc > uint64(len(data)) {
 			break
 		}
 
-		if typ == 1 && string(data[12:12+namesz]) == noteOwner+"\x00" {
-			return data[12+name : 12+uint32(name)+descsz]
+		if typ == 1 && string(data[12:12+uint64(namesz)]) == noteOwner+"\x00" {
+			return data[12+name : 12+name+uint64(descsz)]
 		}
 
 		data = data[12+name+desc:]
@@ -342,7 +342,7 @@ func readEhFrame(data []byte, relocs []objReloc, defined map[string]uint32) []Re
 		start := off + 4
 		end := start + length
 
-		if length == 0xffffffff || end > len(data) {
+		if length < 4 || length == 0xffffffff || end > len(data) {
 			throwFmt("malformed .eh_frame")
 		}
 
@@ -367,6 +367,10 @@ func readEhFrame(data []byte, relocs []objReloc, defined map[string]uint32) []Re
 
 			if strings.HasPrefix(aug, "z") {
 				n := int(uleb(e, &at))
+
+				if n < 0 || n > len(e)-at {
+					throwFmt("malformed .eh_frame")
+				}
 
 				if aug != "zR" || n != 1 || e[at] != 0x1b {
 					throwFmt("unsupported .eh_frame augmentation %q", aug)
