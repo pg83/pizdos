@@ -248,7 +248,7 @@ func (p *Process) execReset() {
 	p.sig.mu.Lock()
 
 	for i, a := range p.sig.actions {
-		if a.handler > sigIgn {
+		if a.handler != sigDfl && a.handler != sigIgn {
 			p.sig.actions[i] = sigAction{}
 		}
 	}

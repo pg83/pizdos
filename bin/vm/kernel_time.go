@@ -660,7 +660,12 @@ func (p *Process) libcClock_gettime(clock, ts uint32) uint32 {
 }
 
 func (p *Process) libcNanosleep(req, rem uint32) uint32 {
-	d := time.Duration(p.u64(req))*time.Second + time.Duration(p.u32(req+8))*time.Nanosecond
+	d, err := p.timespec(req)
+
+	if err != nil {
+		return p.result(0, err)
+	}
+
 	left := p.sleep(d)
 	p.deliver()
 

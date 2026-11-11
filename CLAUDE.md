@@ -97,6 +97,10 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
   `__cxa_thread_atexit` add to atexit's list, which grows as needed. A
   program is one object: `dlopen` fails and `dladdr` names the program, the
   path the kernel exec'd through its links (`__kernel_program`).
+- Signal handlers are Wasm table indices. `SIG_IGN` is the pointer value
+  `-2`, since index `1` can be a real handler; `SIG_DFL` is `0`, `SIG_ERR`
+  is `-1`. Guest modules must use lib/c's signal.h and be rebuilt when
+  these ABI constants change.
 - The link has no `--allow-undefined`: a missing function is a link error,
   not a silent import.
 - `test_libc` runs tst/libc/check.c, built against lib/c, in the kernel:

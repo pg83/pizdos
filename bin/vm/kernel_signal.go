@@ -26,7 +26,7 @@ import (
 
 const (
 	sigDfl      = 0
-	sigIgn      = 1
+	sigIgn      = ^uint32(1)
 	saNocldstop = 1
 	saNocldwait = 2
 	saSiginfo   = 4
@@ -292,7 +292,7 @@ func (p *Process) take() (int, sigAction) {
 	p.sig.pending &^= sigBit(sig)
 	act := p.sig.actions[sig]
 
-	if act.handler > sigIgn && act.flags&saResethand != 0 {
+	if act.handler != sigDfl && act.handler != sigIgn && act.flags&saResethand != 0 {
 		p.sig.actions[sig] = sigAction{}
 	}
 

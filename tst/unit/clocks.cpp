@@ -94,8 +94,28 @@ int main() {
         assert(remaining.tv_sec >= 0 && remaining.tv_sec < 1 && remaining.tv_nsec >= 0);
         assert(clock_gettime(CLOCK_MONOTONIC, &current) == 0 && current.tv_sec <= deadline);
     }
+    assert(usleep(1000000) == -1 && errno == EINTR);
+    assert(sleep(1) == 1);
+    timespec delay{1, 0};
+    assert(clock_nanosleep(CLOCK_MONOTONIC, 0, &delay, &remaining) == EINTR);
+    assert(clock_gettime(CLOCK_MONOTONIC, &delay) == 0);
+    delay.tv_sec++;
+    remaining = {7, 8};
+    assert(clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &delay, &remaining) == EINTR);
+    assert(remaining.tv_sec == 7 && remaining.tv_nsec == 8);
     ualarm(0, 0);
     assert(alarms >= 3);
+    sig_atomic_t before = alarms;
+    assert(signal(SIGUSR1, SIG_IGN) == SIG_DFL);
+    assert(raise(SIGUSR1) == 0 && alarms == before);
+    assert(signal(SIGUSR1, alarmed) == SIG_IGN);
+    assert(raise(SIGUSR1) == 0 && alarms == before + 1);
+    assert(signal(SIGUSR1, SIG_IGN) == alarmed);
+    assert(raise(SIGUSR1) == 0 && alarms == before + 1);
+    action.sa_flags = SA_RESETHAND;
+    assert(sigaction(SIGUSR2, &action, nullptr) == 0);
+    assert(raise(SIGUSR2) == 0 && alarms == before + 2);
+    assert(sigaction(SIGUSR2, nullptr, &action) == 0 && action.sa_handler == SIG_DFL);
     invalid = {-1, 0};
     assert(nanosleep(&invalid, nullptr) == -1 && errno == EINVAL);
     invalid = {0, 1000000000};
