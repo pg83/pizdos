@@ -732,6 +732,23 @@ host_resources_check = command(
     descr="CC", color="green",
 )
 
+host_syscalls_check = command(
+    name="host_syscalls_check",
+    inputs=[*LIBC_HEADERS, "$(S)/tst/host_syscalls/check.c", "$(S)/tst/libc/make.py", "$(S)/dev/wasm.py"],
+    outputs=["$(B)/tst/host_syscalls/check.wasm"],
+    deps=[libc],
+    cmd=["python3", "$(S)/tst/libc/make.py", CLANG, WASM_LD, "$(S)/tst/host_syscalls/check.c", "$(S)/lib/c/include", libc.outputs[0], "$(B)/tst/host_syscalls/check.wasm", "-g", "-D_GNU_SOURCE"],
+    descr="CC", color="green",
+)
+
+host_syscalls_filter = command(
+    name="host_syscalls_filter",
+    inputs=["$(S)/tst/host_syscalls/filter.c"],
+    outputs=["$(B)/tst/host_syscalls/filter"],
+    cmd=[CLANG, *build.cppflags, *build.cflags, "-O2", "$(S)/tst/host_syscalls/filter.c", "-o", "$(B)/tst/host_syscalls/filter", *build.ldflags],
+    descr="CC", color="green",
+)
+
 TESTED = {
     "aot": [aot, aot_command, wazero, vm, busybox],
     "asan": [vm, asan_check_o, libc_check_o],
@@ -757,6 +774,7 @@ TESTED = {
     "invariant_loops": [vm, aot_native, wazero],
     "host_io": [vm, aot_native],
     "host_resources": [vm, aot_native, host_resources_check],
+    "host_syscalls": [vm, aot_native, host_syscalls_check, host_syscalls_filter],
     "host_signals": [vm, aot_native, wazero],
     "doom": [vm, doom_o, doom_wad],
     "libc": [vm, libc_check_o],
