@@ -20,7 +20,9 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
   case is its own `unit_<name>` target and also belongs to `test`.
   `//@ compile-flags:`, `aot-flags:`, `run-flags:`, `args:` and `env:`
   configure the commands; `stdout:` and `stderr:` are JSON strings,
-  `exit-code:` defaults to 0. `host: false` is for kernel-specific cases.
+  `stderr-pattern:` is a JSON full-match regex for diagnostics with
+  addresses, and `exit-code:` defaults to 0. `host: false` is for
+  kernel-specific cases.
   `freestanding: true` links without lib/c and lib/cxx for raw Wasm/WASI
   commands defining their own `_start`. `$ROOT` in `args:` names that
   invocation's temporary directory.

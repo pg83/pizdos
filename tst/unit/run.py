@@ -23,7 +23,7 @@ import wasm
 
 LINK = ["--stack-first", "-z", "stack-size=1049600", "--max-memory=4294967296",
         "--export=__heap_base", "--export=__stack_pointer", "--gc-sections"]
-DIRECTIVES = {"compile-flags", "aot-flags", "run-flags", "args", "env", "stdout", "stderr", "exit-code", "host", "timeout", "freestanding"}
+DIRECTIVES = {"compile-flags", "aot-flags", "run-flags", "args", "env", "stdout", "stderr", "stderr-pattern", "exit-code", "host", "timeout", "freestanding"}
 
 
 def directives(source):
@@ -62,6 +62,13 @@ def check(result, case, phase):
     expected = (int(case.get("exit-code", "0")), json.loads(case.get("stdout", '""')).encode(),
                 json.loads(case.get("stderr", '""')).encode())
     actual = result.returncode, result.stdout, result.stderr
+    if "stderr-pattern" in case:
+        if "stderr" in case:
+            raise ValueError("stderr and stderr-pattern are mutually exclusive")
+        pattern = json.loads(case["stderr-pattern"])
+        if actual[:2] != expected[:2] or not re.fullmatch(pattern, result.stderr.decode(errors="replace")):
+            raise RuntimeError(f"{phase}: got exit/stdout/stderr {actual!r}; expected {expected[:2]!r} and stderr pattern {pattern!r}")
+        return
     if actual != expected:
         raise RuntimeError(f"{phase}: got exit/stdout/stderr {actual!r}; expected {expected!r}")
 
