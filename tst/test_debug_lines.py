@@ -49,7 +49,7 @@ ROW_ORDER = (
 )
 
 
-def table(version, wide=False, path_form=8, index_form=15, define=False, absolute=False):
+def table(version, wide=False, path_form=8, index_form=15, define=False, absolute=False, empty_directory=False):
     # DWARF 4/5, sections 6.2 and 7.22: a row at code offset 67 names line 43.
     width = 8 if wide else 4
     fixed = lambda n: n.to_bytes(width, "little")
@@ -66,7 +66,7 @@ def table(version, wide=False, path_form=8, index_form=15, define=False, absolut
     else:
         def string_value(value, offset):
             return value + b"\0" if path_form == 8 else fixed(offset)
-        header += b"\1\1" + leb(path_form) + b"\1" + string_value(b"/sources", 0)
+        header += b"\1\1" + leb(path_form) + b"\1" + string_value(b"" if empty_directory else b"/sources", 8 if empty_directory else 0)
         formats = [(1, path_form), (2, index_form), (3, 7), (4, 15), (5, 30), (0x2000, 9)]
         header += bytes([len(formats)]) + b"".join(leb(content) + leb(form) for content, form in formats) + b"\2"
         for name, offset in ((b"unused.c", 9), (b"fixture.c", 18)):
@@ -114,6 +114,7 @@ def main():
     valid = [(f"v{version}-wide{wide}", table(version, wide)) for version in (2, 3, 4) for wide in (False, True)]
     valid += [(f"v5-{wide}-{path}-{index}", table(5, wide, path, index))
               for wide in (False, True) for path in (8, 31, 14) for index in (11, 5, 6, 7, 15)]
+    valid.append(("empty-directory", table(5, empty_directory=True)))
     valid += [("define-file", table(4, define=True)), ("absolute-file", table(4, absolute=True))]
     valid += [("adversarial-rows", reordered_table(ROW_ORDER)),
               ("reversed-rows", reordered_table(tuple(reversed(ROW_ORDER)))),
@@ -123,6 +124,17 @@ def main():
         data = bytearray(table(4))
         struct.pack_into("<I", data, 6, length)
         malformed.append((f"header-length-{length}", bytes(data)))
+    malformed.append(("unknown-entry-form", table(5, path_form=0x1234)))
+    unfinished = bytearray(table(4))
+    unfinished = unfinished[:unfinished.index(b"/sources") + len(b"/sources")]
+    struct.pack_into("<I", unfinished, 0, len(unfinished) - 4)
+    struct.pack_into("<I", unfinished, 6, len(unfinished) - 10)
+    malformed.append(("unterminated-directory", bytes(unfinished)))
+    outside = table(5, path_form=31)
+    marker = b"\1\1\x1f\1" + bytes(4)
+    assert marker in outside
+    outside = outside.replace(marker, marker[:4] + struct.pack("<I", 0xffffffff), 1)
+    malformed.append(("string-offset-outside-section", outside))
     original = table(4)
     start = 10 + struct.unpack_from("<I", original, 6)[0]
     for name, program in (("extended-length", b"\0" + leb(1 << 31) + b"\2"),
