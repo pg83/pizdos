@@ -26,23 +26,15 @@ var strBlob []byte
 // and needs before the table.
 var strSlots = []string{"memcpy", "memmove", "memset", "memcmp", "strlen", "strcpy", "strcat", "strcmp", "strspn", "strcspn", "memchr"}
 
-// A configuration is a name, what it needs of the host and the table: 20
-// slots of 8 bytes.
-const (
-	strConfigTable = 16
-	strConfigSize  = strConfigTable + 20*8
-)
+// A configuration's public slots follow its name and feature requirements.
+const strConfigTable = 16
 
 type strLibrary struct {
-	code   []byte
-	config string
-	slots  map[string]uintptr
-	// every configuration's slots and whether the host runs it, for tests
-	configs map[string]map[string]uintptr
-	runs    map[string]bool
+	code  []byte
+	slots map[string]uintptr
 }
 
-var strLib = sync.OnceValue(func() *strLibrary { return linkStr(strBlob) })
+var strLib = sync.OnceValue(linkStr)
 
 // strFunction is the code address of the function a symbol str.<slot>
 // names, in the host's configuration.
@@ -56,17 +48,14 @@ func strFunction(sym string) uintptr {
 	return at
 }
 
-// linkStr links str's object: the text, executable, then the read-only
-// data, both relocated, with nothing outside them. The code is registered
+// linkStr links the embedded str object, validated by lib/str/make.py:
+// the text, executable, then the read-only data, both relocated, with
+// nothing outside them. The code is registered
 // with Go as assembly is, never preempted asynchronously: it keeps values
 // in vector and mask registers Go does not save and below rsp.
-func linkStr(data []byte) *strLibrary {
-	f := parseELF(data)
+func linkStr() *strLibrary {
+	f := parseELF(strBlob)
 	eh := f.find(".eh_frame")
-
-	if f.rodata < 0 || eh < 0 {
-		throwFmt("lib/str: no .rodata or .eh_frame")
-	}
 
 	text, rodata := f.sections[f.text].data, f.sections[f.rodata].data
 	defined := f.functions()
@@ -88,8 +77,6 @@ func linkStr(data []byte) *strLibrary {
 			switch r.in {
 			case inRodata:
 				target += uint64(rodataAt)
-			case inExternal:
-				throwFmt("lib/str refers to %s", r.sym)
 			}
 
 			at := section.at + int(r.at)
@@ -99,8 +86,6 @@ func linkStr(data []byte) *strLibrary {
 				put32rel(code[at:], int64(target)+r.addend-int64(uint64(base)+uint64(at)))
 			case rX86_64_64:
 				binary.LittleEndian.PutUint64(code[at:], target+uint64(r.addend))
-			default:
-				throwFmt("lib/str: relocation type %d", r.typ)
 			}
 		}
 	}
@@ -108,64 +93,12 @@ func linkStr(data []byte) *strLibrary {
 	throw(syscall.Mprotect(code[:rodataAt], syscall.PROT_READ|syscall.PROT_EXEC))
 	throw(syscall.Mprotect(code[rodataAt:], syscall.PROT_READ))
 	registerCode("str", base, uintptr(len(text)), regions, true, nil, nil)
-	choose, ok := defined["str_choose"]
+	choose := defined["str_choose"]
+	at := strCall0(base+uintptr(choose)) - base
+	lib := &strLibrary{code: code, slots: map[string]uintptr{}}
 
-	if !ok {
-		throwFmt("lib/str: no str_choose")
-	}
-
-	lib := &strLibrary{code: code, configs: map[string]map[string]uintptr{}, runs: map[string]bool{}}
-	word := func(at uintptr) uintptr {
-		if at+8 > uintptr(len(code)) {
-			throwFmt("lib/str: a configuration out of the library")
-		}
-
-		return uintptr(binary.LittleEndian.Uint64(code[at:]))
-	}
-
-	// read reads the configuration at offset at: its name and slots
-	read := func(at uintptr) (string, uint32, map[string]uintptr) {
-		name := cstr(code, uint32(word(at)-base))
-		slots := map[string]uintptr{}
-
-		for k, slot := range strSlots {
-			fn := word(at + strConfigTable + 8*uintptr(k))
-
-			if fn < base || fn >= base+uintptr(len(text)) {
-				throwFmt("lib/str: the %s of configuration %s is outside the text", slot, name)
-			}
-
-			slots[slot] = fn
-		}
-
-		return name, binary.LittleEndian.Uint32(code[at+8:]), slots
-	}
-
-	lib.config, _, lib.slots = read(strCall0(base+uintptr(choose)) - base)
-	configs, count := -1, -1
-
-	for _, s := range f.symbols {
-		if s.section == f.rodata && s.name == "str_configs" {
-			configs = rodataAt + int(s.value)
-		}
-
-		if s.section == f.rodata && s.name == "str_nconfigs" {
-			count = int(binary.LittleEndian.Uint32(code[rodataAt+int(s.value):]))
-		}
-	}
-
-	host, ok := defined["str_host"]
-
-	if configs < 0 || count < 0 || !ok {
-		throwFmt("lib/str: no str_configs, str_nconfigs or str_host")
-	}
-
-	has := uint32(strCall0(base + uintptr(host)))
-
-	for k := range count {
-		name, needs, slots := read(uintptr(configs + k*strConfigSize))
-		lib.configs[name] = slots
-		lib.runs[name] = needs&^has == 0
+	for k, slot := range strSlots {
+		lib.slots[slot] = uintptr(binary.LittleEndian.Uint64(code[at+strConfigTable+8*uintptr(k):]))
 	}
 
 	return lib
