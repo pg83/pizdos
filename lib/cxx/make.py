@@ -76,6 +76,15 @@ def extract(tarball, work):
 def headers(tree, include):
     shutil.copytree(tree / "libcxx/include", include, ignore=shutil.ignore_patterns("CMakeLists.txt", "*.in"))
     shutil.copy(ROOT / "__config_site", include / "__config_site")
+    # the unstable ABI but for the alternate string layout, as ix's libc++
+    abi = include / "__configuration/abi.h"
+    text = abi.read_text()
+    layout = "#  define _LIBCPP_ABI_ALTERNATE_STRING_LAYOUT\n"
+
+    if text.count(layout) != 1:
+        raise SystemExit("abi.h does not define _LIBCPP_ABI_ALTERNATE_STRING_LAYOUT once")
+
+    abi.write_text(text.replace(layout, ""))
     shutil.copy(tree / "libcxx/vendor/llvm/default_assertion_handler.in", include / "__assertion_handler")
 
     for name in ("cxxabi.h", "__cxxabi_config.h"):

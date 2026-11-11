@@ -75,7 +75,8 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
   by `lib/cxx/make.py` with the flags and sources of LLVM's runtimes build
   for this system but none of its probes; `__config_site` is ours: musl-like
   libc, lib/c's pthread, the filesystem library, no time zone database, no
-  exceptions. `libc++.a` holds both libraries, `include.tar` the
+  exceptions, and the unstable ABI (version 999) but for the alternate
+  string layout, as ix's libc++ has it. `libc++.a` holds both libraries, `include.tar` the
   `include/c++/v1` a C++ program puts before lib/c's headers.
 - libc++ takes the generic locale path of a libc without xlocale: it
   defines `strto*_l` and, in C++, `vasprintf` itself, which lib/c therefore
