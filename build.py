@@ -801,6 +801,7 @@ TESTED = {
     "stand": [vm, aot_native, stand_fixture],
     "terminal": [vm, aot_native, terminal_check],
     "vfork_traps": [vm, aot_native, wazero],
+    "wide_results": [vm, aot_native, wazero],
     "vm": [vm, aot_native, aot, aot_command, aot_command_aot, aot_relinked, wazero, busybox],
 }
 tests = []
