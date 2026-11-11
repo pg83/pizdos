@@ -20,6 +20,9 @@ static void alarmHandler(int signal) {
     alarms = alarms + 1;
 }
 
+static void childHandler(int) {
+}
+
 int main() {
     int status;
     siginfo_t info{};
@@ -37,6 +40,13 @@ int main() {
     assert(shared != MAP_FAILED);
     int release[2], ready[2];
     assert(pipe(release) == 0 && pipe(ready) == 0);
+    struct sigaction childAction{}, oldChildAction{};
+    childAction.sa_handler = childHandler;
+    childAction.sa_flags = SA_NOCLDSTOP;
+    assert(sigemptyset(&childAction.sa_mask) == 0 && sigaction(SIGCHLD, &childAction, &oldChildAction) == 0);
+    sigset_t children{}, oldMask{}, pending{};
+    assert(sigemptyset(&children) == 0 && sigaddset(&children, SIGCHLD) == 0);
+    assert(sigprocmask(SIG_BLOCK, &children, &oldMask) == 0);
     pid_t child = fork();
     assert(child >= 0);
     if (child == 0) {
@@ -62,11 +72,15 @@ int main() {
     assert(waitid(P_PID, child, &info, WCONTINUED | WNOWAIT) == 0);
     assert(info.si_pid == child && info.si_code == CLD_CONTINUED && info.si_status == SIGCONT);
     assert(waitpid(-child, &status, WCONTINUED) == child && WIFCONTINUED(status));
+    // Stop/continue remain waitable, while SA_NOCLDSTOP suppresses their signals.
+    assert(sigpending(&pending) == 0 && sigismember(&pending, SIGCHLD) == 0);
     assert(write(release[1], "x", 1) == 1);
     assert(waitid(P_PID, child, &info, WEXITED | WNOWAIT) == 0);
     assert(info.si_pid == child && info.si_code == CLD_EXITED && info.si_status == 17);
     rusage usage{};
     assert(wait3(&status, 0, &usage) == child && WIFEXITED(status) && WEXITSTATUS(status) == 17);
+    assert(sigwaitinfo(&children, &info) == SIGCHLD && info.si_signo == SIGCHLD);
+    assert(sigaction(SIGCHLD, &oldChildAction, nullptr) == 0 && sigprocmask(SIG_SETMASK, &oldMask, nullptr) == 0);
     assert(usage.ru_utime.tv_sec >= 0 && usage.ru_stime.tv_sec >= 0);
     assert(pread(fd, &byte, 1, 0) == 1 && byte == 's');
     assert(regexec(&expression, "abbbc", 0, nullptr, 0) == 0);
