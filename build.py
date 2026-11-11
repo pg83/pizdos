@@ -563,8 +563,8 @@ vm_spec_test = command(
     name="test_vm_spec",
     inputs=["$(S)/tst/vm_spec.py"],
     outputs=["$(B)/tst/vm_spec.stamp"],
-    deps=[vm, testsuite_tarball],
-    cmd=["python3", "$(S)/tst/vm_spec.py", vm.outputs[0], WAST2JSON, testsuite_tarball.outputs[0], "$(B)/tst/vm_spec.stamp"],
+    deps=[vm, aot_native, testsuite_tarball],
+    cmd=["python3", "$(S)/tst/vm_spec.py", vm.outputs[0], WAST2JSON, testsuite_tarball.outputs[0], "$(B)/tst/vm_spec.stamp", aot_native.outputs[0]],
     descr="TS",
     color="green",
 )
@@ -771,7 +771,7 @@ for test in build.glob("$(S)/tst/test_*.py"):
                   [node for node in tested if node not in (vm, aot_native, vm_chaos, aot_native_chaos)])
 
 coverage_case("test_vm_spec",
-              ["python3", "$(S)/tst/vm_spec.py", "$VM", WAST2JSON, testsuite_tarball.outputs[0], "$OUT.stamp"],
+              ["python3", "$(S)/tst/vm_spec.py", "$VM", WAST2JSON, testsuite_tarball.outputs[0], "$OUT.stamp", "$AOT"],
               ["$(S)/tst/vm_spec.py"], [testsuite_tarball])
 
 coverage = command(

@@ -338,7 +338,10 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
   memory errors and reads the reports and their lines.
 - `test_vm_spec` runs the spec testsuite (pinned in build.py) through
   `vm spec`, which loads every module in its own process; wast2json
-  comes from `ix run bld/wabt`. `KNOWN` in `tst/vm_spec.py` lists the
+  comes from `ix run bld/wabt`. Every binary module also passes through
+  the native AOT and embedded Wasm AOT commands in strict mode: successful
+  outputs must be byte-identical and rejected inputs must agree on their
+  diagnostic. `KNOWN` in `tst/vm_spec.py` lists the
   failures of what is not implemented (table.grow, more than one memory); a
   file failing more, or crashing, fails the test. Unsupported features are
   refused at decoding, never compiled approximately: memory64 and multiple
