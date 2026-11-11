@@ -730,6 +730,7 @@ TESTED = {
     "busybox": [vm, busybox_o, busybox],
     "chaos": [vm, vm_chaos, aot_native, aot_native_chaos, chaos_check],
     "clang": [vm, clang_o, clang, libc, libc_headers, libcxx],
+    "cli_errors": [vm, aot_native],
     "compiler_modes": [vm, aot_native],
     "copy_loops": [vm, aot_native],
     "cxx": [vm, cxx_check_o],
