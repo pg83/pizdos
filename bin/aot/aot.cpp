@@ -5706,7 +5706,7 @@ namespace {
 
     static void lowererCallIndirect(Lowerer* l, i32 v, Int typeIndex, Int table, Span<const i32> args);
 
-    static void lowererCheckRange(Lowerer* l, VReg a, VReg n, Mem limit, u8 limitSize, i64 code);
+    static void lowererCheckRange(Lowerer* l, VReg a, VReg n, Mem limit, i64 code);
 
     static u8 lowererClassOf(Lowerer* l, ValType t);
 
@@ -15144,7 +15144,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // checkRange traps unless a + n <= limit, all unsigned 32-bit values
     // summed in 64 bits; limit is a memory operand.
-    static void lowererCheckRange(Lowerer* l, VReg a, VReg n, Mem limit, u8 limitSize, i64 code) {
+    static void lowererCheckRange(Lowerer* l, VReg a, VReg n, Mem limit, i64 code) {
         VReg t = mFuncNewReg(l->mf, classGPR);
         lowererMov(l, t, a, 8);
         MInst add = inst(mAlu);
@@ -15153,26 +15153,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         add.size = 8;
         add.aux = 0;
         lowererEmit(l, add);
-        if (limitSize == 8) {
-            MInst c = inst(mCmpMem);
-            c.src = t;
-            c.mem = limit;
-            c.size = 8;
-            lowererEmit(l, c);
-        } else {
-            VReg lim = mFuncNewReg(l->mf, classGPR);
-            MInst ld = inst(mLoad);
-            ld.dst = lim;
-            ld.mem = limit;
-            ld.size = limitSize;
-            ld.dsize = 8;
-            lowererEmit(l, ld);
-            MInst c = inst(mCmp);
-            c.src = t;
-            c.src2 = lim;
-            c.size = 8;
-            lowererEmit(l, c);
-        }
+        MInst c = inst(mCmpMem);
+        c.src = t;
+        c.mem = limit;
+        c.size = 8;
+        lowererEmit(l, c);
         lowererTrapIf(l, ccA, code);
     }
 
@@ -17073,8 +17058,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         VReg d = lowererUse(l, args[0]);
         VReg s = lowererUse(l, args[1]);
         VReg n = lowererUse(l, args[2]);
-        lowererCheckRange(l, d, n, memAt(ctxReg, l->lay->memoryEnd), 8, trapMemoryOOB);
-        lowererCheckRange(l, s, n, memAt(ctxReg, l->lay->memoryEnd), 8, trapMemoryOOB);
+        lowererCheckRange(l, d, n, memAt(ctxReg, l->lay->memoryEnd), trapMemoryOOB);
+        lowererCheckRange(l, s, n, memAt(ctxReg, l->lay->memoryEnd), trapMemoryOOB);
         if (l->m->asan) {
             lowererAsanRange(l, d, n);
             lowererAsanRange(l, s, n);
@@ -17093,7 +17078,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         VReg d = lowererUse(l, args[0]);
         VReg val = lowererUse(l, args[1]);
         VReg n = lowererUse(l, args[2]);
-        lowererCheckRange(l, d, n, memAt(ctxReg, l->lay->memoryEnd), 8, trapMemoryOOB);
+        lowererCheckRange(l, d, n, memAt(ctxReg, l->lay->memoryEnd), trapMemoryOOB);
         if (l->m->asan) {
             lowererAsanRange(l, d, n);
         }
@@ -17248,8 +17233,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         VReg b = lowererUse(l, args[1]);
         VReg n = lowererUse(l, args[2]);
         const Mem end = memAt(ctxReg, l->lay->memoryEnd);
-        lowererCheckRange(l, a, n, end, 8, trapMemoryOOB);
-        lowererCheckRange(l, b, n, end, 8, trapMemoryOOB);
+        lowererCheckRange(l, a, n, end, trapMemoryOOB);
+        lowererCheckRange(l, b, n, end, trapMemoryOOB);
         if (l->m->asan) {
             lowererAsanRange(l, a, n);
             lowererAsanRange(l, b, n);
@@ -17487,7 +17472,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         c.size = 8;
         lowererEmit(l, c);
         lowererTrapIf(l, ccA, trapMemoryOOB);
-        lowererCheckRange(l, d, n, memAt(ctxReg, l->lay->memoryEnd), 8, trapMemoryOOB);
+        lowererCheckRange(l, d, n, memAt(ctxReg, l->lay->memoryEnd), trapMemoryOOB);
         if (l->m->asan) {
             lowererAsanRange(l, d, n);
         }
