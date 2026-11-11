@@ -16,9 +16,9 @@ using uptr = __UINTPTR_TYPE__;
     #include <sys/mman.h>
 #endif
 
-void* operator new(usize, void* p) noexcept {
-    return p;
-}
+// Placement new expressions are lowered directly by Clang; no runtime
+// call uses this overload. Its declaration supplies the freestanding ABI.
+void* operator new(usize, void*) noexcept;
 
 namespace {
     static constexpr usize pageBytes = 65536;
@@ -52,9 +52,8 @@ namespace {
         return true;
     }
 #else
-    static constexpr bool chaosFail(ChaosFault) {
-        return false;
-    }
+    // Disabled fault sites have no runtime implementation.
+    #define chaosFail(point) false
 #endif
 }
 
@@ -2370,9 +2369,7 @@ namespace {
 
     template <typename K, typename V>
     static void clearMap(Map<K, V> m) {
-        if (!m.data) {
-            return;
-        }
+        // The only caller passes the active map it constructs with makeMap.
         for (Int i = 0; i < m.data->buckets.count; ++i) {
             m.data->buckets[i] = {};
         }
@@ -5310,7 +5307,7 @@ namespace {
 
     static void asmDiv(Asm* a, bool signedValue, u8 size, VReg src);
 
-    static void asmExt(Asm* a, u8 width, u8 dsize, bool signedValue, VReg dst, VReg src);
+    static void asmExt(Asm* a, u8 width, u8 dsize, VReg dst, VReg src);
 
     static void asmFalu(Asm* a, FAluOp op, u8 size, VReg dst, VReg x, VReg y);
 
@@ -11071,25 +11068,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
     }
 
-    static void asmExt(Asm* a, u8 width, u8 dsize, bool signedValue, VReg dst, VReg src) {
+    // All three mExt producers sign-extend. Zero extension uses mMov.
+    static void asmExt(Asm* a, u8 width, u8 dsize, VReg dst, VReg src) {
         Int d = convert<i64>(dst);
         Int s = convert<i64>(src);
-        if (width == 4 && signedValue) {
+        if (width == 4) {
             asmOpRR(a, true, Span<const u8>({u8(99LL)}), d, s, false);
-        } else if (width == 4) {
-            asmOpRR(a, false, Span<const u8>({u8(139LL)}), d, s, false);
         } else if (width == 2) {
-            u8 op = 183;
-            if (signedValue) {
-                op = 191;
-            }
-            asmOpRR(a, signedValue && dsize == 8, Span<const u8>({u8(15LL), op}), d, s, false);
+            asmOpRR(a, dsize == 8, Span<const u8>({u8(15LL), u8(191LL)}), d, s, false);
         } else {
-            u8 op = 182;
-            if (signedValue) {
-                op = 190;
-            }
-            asmOpRR(a, signedValue && dsize == 8, Span<const u8>({u8(15LL), op}), d, s, true);
+            asmOpRR(a, dsize == 8, Span<const u8>({u8(15LL), u8(190LL)}), d, s, true);
         }
     }
 
@@ -13673,7 +13661,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 break;
             }
             case mExt: {
-                asmExt(a, in->size, in->dsize, in->aux == 1, in->dst, in->src);
+                asmExt(a, in->size, in->dsize, in->dst, in->src);
                 break;
             }
             case mDiv: {
@@ -15473,7 +15461,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             ext.src = x;
             ext.size = 4;
             ext.dsize = 8;
-            ext.aux = 1;
             lowererEmit(l, ext);
             MInst mul = inst(mImul3);
             mul.dst = q;
@@ -16088,7 +16075,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 in.src = lowererUse(l, args[0]);
                 in.size = Array<u8, 3>{{u8(1LL), u8(2LL), u8(4LL)}}[Op(val->op - OpExtend8S)];
                 in.dsize = size;
-                in.aux = 1;
                 lowererEmit(l, in);
                 break;
             }
@@ -16227,7 +16213,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 in.src = lowererUse(l, args[0]);
                 in.size = 4;
                 in.dsize = 8;
-                in.aux = 1;
                 lowererEmit(l, in);
                 break;
             }
