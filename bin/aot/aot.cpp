@@ -5478,7 +5478,7 @@ namespace {
 
     static void asmUnary(Asm* a, u8 kind, u8 size, VReg dst);
 
-    static void asmVex(Asm* a, Int r, Int x, Int b, u8 mmmmm, bool w, Int vvvv, bool l, u8 pp);
+    static void asmVex(Asm* a, Int r, Int x, Int b, u8 mmmmm, bool w, Int vvvv, u8 pp);
 
     static void asmVexRM(Asm* a, u8 pp, u8 mmmmm, bool w, u8 op, Int reg, Int vvvv, Amem m, Int imm);
 
@@ -11719,7 +11719,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // vex emits a VEX prefix: pp selects 66/F3/F2, mmmmm the opcode map,
     // vvvv the extra source register.
-    static void asmVex(Asm* a, Int r, Int x, Int b, u8 mmmmm, bool w, Int vvvv, bool l, u8 pp) {
+    static void asmVex(Asm* a, Int r, Int x, Int b, u8 mmmmm, bool w, Int vvvv, u8 pp) {
         u8 R = 1;
         u8 X = 1;
         u8 B = 1;
@@ -11736,30 +11736,26 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (vvvv >= 0) {
             v = u8(convert<u8>(~vvvv) & 15);
         }
-        u8 L = 0;
-        if (l) {
-            L = 1;
-        }
         if (X == 1 && B == 1 && mmmmm == 1 && !w) {
-            asmBytes(a, {u8(u8(197LL)), u8(u8(u8(u8(shiftLeft(R, 7) | shiftLeft(v, 3)) | shiftLeft(L, 2)) | pp))});
+            asmBytes(a, {u8(u8(197LL)), u8(u8(u8(u8(shiftLeft(R, 7) | shiftLeft(v, 3))) | pp))});
             return;
         }
         u8 W = 0;
         if (w) {
             W = 1;
         }
-        asmBytes(a, {u8(u8(196LL)), u8(u8(u8(u8(shiftLeft(R, 7) | shiftLeft(X, 6)) | shiftLeft(B, 5)) | mmmmm)), u8(u8(u8(u8(shiftLeft(W, 7) | shiftLeft(v, 3)) | shiftLeft(L, 2)) | pp))});
+        asmBytes(a, {u8(u8(196LL)), u8(u8(u8(u8(shiftLeft(R, 7) | shiftLeft(X, 6)) | shiftLeft(B, 5)) | mmmmm)), u8(u8(u8(u8(shiftLeft(W, 7) | shiftLeft(v, 3))) | pp))});
     }
 
     static void asmVexRM(Asm* a, u8 pp, u8 mmmmm, bool w, u8 op, Int reg, Int vvvv, Amem m, Int imm) {
-        asmVex(a, reg, memX(m), memB(m), mmmmm, w, vvvv, false, pp);
+        asmVex(a, reg, memX(m), memB(m), mmmmm, w, vvvv, pp);
         asmBytes(a, {u8(op)});
         asmModrmMem(a, reg, m, imm);
     }
 
     // vexRR emits a VEX instruction with register operands reg, vvvv and rm.
     static void asmVexRR(Asm* a, u8 pp, u8 mmmmm, bool w, u8 op, Int reg, Int vvvv, Int rm) {
-        asmVex(a, reg, -1, rm, mmmmm, w, vvvv, false, pp);
+        asmVex(a, reg, -1, rm, mmmmm, w, vvvv, pp);
         asmBytes(a, {u8(op)});
         asmModrmReg(a, reg, rm);
     }
@@ -12671,9 +12667,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void frontendCheckData(Frontend* fe, u32 seg) {
-        if (fe->m->dataCount < 0) {
-            compilerError(String("data count section required"));
-        }
         if (convert<i64>(seg) >= fe->m->dataCount) {
             compilerError(String("unknown data segment %d"));
         }
@@ -17755,9 +17748,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         cm.src = rx;
         cm.cc = cc;
         cm.size = size;
-        if (size < 4) {
-            cm.size = 4;
-        }
         lowererEmit(l, cm);
         if (parity != 0) {
             cm.cc = ccP;
@@ -17812,9 +17802,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             case OpShrU: {
                 kind = shiftShr;
-                break;
-            }
-            default: {
                 break;
             }
         }
