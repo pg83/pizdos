@@ -710,6 +710,7 @@ TESTED = {
     "libc": [vm, libc_check_o],
     "objects": [vm, aot_native],
     "profile_artifacts": [vm, aot_native],
+    "spec_cli": [vm, aot_native],
     "python": [vm, python_o, python, python_tarball, busybox_o, busybox],
     "stand": [vm, aot_native, stand_fixture],
     "terminal": [vm, aot_native, terminal_check],
