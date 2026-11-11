@@ -60,6 +60,23 @@ def program():
         mask = (1 << bits) - 1
         values = (0, 1, 3, (1 << (bits - 1)) - 1, 1 << (bits - 1), mask - 1, mask)
         samples = [(value,) for value in values]
+        for operation in range(4):
+            is_signed, remainder = operation in (0, 2), operation >= 2
+            divisors = (1, 2, 3, 7, 10, -3, -7, -10, (1 << (bits - 1)) - 1, 1 << (bits - 1), mask)
+            for divisor in divisors:
+                divisor &= mask
+                denominator = signed(divisor, bits) if is_signed else divisor
+                valid = [(value,) for value in values
+                         if not (is_signed and not remainder and denominator == -1 and value == 1 << (bits - 1))]
+
+                def expected(value):
+                    numerator = signed(value, bits) if is_signed else value
+                    quotient = abs(numerator) // abs(denominator)
+                    if (numerator < 0) != (denominator < 0):
+                        quotient = -quotient
+                    return numerator - quotient * denominator if remainder else quotient
+
+                add([bits], bits, x + constant(divisor, bits) + bytes([(0x7f if bits == 64 else 0x6d) + operation]), valid, expected)
         predicates = (lambda a, b: a == b, lambda a, b: a != b,
                       lambda a, b: signed(a, bits) < signed(b, bits), lambda a, b: a < b,
                       lambda a, b: signed(a, bits) > signed(b, bits), lambda a, b: a > b,
@@ -148,7 +165,7 @@ def main():
             for obj in (compiled, embedded):
                 result = subprocess.run([vm, "run", "--", str(obj)], capture_output=True, env=env, timeout=30)
                 assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), result
-    print(f"integer identities: {checks} signed/unsigned relations, complements, modular identities and narrowing agree with wazero and both AOTs")
+    print(f"integer identities: {checks} signed/unsigned relations, constant divisions, modular identities and narrowing agree with wazero and both AOTs")
 
 
 if __name__ == "__main__":
