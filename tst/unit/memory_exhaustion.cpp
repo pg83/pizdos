@@ -4,19 +4,48 @@
 //@ stdout: "memory exhaustion: ok\n"
 
 #include <assert.h>
+#include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <glob.h>
+#include <locale.h>
 #include <malloc.h>
+#include <net/if.h>
+#include <netdb.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <wchar.h>
 
 static void* large[128];
-static void* small[8192];
+static void* small[32768];
+
+// Diagnostics must work with no room left for stdio's buffers.
+static void check(bool condition, int line) {
+    if (!condition) {
+        char digits[32];
+        size_t at = sizeof(digits);
+        digits[--at] = '\n';
+        do {
+            digits[--at] = '0' + line % 10;
+            line /= 10;
+        } while (line);
+        const char prefix[] = "memory exhaustion check failed at line ";
+        write(2, prefix, sizeof(prefix) - 1);
+        write(2, digits + at, sizeof(digits) - at);
+        _exit(99);
+    }
+}
+#undef assert
+#define assert(condition) check((condition), __LINE__)
 
 int main() {
+    assert(localeconv() != nullptr);
+    int directory = open("/", O_RDONLY | O_DIRECTORY);
+    assert(directory >= 0);
     auto* preserved = static_cast<unsigned char*>(malloc(16));
     assert(preserved);
     memset(preserved, 0x57, 16);
@@ -27,10 +56,14 @@ int main() {
     }
     assert(count > 0 && count < 128 && errno == ENOMEM);
     size_t tiny = 0;
-    while (tiny < 8192 && (small[tiny] = malloc(16))) {
-        ++tiny;
+    // Drain smaller requests too: a failed large allocation can leave
+    // room for the small records that library calls need.
+    for (size_t size = 16; size <= 16384; size += 16) {
+        while (tiny < 32768 && (small[tiny] = malloc(size))) {
+            ++tiny;
+        }
+        assert(tiny < 32768 && errno == ENOMEM);
     }
-    assert(tiny < 8192 && errno == ENOMEM);
     assert(calloc(1, 65536) == nullptr && errno == ENOMEM);
     assert(realloc(nullptr, 65536) == nullptr && errno == ENOMEM);
     assert(realloc(preserved, 65536) == nullptr && errno == ENOMEM);
@@ -50,6 +83,40 @@ int main() {
     assert(getcwd(nullptr, 0) == nullptr && errno == ENOMEM);
     assert(get_current_dir_name() == nullptr && errno == ENOMEM);
     assert(canonicalize_file_name("/") == nullptr && errno == ENOMEM);
+    assert(realpath("/", nullptr) == nullptr && errno == ENOMEM);
+    assert(wcsdup(L"wide") == nullptr && errno == ENOMEM);
+    assert(opendir("/") == nullptr && errno == ENOMEM);
+    assert(fdopendir(directory) == nullptr && errno == ENOMEM);
+    assert(fcntl(directory, F_GETFD) >= 0 && close(directory) == 0);
+    addrinfo hints{}, *addresses = nullptr;
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    assert(getaddrinfo("127.0.0.1", "80", &hints, &addresses) == EAI_MEMORY && addresses == nullptr);
+    assert(gethostbyname("127.0.0.1") == nullptr && h_errno == NO_RECOVERY);
+    assert(getservbyname("http", "tcp") == nullptr && errno == ENOMEM);
+    assert(getprotobyname("tcp") == nullptr && errno == ENOMEM);
+    assert(if_nameindex() == nullptr && errno == ENOBUFS);
+
+    char** savedEnvironment = environ;
+    char entry[] = "OOM_EXISTING=value";
+    char* supplied[] = {entry, nullptr};
+    environ = supplied;
+    char added[] = "OOM_ADDED=value";
+    assert(putenv(added) == -1 && errno == ENOMEM && environ == supplied);
+    assert(setenv("OOM_ADDED", "value", 1) == -1 && errno == ENOMEM && environ == supplied);
+    assert(unsetenv("OOM_EXISTING") == -1 && errno == ENOMEM && environ == supplied);
+    assert(strcmp(getenv("OOM_EXISTING"), "value") == 0);
+    environ = savedEnvironment;
+
+    glob_t paths{};
+    paths.gl_offs = SIZE_MAX;
+    assert(glob("/", GLOB_DOOFFS, nullptr, &paths) == GLOB_NOSPACE && paths.gl_pathv == nullptr);
+    paths = {};
+    assert(glob("/", 0, nullptr, &paths) == GLOB_NOSPACE && paths.gl_pathv == nullptr);
+    // One free small slot holds the vector, leaving none for its string.
+    free(small[0]);
+    small[0] = nullptr;
+    assert(glob("/", 0, nullptr, &paths) == GLOB_NOSPACE && paths.gl_pathv == nullptr);
 
     free(large[--count]);
     auto* recovered = static_cast<unsigned char*>(calloc(1, 65536));
