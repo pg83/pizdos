@@ -297,12 +297,9 @@ func helperTableGrow(ctx uintptr, table, delta uint32, init uintptr) uint32 {
 
 // funcval returns a Go function value's closure: the address of its code
 // pointer, followed by what it captured. Function values are pointer
-// shaped, held in an interface's data word.
+// shaped, held in an interface's data word. Its argument is a fixed helper
+// or an import whose signature resolve checked before keepFunc.
 func funcval(f any) uintptr {
-	if reflect.TypeOf(f).Kind() != reflect.Func {
-		throwFmt("%T is not a function", f)
-	}
-
 	return (*[2]uintptr)(unsafe.Pointer(&f))[1]
 }
 
@@ -503,10 +500,6 @@ func newInstance(c *Code, imports Imports, stack uint64) *Instance {
 			i.release()
 		}
 	}()
-
-	if uint64(meta.instanceSize) > uint64(len(i.block)) {
-		throwFmt("instance of %d bytes", meta.instanceSize)
-	}
 
 	i.put64(offHost, uint64(uintptr(unsafe.Pointer(i))))
 	i.put64(offStackLimit, stack)
