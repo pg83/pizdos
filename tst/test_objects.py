@@ -74,6 +74,19 @@ class Object:
         raise AssertionError(old)
 
 
+def fork_program():
+    module = b"\0asm\1\0\0\0" + wasm_section(1, b"\2\x60\0\1\x7f\x60\0\0")
+    module += wasm_section(2, b"\1\6kernel\4fork\0\0") + wasm_section(3, b"\3\1\0\0")
+    module += wasm_section(5, b"\1\1\1\1") + wasm_section(6, b"\1\x7f\1\x41\x80\x80\2\x0b")
+    module += wasm_section(7, b"\2\6_start\0\1\x0f__stack_pointer\3\0")
+    # Calls to otherwise ordinary functions keep regions on both sides of
+    # the renamed one. fork must return -1/ENOSYS, without making a child.
+    entry = b"\0\x10\2\x1a\x10\3\x1a\x10\0\x41\x7f\x47\x04\x40\0\x0b"
+    entry += b"\x41\0\x28\2\0\x41\x26\x47\x04\x40\0\x0b\x0b"
+    bodies = [entry, b"\0\x41\1\x0b", b"\0\x41\2\x0b"]
+    return module + wasm_section(10, b"\3" + b"".join(uleb(len(body)) + body for body in bodies))
+
+
 def main():
     vm, native = sys.argv[1:]
     env = dict(os.environ, W2X_MEMORY_TAIL="optimized", W2X_TAIL_PROFILE="")
@@ -223,6 +236,30 @@ def main():
                 failures.append(f"{name}: exit {result.returncode}; expected {diagnostic!r}\n{stderr[:1800]}")
         if failures:
             sys.exit("\n".join(failures))
+        source.write_bytes(fork_program())
+        result = subprocess.run([native], input=source.read_bytes(), capture_output=True, env=env, timeout=60)
+        assert result.returncode == 0, result.stderr
+        native_fork = result.stdout
+        result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
+        assert result.returncode == 0 and embedded.read_bytes() == native_fork, result
+        fork_obj = Object(native_fork)
+        symbols = fork_obj.contents(".symtab")
+        strings = fork_obj.contents(fork_obj.sections[fork_obj.named[".symtab"]][6])
+        functions = []
+        for at in range(0, len(symbols), 24):
+            name_at, info, _, section, value, _ = struct.unpack_from("<IBBHQQ", symbols, at)
+            name = strings[name_at:].split(b"\0", 1)[0].decode()
+            if info & 15 == 2 and section == fork_obj.named[".text"] and len(name) > 1 and name[0] == "f" and name[1].isdigit():
+                functions.append((value, name))
+        functions.sort()
+        assert len(functions) >= 3, functions
+        for selected in ([name for _, name in functions], [functions[1][1]]):
+            for original in (native_fork, embedded.read_bytes()):
+                contents = original
+                for name in selected:
+                    contents = Object(contents).renamed(name, "ordinary_" + name)
+                result = run(contents)
+                assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (selected, result)
     print(f"objects: native/Wasm AOT agreement, {len(valid)} valid objects and {len(cases)} malformed objects rejected")
 
 
