@@ -66,5 +66,10 @@ int main() {
     assert(wcscmp(result, L"1970年01月01日") == 0);
     assert(wcsftime(result, 4, L"%Y", &value) == 0);
     assert(wcsftime(result, 0, L"%Y", &value) == 0);
+#ifdef __wasm__
+    const wchar_t malformed[] = {wchar_t(0x110000), wchar_t(0xd800), 0};
+    assert(wcsftime(result, 32, malformed, &value) == 2);
+    assert(result[0] == 0xfffd && result[1] == 0xfffd && result[2] == 0);
+#endif
     puts("wide strings: ok");
 }
