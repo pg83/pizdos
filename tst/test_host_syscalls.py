@@ -37,6 +37,15 @@ def wasi_clock(name):
     return module + section(10, b"\1" + leb(len(body)) + body)
 
 
+def wasi_descriptor(name):
+    owner, function = b"wasi_snapshot_preview1", name.encode()
+    module = b"\0asm\1\0\0\0" + section(1, b"\2\x60\2\x7f\x7f\1\x7f\x60\0\0")
+    module += section(2, b"\1" + leb(len(owner)) + owner + leb(len(function)) + function + b"\0\0")
+    module += section(3, b"\1\1") + section(5, b"\1\0\1") + section(7, b"\1\6_start\0\1")
+    body = b"\0\x41\0\x41\x80\10\x10\0\x41\x1d\x47\x04\x40\0\x0b\x0b"
+    return module + section(10, b"\1" + leb(len(body)) + body)
+
+
 def main():
     vm, native, fixture, wrapper = sys.argv[1:]
     # Linux amd64 syscall numbers: uname, sysinfo, getrusage, getgroups;
@@ -74,6 +83,22 @@ def main():
                 result = subprocess.run([wrapper, f"{errno.EIO}/{number}", "--", vm, "run", "--", str(obj)],
                                         capture_output=True, env=env, timeout=30)
                 assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (name, result)
+        # ENOTTY has no WASI preview1 equivalent and must become generic I/O error.
+        for preset, error, names in (("stdin-stat", errno.EIO, ("fd_fdstat_get", "fd_filestat_get")),
+                                     ("stdin-flags", errno.ENOTTY, ("fd_fdstat_get", "fd_fdstat_set_flags"))):
+            for name in names:
+                source = work / (name + ".wasm")
+                data = wasi_descriptor(name)
+                source.write_bytes(data)
+                result = subprocess.run([native, "--strict"], input=data, capture_output=True, env=env, timeout=60)
+                assert result.returncode == 0, result
+                compiled.write_bytes(result.stdout)
+                result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
+                assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), result
+                for obj in (compiled, embedded):
+                    result = subprocess.run([wrapper, f"{error}/{preset}", "--", vm, "run", "--", str(obj)],
+                                            capture_output=True, env=env, timeout=30)
+                    assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (name, preset, result)
     print("host syscalls: kernel and WASI system, file, polling, DNS, socket, clock and limit errors propagate through both AOTs")
 
 

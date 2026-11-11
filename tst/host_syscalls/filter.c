@@ -51,6 +51,30 @@ int main(int argc, char** argv) {
         }
         next += strlen(next);
     }
+    if (strcmp(next, "stdin-stat") == 0) {
+        // Limit the failure to stdin; loading the executable uses other fds.
+        const struct Filter selected[] = {
+            {0x15, 0, 3, 5},
+            {0x20, 0, 0, 16}, {0x15, 0, 1, 0},
+            {0x06, 0, 0, 0x00050000 | error},
+        };
+        for (unsigned i = 0; i < sizeof(selected) / sizeof(selected[0]); ++i) {
+            filters[count++] = selected[i];
+        }
+        next += strlen(next);
+    }
+    if (strcmp(next, "stdin-flags") == 0) {
+        // Go checks F_GETFD at startup; reject only F_GETFL on stdin.
+        const struct Filter selected[] = {
+            {0x15, 0, 5, 72}, {0x20, 0, 0, 16}, {0x15, 0, 3, 0},
+            {0x20, 0, 0, 24}, {0x15, 0, 1, 3},
+            {0x06, 0, 0, 0x00050000 | error},
+        };
+        for (unsigned i = 0; i < sizeof(selected) / sizeof(selected[0]); ++i) {
+            filters[count++] = selected[i];
+        }
+        next += strlen(next);
+    }
     while (*next) {
         char* end;
         long number = strtol(next, &end, 10);
