@@ -5,7 +5,9 @@
     coverage.py --check <summary.json> [minimum-percent]
 
 GCC/gcov measures native aot.cpp, LLVM measures the embedded Wasm reactor,
-and go build -cover measures the VM executable.
+and go build -cover measures the VM executable. The Wasm goal counts source
+lines other than standalone block braces; raw LLVM totals remain alongside
+that metric and in the unmodified LCOV files.
 Per-process profiles survive children that deliberately replace their
 environment. All tests invoke executables, never internal compiler APIs.
 """
@@ -36,6 +38,13 @@ def wrapper(path, binary, variables):
 
 def metric(hit, total):
     return {"hit": hit, "total": total, "percent": 100 * hit / total if total else 0.0}
+
+
+def executable_wasm_lines(lines, source):
+    # LLVM maps block delimiters too, including unreachable closing braces
+    # after return. Apply the same lexical rule to hit and missed lines;
+    # the unfiltered LLVM metric and LCOV data are retained for comparison.
+    return {number: count for number, count in lines.items() if source[number - 1].strip() not in ("{", "}")}
 
 
 def aot_report(suite, raw, destination, *, chaos=False):
@@ -144,14 +153,18 @@ def run(destination, suite):
         aot_counts = {"lines": metric(sum(count > 0 for count in aot_lines.values()), len(aot_lines)),
                       "branches": metric(sum(count > 0 for count in aot_branches.values()), len(aot_branches)),
                       "chaos_branches": metric(sum(count > 0 for count in chaos_branches.values()), len(chaos_branches))}
-        wasm_lines = coverage_wasm.report(suite, wasm_raw, destination)
+        wasm_raw_lines = coverage_wasm.report(suite, wasm_raw, destination)
+        aot_counts["wasm_raw_lines"] = metric(sum(count > 0 for count in wasm_raw_lines.values()), len(wasm_raw_lines))
+        source = (source_root / "bin/aot/aot.cpp").read_text().splitlines()
+        wasm_lines = executable_wasm_lines(wasm_raw_lines, source)
         aot_counts["wasm_lines"] = metric(sum(count > 0 for count in wasm_lines.values()), len(wasm_lines))
         vm_counts, vm_missing = vm_report(suite, go_raw, destination)
 
     summary = {"aot": aot_counts, "vm": vm_counts, "tests": [case["name"] for case in suite["cases"]], "failures": failures}
     (destination / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     rows = []
-    for name, counts in (("AOT lines (native)", aot_counts["lines"]), ("AOT lines (Wasm)", aot_counts["wasm_lines"]),
+    for name, counts in (("AOT lines (native)", aot_counts["lines"]), ("AOT executable lines (Wasm)", aot_counts["wasm_lines"]),
+                         ("AOT lines (Wasm raw LLVM)", aot_counts["wasm_raw_lines"]),
                          ("AOT branches (normal)", aot_counts["branches"]),
                          ("AOT branches (chaos)", aot_counts["chaos_branches"]),
                          ("VM statements", vm_counts["statements"])):
@@ -182,7 +195,7 @@ def check(path, minimum):
     if summary["failures"]:
         raise RuntimeError("the coverage suite has failing tests")
     for name, counts in (("AOT lines (native)", summary["aot"]["lines"]),
-                         ("AOT lines (Wasm)", summary["aot"]["wasm_lines"]), ("VM statements", summary["vm"]["statements"])):
+                         ("AOT executable lines (Wasm)", summary["aot"]["wasm_lines"]), ("VM statements", summary["vm"]["statements"])):
         if counts["percent"] < minimum:
             raise RuntimeError(f"{name}: {counts['percent']:.2f}% < {minimum:.2f}%")
 
