@@ -19,7 +19,6 @@ __pycache__/
 /aot_relinked
 /aot_native
 /aot_measure
-/aot_selftest
 /testsuite_tarball
 /musl_tarball
 /busybox_tarball

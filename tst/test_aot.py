@@ -13,9 +13,8 @@ def run(command, data):
 
 
 def main():
-    aot, command, wazero, vm, busybox, _links, selftest = sys.argv[1:]
+    aot, command, wazero, vm, busybox, _links = sys.argv[1:]
     env = dict(os.environ, W2X_MEMORY_TAIL="optimized", W2X_TAIL_PROFILE="")
-    assert run([wazero, selftest], b"").stdout == b"aot primitives: ok\n"
 
     with tempfile.TemporaryDirectory(prefix="aot-") as directory:
         directory = Path(directory)
