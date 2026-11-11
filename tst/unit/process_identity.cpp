@@ -150,6 +150,11 @@ int main() {
     observed.rlim_cur = 3;
     check(prlimit(0, RLIMIT_NOFILE, &observed, nullptr) == 0 && getdtablesize() == 3);
     check(setrlimit(RLIMIT_NOFILE, &limit) == 0);
+    if (effective != 0 && limit.rlim_max != RLIM_INFINITY) {
+        observed = limit;
+        observed.rlim_max++;
+        check(setrlimit(RLIMIT_NOFILE, &observed) == -1 && errno == EPERM);
+    }
     check(getrlimit(99, &observed) == -1 && errno == EINVAL);
     check(prlimit(0x7fffffff, RLIMIT_NOFILE, nullptr, &observed) == -1 && errno == ESRCH);
     rusage usage{};
