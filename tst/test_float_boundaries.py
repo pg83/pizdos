@@ -36,7 +36,7 @@ def floating(value, bits):
 
 def program():
     functions, entry, checks = [], bytearray(), 0
-    for bits in (32, 64):
+    for bits, saturating in ((32, False), (64, False), (32, True), (64, True)):
         tiny = 2.0 ** (-149 if bits == 32 else -1074)
         boundaries = (-math.inf, -1.0, -0.0, 0.0, tiny, 1.0, 2.5, math.inf, math.nan)
         samples = (-math.inf, -17.0, -16.0, -2.75, -1.0, -tiny, -0.0, 0.0, tiny, 1.0, 2.5, 15.75, 16.0, 17.0, math.inf, math.nan)
@@ -47,7 +47,8 @@ def program():
                 code = b"\x20\0" + floating(boundary, bits) + bytes([op]) + b"\x04\x7f"
                 code += b"\x20\0" + floating(-16.0, bits) + bytes([0x60 if bits == 32 else 0x66])
                 code += b"\x20\0" + floating(16.0, bits) + bytes([0x5f if bits == 32 else 0x65]) + b"\x71\x04\x7f"
-                code += b"\x20\0" + bytes([0xa8 if bits == 32 else 0xaa]) + b"\x05" + integer(1337) + b"\x0b\x05" + integer(1337) + b"\x0b"
+                conversion = b"\xfc" + leb(0 if bits == 32 else 2) if saturating else bytes([0xa8 if bits == 32 else 0xaa])
+                code += b"\x20\0" + conversion + b"\x05" + integer(1337) + b"\x0b\x05" + integer(1337) + b"\x0b"
                 functions.append((0 if bits == 32 else 1, b"\0" + code + b"\x0b"))
                 for value in samples:
                     choices = (value == boundary, value != boundary, value < boundary, value > boundary,
