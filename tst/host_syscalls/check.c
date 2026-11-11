@@ -7,6 +7,13 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <stdio.h>
+#include <signal.h>
+#include <poll.h>
+#include <sched.h>
+#include <sys/select.h>
+#include <sys/times.h>
+#include <sys/wait.h>
+#include <time.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -35,6 +42,8 @@ int main(int argc, char** argv) {
         assert(getloadavg(load, 3) == -1);
         assert(getrusage(RUSAGE_SELF, &usage) == -1 && errno == EIO);
         assert(getgroups(0, NULL) == -1 && errno == EIO);
+        struct tms ticks;
+        assert(times(&ticks) == (clock_t)-1 && errno == EIO);
     } else if (strcmp(argv[1], "filesystem") == 0) {
         int fd = open("/tmp/data", O_CREAT | O_TRUNC | O_RDWR, 0600);
         assert(fd >= 0 && write(fd, "before", 6) == 6 && ftruncate(fd, 4096) == 0);
@@ -90,7 +99,7 @@ int main(int argc, char** argv) {
         size = sizeof(address);
         assert(getpeername(fd, (struct sockaddr*)&address, &size) == -1 && errno == EIO);
         assert(close(fd) == 0);
-    } else if (strcmp(argv[1], "connect-status") == 0) {
+    } else if (strcmp(argv[1], "connect-status") == 0 || strcmp(argv[1], "connect-poll") == 0) {
         int server = socket(AF_INET, SOCK_STREAM, 0), client = socket(AF_INET, SOCK_STREAM, 0);
         assert(server >= 0 && client >= 0);
         struct sockaddr_in address = {0};
@@ -101,12 +110,59 @@ int main(int argc, char** argv) {
         assert(getsockname(server, (struct sockaddr*)&address, &size) == 0);
         assert(connect(client, (struct sockaddr*)&address, size) == -1 && errno == EIO);
         assert(close(client) == 0 && close(server) == 0);
+    } else if (strcmp(argv[1], "locks") == 0) {
+        int fd = open("/tmp/locks", O_CREAT | O_TRUNC | O_RDWR, 0600);
+        assert(fd >= 0);
+        struct flock lock = {0};
+        lock.l_type = F_WRLCK;
+        lock.l_whence = SEEK_SET;
+        lock.l_len = 4;
+        assert(fcntl(fd, F_GETLK, &lock) == -1 && errno == EIO && lock.l_type == F_WRLCK);
+        assert(lockf(fd, F_TEST, 4) == -1 && errno == EIO);
+        assert(fcntl(fd, F_SETFL, O_APPEND) == -1 && errno == EIO);
+        assert((fcntl(fd, F_GETFL) & O_APPEND) == 0);
+        assert(close(fd) == 0 && unlink("/tmp/locks") == 0);
+    } else if (strcmp(argv[1], "poll") == 0) {
+        assert(poll(NULL, 0, 1) == -1 && errno == EIO);
+        assert(poll(NULL, 65537, 0) == -1 && errno == EINVAL);
+        struct timeval instant = {0};
+        assert(select(0, NULL, NULL, NULL, &instant) == -1 && errno == EIO);
+        struct timespec invalid = {-1, 0};
+        assert(pselect(0, NULL, NULL, NULL, &invalid, NULL) == -1 && errno == EINVAL);
+        int ends[2];
+        assert(pipe(ends) == 0);
+        char byte;
+        assert(read(ends[0], &byte, 1) == -1 && errno == EIO);
+        assert(write(1, "", 0) == -1 && errno == EIO);
+        assert(close(ends[0]) == 0 && close(ends[1]) == 0);
+        pid_t child = fork();
+        assert(child >= 0);
+        if (child == 0) {
+            for (;;) {
+                __asm__ volatile("" ::: "memory");
+            }
+        }
+        int status;
+        assert(waitpid(child, &status, 0) == -1 && errno == EIO);
+        assert(kill(child, SIGKILL) == 0);
+        pid_t waited;
+        do {
+            waited = waitpid(child, &status, WNOHANG);
+            assert(waited >= 0);
+            if (waited == 0) {
+                sched_yield();
+            }
+        } while (waited == 0);
+        assert(waited == child && WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL);
     } else if (strcmp(argv[1], "limits") == 0) {
         struct rlimit limit;
         assert(getrlimit(RLIMIT_NOFILE, &limit) == 0);
         assert(limit.rlim_cur == RLIM_INFINITY && limit.rlim_max == RLIM_INFINITY);
     } else {
         return 2;
+    }
+    if (strcmp(argv[1], "poll") == 0 || strcmp(argv[1], "connect-poll") == 0) {
+        return 0;
     }
     puts("host syscall errors: ok");
     return 0;

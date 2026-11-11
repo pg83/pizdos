@@ -39,6 +39,18 @@ int main(int argc, char** argv) {
         error = (unsigned)value;
         next = slash + 1;
     }
+    if (strcmp(next, "fcntl") == 0) {
+        // Reject OFD lock queries, and F_SETFL when it requests O_APPEND.
+        const struct Filter selected[] = {
+            {0x15, 0, 6, 72}, {0x20, 0, 0, 24}, {0x15, 3, 0, 36},
+            {0x15, 0, 3, 4}, {0x20, 0, 0, 32}, {0x45, 0, 1, 1024},
+            {0x06, 0, 0, 0x00050000 | error},
+        };
+        for (unsigned i = 0; i < sizeof(selected) / sizeof(selected[0]); ++i) {
+            filters[count++] = selected[i];
+        }
+        next += strlen(next);
+    }
     while (*next) {
         char* end;
         long number = strtol(next, &end, 10);

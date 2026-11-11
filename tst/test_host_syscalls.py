@@ -18,9 +18,10 @@ def main():
     vm, native, fixture, wrapper = sys.argv[1:]
     # Linux amd64 syscall numbers: uname, sysinfo, getrusage, getgroups;
     # fstatfs, utimensat, syncfs, sync, pwrite64; prlimit64, getrlimit.
-    cases = [("system", errno.EIO, (63, 99, 98, 115)), ("filesystem", errno.EIO, (138, 280, 306, 162, 18)),
+    cases = [("system", errno.EIO, (63, 99, 98, 115, 100)), ("filesystem", errno.EIO, (138, 280, 306, 162, 18)),
              ("limits", errno.EIO, (302, 97)), ("network", errno.EIO, (41,)), ("retry", errno.EAGAIN, (41,)),
-             ("socket-names", errno.EIO, (51, 52)), ("connect-status", errno.EIO, (55,))]
+             ("socket-names", errno.EIO, (51, 52)), ("connect-status", errno.EIO, (55,)),
+             ("locks", errno.EIO, ("fcntl",)), ("poll", errno.EIO, (7,)), ("connect-poll", errno.EIO, (7,))]
     env = dict(os.environ, W2X_MEMORY_TAIL="strict", W2X_TAIL_PROFILE="")
     with tempfile.TemporaryDirectory(prefix="pizdos-host-syscalls-") as directory:
         work = Path(directory)
@@ -35,7 +36,8 @@ def main():
             for operation, error, numbers in cases:
                 result = subprocess.run([wrapper, str(error) + "/" + ",".join(map(str, numbers)), "--", vm, "run", "--root", str(work), "--", str(obj), operation], capture_output=True,
                                         env=env, timeout=30)
-                assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), (operation, result)
+                expected = b"" if operation in ("poll", "connect-poll") else b"host syscall errors: ok\n"
+                assert (result.returncode, result.stdout, result.stderr) == (0, expected, b""), (operation, result)
     print("host syscalls: system information, files, DNS, sockets and resource-limit failures propagate through both AOTs")
 
 
