@@ -23,7 +23,7 @@ import wasm
 
 LINK = ["--stack-first", "-z", "stack-size=1049600", "--max-memory=4294967296",
         "--export=__heap_base", "--export=__stack_pointer", "--gc-sections"]
-DIRECTIVES = {"compile-flags", "aot-flags", "run-flags", "args", "env", "stdout", "stderr", "exit-code", "host", "timeout"}
+DIRECTIVES = {"compile-flags", "aot-flags", "run-flags", "args", "env", "stdout", "stderr", "exit-code", "host", "timeout", "freestanding"}
 
 
 def directives(source):
@@ -88,6 +88,8 @@ def run(source, prefix, tools):
         work = Path(temporary)
         if case.get("host", "true") not in ("true", "false"):
             raise ValueError("host must be true or false")
+        if case.get("freestanding", "false") not in ("true", "false"):
+            raise ValueError("freestanding must be true or false")
         if case.get("host", "true") == "true":
             reference = work / "reference"
             successful([tools["cc"], *tools["host_cflags"], "-x", "c++", *cflags, source,
@@ -100,7 +102,8 @@ def run(source, prefix, tools):
         successful([tools["cc"], *wasm.CFLAGS, *cflags, "-nostdinc++",
                     "-isystem", work / "cxx/include/c++/v1", "-isystem", tools["c_headers"],
                     "-c", source, "-o", obj], env=env, timeout=timeout)
-        successful([tools["ld"], *LINK, "-o", module, obj, tools["libcxx"], tools["libc"]], env=env, timeout=timeout)
+        libraries = [] if case.get("freestanding", "false") == "true" else [tools["libcxx"], tools["libc"]]
+        successful([tools["ld"], *LINK, "-o", module, obj, *libraries], env=env, timeout=timeout)
 
         native = Path(str(prefix) + ".native.o")
         embedded = Path(str(prefix) + ".embedded.o")
@@ -119,8 +122,9 @@ def run(source, prefix, tools):
                 executable = root / "bin/check"
                 shutil.copyfile(program, executable)
                 executable.chmod(0o755)
+                run_args = [argument.replace("$ROOT", str(root)) for argument in args]
                 result = invoke([tools["vm"], "run", "--root", root, "-a", "check", *run_flags,
-                                 "--", executable, *args], env=env, timeout=timeout)
+                                 "--", executable, *run_args], env=env, timeout=timeout)
                 check(result, case, name)
 
     Path(str(prefix) + ".stamp").write_text("native reference, native AOT, Wasm AOT: passed\n")

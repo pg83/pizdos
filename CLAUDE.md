@@ -21,6 +21,9 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
   `//@ compile-flags:`, `aot-flags:`, `run-flags:`, `args:` and `env:`
   configure the commands; `stdout:` and `stderr:` are JSON strings,
   `exit-code:` defaults to 0. `host: false` is for kernel-specific cases.
+  `freestanding: true` links without lib/c and lib/cxx for raw Wasm/WASI
+  commands defining their own `_start`. `$ROOT` in `args:` names that
+  invocation's temporary directory.
   Tests exercise program behaviour; tests of internal code are forbidden.
 - `./build coverage` reruns the end-to-end cases with separate instrumented
   tools (`aot_coverage`, `vm_coverage`), including the Python and spec suites.
