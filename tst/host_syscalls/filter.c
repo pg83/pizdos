@@ -75,6 +75,18 @@ int main(int argc, char** argv) {
         }
         next += strlen(next);
     }
+    if (strcmp(next, "getfl") == 0) {
+        // Guest descriptors may be duplicated onto high host descriptors.
+        // Leave Go's F_GETFD startup checks available on every descriptor.
+        const struct Filter selected[] = {
+            {0x15, 0, 3, 72}, {0x20, 0, 0, 24}, {0x15, 0, 1, 3},
+            {0x06, 0, 0, 0x00050000 | error},
+        };
+        for (unsigned i = 0; i < sizeof(selected) / sizeof(selected[0]); ++i) {
+            filters[count++] = selected[i];
+        }
+        next += strlen(next);
+    }
     while (*next) {
         char* end;
         long number = strtol(next, &end, 10);

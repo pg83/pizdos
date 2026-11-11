@@ -154,6 +154,14 @@ int main(int argc, char** argv) {
             }
         } while (waited == 0);
         assert(waited == child && WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL);
+    } else if (strcmp(argv[1], "descriptor-flags") == 0) {
+        assert(fcntl(0, F_GETFL) == -1 && errno == EIO);
+        assert(fcntl(0, F_SETFL, 0) == -1 && errno == EIO);
+    } else if (strcmp(argv[1], "access") == 0) {
+        assert(access("/", F_OK) == -1 && errno == EIO);
+        assert(euidaccess("/", R_OK) == -1 && errno == EIO);
+        assert(faccessat(AT_FDCWD, "/", W_OK, AT_EACCESS) == -1 && errno == EIO);
+        assert(chdir("/") == -1 && errno == EIO);
     } else if (strcmp(argv[1], "temp-files") == 0) {
         char path[] = "/tmp/collision-XXXXXX";
         assert(mkstemp(path) == -1 && errno == EEXIST);
