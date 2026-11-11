@@ -5,6 +5,7 @@
 #include <assert.h>
 #include <regex.h>
 #include <stdio.h>
+#include <string.h>
 
 // GNU escapes supplement POSIX syntax in the kernel's regex interface;
 // the host's musl regex need not implement those extensions.
@@ -25,6 +26,8 @@ int main() {
         {R"(a\?)", "b", 0, 0, 0},
         {R"(\+)", "+", 0, 0, 1},
         {R"(\?)", "?", 0, 0, 1},
+        {"*", "x*y", 0, 1, 2},
+        {"{oops}", "x{oops}y", REG_EXTENDED, 1, 7},
         {R"(\<word\>)", "a word!", REG_EXTENDED, 2, 6},
         {R"(\bword\b)", "sword word!", REG_EXTENDED, 6, 10},
         {R"(\Boo\B)", "food", REG_EXTENDED, 1, 3},
@@ -59,5 +62,18 @@ int main() {
         }
         regfree(&expression);
     }
+    regex_t expression{};
+    assert(regcomp(&expression, "(a{1000}){1000}", REG_EXTENDED) == REG_BADPAT);
+    assert(regcomp(&expression, "ab", REG_EXTENDED) == 0);
+    regmatch_t range{3, 2};
+    assert(regexec(&expression, "zabz", 1, &range, REG_STARTEND) == REG_BADPAT);
+    range = {1, 3};
+    assert(regexec(&expression, "zabz", 1, &range, REG_STARTEND) == 0 && range.rm_so == 1 && range.rm_eo == 3);
+    regfree(&expression);
+    // A stale public handle must be rejected without reading host state.
+    assert(regexec(&expression, "ab", 0, nullptr, 0) == REG_BADPAT);
+    char message[32];
+    size_t size = regerror(999, &expression, message, sizeof(message));
+    assert(size == strlen(message) + 1 && message[0] != 0);
     puts("regex extensions: ok");
 }
