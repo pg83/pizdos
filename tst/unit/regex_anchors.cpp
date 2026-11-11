@@ -23,6 +23,10 @@ int main() {
         {"^abc$", "abc", REG_EXTENDED | REG_NEWLINE, REG_NOTBOL, REG_NOMATCH},
         {"^abc$", "abc", REG_EXTENDED | REG_NEWLINE, REG_NOTEOL, REG_NOMATCH},
         {"^abc$", "abc", REG_EXTENDED | REG_NEWLINE, REG_NOTBOL | REG_NOTEOL, REG_NOMATCH},
+        {"abc|^abc$", "abc", REG_EXTENDED | REG_NEWLINE, REG_NOTBOL | REG_NOTEOL, 0},
+        {"a.*", "éabc", REG_EXTENDED | REG_NEWLINE, REG_NOTBOL | REG_NOTEOL, 0},
+        {"^$", "", REG_EXTENDED | REG_NEWLINE, REG_NOTBOL | REG_NOTEOL, REG_NOMATCH},
+        {"^$", "\n", REG_EXTENDED | REG_NEWLINE, REG_NOTBOL, 0},
     };
     for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         const Case& item = cases[i];
@@ -37,6 +41,21 @@ int main() {
             abort();
         }
     }
+    regex_t expression;
+    regmatch_t matches[3];
+    if (regcomp(&expression, "(ab|a)", REG_EXTENDED | REG_NEWLINE) != 0) {
+        abort();
+    }
+    if (regexec(&expression, "éabc", 3, matches, REG_NOTBOL | REG_NOTEOL) != 0 || matches[0].rm_so != 2 || matches[0].rm_eo != 4 || matches[1].rm_so != 2 || matches[1].rm_eo != 4 || matches[2].rm_so != -1 || matches[2].rm_eo != -1) {
+        abort();
+    }
+#ifdef REG_STARTEND
+    matches[0] = {2, 4};
+    if (regexec(&expression, "zzabzzz", 3, matches, REG_NOTBOL | REG_NOTEOL | REG_STARTEND) != 0 || matches[0].rm_so != 2 || matches[0].rm_eo != 4 || matches[1].rm_so != 2 || matches[1].rm_eo != 4) {
+        abort();
+    }
+#endif
+    regfree(&expression);
     puts("regex anchors: ok");
     return 0;
 }

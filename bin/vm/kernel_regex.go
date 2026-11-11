@@ -58,6 +58,23 @@ func (r *posixRegex) variant(eflags uint32) *regexp.Regexp {
 
 	if r.variants[v] == nil {
 		src, _, _ := translateRegex(r.pattern, r.flags, v&regNotbol != 0, v&regNoteol != 0)
+
+		if r.flags&regNewline != 0 && v != 0 {
+			// Consume the synthetic boundary characters outside a capture of
+			// the user's expression. Multiline anchors still see real newlines,
+			// while ^/$ cannot see the artificial string boundaries. Keeping
+			// the match in a capture also preserves byte offsets after UTF-8.
+			src = "(" + src + ")"
+
+			if v&regNotbol != 0 {
+				src = "(?s:.)" + src
+			}
+
+			if v&regNoteol != 0 {
+				src += "(?s:.)"
+			}
+		}
+
 		re := regexp.MustCompile(src)
 		re.Longest()
 		r.variants[v] = re
@@ -446,10 +463,39 @@ func (p *Process) libcRegexec(preg, s, nmatch, pmatch, eflags uint32) uint32 {
 		subject = p.cstr(s)
 	}
 
+	boundary := r.flags&regNewline != 0 && eflags&(regNotbol|regNoteol) != 0
+	prefix := 0
+
+	if boundary {
+		suffix := 0
+
+		if eflags&regNotbol != 0 {
+			prefix = 1
+		}
+
+		if eflags&regNoteol != 0 {
+			suffix = 1
+		}
+
+		padded := make([]byte, prefix+len(subject)+suffix)
+		copy(padded[prefix:], subject)
+		subject = padded
+	}
+
 	m := r.variant(eflags).FindSubmatchIndex(subject)
 
 	if m == nil {
 		return regNomatch
+	}
+
+	if boundary {
+		m = m[2:]
+
+		for i, at := range m {
+			if at >= 0 {
+				m[i] = at - prefix
+			}
+		}
 	}
 
 	if r.flags&regNosub == 0 {
