@@ -224,7 +224,9 @@ namespace {
         void* allocate(usize size);
         void release(void* object);
         void releaseSlow(HeapPage* page, void* object);
+#if defined(__wasm__) || defined(wasm)
         void adoptPages(void* data, usize bytes);
+#endif
 
         HeapClass classes[heapClassCount]{};
         HeapSegment segments[heapSegmentLimit]{};
@@ -471,8 +473,8 @@ void Heap::release(void* object) {
     releaseSlow(page, object);
 }
 
-void Heap::adoptPages(void* data, usize bytes) {
 #if defined(__wasm__) || defined(wasm)
+void Heap::adoptPages(void* data, usize bytes) {
     const uptr first = reinterpret_cast<uptr>(data);
     require(first % pageBytes == 0 && bytes % pageBytes == 0, "invalid free memory range");
     for (usize offset = 0; offset < bytes; offset += pageBytes) {
@@ -486,12 +488,8 @@ void Heap::adoptPages(void* data, usize bytes) {
         require(page->cls == heapUnavailablePage, "I/O memory already owned by allocator");
         releasePage(page);
     }
-#else
-    (void)data;
-    (void)bytes;
-    fail("external pages are not in the native allocator region");
-#endif
 }
+#endif
 
 namespace {
     static void* allocPage() {
@@ -536,7 +534,6 @@ namespace {
         void reserve(usize size);
         void grow(usize size);
         void resize(usize size);
-        void clear();
         void append(const void* data, usize size);
         void swap(Buffer& other);
 
@@ -618,12 +615,6 @@ inline void Buffer::resize(usize size) {
     reserve(size);
     if (size != 0 || header() != &emptyBuffer) {
         header()->used = size;
-    }
-}
-
-void Buffer::clear() {
-    if (header() != &emptyBuffer) {
-        header()->used = 0;
     }
 }
 
@@ -715,10 +706,6 @@ namespace {
 
         void resize(usize count) {
             buffer.resize(checkedMultiply(count, sizeof(T)));
-        }
-
-        void clear() {
-            buffer.clear();
         }
 
         void pushBack(T value) {
@@ -1509,15 +1496,6 @@ namespace {
             }
         }
 
-        void clear() {
-            if (paged) {
-                pages.clear();
-            } else {
-                small.clear();
-                pages.count = 0;
-            }
-        }
-
         T& operator[](usize index) {
             return paged ? pages.pages.data()[index / PageVec<T>::itemsPerPage][index % PageVec<T>::itemsPerPage] : small.data()[index];
         }
@@ -2087,15 +2065,6 @@ namespace {
             return true;
         }
 
-        bool operator<(String other) const {
-            usize n = count < other.count ? count : other.count;
-            for (usize i = 0; i < n; ++i) {
-                if (data[i] != other.data[i]) {
-                    return data[i] < other.data[i];
-                }
-            }
-            return count < other.count;
-        }
     };
 
     static Int length(String s) {
@@ -2126,32 +2095,12 @@ namespace {
         return {p, s.count};
     }
 
-    static String asString(String s) {
-        return s;
-    }
-
-    static Slice<u8> asBytes(String s) {
-        auto result = makeSlice<u8>(s.count);
-        for (usize i = 0; i < s.count; ++i) {
-            result[i] = s.data[i];
-        }
-        return result;
-    }
-
     static Slice<u8> appendSlice(Slice<u8> out, String text) {
         growSlice(out, text.count);
         for (usize i = 0; i < text.count; ++i) {
             out.unchecked(out.count++) = text.data[i];
         }
         return out;
-    }
-
-    static Int copySlice(Slice<u8> out, String text) {
-        Int n = out.count < text.count ? out.count : text.count;
-        for (Int i = 0; i < n; ++i) {
-            out[i] = text.data[i];
-        }
-        return n;
     }
 
     static String operator+(String a, String b) {
@@ -2641,22 +2590,6 @@ namespace {
         }
     }
 
-    static u16 littleUint16(Slice<u8> bytes) {
-        return littleRead<u16>(bytes);
-    }
-
-    static u32 littleUint32(Slice<u8> bytes) {
-        return littleRead<u32>(bytes);
-    }
-
-    static u64 littleUint64(Slice<u8> bytes) {
-        return littleRead<u64>(bytes);
-    }
-
-    static void littlePutUint16(Span<u8> bytes, u16 value) {
-        littleWrite(bytes, value);
-    }
-
     static void littlePutUint32(Span<u8> bytes, u32 value) {
         littleWrite(bytes, value);
     }
@@ -2701,10 +2634,6 @@ namespace {
         auto* bytes = static_cast<u8*>(activePool->allocate(value.count, 1));
         copyBytes(bytes, value.data, value.count);
         return {bytes, value.count};
-    }
-
-    static bool stringsHasPrefix(String text, String prefix) {
-        return text.count >= prefix.count && subslice(text, 0, prefix.count) == prefix;
     }
 
     template <typename T, typename V>
@@ -3216,18 +3145,6 @@ namespace {
         bool set{};
     };
 
-    static bool operator==(const CheckUndo& a, const CheckUndo& b) {
-        return a.value == b.value && a.end == b.end && a.set == b.set;
-    }
-
-    static u64 hashValue(const CheckUndo& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.value));
-        result = combineHash(result, hashValue(value.end));
-        result = combineHash(result, hashValue(value.set));
-        return result;
-    }
-
     template <typename L, typename S>
     struct LessSwap {
         L Less;
@@ -3274,36 +3191,10 @@ namespace {
         u64 factor{};
     };
 
-    static bool operator==(const Anonymous49& a, const Anonymous49& b) {
-        return a.base == b.base && a.base2 == b.base2 && a.stride == b.stride && a.mul == b.mul && a.mul2 == b.mul2 && a.factor == b.factor;
-    }
-
-    static u64 hashValue(const Anonymous49& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.base));
-        result = combineHash(result, hashValue(value.base2));
-        result = combineHash(result, hashValue(value.stride));
-        result = combineHash(result, hashValue(value.mul));
-        result = combineHash(result, hashValue(value.mul2));
-        result = combineHash(result, hashValue(value.factor));
-        return result;
-    }
-
     struct SpEntry {
         i32 pc{};
         i32 delta{};
     };
-
-    static bool operator==(const SpEntry& a, const SpEntry& b) {
-        return a.pc == b.pc && a.delta == b.delta;
-    }
-
-    static u64 hashValue(const SpEntry& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.pc));
-        result = combineHash(result, hashValue(value.delta));
-        return result;
-    }
 
     struct AddressTerm {
         i32 value{};
@@ -3349,17 +3240,6 @@ namespace {
         Int i{};
     };
 
-    static bool operator==(const FrameRegalloc324& a, const FrameRegalloc324& b) {
-        return a.b == b.b && a.i == b.i;
-    }
-
-    static u64 hashValue(const FrameRegalloc324& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.b));
-        result = combineHash(result, hashValue(value.i));
-        return result;
-    }
-
     struct FloatRanges {
         Function* f{};
         Map<i32, FloatRange> facts{};
@@ -3377,17 +3257,6 @@ namespace {
         VReg src{};
         u8 size{};
     };
-
-    static bool operator==(const Move& a, const Move& b) {
-        return a.dst == b.dst && a.src == b.src;
-    }
-
-    static u64 hashValue(const Move& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.dst));
-        result = combineHash(result, hashValue(value.src));
-        return result;
-    }
 
     struct CodeBlob {
         Slice<u8> bytes{};
@@ -3407,18 +3276,6 @@ namespace {
         Int depth{};
     };
 
-    static bool operator==(const Anonymous17& a, const Anonymous17& b) {
-        return a.dst == b.dst && a.src == b.src && a.depth == b.depth;
-    }
-
-    static u64 hashValue(const Anonymous17& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.dst));
-        result = combineHash(result, hashValue(value.src));
-        result = combineHash(result, hashValue(value.depth));
-        return result;
-    }
-
     struct LoopSpan {
         i32 base{};
         u64 mul{};
@@ -3434,24 +3291,6 @@ namespace {
         // fast copy keeps the wrapping additions of the address.
         bool signedTerms{};
     };
-
-    static bool operator==(const LoopSpan& a, const LoopSpan& b) {
-        return a.base == b.base && a.mul == b.mul && a.factor == b.factor && a.offset == b.offset && a.base2 == b.base2 && a.mul2 == b.mul2 && a.lo == b.lo && a.stride == b.stride && a.valid == b.valid && a.signedTerms == b.signedTerms;
-    }
-
-    static u64 hashValue(const LoopSpan& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.base));
-        result = combineHash(result, hashValue(value.mul));
-        result = combineHash(result, hashValue(value.factor));
-        result = combineHash(result, hashValue(value.offset));
-        result = combineHash(result, hashValue(value.base2));
-        result = combineHash(result, hashValue(value.mul2));
-        result = combineHash(result, hashValue(value.lo));
-        result = combineHash(result, hashValue(value.stride));
-        result = combineHash(result, hashValue(value.valid));
-        return result;
-    }
 
     struct Edge {
         i32 block{};
@@ -3508,18 +3347,6 @@ namespace {
         i32 src{};
         Int depth{};
     };
-
-    static bool operator==(const CopyPairCoalesce41& a, const CopyPairCoalesce41& b) {
-        return a.dst == b.dst && a.src == b.src && a.depth == b.depth;
-    }
-
-    static u64 hashValue(const CopyPairCoalesce41& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.dst));
-        result = combineHash(result, hashValue(value.src));
-        result = combineHash(result, hashValue(value.depth));
-        return result;
-    }
 
     struct FuncEmitter {
         ObjCode* oc{};
@@ -3581,72 +3408,22 @@ namespace {
         u8 labelKind{};
     };
 
-    static bool operator==(const Amem& a, const Amem& b) {
-        return a.base == b.base && a.index == b.index && a.scale == b.scale && a.disp == b.disp && a.label == b.label && a.labelKind == b.labelKind;
-    }
-
-    static u64 hashValue(const Amem& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.base));
-        result = combineHash(result, hashValue(value.index));
-        result = combineHash(result, hashValue(value.scale));
-        result = combineHash(result, hashValue(value.disp));
-        result = combineHash(result, hashValue(value.label));
-        result = combineHash(result, hashValue(value.labelKind));
-        return result;
-    }
-
     struct OrigOperand {
         VReg vreg{};
         VReg loc{};
         Int role{};
     };
 
-    static bool operator==(const OrigOperand& a, const OrigOperand& b) {
-        return a.vreg == b.vreg && a.loc == b.loc && a.role == b.role;
-    }
-
-    static u64 hashValue(const OrigOperand& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.vreg));
-        result = combineHash(result, hashValue(value.loc));
-        result = combineHash(result, hashValue(value.role));
-        return result;
-    }
-
     struct CheckedValue {
         i32 value{};
         i64 end{};
     };
-
-    static bool operator==(const CheckedValue& a, const CheckedValue& b) {
-        return a.value == b.value && a.end == b.end;
-    }
-
-    static u64 hashValue(const CheckedValue& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.value));
-        result = combineHash(result, hashValue(value.end));
-        return result;
-    }
 
     struct TextReloc {
         i32 at{};
         i32 sym{};
         i64 addend{};
     };
-
-    static bool operator==(const TextReloc& a, const TextReloc& b) {
-        return a.at == b.at && a.sym == b.sym && a.addend == b.addend;
-    }
-
-    static u64 hashValue(const TextReloc& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.at));
-        result = combineHash(result, hashValue(value.sym));
-        result = combineHash(result, hashValue(value.addend));
-        return result;
-    }
 
     struct Term {
         TermKind kind{};
@@ -3676,10 +3453,6 @@ namespace {
         }
 
         Interval*& operator[](usize index) {
-            return (*entries)[index];
-        }
-
-        Interval* operator[](usize index) const {
             return (*entries)[index];
         }
 
@@ -3726,17 +3499,6 @@ namespace {
         i32 begin{};
         i32 end{};
     };
-
-    static bool operator==(const Anonymous50& a, const Anonymous50& b) {
-        return a.begin == b.begin && a.end == b.end;
-    }
-
-    static u64 hashValue(const Anonymous50& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.begin));
-        result = combineHash(result, hashValue(value.end));
-        return result;
-    }
 
     struct ParamIndex {
         i32 index = 0;
@@ -3803,17 +3565,6 @@ namespace {
         i32 edge{};
     };
 
-    static bool operator==(const PredRef& a, const PredRef& b) {
-        return a.block == b.block && a.edge == b.edge;
-    }
-
-    static u64 hashValue(const PredRef& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.block));
-        result = combineHash(result, hashValue(value.edge));
-        return result;
-    }
-
     struct Layout {
         i32 memoryEnd{};
         i32 tailProfile{};
@@ -3833,34 +3584,10 @@ namespace {
         bool imported{};
     };
 
-    static bool operator==(const TableMeta& a, const TableMeta& b) {
-        return a.offset == b.offset && a.min == b.min && a.max == b.max && a.imported == b.imported;
-    }
-
-    static u64 hashValue(const TableMeta& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.offset));
-        result = combineHash(result, hashValue(value.min));
-        result = combineHash(result, hashValue(value.max));
-        result = combineHash(result, hashValue(value.imported));
-        return result;
-    }
-
     struct LoadRangeLoop_version741 {
         i32 begin{};
         i32 end{};
     };
-
-    static bool operator==(const LoadRangeLoop_version741& a, const LoadRangeLoop_version741& b) {
-        return a.begin == b.begin && a.end == b.end;
-    }
-
-    static u64 hashValue(const LoadRangeLoop_version741& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.begin));
-        result = combineHash(result, hashValue(value.end));
-        return result;
-    }
 
     struct Elem {
         u8 mode{};
@@ -3877,19 +3604,6 @@ namespace {
         u8 kind{};
     };
 
-    static bool operator==(const RipFixup& a, const RipFixup& b) {
-        return a.at == b.at && a.end == b.end && a.label == b.label && a.kind == b.kind;
-    }
-
-    static u64 hashValue(const RipFixup& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.at));
-        result = combineHash(result, hashValue(value.end));
-        result = combineHash(result, hashValue(value.label));
-        result = combineHash(result, hashValue(value.kind));
-        return result;
-    }
-
     struct Asm {
         PageVec<u8> buf{};
         Slice<RipFixup> fixups{};
@@ -3905,17 +3619,6 @@ namespace {
         i32 b{};
         Int i{};
     };
-
-    static bool operator==(const Anonymous93& a, const Anonymous93& b) {
-        return a.b == b.b && a.i == b.i;
-    }
-
-    static u64 hashValue(const Anonymous93& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.b));
-        result = combineHash(result, hashValue(value.i));
-        return result;
-    }
 
     struct FuncType {
         Slice<ValType> params{};
@@ -3949,17 +3652,6 @@ namespace {
         bool imported{};
     };
 
-    static bool operator==(const Memory& a, const Memory& b) {
-        return a.limits == b.limits && a.imported == b.imported;
-    }
-
-    static u64 hashValue(const Memory& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.limits));
-        result = combineHash(result, hashValue(value.imported));
-        return result;
-    }
-
     struct TrapFixup {
         i32 at{};
         i64 code{};
@@ -3977,33 +3669,10 @@ namespace {
         u32 pos{};
     };
 
-    static bool operator==(const TrapFixup& a, const TrapFixup& b) {
-        return a.at == b.at && a.code == b.code && a.sp == b.sp;
-    }
-
-    static u64 hashValue(const TrapFixup& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.at));
-        result = combineHash(result, hashValue(value.code));
-        result = combineHash(result, hashValue(value.sp));
-        return result;
-    }
-
     struct Anonymous68 {
         i32 block{};
         Int edge{};
     };
-
-    static bool operator==(const Anonymous68& a, const Anonymous68& b) {
-        return a.block == b.block && a.edge == b.edge;
-    }
-
-    static u64 hashValue(const Anonymous68& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.block));
-        result = combineHash(result, hashValue(value.edge));
-        return result;
-    }
 
     struct Lowerer {
         Module* m{};
@@ -4057,35 +3726,10 @@ namespace {
         i32 label{};
     };
 
-    static bool operator==(const Mem& a, const Mem& b) {
-        return a.base == b.base && a.index == b.index && a.scale == b.scale && a.disp == b.disp && a.label == b.label;
-    }
-
-    static u64 hashValue(const Mem& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.base));
-        result = combineHash(result, hashValue(value.index));
-        result = combineHash(result, hashValue(value.scale));
-        result = combineHash(result, hashValue(value.disp));
-        result = combineHash(result, hashValue(value.label));
-        return result;
-    }
-
     struct VisitMir346 {
         i32 block{};
         Int edge{};
     };
-
-    static bool operator==(const VisitMir346& a, const VisitMir346& b) {
-        return a.block == b.block && a.edge == b.edge;
-    }
-
-    static u64 hashValue(const VisitMir346& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.block));
-        result = combineHash(result, hashValue(value.edge));
-        return result;
-    }
 
     struct Reader {
         Slice<u8> data{};
@@ -4096,17 +3740,6 @@ namespace {
         i32 b{};
         Int i{};
     };
-
-    static bool operator==(const Anonymous10& a, const Anonymous10& b) {
-        return a.b == b.b && a.i == b.i;
-    }
-
-    static u64 hashValue(const Anonymous10& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.b));
-        result = combineHash(result, hashValue(value.i));
-        return result;
-    }
 
     struct ConstKey {
         ValType typ{};
@@ -4151,18 +3784,6 @@ namespace {
         u32 index{};
     };
 
-    static bool operator==(const Export& a, const Export& b) {
-        return a.name == b.name && a.kind == b.kind && a.index == b.index;
-    }
-
-    static u64 hashValue(const Export& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.name));
-        result = combineHash(result, hashValue(value.kind));
-        result = combineHash(result, hashValue(value.index));
-        return result;
-    }
-
     // A power-of-two stride makes paged value indexing a shift and mask.
     struct alignas(16) Value {
         Op op{};
@@ -4176,39 +3797,12 @@ namespace {
 
     static_assert(sizeof(Value) == 32);
 
-    static bool operator==(const Value& a, const Value& b) {
-        return a.op == b.op && a.typ == b.typ && a.nargs == b.nargs && a.args == b.args && a.aux == b.aux && a.aux2 == b.aux2 && a.block == b.block;
-    }
-
-    static u64 hashValue(const Value& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.op));
-        result = combineHash(result, hashValue(value.typ));
-        result = combineHash(result, hashValue(value.nargs));
-        result = combineHash(result, hashValue(value.args));
-        result = combineHash(result, hashValue(value.aux));
-        result = combineHash(result, hashValue(value.aux2));
-        result = combineHash(result, hashValue(value.block));
-        return result;
-    }
-
     struct JumpFixup {
         i32 at{};
         i32 block{};
         // small jumps have an 8-bit displacement at at, others 32 bits.
         bool small{};
     };
-
-    static bool operator==(const JumpFixup& a, const JumpFixup& b) {
-        return a.at == b.at && a.block == b.block;
-    }
-
-    static u64 hashValue(const JumpFixup& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.at));
-        result = combineHash(result, hashValue(value.block));
-        return result;
-    }
 
     struct MemoryMeta {
         u64 min{};
@@ -4223,38 +3817,10 @@ namespace {
         u32 shadow{};
     };
 
-    static bool operator==(const MemoryMeta& a, const MemoryMeta& b) {
-        return a.min == b.min && a.max == b.max && a.imported == b.imported && a.tail == b.tail && a.tailEnd == b.tailEnd && a.profile == b.profile && a.profileFuncs == b.profileFuncs && a.shadow == b.shadow;
-    }
-
-    static u64 hashValue(const MemoryMeta& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.min));
-        result = combineHash(result, hashValue(value.max));
-        result = combineHash(result, hashValue(value.imported));
-        result = combineHash(result, hashValue(value.tail));
-        result = combineHash(result, hashValue(value.tailEnd));
-        result = combineHash(result, hashValue(value.profile));
-        result = combineHash(result, hashValue(value.profileFuncs));
-        result = combineHash(result, hashValue(value.shadow));
-        return result;
-    }
-
     struct ValueRange {
         i64 lo{};
         i64 hi{};
     };
-
-    static bool operator==(const ValueRange& a, const ValueRange& b) {
-        return a.lo == b.lo && a.hi == b.hi;
-    }
-
-    static u64 hashValue(const ValueRange& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.lo));
-        result = combineHash(result, hashValue(value.hi));
-        return result;
-    }
 
     struct AddressExpression {
         Array<AddressTerm, 4> terms{};
@@ -4449,19 +4015,6 @@ namespace {
         bool imported{};
     };
 
-    static bool operator==(const GlobalMeta& a, const GlobalMeta& b) {
-        return a.offset == b.offset && a.typ == b.typ && a.mutableValue == b.mutableValue && a.imported == b.imported;
-    }
-
-    static u64 hashValue(const GlobalMeta& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.offset));
-        result = combineHash(result, hashValue(value.typ));
-        result = combineHash(result, hashValue(value.mutableValue));
-        result = combineHash(result, hashValue(value.imported));
-        return result;
-    }
-
     struct ValueRanges {
         Function* f{};
         Slice<ValueRange> cache{};
@@ -4472,17 +4025,6 @@ namespace {
         i32 local{};
         i32 phi{};
     };
-
-    static bool operator==(const PendingPhi& a, const PendingPhi& b) {
-        return a.local == b.local && a.phi == b.phi;
-    }
-
-    static u64 hashValue(const PendingPhi& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.local));
-        result = combineHash(result, hashValue(value.phi));
-        return result;
-    }
 
     struct CseVisit {
         i32 block{};
@@ -4496,33 +4038,10 @@ namespace {
         bool nan{};
     };
 
-    static bool operator==(const FloatRange& a, const FloatRange& b) {
-        return a.lo == b.lo && a.hi == b.hi && a.nan == b.nan;
-    }
-
-    static u64 hashValue(const FloatRange& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.lo));
-        result = combineHash(result, hashValue(value.hi));
-        result = combineHash(result, hashValue(value.nan));
-        return result;
-    }
-
     struct FrameCfg34 {
         i32 b{};
         Int i{};
     };
-
-    static bool operator==(const FrameCfg34& a, const FrameCfg34& b) {
-        return a.b == b.b && a.i == b.i;
-    }
-
-    static u64 hashValue(const FrameCfg34& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.b));
-        result = combineHash(result, hashValue(value.i));
-        return result;
-    }
 
     struct ImportMeta {
         u8 kind{};
@@ -4540,33 +4059,10 @@ namespace {
         Int undo{};
     };
 
-    static bool operator==(const LowerVisit& a, const LowerVisit& b) {
-        return a.block == b.block && a.leave == b.leave && a.undo == b.undo;
-    }
-
-    static u64 hashValue(const LowerVisit& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.block));
-        result = combineHash(result, hashValue(value.leave));
-        result = combineHash(result, hashValue(value.undo));
-        return result;
-    }
-
     struct CheckedEdge {
         i32 pred{};
         Edge* edge{};
     };
-
-    static bool operator==(const CheckedEdge& a, const CheckedEdge& b) {
-        return a.pred == b.pred && a.edge == b.edge;
-    }
-
-    static u64 hashValue(const CheckedEdge& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.pred));
-        result = combineHash(result, hashValue(value.edge));
-        return result;
-    }
 
     struct TableFixup {
         i32 lea{};
@@ -4608,19 +4104,6 @@ namespace {
         bool asan{};
     };
 
-    static bool operator==(const CompileOptions& a, const CompileOptions& b) {
-        return a.memoryTail == b.memoryTail && a.tailRanges == b.tailRanges && a.tailProfile == b.tailProfile && a.asan == b.asan;
-    }
-
-    static u64 hashValue(const CompileOptions& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.memoryTail));
-        result = combineHash(result, hashValue(value.tailRanges));
-        result = combineHash(result, hashValue(value.tailProfile));
-        result = combineHash(result, hashValue(value.asan));
-        return result;
-    }
-
     struct FloatIntegerNarrow {
         Optimizer* o{};
         Slice<u8> valid{};
@@ -4631,17 +4114,6 @@ namespace {
         i32 at{};
         i32 target{};
     };
-
-    static bool operator==(const TextAddress& a, const TextAddress& b) {
-        return a.at == b.at && a.target == b.target;
-    }
-
-    static u64 hashValue(const TextAddress& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.at));
-        result = combineHash(result, hashValue(value.target));
-        return result;
-    }
 
     struct MFunc {
         NodeVec<MBlock> blocks{};
@@ -4715,19 +4187,6 @@ namespace {
         u32 index{};
     };
 
-    static bool operator==(const Import& a, const Import& b) {
-        return a.module == b.module && a.name == b.name && a.kind == b.kind && a.index == b.index;
-    }
-
-    static u64 hashValue(const Import& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.module));
-        result = combineHash(result, hashValue(value.name));
-        result = combineHash(result, hashValue(value.kind));
-        result = combineHash(result, hashValue(value.index));
-        return result;
-    }
-
     struct ExportMeta {
         u8 kind{};
         String name{};
@@ -4737,64 +4196,20 @@ namespace {
         Slice<ValType> results{};
     };
 
-    static bool operator==(const Lrange& a, const Lrange& b) {
-        return a.from == b.from && a.to == b.to;
-    }
-
-    static u64 hashValue(const Lrange& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.from));
-        result = combineHash(result, hashValue(value.to));
-        return result;
-    }
-
     struct CallFixup {
         i32 at{};
         i32 fn{};
     };
-
-    static bool operator==(const CallFixup& a, const CallFixup& b) {
-        return a.at == b.at && a.fn == b.fn;
-    }
-
-    static u64 hashValue(const CallFixup& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.at));
-        result = combineHash(result, hashValue(value.fn));
-        return result;
-    }
 
     struct Anonymous24 {
         Int index{};
         String name{};
     };
 
-    static bool operator==(const Anonymous24& a, const Anonymous24& b) {
-        return a.index == b.index && a.name == b.name;
-    }
-
-    static u64 hashValue(const Anonymous24& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.index));
-        result = combineHash(result, hashValue(value.name));
-        return result;
-    }
-
     struct GoLoc {
         VReg reg{};
         i32 off{};
     };
-
-    static bool operator==(const GoLoc& a, const GoLoc& b) {
-        return a.reg == b.reg && a.off == b.off;
-    }
-
-    static u64 hashValue(const GoLoc& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.reg));
-        result = combineHash(result, hashValue(value.off));
-        return result;
-    }
 
     struct Func {
         u32 typ{};
@@ -4854,18 +4269,6 @@ namespace {
         Limits limits{};
         bool imported{};
     };
-
-    static bool operator==(const Table& a, const Table& b) {
-        return a.elem == b.elem && a.limits == b.limits && a.imported == b.imported;
-    }
-
-    static u64 hashValue(const Table& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.elem));
-        result = combineHash(result, hashValue(value.limits));
-        result = combineHash(result, hashValue(value.imported));
-        return result;
-    }
 
     struct MInstExtra {
         Vec<VReg> uses;
@@ -4939,17 +4342,6 @@ namespace {
         AddressExpression expr{};
         u32 mul{};
     };
-
-    static bool operator==(const Anonymous4& a, const Anonymous4& b) {
-        return a.expr == b.expr && a.mul == b.mul;
-    }
-
-    static u64 hashValue(const Anonymous4& value) {
-        u64 result = 0;
-        result = combineHash(result, hashValue(value.expr));
-        result = combineHash(result, hashValue(value.mul));
-        return result;
-    }
 
     struct Block {
         Slice<i32> params{};
@@ -6713,7 +6105,6 @@ namespace {
 
     static Module* decodeModule(Slice<u8> data);
 
-    static Slice<i32> dedup(Slice<i32> xs);
 
     static String displayName(String s);
 
@@ -23582,21 +22973,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         return m;
-    }
-
-    static Slice<i32> dedup(Slice<i32> xs) {
-        if (length(xs) < 2) {
-            return xs;
-        }
-        Slice<i32> out = subslice(xs, 0, 1);
-        auto range1460 = subslice(xs, 1, length(xs));
-        for (Int index1461 = 0, rangeEnd1462 = length(range1460); index1461 < rangeEnd1462; ++index1461) {
-            i32 x = range1460[index1461];
-            if (x != out[length(out) - 1]) {
-                out = appendValues(out, x);
-            }
-        }
-        return out;
     }
 
     // displayName keeps a name readable in tracebacks: only control bytes,
