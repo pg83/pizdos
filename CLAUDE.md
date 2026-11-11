@@ -23,6 +23,8 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
   `stderr-pattern:` is a JSON full-match regex for diagnostics with
   addresses, and `exit-code:` defaults to 0. `host: false` is for
   kernel-specific cases.
+  `max-memory:` limits the guest's linear memory in bytes (a multiple of
+  65536, at most 4294967296) for exhaustion and recovery scenarios.
   `freestanding: true` links without lib/c and lib/cxx for raw Wasm/WASI
   commands defining their own `_start`. `$ROOT` in `args:` names that
   invocation's temporary directory.

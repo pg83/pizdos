@@ -23,7 +23,7 @@ import wasm
 
 LINK = ["--stack-first", "-z", "stack-size=1049600", "--max-memory=4294967296",
         "--export=__heap_base", "--export=__stack_pointer", "--gc-sections"]
-DIRECTIVES = {"compile-flags", "aot-flags", "run-flags", "args", "env", "stdout", "stderr", "stderr-pattern", "exit-code", "host", "timeout", "freestanding"}
+DIRECTIVES = {"compile-flags", "aot-flags", "run-flags", "args", "env", "stdout", "stderr", "stderr-pattern", "exit-code", "host", "timeout", "freestanding", "max-memory"}
 
 
 def directives(source):
@@ -88,6 +88,10 @@ def run(source, prefix, tools):
     run_flags = shlex.split(case.get("run-flags", ""))
     args = shlex.split(case.get("args", ""))
     cflags = ["-O2", "-std=c++23", "-fno-exceptions", "-fno-rtti", *shlex.split(case.get("compile-flags", ""))]
+    maximum = int(case.get("max-memory", "4294967296"))
+    if maximum <= 0 or maximum > 4294967296 or maximum % 65536:
+        raise ValueError("max-memory must be a positive multiple of 65536 up to 4294967296")
+    link = [flag if not flag.startswith("--max-memory=") else f"--max-memory={maximum}" for flag in LINK]
     prefix.parent.mkdir(parents=True, exist_ok=True)
     module = Path(str(prefix) + ".wasm")
 
@@ -110,7 +114,7 @@ def run(source, prefix, tools):
                     "-isystem", work / "cxx/include/c++/v1", "-isystem", tools["c_headers"],
                     "-c", source, "-o", obj], env=env, timeout=timeout)
         libraries = [] if case.get("freestanding", "false") == "true" else [tools["libcxx"], tools["libc"]]
-        successful([tools["ld"], *LINK, "-o", module, obj, *libraries], env=env, timeout=timeout)
+        successful([tools["ld"], *link, "-o", module, obj, *libraries], env=env, timeout=timeout)
 
         native = Path(str(prefix) + ".native.o")
         embedded = Path(str(prefix) + ".embedded.o")
