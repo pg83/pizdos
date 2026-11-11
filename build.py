@@ -697,6 +697,7 @@ TESTED = {
     "cxx": [vm, cxx_check_o],
     "doom": [vm, doom_o, doom_wad],
     "libc": [vm, libc_check_o],
+    "objects": [vm, aot_native],
     "python": [vm, python_o, python, python_tarball, busybox_o, busybox],
     "stand": [vm, aot_native, stand_fixture],
     "vm": [vm, aot_native, aot, aot_command, aot_command_aot, aot_relinked, wazero, busybox],
