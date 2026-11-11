@@ -120,6 +120,10 @@ def main():
               ("reversed-rows", reordered_table(tuple(reversed(ROW_ORDER)))),
               ("duplicate-rows", reordered_table(ROW_ORDER + ROW_ORDER[64:96] + (8,)))]
     malformed = [("truncated-" + str(n), table(4)[:n]) for n in range(len(table(4)))]
+    for version in (0, 1, 6, 0xffff):
+        data = bytearray(table(4))
+        struct.pack_into("<H", data, 4, version)
+        malformed.append((f"unsupported-version-{version}", bytes(data)))
     for length in (0x80000000, 0xffffffff):
         data = bytearray(table(4))
         struct.pack_into("<I", data, 6, length)
