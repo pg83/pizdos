@@ -70,7 +70,9 @@ def main():
     with tempfile.TemporaryDirectory(prefix="pizdos-spec-cli-") as directory:
         work = Path(directory)
         modules = {"base": base_module(), "start-trap": base_module(True),
-                   "global-alias": importing(3, "shared", "gi32")}
+                   "global-alias": importing(3, "shared", "gi32"),
+                   "memory-alias": importing(2, "shared", "memory"),
+                   "spectest-table": importing(1, "spectest", "table")}
         for kind in range(4):
             modules[f"missing-module-{kind}"] = importing(kind, "unknown", "missing")
             modules[f"missing-field-{kind}"] = importing(kind, "shared", "missing")
@@ -125,6 +127,8 @@ def main():
         run([{"type": "module", "name": "alias", "filename": "global-alias.wasm"},
              {"type": "assert_return", "action": {"type": "get", "module": "alias", "field": "alias"},
               "expected": [{"type": "i32", "value": "7"}]}], (2, 0, 0))
+        for name in ("memory-alias", "spectest-table"):
+            run([{"type": "module", "name": name, "filename": name + ".wasm"}], (1, 0, 0))
         for name in modules:
             if name.startswith("missing-") or name == "wrong-signature":
                 run([{"type": "module", "filename": name + ".wasm"}], (0, 0, 1), ["UNSUPPORTED"])
