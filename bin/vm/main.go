@@ -11,7 +11,7 @@ import (
 )
 
 func usage() {
-	throwFmt("usage: wasm2o [-v] -o output.o input.wasm\n       wasm2o run [--root dir] [-a argv0] object.o [-- arg...]\n       wasm2o spec test.json\n       wasm2o stand [--repeat N] im|pdf|djvu|svg|magic object.o file...")
+	throwFmt("usage: vm [-v] -o output.o input.wasm\n       vm run [--root dir] [-a argv0] object.o [-- arg...]\n       vm spec test.json\n       vm stand [--repeat N] im|pdf|djvu|svg|magic object.o file...")
 }
 
 func main() {
@@ -40,7 +40,7 @@ func main() {
 
 		compileCommand(args)
 	}); e != nil {
-		fmt.Fprintln(os.Stderr, "wasm2o:", e)
+		fmt.Fprintln(os.Stderr, "vm:", e)
 		os.Exit(1)
 	}
 
@@ -82,7 +82,7 @@ func compileCommand(args []string) {
 
 	defer source.Close()
 
-	destination := throw2(os.CreateTemp(filepath.Dir(output), ".wasm2o-*"))
+	destination := throw2(os.CreateTemp(filepath.Dir(output), ".vm-*"))
 
 	defer destination.Close()
 	defer os.Remove(destination.Name())
@@ -102,7 +102,7 @@ func compileCommand(args []string) {
 	throw(os.Rename(destination.Name(), output))
 
 	if verbose {
-		fmt.Fprintf(os.Stderr, "wasm2o: %d bytes -> %d bytes in %s\n", throw2(source.Stat()).Size(), throw2(os.Stat(output)).Size(), elapsed)
+		fmt.Fprintf(os.Stderr, "vm: %d bytes -> %d bytes in %s\n", throw2(source.Stat()).Size(), throw2(os.Stat(output)).Size(), elapsed)
 	}
 }
 

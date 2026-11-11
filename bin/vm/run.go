@@ -8,7 +8,7 @@ import (
 	"runtime"
 )
 
-// runObject runs an object and returns the exit code of wasm2o: a program
+// runObject runs an object and returns the exit code of vm: a program
 // of the kernel as its first process, inside root, or a WASI command on
 // this goroutine, whose code is proc_exit's, or 128 and the trap code after
 // a trap.

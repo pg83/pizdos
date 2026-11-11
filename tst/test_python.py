@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CPython under `wasm2o run`: python.o is /usr/bin/python3 of a root whose
+"""CPython under `vm run`: python.o is /usr/bin/python3 of a root whose
 standard library is /usr/lib/python314.zip and whose shell is busybox's.
 A script prints what the interpreter computes and what it gets from the
 kernel: processes, pipes, a pseudoterminal, signals, timers, locks,
@@ -7,7 +7,7 @@ mappings written back, the user database, locales and the tokenizer's
 positions. Then a set of CPython's own tests, from the release tarball's
 Lib/test, runs with its regrtest.
 
-    test_python.py <wasm2o> <python.o> <python.wasm> <python314.zip> <Python.tgz> <busybox.o> <busybox.wasm> <busybox.links>
+    test_python.py <vm> <python.o> <python.wasm> <python314.zip> <Python.tgz> <busybox.o> <busybox.wasm> <busybox.links>
 """
 import os
 import shutil
@@ -170,27 +170,27 @@ def make_root(root, python, zipped, tarball, busybox, links):
     (root / "tmp").mkdir()
 
 
-def python(wasm2o, root, args, timeout):
-    command = [wasm2o, "run", "--root", str(root), "-a", "/usr/bin/python3", str(root / "usr" / "bin" / "python3"), "--", *args]
+def python(vm, root, args, timeout):
+    command = [vm, "run", "--root", str(root), "-a", "/usr/bin/python3", str(root / "usr" / "bin" / "python3"), "--", *args]
     environment = {"PATH": "/usr/bin:/bin", "HOME": "/tmp", "TZ": "UTC"}
 
     return subprocess.run(command, capture_output=True, text=True, cwd=root / "tmp", env=environment, timeout=timeout)
 
 
 def main():
-    wasm2o, python_o, _, zipped, tarball, busybox, _, links = sys.argv[1:9]
+    vm, python_o, _, zipped, tarball, busybox, _, links = sys.argv[1:9]
     failures = []
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / "root"
         make_root(root, python_o, zipped, tarball, busybox, Path(links).read_text())
         (root / "tmp" / "check.py").write_text(SCRIPT)
-        r = python(wasm2o, root, ["/tmp/check.py"], 300)
+        r = python(vm, root, ["/tmp/check.py"], 300)
 
         if r.returncode != 0 or r.stdout != EXPECTED:
             failures.append(f"check.py: exit {r.returncode}\n--- stdout\n{r.stdout}\n--- expected\n{EXPECTED}\n--- stderr\n{r.stderr[-3000:]}")
 
-        r = python(wasm2o, root, ["-m", "test", *TESTS], 1800)
+        r = python(vm, root, ["-m", "test", *TESTS], 1800)
 
         if r.returncode != 0 or "Result: SUCCESS" not in r.stdout:
             failures.append(f"regrtest: exit {r.returncode}\n{r.stdout[-5000:]}\n{r.stderr[-2000:]}")

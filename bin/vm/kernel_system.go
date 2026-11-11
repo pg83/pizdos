@@ -14,7 +14,7 @@ import (
 )
 
 // What the system tells of itself: memory, load and resource usage, which
-// are the host's and wasm2o's, configuration values, and the names of the
+// are the host's and vm's, configuration values, and the names of the
 // login and terminals.
 
 // The system logger: there is none to send messages to, so syslog writes
@@ -124,7 +124,7 @@ func pages(free bool) int {
 }
 
 // putRusage writes the guest's struct rusage: CPU times and the counts
-// of the host's, which wasm2o's processes share.
+// of the host's, which vm's processes share.
 func (p *Process) putRusage(at uint32, ru *syscall.Rusage) {
 	clear(p.span(at, 88))
 
@@ -271,7 +271,7 @@ func (p *Process) libcGetloadavg(at, n uint32) uint32 {
 	return n
 }
 
-// getrusage of the process, or its thread, is wasm2o's: its
+// getrusage of the process, or its thread, is vm's: its
 // children's are in it.
 func (p *Process) libcGetrusage(who, at uint32) uint32 {
 	switch int32(who) {

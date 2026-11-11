@@ -14,7 +14,7 @@ import (
 )
 
 // Processes: identity, limits, the environment and exec. exec runs an
-// object of wasm2o, which it links once per version of the file, or a
+// object of vm, which it links once per version of the file, or a
 // script through its #! interpreter.
 
 const (
@@ -86,7 +86,7 @@ func (k *Kernel) code(fd int, name string) (*Code, error) {
 
 		c = link(name, obj, k)
 	}); e != nil {
-		fmt.Fprintf(os.Stderr, "wasm2o: %s: %s\n", name, e)
+		fmt.Fprintf(os.Stderr, "vm: %s: %s\n", name, e)
 		return nil, syscall.ENOEXEC
 	}
 

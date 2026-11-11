@@ -9,18 +9,18 @@ from pathlib import Path
 
 
 def main():
-    wasm2o, native, reactor, command, aot, relinked, wazero, busybox, _links = sys.argv[1:]
+    vm, native, reactor, command, aot, relinked, wazero, busybox, _links = sys.argv[1:]
     compilers = {
-        "self-compiled AOT": [wasm2o, "run", aot, "--"],
-        "relinked AOT": [wasm2o, "run", relinked, "--"],
+        "self-compiled AOT": [vm, "run", aot, "--"],
+        "relinked AOT": [vm, "run", relinked, "--"],
         "WASI reactor": [wazero, "-aot", reactor],
         "WASI command": [wazero, command],
     }
 
-    with tempfile.TemporaryDirectory(prefix="wasm2o-") as work:
+    with tempfile.TemporaryDirectory(prefix="vm-") as work:
         out = Path(work) / "out.o"
-        isolated = Path(work) / "wasm2o"
-        shutil.copyfile(wasm2o, isolated)
+        isolated = Path(work) / "vm"
+        shutil.copyfile(vm, isolated)
         isolated.chmod(0o755)
         env = dict(os.environ, PATH="")
 
@@ -59,7 +59,7 @@ def main():
         result = subprocess.run([str(isolated), "-o", str(out), str(bad)], cwd=work, env=env, capture_output=True)
         assert result.returncode != 0 and b"aot exited" in result.stderr
         assert out.read_bytes() == b"previous output", "failed compilation replaced the output"
-        assert not list(Path(work).glob(".wasm2o-*")), "failed compilation retained temporary output"
+        assert not list(Path(work).glob(".vm-*")), "failed compilation retained temporary output"
 
 
 if __name__ == "__main__":

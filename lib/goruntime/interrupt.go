@@ -1,4 +1,4 @@
-// Interruption of native code that runs on a goroutine, for wasm2o's
+// Interruption of native code that runs on a goroutine, for vm's
 // kernel (bin/vm): the goroutine names the code and a stub, and when
 // another goroutine asks, the next preemption signal that finds it at an
 // asynchronous safe point in that code injects a call of the stub there,
@@ -18,7 +18,7 @@ type gInterrupt struct {
 	wanted       atomic.Bool
 }
 
-// InstanceOffset is the offset in g of the instance of wasm2o's code the
+// InstanceOffset is the offset in g of the instance of vm's code the
 // goroutine runs, which the code reads after a call of Go; the entry
 // thunks set it.
 func InstanceOffset() uintptr {

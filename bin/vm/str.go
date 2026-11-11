@@ -11,7 +11,7 @@ import (
 	"unsafe"
 )
 
-// lib/str's string and memory functions (pg83/str compiled for wasm2o,
+// lib/str's string and memory functions (pg83/str compiled for vm,
 // lib/str/make.py): one object, its code in the convention between the
 // module's functions, taking host addresses and checking nothing. It is
 // linked once; str_choose gives the configuration of the host, and the

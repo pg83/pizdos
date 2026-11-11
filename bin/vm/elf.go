@@ -43,7 +43,7 @@ const (
 
 const noteOwner = "wasm2o"
 
-// Object is what a loader takes from an object, as wasm2o or a linker
+// Object is what a loader takes from an object, as vm or a linker
 // that combined such objects wrote it.
 type Object struct {
 	text   []byte
@@ -261,7 +261,7 @@ func readObject(data []byte) *Object {
 	note := f.find(".note.wasm2o")
 
 	if note < 0 {
-		throwFmt("no .note.wasm2o: not an object of wasm2o")
+		throwFmt("no .note.wasm2o: not an object of vm")
 	}
 
 	obj.meta = decodeNote(readNote(f.sections[note].data))
@@ -422,7 +422,7 @@ func readEhFrame(data []byte, relocs []objReloc, defined map[string]uint32) []Re
 	return regions
 }
 
-// cfaProgram runs the CFA instructions wasm2o writes, starting from a CFA of
+// cfaProgram runs the CFA instructions the compiler writes, starting from a CFA of
 // rsp+cfa, and returns the CFA offset at the end; with sp it records the
 // stack pointer, CFA less 8, at every change, from offset 0 of a range of
 // size bytes.

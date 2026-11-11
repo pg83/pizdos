@@ -11,7 +11,7 @@ import (
 )
 
 // Who a process is: its credentials, session and group, priority and
-// scheduling. Every process has wasm2o's credentials, which none can change:
+// scheduling. Every process has vm's credentials, which none can change:
 // setting the ids it has succeeds and does nothing, setting others fails
 // as for an unprivileged process. A priority is a nice value, a policy
 // SCHED_OTHER, SCHED_BATCH or SCHED_IDLE: the kernel keeps them, Go's
@@ -30,7 +30,7 @@ const (
 	schedIdle   = 5
 )
 
-// hostIds are wasm2o's real, effective and saved user or group ids.
+// hostIds are vm's real, effective and saved user or group ids.
 func hostIds(trap uintptr) [3]uint32 {
 	var ids [3]uint32
 	syscall.RawSyscall(trap, uintptr(unsafe.Pointer(&ids[0])), uintptr(unsafe.Pointer(&ids[1])), uintptr(unsafe.Pointer(&ids[2])))

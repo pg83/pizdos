@@ -19,7 +19,7 @@ import (
 // "kernel" (lib/c/include declares its functions). A process is a goroutine
 // running an instance; the kernel keeps its pid, descriptors, working
 // directory, signals and children. Paths resolve inside the root directory
-// `wasm2o run` is given, and exec runs only objects of wasm2o and scripts.
+// `vm run` is given, and exec runs only objects of vm and scripts.
 //
 // A function of the kernel finds its process through the instance. Pointers
 // are offsets in the process's memory: one out of it traps, as the guest's
@@ -201,7 +201,7 @@ func importsKernel(obj *Object) bool {
 }
 
 // runKernel runs an object as the first process and returns the exit code
-// of wasm2o: the process's, or 128 and the signal that ended it.
+// of vm: the process's, or 128 and the signal that ended it.
 func runKernel(path, root string, argv []string) int {
 	k := newKernel(root)
 	fd := throw2(syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC, 0))
@@ -383,7 +383,7 @@ func trapSignal(code uint32) int {
 // terminate ends the process with a wait status: its descriptors close, its
 // children go to the first process, it becomes a zombie its parent reaps,
 // or nothing when the parent ignores SIGCHLD; with the first process
-// wasm2o ends.
+// vm ends.
 func (p *Process) terminate(status int) {
 	p.stopTimers()
 
@@ -463,7 +463,7 @@ func (p *Process) childChanged(sig int) {
 	p.wakeUp()
 }
 
-// hostCode is wasm2o's exit code for a wait status.
+// hostCode is vm's exit code for a wait status.
 func hostCode(status int) int {
 	if status&0x7f != 0 {
 		return 128 + status&0x7f

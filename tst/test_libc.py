@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""lib/c's functions under `wasm2o run`: tst/libc/check.c prints one line
+"""lib/c's functions under `vm run`: tst/libc/check.c prints one line
 of results per area, which must be these. Its root has /etc/passwd,
 /etc/group, /etc/hosts and /etc/services, so no name goes to the host's
 resolver, a /tmp to make files and sockets in, and the program as
 /bin/check, the path dladdr names.
 
-    test_libc.py <wasm2o> <check.o>
+    test_libc.py <vm> <check.o>
 """
 import shutil
 import subprocess
@@ -66,7 +66,7 @@ fenv 0 0 0 0 0 gethostname 1 confstr 14 sysconf 1 pathconf 255
 
 
 def main():
-    wasm2o, check = sys.argv[1:3]
+    vm, check = sys.argv[1:3]
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -78,7 +78,7 @@ def main():
         (root / "etc" / "services").write_text(SERVICES)
         (root / "bin").mkdir()
         shutil.copy(check, root / "bin" / "check")
-        r = subprocess.run([wasm2o, "run", "--root", str(root), "-a", "check", str(root / "bin" / "check")],
+        r = subprocess.run([vm, "run", "--root", str(root), "-a", "check", str(root / "bin" / "check")],
                            capture_output=True, text=True, env={"PATH": "/bin"}, timeout=120)
 
     if r.returncode != 0 or r.stdout != EXPECTED:

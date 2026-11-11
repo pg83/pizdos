@@ -12,8 +12,8 @@ import (
 	"time"
 )
 
-// wasm2o stand runs the work of the stand (dev/stand) over files with a
-// pure module of impulse-desktop/decode compiled by wasm2o: what
+// vm stand runs the work of the stand (dev/stand) over files with a
+// pure module of impulse-desktop/decode compiled by vm: what
 // dev/stand/decode.c does with the module's sources compiled natively. One
 // line per file says the result; native pixels may differ:
 //

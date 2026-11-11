@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""The WebAssembly spec testsuite through `wasm2o spec`.
+"""The WebAssembly spec testsuite through `vm spec`.
 
-    wasm2o_spec.py <wasm2o> <wast2json> <testsuite.tar.gz> <stamp>
+    vm_spec.py <vm> <wast2json> <testsuite.tar.gz> <stamp>
 
-Every top-level .wast is converted by wast2json and run by wasm2o, which
+Every top-level .wast is converted by wast2json and run by vm, which
 compiles and loads its modules and counts its checks. A file that does not
 convert is not counted. The test fails when a file crashes or fails more
 checks than KNOWN allows, and prints the totals.
@@ -17,7 +17,7 @@ import tarfile
 import tempfile
 from pathlib import Path
 
-# Failures of what wasm2o does not implement, by file: table.grow, which
+# Failures of what vm does not implement, by file: table.grow, which
 # fails; modules of two memories, skipped, which were to fill memory or a
 # table that other modules read.
 KNOWN = {
@@ -28,7 +28,7 @@ KNOWN = {
 }
 
 
-def run(wasm2o, wast2json, wast, work):
+def run(vm, wast2json, wast, work):
     work.mkdir(parents=True)
     r = subprocess.run([wast2json, str(wast), "-o", str(work / "t.json")], capture_output=True, text=True)
 
@@ -36,7 +36,7 @@ def run(wasm2o, wast2json, wast, work):
         return None
 
     try:
-        r = subprocess.run([wasm2o, "spec", str(work / "t.json")], capture_output=True, text=True, timeout=600)
+        r = subprocess.run([vm, "spec", str(work / "t.json")], capture_output=True, text=True, timeout=600)
     except subprocess.TimeoutExpired:
         return "timeout"
 
@@ -51,7 +51,7 @@ def run(wasm2o, wast2json, wast, work):
 
 
 def main():
-    wasm2o, wast2json, tarball, stamp = sys.argv[1:]
+    vm, wast2json, tarball, stamp = sys.argv[1:]
 
     if not wast2json or not os.access(wast2json, os.X_OK):
         sys.exit("wast2json is not on PATH: run the build under ix run bld/wabt")
@@ -68,7 +68,7 @@ def main():
         bad = []
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count()) as pool:
-            jobs = {w.name: pool.submit(run, wasm2o, wast2json, w, tmp / "work" / w.stem) for w in wasts}
+            jobs = {w.name: pool.submit(run, vm, wast2json, w, tmp / "work" / w.stem) for w in wasts}
 
             for name, job in jobs.items():
                 res = job.result()

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The standalone C++ compiler's WASI export and command match wasm2o."""
+"""The standalone C++ compiler's WASI export and command match vm."""
 import os
 import re
 import subprocess
@@ -13,7 +13,7 @@ def run(command, data):
 
 
 def main():
-    aot, command, wazero, wasm2o, busybox, _links, selftest = sys.argv[1:]
+    aot, command, wazero, vm, busybox, _links, selftest = sys.argv[1:]
     env = dict(os.environ, W2X_MEMORY_TAIL="optimized", W2X_TAIL_PROFILE="")
     assert run([wazero, selftest], b"").stdout == b"aot primitives: ok\n"
 
@@ -28,13 +28,13 @@ def main():
 
         for source in (empty, names, Path(busybox), Path(aot), Path(command)):
             output = directory / "reference.o"
-            subprocess.run([wasm2o, "-o", str(output), str(source)], env=env, capture_output=True, check=True)
+            subprocess.run([vm, "-o", str(output), str(source)], env=env, capture_output=True, check=True)
             expected = output.read_bytes()
             references[source] = expected
             data = source.read_bytes()
             for entry in ([wazero, "-aot", aot], [wazero, command]):
                 result = run(entry, data)
-                assert result.stdout == expected, f"{entry}: {source.name} differs from wasm2o"
+                assert result.stdout == expected, f"{entry}: {source.name} differs from vm"
             print(f"aot export/command: {source.name} -> {len(expected)} bytes, identical")
 
         # Run the C++ compiler as its own x86 output, through the same Go
@@ -42,7 +42,7 @@ def main():
         self_object = directory / "aot-command.o"
         self_object.write_bytes(references[Path(command)])
         for source in (Path(busybox), Path(command)):
-            result = run([wasm2o, "run", str(self_object), "--"], source.read_bytes())
+            result = run([vm, "run", str(self_object), "--"], source.read_bytes())
             assert result.stdout == references[source], f"self-compiled aot differs for {source.name}"
             print(f"self-compiled aot: {source.name}, identical")
 

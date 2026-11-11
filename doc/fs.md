@@ -15,7 +15,7 @@ what is open.
 
 ## A file system is a process
 
-- A file system is an ordinary program, a wasm module wasm2o compiles,
+- A file system is an ordinary program, a wasm module vm compiles,
   linked with lib/c. It has the kernel's API like any program and its
   block device as a descriptor, a file of `/sys/dev` it reads and writes
   with `pread`, `pwrite` and `fdatasync`. It serves the file system to the
@@ -91,7 +91,7 @@ after the run the host's `e2fsck` checks the image.
 ## Open
 
 - The calls: how a server gets its channel and mounts it, and who may.
-- The names of `/sys/dev`: disks given to wasm2o (a host file or device
+- The names of `/sys/dev`: disks given to vm (a host file or device
   each), terminals, null and the like.
 - What `/sys/pid` holds.
 - The host devices the kernel passes through today (`/dev/null` and its

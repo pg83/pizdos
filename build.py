@@ -146,7 +146,7 @@ libcxx = command(
 )
 
 # lib/str: pg83/str's string and memory functions, compiled by str's own
-# compiler in the convention of the code wasm2o compiles, for its loader.
+# compiler in the convention of the code vm compiles, for its loader.
 libstr = command(
     name="libstr",
     inputs=["$(S)/lib/str/make.py"],
@@ -219,7 +219,7 @@ doom = command(
 )
 
 # CPython's interpreter and built-in modules, and its freezer: nothing of
-# wasm2o, so a change of the compiler rebuilds none of it.
+# vm, so a change of the compiler rebuilds none of it.
 python_core = command(
     name="python_core",
     inputs=[*LIBC_HEADERS, "$(S)/bin/python/pyconfig.h", "$(S)/bin/python/make.py", "$(S)/dev/wasm.py"],
@@ -243,7 +243,7 @@ python_core = command(
 # exports compile(), reading fd 0 and writing fd 1; the command adds _start.
 AOT_FLAGS = ["-x", "c++", "-std=c++20", "-O2", "-fno-exceptions", "-fno-rtti", "-fno-builtin", "-fwrapv", "-ffp-contract=off", "-Wno-parentheses-equality"]
 # Compiler debug names otherwise get duplicated in ELF symbols and Go's
-# runtime metadata when wasm2o embeds the compiled reactor. The multivalue
+# runtime metadata when vm embeds the compiled reactor. The multivalue
 # ABI passes and returns small structs, the compiler's slices and views
 # among them, as values instead of through the shadow stack.
 AOT_WASM_FLAGS = [*AOT_FLAGS, "--target=wasm32-unknown-unknown", "-ffreestanding", "-nostdlib", "-nostdinc", "-nostdinc++", "-mbulk-memory", "-Xclang", "-target-abi", "-Xclang", "experimental-mv", "-Wl,--strip-all", "-Wl,--no-entry", "-Wl,--export-memory", "-Wl,--stack-first", "-Wl,-z,stack-size=4195328"]
@@ -290,7 +290,7 @@ aot_measure = command(
     descr="CC", color="green",
 )
 
-# Bootstrap without an existing wasm2o: the native C++ compiler compiles the
+# Bootstrap without an existing vm: the native C++ compiler compiles the
 # WASI reactor to the machine-code object embedded in the Go loader.
 aot_aot = command(
     name="aot_aot",
@@ -313,23 +313,23 @@ aot_command_aot = command(
 WASM2O_SOURCES = [*build.glob("$(S)/bin/vm/*.go"), *build.glob("$(S)/bin/vm/*.s"), "$(S)/bin/vm/go.mod", "$(S)/dev/go.py"]
 GO_RUNTIME = [*build.glob("$(S)/lib/goruntime/*.go"), "$(S)/lib/goruntime/edits.py"]
 
-wasm2o = command(
-    name="wasm2o",
+vm = command(
+    name="vm",
     inputs=[*WASM2O_SOURCES, *GO_RUNTIME],
-    outputs=["$(B)/bin/vm/wasm2o"],
+    outputs=["$(B)/bin/vm/vm"],
     deps=[aot_aot, libstr],
-    cmd=["python3", "$(S)/dev/go.py", "build", GO, "$(S)/bin/vm", "$(B)/bin/vm/wasm2o", "--runtime", "$(S)/lib/goruntime", "--embed", aot_aot.outputs[0],
+    cmd=["python3", "$(S)/dev/go.py", "build", GO, "$(S)/bin/vm", "$(B)/bin/vm/vm", "--runtime", "$(S)/lib/goruntime", "--embed", aot_aot.outputs[0],
          "--embed", libstr.outputs[0]],
     descr="GO", color="light-blue",
 )
 
-# busybox.wasm compiled by wasm2o: what `wasm2o run` runs in the kernel's
+# busybox.wasm compiled by vm: what `vm run` runs in the kernel's
 # processes.
 busybox_o = command(
     name="busybox_o",
     outputs=["$(B)/bin/busybox/busybox.o"],
-    deps=[wasm2o, busybox],
-    cmd=[wasm2o.outputs[0], "-o", "$(B)/bin/busybox/busybox.o", busybox.outputs[0]],
+    deps=[vm, busybox],
+    cmd=[vm.outputs[0], "-o", "$(B)/bin/busybox/busybox.o", busybox.outputs[0]],
     descr="AO",
     color="light-cyan",
 )
@@ -337,8 +337,8 @@ busybox_o = command(
 doom_o = command(
     name="doom_o",
     outputs=["$(B)/bin/doom/doom.o"],
-    deps=[wasm2o, doom],
-    cmd=[wasm2o.outputs[0], "-o", "$(B)/bin/doom/doom.o", doom.outputs[0]],
+    deps=[vm, doom],
+    cmd=[vm.outputs[0], "-o", "$(B)/bin/doom/doom.o", doom.outputs[0]],
     descr="AO",
     color="light-cyan",
 )
@@ -349,10 +349,10 @@ python = command(
     name="python",
     inputs=[*LIBC_HEADERS, "$(S)/bin/python/pyconfig.h", "$(S)/bin/python/make.py", "$(S)/dev/wasm.py"],
     outputs=["$(B)/bin/python/python.wasm", "$(B)/bin/python/python314.zip"],
-    deps=[python_tarball, libc, python_core, wasm2o],
+    deps=[python_tarball, libc, python_core, vm],
     cmd=[
         "python3", "$(S)/bin/python/make.py", "python",
-        CLANG, WASM_LD, wasm2o.outputs[0],
+        CLANG, WASM_LD, vm.outputs[0],
         python_tarball.outputs[0],
         "$(S)/bin/python/pyconfig.h",
         "$(S)/lib/c/include",
@@ -368,8 +368,8 @@ python = command(
 python_o = command(
     name="python_o",
     outputs=["$(B)/bin/python/python.o"],
-    deps=[wasm2o, python],
-    cmd=[wasm2o.outputs[0], "-o", "$(B)/bin/python/python.o", python.outputs[0]],
+    deps=[vm, python],
+    cmd=[vm.outputs[0], "-o", "$(B)/bin/python/python.o", python.outputs[0]],
     descr="AO",
     color="light-cyan",
 )
@@ -401,8 +401,8 @@ clang = command(
 clang_o = command(
     name="clang_o",
     outputs=["$(B)/bin/clang/llvm.o"],
-    deps=[wasm2o, clang],
-    cmd=[wasm2o.outputs[0], "-o", "$(B)/bin/clang/llvm.o", clang.outputs[0]],
+    deps=[vm, clang],
+    cmd=[vm.outputs[0], "-o", "$(B)/bin/clang/llvm.o", clang.outputs[0]],
     descr="AO",
     color="light-cyan",
 )
@@ -421,8 +421,8 @@ libc_check = command(
 libc_check_o = command(
     name="libc_check_o",
     outputs=["$(B)/tst/libc/check.o"],
-    deps=[wasm2o, libc_check],
-    cmd=[wasm2o.outputs[0], "-o", "$(B)/tst/libc/check.o", libc_check.outputs[0]],
+    deps=[vm, libc_check],
+    cmd=[vm.outputs[0], "-o", "$(B)/tst/libc/check.o", libc_check.outputs[0]],
     descr="AO",
     color="light-cyan",
 )
@@ -442,8 +442,8 @@ cxx_check = command(
 cxx_check_o = command(
     name="cxx_check_o",
     outputs=["$(B)/tst/cxx/check.o"],
-    deps=[wasm2o, cxx_check],
-    cmd=[wasm2o.outputs[0], "-o", "$(B)/tst/cxx/check.o", cxx_check.outputs[0]],
+    deps=[vm, cxx_check],
+    cmd=[vm.outputs[0], "-o", "$(B)/tst/cxx/check.o", cxx_check.outputs[0]],
     descr="AO",
     color="light-cyan",
 )
@@ -457,19 +457,19 @@ aot_relinked = command(
     descr="LD", color="green",
 )
 
-# wasm2o's own tests: the loader drives Go's runtime through native frames.
-wasm2o_go_test = command(
-    name="test_wasm2o_go",
+# vm's own tests: the loader drives Go's runtime through native frames.
+vm_go_test = command(
+    name="test_vm_go",
     inputs=[*build.glob("$(S)/bin/vm/*.go"), *build.glob("$(S)/bin/vm/*.s"), "$(S)/bin/vm/go.mod", "$(S)/dev/go.py", *GO_RUNTIME],
-    outputs=["$(B)/tst/wasm2o_go.stamp"],
+    outputs=["$(B)/tst/vm_go.stamp"],
     deps=[aot_aot, libstr],
-    cmd=["python3", "$(S)/dev/go.py", "test", GO, "$(S)/bin/vm", "$(B)/tst/wasm2o_go.stamp", "--runtime", "$(S)/lib/goruntime", "--embed", aot_aot.outputs[0],
+    cmd=["python3", "$(S)/dev/go.py", "test", GO, "$(S)/bin/vm", "$(B)/tst/vm_go.stamp", "--runtime", "$(S)/lib/goruntime", "--embed", aot_aot.outputs[0],
          "--embed", libstr.outputs[0]],
     descr="TS",
     color="green",
 )
 
-# The WebAssembly spec testsuite through `wasm2o spec`; wast2json comes from
+# The WebAssembly spec testsuite through `vm spec`; wast2json comes from
 # wabt, under ix run bld/wabt.
 TESTSUITE = "9b9fbf8260507169066bf3e8de7b01fb8c145e55"
 WAST2JSON = shutil.which("wast2json") or ""
@@ -481,17 +481,17 @@ testsuite_tarball = fetch(
     f"$(B)/ext/testsuite-{TESTSUITE}.tar.gz",
 )
 
-wasm2o_spec_test = command(
-    name="test_wasm2o_spec",
-    inputs=["$(S)/tst/wasm2o_spec.py"],
-    outputs=["$(B)/tst/wasm2o_spec.stamp"],
-    deps=[wasm2o, testsuite_tarball],
-    cmd=["python3", "$(S)/tst/wasm2o_spec.py", wasm2o.outputs[0], WAST2JSON, testsuite_tarball.outputs[0], "$(B)/tst/wasm2o_spec.stamp"],
+vm_spec_test = command(
+    name="test_vm_spec",
+    inputs=["$(S)/tst/vm_spec.py"],
+    outputs=["$(B)/tst/vm_spec.stamp"],
+    deps=[vm, testsuite_tarball],
+    cmd=["python3", "$(S)/tst/vm_spec.py", vm.outputs[0], WAST2JSON, testsuite_tarball.outputs[0], "$(B)/tst/vm_spec.stamp"],
     descr="TS",
     color="green",
 )
 
-# tst/wazero: a WASI runner on wazero, what wasm2o is measured against. Its
+# tst/wazero: a WASI runner on wazero, what vm is measured against. Its
 # modules, checked against go.sum, are fetched once; the build has no network.
 wazero_modules = command(
     name="wazero_modules",
@@ -516,7 +516,7 @@ wazero = command(
     color="light-blue",
 )
 
-# The stand compares wasm2o's code with native code of the same programs:
+# The stand compares vm's code with native code of the same programs:
 # the C++ compiler, and decode release 16, pure C/C++ wasm whose native
 # column uses the same wrappers and the libraries of the ix revision that
 # built that release. dev/stand/build.sh supplies those libraries and the
@@ -556,9 +556,9 @@ for kind, (module, digest, source, source_digest) in DECODE.items():
     )
     obj = command(
         name=f"stand_{kind}_aot",
-        deps=[wasm2o, wasm],
+        deps=[vm, wasm],
         outputs=[f"{folder}/module.o"],
-        cmd=[wasm2o.outputs[0], "-o", f"{folder}/module.o", wasm.outputs[0]],
+        cmd=[vm.outputs[0], "-o", f"{folder}/module.o", wasm.outputs[0]],
         descr="AO", color="light-cyan",
     )
     wrapper = fetch(f"stand_{kind}_source", f"https://raw.githubusercontent.com/pg83/ix/{DECODE_IX}/pkgs/{source}", source_digest, f"{folder}/wrapper" + os.path.splitext(source)[1])
@@ -593,15 +593,15 @@ stand_corpus = fetch(
 
 # What each test runs against: its arguments are the outputs of these nodes.
 TESTED = {
-    "aot": [aot, aot_command, wazero, wasm2o, busybox, aot_selftest],
+    "aot": [aot, aot_command, wazero, vm, busybox, aot_selftest],
     "busybox_abi": [busybox],
-    "busybox": [wasm2o, busybox_o, busybox],
-    "clang": [wasm2o, clang_o, clang, libc, libc_headers, libcxx],
-    "cxx": [wasm2o, cxx_check_o],
-    "doom": [wasm2o, doom_o, doom_wad],
-    "libc": [wasm2o, libc_check_o],
-    "python": [wasm2o, python_o, python, python_tarball, busybox_o, busybox],
-    "wasm2o": [wasm2o, aot_native, aot, aot_command, aot_command_aot, aot_relinked, wazero, busybox],
+    "busybox": [vm, busybox_o, busybox],
+    "clang": [vm, clang_o, clang, libc, libc_headers, libcxx],
+    "cxx": [vm, cxx_check_o],
+    "doom": [vm, doom_o, doom_wad],
+    "libc": [vm, libc_check_o],
+    "python": [vm, python_o, python, python_tarball, busybox_o, busybox],
+    "vm": [vm, aot_native, aot, aot_command, aot_command_aot, aot_relinked, wazero, busybox],
 }
 tests = []
 
@@ -623,6 +623,6 @@ for test in build.glob("$(S)/tst/test_*.py"):
         color="green",
     ))
 
-group("install", libcxx, libc_headers, clang, clang_o, busybox, busybox_abi, busybox_o, doom, doom_o, python, python_o, wasm2o, aot_native, aot, aot_aot, wazero)
-group("test", *tests, wasm2o_go_test, wasm2o_spec_test)
-group("stand", wasm2o, aot_native, aot, aot_aot, busybox, stand_corpus, *decode_stand, python, python_o, stand_python_native)
+group("install", libcxx, libc_headers, clang, clang_o, busybox, busybox_abi, busybox_o, doom, doom_o, python, python_o, vm, aot_native, aot, aot_aot, wazero)
+group("test", *tests, vm_go_test, vm_spec_test)
+group("stand", vm, aot_native, aot, aot_aot, busybox, stand_corpus, *decode_stand, python, python_o, stand_python_native)

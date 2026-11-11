@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Build lib/str: pg83/str's string and memory functions in the convention of
-the code wasm2o compiles, the object wasm2o's loader links.
+the code vm compiles, the object vm's loader links.
 
     make.py <str-tarball> <libstr.o>
 

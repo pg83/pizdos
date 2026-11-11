@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""clang of this system under `wasm2o run`: LLVM's multicall program, as
+"""clang of this system under `vm run`: LLVM's multicall program, as
 /bin/llvm with clang, clang++ and wasm-ld naming it, in a root with lib/c's
 and lib/cxx's headers and libraries, compiles and links a C and a C++
 program, its driver running cc1 and the linker as processes of their own;
-wasm2o compiles what they link and the kernel runs it.
+vm compiles what they link and the kernel runs it.
 
-    test_clang.py <wasm2o> <llvm.o> <llvm.wasm> <resource.tar> <libc.a> <libc-include.tar> <libc++.a> <cxx-include.tar>
+    test_clang.py <vm> <llvm.o> <llvm.wasm> <resource.tar> <libc.a> <libc-include.tar> <libc++.a> <cxx-include.tar>
 """
 import shutil
 import subprocess
@@ -61,8 +61,8 @@ LINK = ["-nostdlib", "-Wl,--stack-first", "-Wl,-z,stack-size=1049600", "-Wl,--ma
         "-Wl,--export=__heap_base", "-Wl,--export=__stack_pointer", "-Wl,--gc-sections"]
 
 
-def run(wasm2o, root, name, program, *args):
-    r = subprocess.run([wasm2o, "run", "--root", str(root), "-a", name, str(program), "--", *args], capture_output=True,
+def run(vm, root, name, program, *args):
+    r = subprocess.run([vm, "run", "--root", str(root), "-a", name, str(program), "--", *args], capture_output=True,
                        text=True, env={"PATH": "/bin"}, timeout=600)
 
     if r.returncode != 0:
@@ -73,7 +73,7 @@ def run(wasm2o, root, name, program, *args):
 
 
 def main():
-    wasm2o, llvm, _, resource, libc, libc_include, libcxx, cxx_include = sys.argv[1:9]
+    vm, llvm, _, resource, libc, libc_include, libcxx, cxx_include = sys.argv[1:9]
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -96,24 +96,24 @@ def main():
         (root / "src/hello.c").write_text(C)
         (root / "src/hello.cpp").write_text(CXX)
         clang = root / "bin" / "llvm"
-        version = run(wasm2o, root, "clang", clang, "--version").splitlines()[0]
+        version = run(vm, root, "clang", clang, "--version").splitlines()[0]
 
         if not version.startswith("clang version 23."):
             print(f"FAIL clang --version: {version}")
             sys.exit(1)
 
-        run(wasm2o, root, "clang", clang, *wasm.CFLAGS, "-isystem", "/usr/include", "-O2", "/src/hello.c",
+        run(vm, root, "clang", clang, *wasm.CFLAGS, "-isystem", "/usr/include", "-O2", "/src/hello.c",
             "-o", "/tmp/hello.wasm", *LINK, "/usr/lib/libc.a")
-        run(wasm2o, root, "clang++", clang, *wasm.CFLAGS, "-nostdinc++", "-fno-exceptions", "-std=c++23",
+        run(vm, root, "clang++", clang, *wasm.CFLAGS, "-nostdinc++", "-fno-exceptions", "-std=c++23",
             "-isystem", "/usr/include/c++/v1", "-isystem", "/usr/include", "-O2", "/src/hello.cpp",
             "-o", "/tmp/hello-cxx.wasm", *LINK, "/usr/lib/libc++.a", "/usr/lib/libc.a")
         results = []
 
         for name, want in (("hello", "hello: 1 3 5 7 9 3.143 15\n"), ("hello-cxx", "apple 4 3\n")):
             program = root / "bin" / name
-            subprocess.run([wasm2o, "-o", str(program), str(root / "tmp" / f"{name}.wasm")], check=True)
+            subprocess.run([vm, "-o", str(program), str(root / "tmp" / f"{name}.wasm")], check=True)
             program.chmod(0o755)
-            got = run(wasm2o, root, name, program)
+            got = run(vm, root, name, program)
 
             if got != want:
                 print(f"FAIL {name}: got {got!r}, want {want!r}")

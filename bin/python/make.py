@@ -2,12 +2,12 @@
 """Build CPython for pizdos from a release tarball, our pyconfig.h and lib/c.
 
     make.py core <cc> <ar> <wasm-ld> <tarball> <pyconfig.h> <libc-include> <libc.a> <libpython.a> <freeze.wasm>
-    make.py python <cc> <wasm-ld> <wasm2o> <tarball> <pyconfig.h> <libc-include> <libc.a> <libpython.a> <freeze.wasm> <python.wasm> <python314.zip>
+    make.py python <cc> <wasm-ld> <vm> <tarball> <pyconfig.h> <libc-include> <libc.a> <libpython.a> <freeze.wasm> <python.wasm> <python314.zip>
 
 core compiles the interpreter and its built-in modules into libpython.a,
 the objects the tarball's Makefile.pre.in names and the modules below, and
 links Programs/_freeze_module against it. python compiles that freezer
-with wasm2o and runs it in the kernel to freeze the modules the Makefile
+with vm and runs it in the kernel to freeze the modules the Makefile
 freezes, links python.wasm with them, and stores the standard library,
 without its tests, in a zip with the build's sysconfig data. Threads are
 CPython's stubs, there is no dynamic loading, every module is built in and
@@ -349,7 +349,7 @@ def stdlib_zip(tree, pyconfig, output):
             z.writestr(info, files[name])
 
 
-def python(cc, ld, wasm2o, tarball, pyconfig, libc_include, libc, libpython, freeze, output, zipped):
+def python(cc, ld, vm, tarball, pyconfig, libc_include, libc, libpython, freeze, output, zipped):
     work = Path(os.environ.get("TMPDIR") or "/tmp") / "python"
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
@@ -358,7 +358,7 @@ def python(cc, ld, wasm2o, tarball, pyconfig, libc_include, libc, libpython, fre
     include.mkdir()
     shutil.copy(pyconfig, include / "pyconfig.h")
     freezer = work / "freeze.o"
-    subprocess.run([wasm2o, "-o", str(freezer), freeze], check=True)
+    subprocess.run([vm, "-o", str(freezer), freeze], check=True)
 
     # The headers go where frozen.c and getpath.c include them from: the
     # first as frozen_modules/, the second as Python/frozen_modules/.
@@ -368,7 +368,7 @@ def python(cc, ld, wasm2o, tarball, pyconfig, libc_include, libc, libpython, fre
     out.mkdir()
 
     for name, source, header in frozen_modules(tree):
-        subprocess.run([wasm2o, "run", "--root", str(tree), "-a", "_freeze_module", str(freezer),
+        subprocess.run([vm, "run", "--root", str(tree), "-a", "_freeze_module", str(freezer),
                         "--", name, "/" + source, "/frozen/" + header], check=True, env={"PATH": "/bin"})
         shutil.copy(out / header, frozen / header)
 

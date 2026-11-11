@@ -6,7 +6,7 @@ generators and exceptions.
     python3 -S pybench.py --list
 
 It runs benchmark NAME REPEAT times, prints the sha256 of its results, which
-native and wasm2o must agree on, and on standard error `time SECONDS` of the
+native and vm must agree on, and on standard error `time SECONDS` of the
 work alone. Floats see no libm but sqrt, so results are the same bits
 everywhere; PYTHONHASHSEED=0 fixes the order of sets.
 """

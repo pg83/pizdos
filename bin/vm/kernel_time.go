@@ -24,8 +24,8 @@ const (
 	timerAbstime        = 1
 )
 
-// hostClock is the host's clock of a guest's. The processes of wasm2o have
-// no CPU clocks of their own: both CPU clocks are wasm2o's.
+// hostClock is the host's clock of a guest's. The processes of vm have
+// no CPU clocks of their own: both CPU clocks are vm's.
 func hostClock(clock uint32) (uintptr, bool) {
 	switch {
 	case clock == clockThreadCputime:
@@ -77,7 +77,7 @@ func (p *Process) putTimeval(at uint32, d time.Duration) {
 }
 
 // The interval timers of setitimer: each sends its signal when its value
-// passes, then every interval. All of them count real time, wasm2o having
+// passes, then every interval. All of them count real time, vm having
 // no CPU clocks of the processes. They live through exec; a child has none.
 const (
 	itimerReal = 0

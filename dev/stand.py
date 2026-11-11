@@ -16,7 +16,7 @@ the same standard library zip; their digests of the results must be equal.
 The suite counts as one workload in the geometric mean, by its own.
 
 The original positional form is accepted for compiler workloads alone:
-    stand.py [--runs N] <aot-native> <wasm2o> <input.wasm>...
+    stand.py [--runs N] <aot-native> <vm> <input.wasm>...
 """
 import argparse
 import hashlib
@@ -57,14 +57,14 @@ def compile_run(command, wasm, out, streams=False):
     return wall, after.ru_utime - before.ru_utime + after.ru_stime - before.ru_stime
 
 
-def compile_work(native, wasm2o, inputs, runs, work):
+def compile_work(native, vm, inputs, runs, work):
     rows = []
 
     for wasm in inputs:
         expected = work / "want.o"
         compile_run([str(native)], wasm, expected, streams=True)
         want = expected.read_bytes()
-        commands = {"A": ([str(native)], True), "C": ([str(wasm2o)], False)}
+        commands = {"A": ([str(native)], True), "C": ([str(vm)], False)}
         samples = {name: [] for name in commands}
 
         for run in range(runs):
@@ -132,7 +132,7 @@ def shape(kind, row):
     return row.rsplit(" ", 1)[0]
 
 
-def decode_work(build, wasm2o, kinds, runs, minimum, work, objects=None):
+def decode_work(build, vm, kinds, runs, minimum, work, objects=None):
     root = unpack_corpus(build / "stand/decode-corpus-1.tgz", work)
     rows = []
 
@@ -141,7 +141,7 @@ def decode_work(build, wasm2o, kinds, runs, minimum, work, objects=None):
         obj = objects / f"{kind}.o" if objects else folder / "module.o"
         files = sorted(p for p in (root.rglob("*") if kind == "magic" else (root / kind).iterdir())
                        if p.is_file() and p.name not in ("MANIFEST", "SHA256SUMS"))
-        commands = {"A": [str(folder / "native")], "C": [str(wasm2o), "stand"]}
+        commands = {"A": [str(folder / "native")], "C": [str(vm), "stand"]}
         # The AOT command has its object after KIND, unlike the native driver.
         native_time, want = decode_run(commands["A"], 1, kind, files)
         repeat = 1
@@ -172,7 +172,7 @@ def decode_work(build, wasm2o, kinds, runs, minimum, work, objects=None):
         mismatches = [f"{c} != {a}" for c, a in zip(outputs["C"], want) if shape(kind, c) != shape(kind, a)]
 
         if mismatches:
-            raise SystemExit(f"{kind}: wasm2o does different work than native:\n" + "\n".join(mismatches[:8]))
+            raise SystemExit(f"{kind}: vm does different work than native:\n" + "\n".join(mismatches[:8]))
 
         exact = sum(c == a for c, a in zip(outputs["C"], want))
         medians = {name: statistics.median(values) for name, values in samples.items()}
@@ -214,7 +214,7 @@ def python_run(command, repeat):
     return float(times[0]), r.stdout.strip()
 
 
-def python_work(build, wasm2o, runs, minimum, work, only=None):
+def python_work(build, vm, runs, minimum, work, only=None):
     """Every benchmark of the suite: its repeat calibrated on native to the
     minimum time, A and C interleaved, their digests equal."""
     native = python_root(work / "python-A", build / "stand/python/native", build)
@@ -229,7 +229,7 @@ def python_work(build, wasm2o, runs, minimum, work, only=None):
 
         commands = {
             "A": [str(native / "usr/bin/python3"), "-S", str(native / "pybench.py"), bench],
-            "C": [str(wasm2o), "run", "--root", str(aot), "-a", "/usr/bin/python3", str(aot / "usr/bin/python3"), "--", "-S", "/pybench.py", bench],
+            "C": [str(vm), "run", "--root", str(aot), "-a", "/usr/bin/python3", str(aot / "usr/bin/python3"), "--", "-S", "/pybench.py", bench],
         }
         native_time, _ = python_run(commands["A"], 1)
         repeat = max(1, math.ceil(minimum / max(native_time, 0.000001)))
@@ -249,7 +249,7 @@ def python_work(build, wasm2o, runs, minimum, work, only=None):
                 samples[name].append(elapsed / repeat)
 
         if outputs["A"] != outputs["C"]:
-            raise SystemExit(f"py/{bench}: wasm2o computes {outputs['C']}, native {outputs['A']}")
+            raise SystemExit(f"py/{bench}: vm computes {outputs['C']}, native {outputs['A']}")
 
         medians = {name: statistics.median(values) for name, values in samples.items()}
         print(f"py/{bench:16s} A {medians['A']:7.4f}s  C {medians['C']:7.4f}s  C/A {medians['C'] / medians['A']:.3f}  x{repeat}, digest equal",
@@ -303,33 +303,33 @@ def main():
         parser.error("unknown workload in --only")
 
     build = args.build_dir.resolve()
-    wasm2o = build / "bin/vm/wasm2o"
+    vm = build / "bin/vm/vm"
     rows = []
-    print("A=native C=wasm2o; GOMAXPROCS=1, MAGICK/OMP threads=1; decode excludes startup, I/O and pixel hashing", flush=True)
+    print("A=native C=vm; GOMAXPROCS=1, MAGICK/OMP threads=1; decode excludes startup, I/O and pixel hashing", flush=True)
 
     with tempfile.TemporaryDirectory(prefix="stand-") as tmp:
         work = Path(tmp)
 
         if args.paths:
             if len(args.paths) < 3:
-                parser.error("positional form needs aot-native, wasm2o and input.wasm")
+                parser.error("positional form needs aot-native, vm and input.wasm")
 
             native, compiler, *inputs = (Path(p).absolute() for p in args.paths)
             rows.extend(compile_work(native, compiler, inputs, args.runs, work))
         else:
             if "aot" in selected:
-                rows.extend(compile_work(build / "bin/aot/aot", wasm2o,
+                rows.extend(compile_work(build / "bin/aot/aot", vm,
                                          [build / "bin/busybox/busybox.wasm", build / "bin/aot/aot.wasm"], args.runs, work))
 
             kinds = [kind for kind in KINDS if kind in selected]
 
             if kinds:
-                rows.extend(decode_work(build, wasm2o, kinds, args.runs, args.min_time, work, args.objects))
+                rows.extend(decode_work(build, vm, kinds, args.runs, args.min_time, work, args.objects))
 
             benches = {s[len("py/"):] for s in selected if s.startswith("py/")}
 
             if "py" in selected or benches:
-                rows.extend(python_work(build, wasm2o, args.runs, args.min_time, work, benches if "py" not in selected else None))
+                rows.extend(python_work(build, vm, args.runs, args.min_time, work, benches if "py" not in selected else None))
 
     if rows:
         print(f"geomean C/A {corpus_geomean(rows):.3f}", flush=True)

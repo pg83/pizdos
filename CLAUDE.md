@@ -10,13 +10,13 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
 - `./build` builds `libc.a`, `libc++.a`, `libstr.o`, `busybox.wasm`,
   `busybox.links`, `bin/busybox/abi.txt` (every kernel import busybox uses),
   `doom.wasm`, `doom.o` (doomgeneric with our terminal backend, `bin/doom`),
-  `llvm.wasm` and `llvm.o` (clang, `bin/clang`), `wasm2o`, native `aot`,
+  `llvm.wasm` and `llvm.o` (clang, `bin/clang`), `vm`, native `aot`,
   `aot.wasm`, `aot.aot` and the wazero runner.
 - `./build test` runs `tst/test_*.py`, each with the outputs of the nodes
   `TESTED` names for it in build.py.
 - `sh dev/stand/build.sh` supplies the pinned ix revision's libraries and
   tools and runs `./build stand`: decode's im, pdf, djvu, svg and magic
-  modules through wasm2o, and their wrappers against the native
+  modules through vm, and their wrappers against the native
   libraries; python.o and CPython built natively from the same tarball
   (`dev/stand/python.py`: no computed gotos, the same built-in modules).
   `dev/stand.py --runs 5 --json FILE` runs native (A) and our
@@ -88,7 +88,7 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
 
 - pg83/str's string and memory functions, fetched at the revision `STR`
   pins in build.py and compiled by str's own compiler (`dev/strcc.py`,
-  Python) with `--abi wasm2o` into `libstr.o`, the object wasm2o's loader
+  Python) with `--abi wasm2o` into `libstr.o`, the object vm's loader
   links (`lib/str/make.py`); str's check of that contract (`tst/wasm2o.py`)
   passes before the object is kept.
 - The convention is the one between the module's functions: arguments in
@@ -105,16 +105,18 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
 
 - The compiler is `bin/aot/aot.cpp`, one freestanding C++ translation unit.
   `build.py` builds native `aot` and `aot.wasm`, then native aot compiles the
-  reactor to `aot.aot`. `wasm2o` embeds that object through `go:embed`;
+  reactor to `aot.aot`. `vm` embeds that object through `go:embed`;
   `dev/go.py --embed` stages it for both native builds and Go tests. There is
-  no Go compiler implementation or wasm2o.wasm bootstrap.
+  no Go compiler implementation or vm.wasm bootstrap.
 - Compiler optimization aims to reduce compilation CPU while generated
   programs run no slower on the stand. ELF bytes may change between
   revisions; native and embedded forms of the same compiler still agree.
   Freeze the compiler's wasm input across revisions with
   `dev/aot_perf.py --compiler-input`, save objects with `--objects`, and
   run the saved and candidate objects through the same stand loader.
-- `bin/vm` is wasm2o, the Go loader, kernel and WASI host. `compile.go` links
+- `bin/vm` is vm, the Go loader, kernel and WASI host (the objects' note
+  `.note.wasm2o`, the `w2o.` symbols and the `W2O_`/`W2X_` variables keep
+  the name it had). `compile.go` links
   embedded code once and gives each invocation its own instance, memory and
   fd streams. `compile()` reads fd 0 and writes ELF to fd 1;
   `compileOptions(flags)` selects tail, range optimization and profiling
@@ -201,14 +203,14 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
   slack before it, as an access reaching past the end lands in the tail.
   The two sides of the ring are the one constant.
   `W2X_MEMORY_TAIL=plain` disables range versioning for comparisons;
-  `W2X_MEMORY_TAIL=strict` compiles with exact Wasm bounds. `wasm2o spec`
+  `W2X_MEMORY_TAIL=strict` compiles with exact Wasm bounds. `vm spec`
   and boundary-assertion unit tests select strict compilation explicitly.
   `W2X_TAIL_PROFILE=1` adds per-function counters to an optimized object;
   `W2O_TAIL_PROFILE=FILE` when running a stand or WASI command appends JSON
   records with executed guards, fallback entries, omitted checks and
   ordinary checks. Profiled objects are for counting, not timing.
 - Speed is measured against native code by the stand: the C++ compiler
-  compiling busybox.wasm and aot.wasm, natively and as aot.aot in wasm2o,
+  compiling busybox.wasm and aot.wasm, natively and as aot.aot in vm,
   the scalar modules of decode release 16 on their file corpora against
   the same wrappers compiled with the pinned ix libraries, and CPython's
   interpreter on the pure Python benchmarks of `dev/stand/pybench.py`
@@ -231,7 +233,7 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
   preview1. Code and its registration live as long as the process.
 - `lib/goruntime` is our fork of Go's runtime, an overlay of files and
   anchored edits (`edits.py`) that `dev/go.py --runtime` applies to the
-  native builds of wasm2o: `runtime.SetInterrupt` and `runtime.Interrupt`
+  native builds of vm: `runtime.SetInterrupt` and `runtime.Interrupt`
   make the next preemption signal that finds a goroutine in the module's
   functions inject a call of the loader's `w2o.interrupt_call` there, as Go
   injects asyncPreempt. The stub saves every register and flag and calls
@@ -239,14 +241,14 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
   interrupt word is set. The kernel delivers signals there, below the
   shadow stack's 128-byte red zone, and repeats Interrupt every
   millisecond until they are taken.
-- `wasm2o run` runs an object importing module `kernel` in the kernel of
+- `vm run` runs an object importing module `kernel` in the kernel of
   lib/c (`kernel*.go`). `libc.go` is its table: every function lib/c imports
   is a function `libcX(ctx, …)` there, a call of the Process method `libcX`
   that does the work, the process taken from ctx. A process is a goroutine with its own pid, group,
   descriptors (host descriptors the kernel owns), cwd, umask, limits and
   signals; paths resolve inside `--root` through openat2 `RESOLVE_IN_ROOT`,
   but for a few host devices (/dev/null and kin); exec runs only objects of
-  wasm2o and `#!` scripts; wasm2o exits with the first process, which
+  vm and `#!` scripts; vm exits with the first process, which
   adopts orphans. The heap's blocks, environ, DIRs and libc's static
   results live in the guest's memory, and the guest's memory holds data
   only: what the allocator knows of the heap is the kernel's, in Go
@@ -263,7 +265,7 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
   frames: the code that runs handlers holds no lock and defers nothing.
   `test_busybox` builds a root from busybox.links and runs applets and the
   shell in it: pipes, jobs, SIGINT, and Ctrl-Z, jobs and fg on a pty.
-- `test_wasm2o_go` runs `bin/vm/*_test.go`: modules built in the test
+- `test_vm_go` runs `bin/vm/*_test.go`: modules built in the test
   run through the loader while Go collects, copies stacks, parks, preempts a
   call-free loop on one processor and unwinds traps through native frames;
   wide signatures cross both boundaries on the stack; longjmp lands across a
@@ -274,14 +276,14 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
   `__kernel_<name>` imports compiled to lib/str's functions do what the
   kernel's functions did: results, traps and memory, up to and past the
   memory's end.
-- `test_wasm2o_spec` runs the spec testsuite (pinned in build.py) through
-  `wasm2o spec`, which loads every module in its own process; wast2json
-  comes from `ix run bld/wabt`. `KNOWN` in `tst/wasm2o_spec.py` lists the
+- `test_vm_spec` runs the spec testsuite (pinned in build.py) through
+  `vm spec`, which loads every module in its own process; wast2json
+  comes from `ix run bld/wabt`. `KNOWN` in `tst/vm_spec.py` lists the
   failures of what is not implemented (table.grow, more than one memory); a
   file failing more, or crashing, fails the test. Unsupported features are
   refused at decoding, never compiled approximately: memory64 and multiple
   memories are refused because the bounds checks assume one 32-bit memory.
-- `test_wasm2o` checks the fixed point against native C++: embedded AOT,
+- `test_vm` checks the fixed point against native C++: embedded AOT,
   self-compiled and ld.lld-relinked commands, and aot.wasm under wazero
   compile aot.wasm and busybox.wasm to identical bytes. `test_aot` also
   checks both WASI entry points, malformed modules and repeated reactor calls.
@@ -299,8 +301,8 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
 
 - `make.py core` compiles CPython 3.14 from its tarball into libpython.a,
   the Makefile's objects and the built-in modules (Setup.bootstrap's and
-  MODULES), and links the freezer: no wasm2o, so a compiler change rebuilds
-  none of it. `make.py python` compiles the freezer with wasm2o, runs it in
+  MODULES), and links the freezer: no vm, so a compiler change rebuilds
+  none of it. `make.py python` compiles the freezer with vm, runs it in
   the kernel on every module the Makefile freezes, links python.wasm and
   writes python314.zip: Lib without tests, stored, with
   `_sysconfigdata__pizdos_.py` made from pyconfig.h.
@@ -332,7 +334,7 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
   children, fork and exec of the object, which must be executable.
 - `test_clang` runs it in the kernel in a root with lib/c's and lib/cxx's
   headers and libraries: clang and clang++ compile and link a C and a C++
-  program, which wasm2o compiles and the kernel runs.
+  program, which vm compiles and the kernel runs.
 
 ## bin/busybox
 

@@ -17,7 +17,7 @@ import (
 )
 
 // specCommand runs one test of the WebAssembly spec testsuite as wast2json
-// writes it, `wasm2o spec test.json`: every binary module is compiled and
+// writes it, `vm spec test.json`: every binary module is compiled and
 // loaded in this process, linked with the spectest module and registered
 // modules. An instantiation or an assertion on an action is a check; what
 // cannot be compiled, linked or expressed is skipped, as are validation

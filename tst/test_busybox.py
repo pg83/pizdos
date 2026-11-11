@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""busybox under `wasm2o run`: the kernel of lib/c runs its applets inside a
+"""busybox under `vm run`: the kernel of lib/c runs its applets inside a
 root made like the system's, /bin/busybox the object and every path of
 busybox.links a symbolic link to it. The shell's errors, exit and SIGINT
 are longjmps, one of them out of a signal handler; its commands, pipes,
@@ -7,7 +7,7 @@ substitutions and jobs are forks, which a terminal stops and continues;
 xargs, find -exec and awk's pipes are vforks; a loop without system calls
 is interrupted for its signals.
 
-    test_busybox.py <wasm2o> <busybox.o> <busybox.wasm> <busybox.links>
+    test_busybox.py <vm> <busybox.o> <busybox.wasm> <busybox.links>
 """
 import gzip
 import hashlib
@@ -121,15 +121,15 @@ def make_root(root, obj, links):
     (tmp / "up").symlink_to("/")
 
 
-def run(wasm2o, root, argv, stdin, env=None):
-    command = [wasm2o, "run", "--root", str(root), "-a", argv[0], str(root / "bin" / "busybox"), "--", *argv[1:]]
+def run(vm, root, argv, stdin, env=None):
+    command = [vm, "run", "--root", str(root), "-a", argv[0], str(root / "bin" / "busybox"), "--", *argv[1:]]
     environment = {"PATH": "/bin:/usr/bin", "TZ": "UTC", **(env or {})}
 
     return subprocess.run(command, input=stdin.encode(), capture_output=True, cwd=root / "tmp", env=environment, timeout=60)
 
 
-def interrupt(wasm2o, root, first):
-    command = [wasm2o, "run", "--root", str(root), "-a", "sh", str(root / "bin" / "busybox"), "--", "-i"]
+def interrupt(vm, root, first):
+    command = [vm, "run", "--root", str(root), "-a", "sh", str(root / "bin" / "busybox"), "--", "-i"]
     p = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=root / "tmp",
                          env={"PATH": "/bin:/usr/bin", "PS1": "$ "})
 
@@ -152,14 +152,14 @@ def interrupt(wasm2o, root, first):
     return out.decode(errors="replace"), p.returncode
 
 
-def job_control(wasm2o, root):
+def job_control(vm, root):
     """Ctrl-Z stops a command on a terminal, jobs lists it, fg continues it
     and Ctrl-C ends it."""
     pid, fd = pty.fork()
 
     if pid == 0:
         os.chdir(root / "tmp")
-        os.execve(wasm2o, [wasm2o, "run", "--root", str(root), "-a", "sh", str(root / "bin" / "busybox"), "--", "-i"],
+        os.execve(vm, [vm, "run", "--root", str(root), "-a", "sh", str(root / "bin" / "busybox"), "--", "-i"],
                   {"PATH": "/bin:/usr/bin", "PS1": "$ ", "TERM": "dumb"})
 
     out = b""
@@ -188,7 +188,7 @@ def job_control(wasm2o, root):
 
 
 def main():
-    wasm2o, obj, _, links = sys.argv[1:5]
+    vm, obj, _, links = sys.argv[1:5]
     failed = []
 
     with tempfile.TemporaryDirectory(prefix="busybox-") as work:
@@ -198,7 +198,7 @@ def main():
         for case in CASES:
             argv, stdin, want, code = case[:4]
             env = case[4] if len(case) > 4 else None
-            r = run(wasm2o, root, argv, stdin, env)
+            r = run(vm, root, argv, stdin, env)
             got = r.stdout.decode(errors="replace")
 
             if got != want or r.returncode != code:
@@ -216,7 +216,7 @@ def main():
         ]
 
         for argv in steps:
-            r = run(wasm2o, root, argv, "")
+            r = run(vm, root, argv, "")
 
             if r.returncode != 0:
                 failed.append(f"{argv}: exit {r.returncode}, stderr {r.stderr.decode(errors='replace')!r}")
@@ -229,23 +229,23 @@ def main():
         if os.readlink(tmp / "d" / "link") != "e/copy" or (tmp / "d" / "e" / "copy").read_text() != "#!/bin/echo from\n":
             failed.append("tar xf: the tree differs")
 
-        r = run(wasm2o, root, ["find", "/tmp/d", "-type", "f"], "")
+        r = run(vm, root, ["find", "/tmp/d", "-type", "f"], "")
 
         if r.stdout.decode() != "/tmp/d/e/copy\n":
             failed.append(f"find: {r.stdout!r}")
 
-        r = run(wasm2o, root, ["cat", "/tmp/missing"], "")
+        r = run(vm, root, ["cat", "/tmp/missing"], "")
 
         if r.returncode != 1 or b"No such file or directory" not in r.stderr:
             failed.append(f"cat of a missing file: exit {r.returncode}, stderr {r.stderr!r}")
 
         for first, tail in INTERRUPTS:
-            out, code = interrupt(wasm2o, root, first)
+            out, code = interrupt(vm, root, first)
 
             if not out.endswith(tail) or code != 5:
                 failed.append(f"SIGINT to sh -i after {first!r}: exit {code}, stdout ends {out[-60:]!r}; want exit 5, {tail!r}")
 
-        out, code = job_control(wasm2o, root)
+        out, code = job_control(vm, root)
 
         if out.count("Stopped") != 2 or "after 130" not in out or code != 6:
             failed.append(f"job control: exit {code}, terminal {out!r}")

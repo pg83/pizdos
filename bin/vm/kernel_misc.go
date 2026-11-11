@@ -159,7 +159,7 @@ func (p *Process) getsubopt(opt, keys, val uint32) uint32 {
 // daemon detaches the process as fork, setsid and the parent's exit would:
 // it goes on with a new pid in a session of its own, its children and its
 // old pid, which ends with status 0, its parent's. The first process ends
-// wasm2o when it ends, so it stays as it is.
+// vm when it ends, so it stays as it is.
 func (p *Process) daemon(nochdir, noclose uint32) uint32 {
 	if nochdir == 0 {
 		p.cwd = "/"

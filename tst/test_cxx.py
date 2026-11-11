@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""lib/cxx's C++ library under `wasm2o run`: tst/cxx/check.cpp prints one line
+"""lib/cxx's C++ library under `vm run`: tst/cxx/check.cpp prints one line
 of results per area, between its static and thread_local objects' lines,
 which must be these. Its root has a /tmp for the files.
 
-    test_cxx.py <wasm2o> <check.o>
+    test_cxx.py <vm> <check.o>
 """
 import os
 import subprocess
@@ -35,11 +35,11 @@ destroy first
 
 
 def main():
-    wasm2o, check = sys.argv[1:3]
+    vm, check = sys.argv[1:3]
 
     with tempfile.TemporaryDirectory() as root:
         os.mkdir(os.path.join(root, "tmp"))
-        r = subprocess.run([wasm2o, "run", "--root", root, "-a", "check", check], capture_output=True, text=True,
+        r = subprocess.run([vm, "run", "--root", root, "-a", "check", check], capture_output=True, text=True,
                            env={"PATH": "/bin"}, timeout=120)
 
     if r.returncode != 0 or r.stdout != EXPECTED:

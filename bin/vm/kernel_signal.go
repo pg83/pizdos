@@ -116,7 +116,7 @@ func (a sigAction) ignored(sig int) bool {
 }
 
 // send makes a signal pending for the process and wakes it. A fatal signal
-// for the first process ends wasm2o at once: the process may be running
+// for the first process ends vm at once: the process may be running
 // code that takes no signals. SIGCONT continues a stopped process even
 // when it ignores it.
 func (p *Process) send(sig int) {
@@ -341,7 +341,7 @@ func (p *Process) handleSignals() bool {
 }
 
 // stop stops the process until SIGCONT or SIGKILL (kernel_fork.go). The
-// first process stops wasm2o, so the host's shell gets the terminal back.
+// first process stops vm, so the host's shell gets the terminal back.
 func (p *Process) stop(sig int) {
 	if p == p.k.first {
 		syscall.Kill(os.Getpid(), syscall.SIGSTOP)

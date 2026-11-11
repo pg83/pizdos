@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""doom under `wasm2o run`: doomgeneric's frame is ANSI half blocks on a
+"""doom under `vm run`: doomgeneric's frame is ANSI half blocks on a
 terminal the kernel owns, its keys the terminal's in raw mode, its clock
 the kernel's monotonic time. Headless it plays the shareware demo from the
 wad and hashes each second of frames; on a pty it draws truecolor cells,
 and Ctrl-C, which the raw terminal no longer turns into a signal, still
 ends it with the terminal restored.
 
-    test_doom.py <wasm2o> <doom.o> <doom1.wad>
+    test_doom.py <vm> <doom.o> <doom1.wad>
 """
 import os
 import pty
@@ -30,13 +30,13 @@ def make_root(root, obj, wad):
     (root / "tmp").mkdir()
 
 
-def timedemo(wasm2o, root, work):
+def timedemo(vm, root, work):
     """The shareware demo plays twice, headless: the frames hash the same."""
     hashes = []
 
     for _ in range(2):
         r = subprocess.run(
-            [wasm2o, "run", "--root", str(root), "-a", "doom", str(root / "bin" / "doom"),
+            [vm, "run", "--root", str(root), "-a", "doom", str(root / "bin" / "doom"),
              "--", "-iwad", IWAD, "-nosound", "-timedemo", "demo1"],
             capture_output=True, cwd=work, timeout=300,
             env={"PATH": "/bin:/usr/bin", "DG_HEADLESS": "1", "HOME": "/tmp"},
@@ -55,14 +55,14 @@ def timedemo(wasm2o, root, work):
     return hashes[0], None
 
 
-def terminal(wasm2o, root):
+def terminal(vm, root):
     """On a pty doom takes the alternate screen, draws truecolor cells and
     leaves the terminal as it found it."""
     pid, fd = pty.fork()
 
     if pid == 0:
         os.chdir(root / "tmp")
-        os.execve(wasm2o, [wasm2o, "run", "--root", str(root), "-a", "doom", str(root / "bin" / "doom"),
+        os.execve(vm, [vm, "run", "--root", str(root), "-a", "doom", str(root / "bin" / "doom"),
                            "--", "-iwad", IWAD, "-nosound"],
                   {"PATH": "/bin:/usr/bin", "TERM": "xterm-256color", "HOME": "/tmp",
                    "DG_COLS": "80", "DG_ROWS": "50"})
@@ -93,21 +93,21 @@ def terminal(wasm2o, root):
 
 
 def main():
-    wasm2o, obj, wad = sys.argv[1:4]
+    vm, obj, wad = sys.argv[1:4]
     failed = []
 
     with tempfile.TemporaryDirectory(prefix="doom-") as work:
         root = Path(work) / "root"
         make_root(root, obj, Path(wad))
 
-        frames, error = timedemo(wasm2o, root, work)
+        frames, error = timedemo(vm, root, work)
 
         if error:
             failed.append(error)
         elif len(frames) < 10:
             failed.append(f"timedemo hashed only {len(frames)} seconds of frames")
 
-        out, code = terminal(wasm2o, root)
+        out, code = terminal(vm, root)
         colors = out.count(b"\x1b[38;2;")
 
         if b"\x1b[?1049h" not in out:
