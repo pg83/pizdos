@@ -36,6 +36,18 @@ def custom(name, data):
 
 STRINGS = b"/sources\0unused.c\0fixture.c\0"
 
+# A fixed McIlroy adversarial ordering of disjoint line sequences.
+ROW_ORDER = (
+    5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+    21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 0,
+    3, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
+    51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 1,
+    4, 112, 86, 67, 92, 120, 99, 124, 100, 74, 89, 118, 78, 113, 111, 96,
+    95, 125, 114, 70, 116, 102, 73, 68, 77, 81, 119, 127, 82, 85, 123, 2,
+    66, 71, 91, 122, 94, 103, 83, 115, 88, 126, 87, 69, 97, 117, 110, 93,
+    72, 76, 80, 84, 90, 75, 98, 101, 105, 121, 79, 104, 109, 108, 107, 106,
+)
+
 
 def table(version, wide=False, path_form=8, index_form=15, define=False, absolute=False):
     # DWARF 4/5, sections 6.2 and 7.22: a row at code offset 67 names line 43.
@@ -73,6 +85,22 @@ def table(version, wide=False, path_form=8, index_form=15, define=False, absolut
     return (b"\xff" * 4 + struct.pack("<Q", len(body)) if wide else struct.pack("<I", len(body))) + body
 
 
+def reordered_table(order):
+    original = table(4)
+    start = 10 + struct.unpack_from("<I", original, 6)[0]
+    program = bytearray()
+    last = max(index for index, rank in enumerate(order) if rank == 8)
+    for index, rank in enumerate(order):
+        # The sequence at 64 covers the trap's PC 67. Repeated rows must
+        # keep the last source location written for that address.
+        line = (43 if index == last else 17) if rank == 8 else rank + 100
+        program += b"\0\5\2" + struct.pack("<I", rank * 8) + b"\4\2\3" + leb(line - 1, True)
+        program += b"\1\2\4\0\1\1"
+    result = bytearray(original[:start] + program)
+    struct.pack_into("<I", result, 0, len(result) - 4)
+    return result
+
+
 def module(lines):
     body = b"\0" + b"\1" * 64 + b"\0\x0b"
     wasm = b"\0asm\1\0\0\0" + section(1, b"\1\x60\0\0") + section(3, b"\1\0")
@@ -87,6 +115,9 @@ def main():
     valid += [(f"v5-{wide}-{path}-{index}", table(5, wide, path, index))
               for wide in (False, True) for path in (8, 31, 14) for index in (11, 5, 6, 7, 15)]
     valid += [("define-file", table(4, define=True)), ("absolute-file", table(4, absolute=True))]
+    valid += [("adversarial-rows", reordered_table(ROW_ORDER)),
+              ("reversed-rows", reordered_table(tuple(reversed(ROW_ORDER)))),
+              ("duplicate-rows", reordered_table(ROW_ORDER + ROW_ORDER[64:96] + (8,)))]
     malformed = [("truncated-" + str(n), table(4)[:n]) for n in range(len(table(4)))]
     for length in (0x80000000, 0xffffffff):
         data = bytearray(table(4))
