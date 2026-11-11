@@ -38,12 +38,12 @@ def check(actual, expected):
     return actual + constant(expected) + b"\x47\x04\x40\0\x0b"
 
 
-def program(count, pointer, dest, do_while=False):
+def program(count, pointer, dest, do_while=False, subtract=True):
     source = 8192
     code = get(2) + constant(1) + b"\x72\x21\2" if do_while else get(2) + b"\x45\x04\x40" + constant(0) + b"\x0f\x0b"
     code += b"\x03\x40"
     code += get(3) + b"\x2d\0\0\x21\6"
-    code += get(0) + get(4) + b"\x6a" + get(1) + get(5) + b"\x6a" + get(6) + b"\x6b\x2d\0\0\x3a\0\0"
+    code += get(0) + get(4) + b"\x6a" + get(1) + get(5) + b"\x6a" + get(6) + bytes([0x6b if subtract else 0x6a]) + b"\x2d\0\0\x3a\0\0"
     for local in (4, 5):
         code += get(local) + constant(1) + b"\x6a\x21" + leb(local)
     code += get(2) + constant(1) + b"\x6b\x22\2\x0d\0\x0b" + get(6) + b"\x24\0" + get(6) + constant(1) + b"\x6a"
@@ -52,7 +52,7 @@ def program(count, pointer, dest, do_while=False):
     touched = {4095, 65535, dest - 1, dest + iterations, pointer}
     for index in range(iterations):
         offset = memory[pointer]
-        at, to = source + index - offset, dest + index
+        at, to = source + index + (-offset if subtract else offset), dest + index
         memory[to] = memory[at]
         result = offset + 1
         touched.update((at, to))
@@ -70,8 +70,10 @@ def program(count, pointer, dest, do_while=False):
 
 def main():
     vm, native, wazero = sys.argv[1:]
-    cases = [(count, pointer, dest, do_while) for count in (0, 1, 16, 17, 97)
+    cases = [(count, pointer, dest, do_while, True) for count in (0, 1, 16, 17, 97)
              for dest in (32768, 8191, 8193) for pointer in (4096, dest, dest + 1, dest + 65, 8192) for do_while in (False, True)]
+    cases += [(count, pointer, dest, False, False) for count in (0, 1, 17, 97)
+              for dest in (32768, 8191, 8193) for pointer in (4096, dest, dest + 1, dest + 65, 8192)]
     with tempfile.TemporaryDirectory(prefix="pizdos-invariant-results-") as directory:
         work = Path(directory)
         source, compiled, embedded = [work / name for name in ("input.wasm", "native.o", "embedded.o")]
