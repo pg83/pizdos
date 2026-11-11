@@ -32,6 +32,7 @@ CASES = {
     "shrink": (SEGV, [rf"asan: 1-byte store at {HEX}: past the end of the 4-byte block at {HEX}", r"shrink\+0x[0-9a-f]+ +check\.c:98"]),
     "mapped": (SEGV, [rf"asan: 1-byte store at {HEX}: in the freed 8192-byte block at {HEX}", r"mapped\+0x[0-9a-f]+ +check\.c:105"]),
     "run": (SEGV, [rf"asan: 1-byte store at {HEX}: past the end of the 100000-byte block at {HEX}", r"run\+0x[0-9a-f]+ +check\.c:111"]),
+    "run_shrink": (SEGV, [rf"asan: 1-byte store at {HEX}: in freed memory", r"run_shrink\+0x[0-9a-f]+ +check\.c:131"]),
     "wide": (SEGV, [rf"asan: 4-byte load at {HEX}, whose byte {HEX} is past the end of the 6-byte block at {HEX}", r"wide\+0x[0-9a-f]+ +check\.c:117"]),
 }
 

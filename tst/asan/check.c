@@ -118,6 +118,21 @@ static int wide(void) {
     return 1;
 }
 
+static int run_shrink(void) {
+    char* p = malloc(200000);
+    if (p == NULL) {
+        return 3;
+    }
+    p[0] = 7;
+    p = realloc(p, 20000);
+    if (p == NULL || p[0] != 7) {
+        return 4;
+    }
+    p[131072] = 1;
+    sink = p[0];
+    return 1;
+}
+
 int main(int argc, char** argv) {
     if (argc != 2) {
         return 2;
@@ -128,7 +143,7 @@ int main(int argc, char** argv) {
     } cases[] = {
         {"ok", ok}, {"overflow", overflow}, {"after_free", after_free}, {"syscall_read", syscall_read},
         {"string", string}, {"copy", copy}, {"null", null}, {"shrink", shrink}, {"mapped", mapped},
-        {"run", run}, {"wide", wide},
+        {"run", run}, {"wide", wide}, {"run_shrink", run_shrink},
     };
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
         if (strcmp(argv[1], cases[i].name) == 0) {
