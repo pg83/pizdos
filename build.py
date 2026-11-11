@@ -687,6 +687,15 @@ chaos_check = command(
     descr="CC", color="green",
 )
 
+terminal_check = command(
+    name="terminal_check",
+    inputs=[*LIBC_HEADERS, "$(S)/tst/terminal/check.c", "$(S)/tst/libc/make.py", "$(S)/dev/wasm.py"],
+    outputs=["$(B)/tst/terminal/check.wasm"],
+    deps=[libc],
+    cmd=["python3", "$(S)/tst/libc/make.py", CLANG, WASM_LD, "$(S)/tst/terminal/check.c", "$(S)/lib/c/include", libc.outputs[0], "$(B)/tst/terminal/check.wasm", "-g"],
+    descr="CC", color="green",
+)
+
 TESTED = {
     "aot": [aot, aot_command, wazero, vm, busybox],
     "asan": [vm, asan_check_o, libc_check_o],
@@ -701,6 +710,7 @@ TESTED = {
     "objects": [vm, aot_native],
     "python": [vm, python_o, python, python_tarball, busybox_o, busybox],
     "stand": [vm, aot_native, stand_fixture],
+    "terminal": [vm, aot_native, terminal_check],
     "vm": [vm, aot_native, aot, aot_command, aot_command_aot, aot_relinked, wazero, busybox],
 }
 tests = []
