@@ -19168,9 +19168,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         for (Int i = 0; i < length(params); ++i) {
             ValType t = params[i];
             GoLoc dst = g.params[i];
-            if (pregs[i] != noReg && dst.reg == noReg) {
-                asmStore(a, convert<u8>(goSize(t)), pregs[i], rspAt(dst.off));
-            } else if (pregs[i] == noReg && dst.reg == noReg) {
+            if (pregs[i] == noReg && dst.reg == noReg) {
                 asmLoad(a, 8, 8, false, R12, rspAt(incoming + convert<i32>(8 * pslots[i])));
                 asmStore(a, convert<u8>(goSize(t)), R12, rspAt(dst.off));
             } else if (pregs[i] != noReg) {
@@ -19205,13 +19203,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
         }
         asmMoveRegs(a, moves, R12);
-        for (Int i = 0; i < length(results); ++i) {
-            ValType t = results[i];
-            GoLoc src = g.results[i];
-            if (rregs[i] != noReg && src.reg == noReg) {
-                asmLoad(a, convert<u8>(goSize(t)), 8, false, rregs[i], rspAt(src.off));
-            }
-        }
         if (g.size > 0) {
             asmAluRI(a, aluAdd, 8, RSP, convert<i64>(g.size));
         }
