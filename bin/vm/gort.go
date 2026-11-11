@@ -4,7 +4,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"os"
@@ -148,25 +147,6 @@ func checkGo() {
 	if runtime.InstanceOffset() != gInstance {
 		throwFmt("g.instance is at %d, the code reads %d", runtime.InstanceOffset(), gInstance)
 	}
-}
-
-// goSymbol returns the address of a function of the program.
-func goSymbol(name string) uintptr {
-	checkGo()
-	m := hostModule
-
-	for _, f := range m.ftab[:len(m.ftab)-1] {
-		record := m.pcln[f.offset:]
-		n := m.names[binary.LittleEndian.Uint32(record[4:]):]
-
-		if string(n[:bytes.IndexByte(n, 0)]) == name {
-			return m.text + uintptr(f.entry)
-		}
-	}
-
-	throwFmt("no %s in the program", name)
-
-	return 0
 }
 
 // goFunctionRange returns the code of the function of the program that

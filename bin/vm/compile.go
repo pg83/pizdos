@@ -209,10 +209,6 @@ func compileStreams(input io.Reader, output io.Writer, options CompileOptions) {
 	}
 }
 
-func compileModule(data []byte) []byte {
-	return compileModuleWithOptions(data, compileOptions())
-}
-
 func compileModuleWithOptions(data []byte, options CompileOptions) []byte {
 	var out bytes.Buffer
 	compileStreams(bytes.NewReader(data), &out, options)

@@ -221,10 +221,6 @@ func (m *LinearMemory) grow(delta uint32) uint32 {
 	return uint32(old)
 }
 
-func (m *LinearMemory) bytes() []byte {
-	return m.data[:m.pages*pageSize]
-}
-
 func (i *Instance) memoryBytes() []byte {
 	return i.mem
 }
