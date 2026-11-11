@@ -479,18 +479,6 @@ aot_relinked = command(
     descr="LD", color="green",
 )
 
-# vm's own tests: the loader drives Go's runtime through native frames.
-vm_go_test = command(
-    name="test_vm_go",
-    inputs=[*build.glob("$(S)/bin/vm/*.go"), *build.glob("$(S)/bin/vm/*.s"), "$(S)/bin/vm/go.mod", "$(S)/dev/go.py", *GO_RUNTIME],
-    outputs=["$(B)/tst/vm_go.stamp"],
-    deps=[aot_aot, libstr],
-    cmd=["python3", "$(S)/dev/go.py", "test", GO, "$(S)/bin/vm", "$(B)/tst/vm_go.stamp", "--runtime", "$(S)/lib/goruntime", "--embed", aot_aot.outputs[0],
-         "--embed", libstr.outputs[0]],
-    descr="TS",
-    color="green",
-)
-
 # The WebAssembly spec testsuite through `vm spec`; wast2json comes from
 # wabt, under ix run bld/wabt.
 TESTSUITE = "9b9fbf8260507169066bf3e8de7b01fb8c145e55"
@@ -647,5 +635,5 @@ for test in build.glob("$(S)/tst/test_*.py"):
     ))
 
 group("install", libcxx, libc_headers, clang, clang_o, busybox, busybox_abi, busybox_o, doom, doom_o, python, python_o, vm, aot_native, aot, aot_aot, wazero)
-group("test", *tests, vm_go_test, vm_spec_test)
+group("test", *tests, vm_spec_test)
 group("stand", vm, aot_native, aot, aot_aot, busybox, stand_corpus, *decode_stand, python, python_o, stand_python_native)

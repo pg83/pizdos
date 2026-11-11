@@ -107,7 +107,7 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
 - The compiler is `bin/aot/aot.cpp`, one freestanding C++ translation unit.
   `build.py` builds native `aot` and `aot.wasm`, then native aot compiles the
   reactor to `aot.aot`. `vm` embeds that object through `go:embed`;
-  `dev/go.py --embed` stages it for both native builds and Go tests. There is
+  `dev/go.py --embed` stages it for native builds. There is
   no Go compiler implementation or vm.wasm bootstrap.
 - Compiler optimization aims to reduce compilation CPU while generated
   programs run no slower on the stand. ELF bytes may change between
@@ -205,7 +205,7 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
   The two sides of the ring are the one constant.
   `W2X_MEMORY_TAIL=plain` disables range versioning for comparisons;
   `W2X_MEMORY_TAIL=strict` compiles with exact Wasm bounds. `vm spec`
-  and boundary-assertion unit tests select strict compilation explicitly.
+  selects strict compilation explicitly.
   `W2X_TAIL_PROFILE=1` adds per-function counters to an optimized object;
   `W2O_TAIL_PROFILE=FILE` when running a stand or WASI command appends JSON
   records with executed guards, fallback entries, omitted checks and
@@ -304,17 +304,6 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
   touched. The compiler's output holds 512 MiB of code, which clang's
   multicall object exceeds under asan. `test_asan` runs tst/asan/check.c's
   memory errors and reads the reports and their lines.
-- `test_vm_go` runs `bin/vm/*_test.go`: modules built in the test
-  run through the loader while Go collects, copies stacks, parks, preempts a
-  call-free loop on one processor and unwinds traps through native frames;
-  wide signatures cross both boundaries on the stack; longjmp lands across a
-  copied stack, through Go frames and under collection, and refuses a frame
-  that returned; fork copies 10000 frames and memory, and the child's
-  longjmp to the parent's setjmp lands; a call-free loop interrupted
-  thousands of times under collection keeps its registers and flags; the
-  `__kernel_<name>` imports compiled to lib/str's functions do what the
-  kernel's functions did: results, traps and memory, up to and past the
-  memory's end.
 - `test_vm_spec` runs the spec testsuite (pinned in build.py) through
   `vm spec`, which loads every module in its own process; wast2json
   comes from `ix run bld/wabt`. `KNOWN` in `tst/vm_spec.py` lists the
