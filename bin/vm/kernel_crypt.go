@@ -121,6 +121,10 @@ func shacrypt(key, setting string, size int) (string, bool) {
 	}
 
 	salt = salt[:min(len(salt), 16)]
+	if strings.ContainsAny(salt, ":\n") {
+		return "", false
+	}
+
 	pw := []byte(key)
 	sum := func(parts ...[]byte) []byte {
 		h := newHash()
