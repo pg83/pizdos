@@ -87,6 +87,17 @@ int main(int argc, char** argv) {
         }
         next += strlen(next);
     }
+    if (strcmp(next, "pty-attributes") == 0) {
+        // Let the PTY master and slave open, then fail only TCSETS.
+        const struct Filter selected[] = {
+            {0x15, 0, 3, 16}, {0x20, 0, 0, 24}, {0x15, 0, 1, 0x5402},
+            {0x06, 0, 0, 0x00050000 | error},
+        };
+        for (unsigned i = 0; i < sizeof(selected) / sizeof(selected[0]); ++i) {
+            filters[count++] = selected[i];
+        }
+        next += strlen(next);
+    }
     while (*next) {
         char* end;
         long number = strtol(next, &end, 10);

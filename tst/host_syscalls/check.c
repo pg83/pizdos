@@ -9,11 +9,13 @@
 #include <stdio.h>
 #include <signal.h>
 #include <poll.h>
+#include <pty.h>
 #include <sched.h>
 #include <sys/select.h>
 #include <sys/times.h>
 #include <sys/wait.h>
 #include <time.h>
+#include <termios.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -154,6 +156,17 @@ int main(int argc, char** argv) {
             }
         } while (waited == 0);
         assert(waited == child && WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL);
+    } else if (strcmp(argv[1], "pty-attributes") == 0) {
+        struct termios attributes = {0};
+        attributes.c_cflag = CS8 | CREAD;
+        for (int attempt = 0; attempt != 40; ++attempt) {
+            int master = -1, slave = -1;
+            assert(openpty(&master, &slave, NULL, &attributes, NULL) == -1 && errno == EIO);
+            assert(master == -1 && slave == -1);
+        }
+        int master = -1, slave = -1;
+        assert(openpty(&master, &slave, NULL, NULL, NULL) == 0);
+        assert(close(master) == 0 && close(slave) == 0);
     } else if (strcmp(argv[1], "nonblocking-input") == 0) {
         assert(fcntl(0, F_GETFL) & O_NONBLOCK);
         char byte = 0;
