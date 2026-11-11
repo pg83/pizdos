@@ -1,4 +1,4 @@
-//@ compile-flags: -g
+//@ compile-flags: -g -D_GNU_SOURCE
 //@ stdout: "signal wait interrupt: ok\n"
 
 #include <assert.h>
@@ -6,6 +6,11 @@
 #include <signal.h>
 #include <stdio.h>
 #include <sys/time.h>
+#include <unistd.h>
+
+#ifndef __wasm__
+#include <sys/syscall.h>
+#endif
 
 static volatile sig_atomic_t caught;
 
@@ -25,7 +30,14 @@ int main() {
     assert(setitimer(ITIMER_REAL, &timer, nullptr) == 0);
     timespec limit{1, 0};
     siginfo_t info{};
-    assert(sigtimedwait(&waited, &info, &limit) == -1 && errno == EINTR);
+#ifdef __wasm__
+    int result = sigtimedwait(&waited, &info, &limit);
+#else
+    // musl retries EINTR in its wrapper; use Linux's signal-wait contract
+    // as the reference for the kernel ABI exposed by the guest C library.
+    long result = syscall(SYS_rt_sigtimedwait, &waited, &info, &limit, 8);
+#endif
+    assert(result == -1 && errno == EINTR);
     assert(caught == SIGALRM);
     timer = {};
     assert(setitimer(ITIMER_REAL, &timer, nullptr) == 0);
