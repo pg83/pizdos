@@ -90,8 +90,7 @@ func (k *Kernel) code(fd int, name string) (*Code, error) {
 
 		c = link(name, obj, k)
 	}); e != nil {
-		fmt.Fprintf(os.Stderr, "vm: %s: %s\n", name, e)
-		return nil, syscall.ENOEXEC
+		return nil, fmt.Errorf("%s: %s: %w", name, e, syscall.ENOEXEC)
 	}
 
 	k.mu.Lock()
@@ -646,6 +645,12 @@ func (p *Process) libc_Exit(code uint32) {
 // shifted as the shell's system reports it. The shell missing is
 // 127, the way a child that cannot run ends.
 func (p *Process) libcSystem(cmd uint32) uint32 {
+	if cmd == 0 {
+		_, err := p.loadProgram("/bin/sh", []string{"sh", "-c", "exit 0"})
+
+		return bit(err == nil)
+	}
+
 	argv := []string{"sh", "-c", string(p.cstr(cmd))}
 	img, err := p.loadProgram("/bin/sh", argv)
 
