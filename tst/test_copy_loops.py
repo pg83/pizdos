@@ -47,9 +47,12 @@ def check(actual, expected):
     return actual + constant(expected) + b"\x47\x04\x40\0\x0b"
 
 
-def program(width, step, count, dest, source, wrapped, signed, kernel=False):
+def program(width, step, count, dest, source, wrapped, signed, subtract=False, kernel=False):
     arguments = [(dest - STORE_OFFSET) // width, (source - LOAD_OFFSET) // width, count,
                  (dest - STORE_OFFSET) % width, (source - LOAD_OFFSET) % width]
+    bias_sign = -1 if subtract else 1
+    arguments[3] *= bias_sign
+    arguments[4] *= bias_sign
     if wrapped:
         arguments[0] += (1 << 32) // width
         arguments[1] += (1 << 32) // width
@@ -59,7 +62,7 @@ def program(width, step, count, dest, source, wrapped, signed, kernel=False):
     code += get(0) + set_local(p) + get(1) + set_local(q) + get(2) + set_local(remaining) + b"\x03\x40"
 
     def address(local, bias):
-        return get(local) + constant(width.bit_length() - 1) + b"\x74" + get(bias) + b"\x6a"
+        return get(local) + constant(width.bit_length() - 1) + b"\x74" + get(bias) + (b"\x6b" if subtract else b"\x6a")
 
     for byte in range(width):
         code += address(p, 3) + address(q, 4) + b"\x2d\0" + leb(LOAD_OFFSET + byte)
@@ -78,8 +81,8 @@ def program(width, step, count, dest, source, wrapped, signed, kernel=False):
     locations = {4095, 4096, 8191, 8192, 32767, 32768, 65535}
     for iteration in range(iterations):
         for byte in range(width):
-            to = ((arguments[0] + iteration) * width + arguments[3] + STORE_OFFSET + byte) & MASK
-            at = ((arguments[1] + iteration) * width + arguments[4] + LOAD_OFFSET + byte) & MASK
+            to = ((arguments[0] + iteration) * width + bias_sign * arguments[3] + STORE_OFFSET + byte) & MASK
+            at = ((arguments[1] + iteration) * width + bias_sign * arguments[4] + LOAD_OFFSET + byte) & MASK
             image[to] = image[at]
             locations.update(pos for start in (to, at) for pos in (start - 1, start, start + 1) if 0 <= pos < 65536)
     expected = (arguments[0] + arguments[1] + iterations * 2 + rest) & MASK
@@ -107,10 +110,12 @@ def program(width, step, count, dest, source, wrapped, signed, kernel=False):
 def main():
     vm, native = sys.argv[1:]
     cases = [(width, step, count, 32768, 8192, False, False)
-             for width in (1, 2, 4, 8) for step in (1, 3, 5) for count in (0, 1, 7, 16, 17, 33, 97)]
+             for width in (1, 2, 4, 8) for step in (1, 2, 3, 4, 5, 8) for count in (0, 1, 7, 16, 17, 33, 97)]
     cases += [(width, 1, 97, dest, 8192, False, False) for width in (1, 2, 4, 8) for dest in (8191, 8193)]
     cases += [(width, 1, 17, 32768, 8192, True, False) for width in (2, 4, 8)]
     cases += [(4, 1, count, 32768, 8192, False, True) for count in (0, 1, 17, 97, MASK)]
+    cases += [(width, step, count, 32768, 8192, False, False, True)
+              for width in (2, 4, 8) for step in (1, 2) for count in (17, 97)]
     checked = 0
     with tempfile.TemporaryDirectory(prefix="pizdos-copy-loops-") as directory:
         work = Path(directory)
