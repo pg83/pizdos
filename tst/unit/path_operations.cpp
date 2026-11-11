@@ -90,6 +90,11 @@ int main() {
     assert(mkstemp(absent) == -1 && errno == ENOENT);
     char absentDirectory[] = "absent/dir-XXXXXX";
     assert(mkdtemp(absentDirectory) == nullptr && errno == ENOENT);
+    char notDirectory[256];
+    assert(snprintf(notDirectory, sizeof(notDirectory), "%s/name-XXXXXX", file) > 0);
+    errno = 0;
+    assert(mktemp(notDirectory) == notDirectory && notDirectory[0] == 0);
+    assert(errno == ENOTDIR);
     char longName[4097];
     memset(longName, 'x', sizeof(longName) - 1);
     longName[sizeof(longName) - 1] = 0;
