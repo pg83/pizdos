@@ -71,8 +71,13 @@ def program():
                 add([bits, bits], 32, body, [(a, b) for a in values for b in values],
                     lambda a, b: int(bool(predicate(a, b)) ^ bool(inversions % 2)))
 
+            add([bits], 32, x + x + bytes([(0x51 if bits == 64 else 0x46) + relation]), samples,
+                lambda a: int(predicate(a, a)))
+            add([bits], 32, x + constant(0, bits) + bytes([(0x51 if bits == 64 else 0x46) + relation]), samples,
+                lambda a: int(predicate(a, 0)))
+        add([bits], 32, x + bytes([0x50 if bits == 64 else 0x45]) + b"\x45", samples, lambda a: int(a != 0))
         offset = 0x7c if bits == 64 else 0x6a
-        for opcode, kind, constants in ((0, "add", (0,)), (1, "sub", (0,)), (2, "mul", (0, 1, mask)),
+        for opcode, kind, constants in ((0, "add", (0,)), (1, "sub", (0,)), (2, "mul", (0, 1, 2, 4, 8, mask)),
                                         (7, "and", (0, mask)), (8, "or", (0, mask)), (9, "xor", (0, mask))):
             for value in constants:
                 for reverse in (False, True):
@@ -106,6 +111,15 @@ def program():
                 left, right = (signed(a, 32), signed(b, 32)) if extend == 0xac else (a, b)
                 return operation(left, right) & 0xffffffff
             add([32, 32], 32, body, [(a, b) for a in values for b in values], expected)
+
+    for extend in (0xac, 0xad):
+        samples = [(value,) for value in values]
+        add([32], 32, x + bytes([extend, 0xa7]), samples, lambda a: a)
+        add([32], 64, x + b"\xad" + constant(0xffffffff, 64) + b"\x83", samples, lambda a: a)
+        for amount in (1, 31, 32, 63):
+            body = x + bytes([extend]) + constant(amount, 64) + b"\x86\xa7"
+            add([32], 32, body, samples,
+                lambda a: ((signed(a, 32) if extend == 0xac else a) << amount) & 0xffffffff)
 
     functions.append((signature([], None), b"\0" + bytes(entry) + b"\x0b"))
     module = b"\0asm\1\0\0\0" + section(1, leb(len(types)) + b"".join(types))
