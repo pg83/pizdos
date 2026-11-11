@@ -925,6 +925,7 @@ func conversion(c byte, tm tmFields, pad byte, width int) string {
 // of s it took.
 func strptime(s []byte, format string, tm *tmFields) (int, bool) {
 	at := 0
+	century := -1
 	space := func() {
 		for at < len(s) && (s[at] == ' ' || s[at] >= '\t' && s[at] <= '\r') {
 			at++
@@ -1001,6 +1002,7 @@ func strptime(s []byte, format string, tm *tmFields) (int, bool) {
 		case 'Y':
 			v, ok = num(4, 0, 9999)
 			tm.year = v - 1900
+			century = -1
 		case 'y':
 			v, ok = num(2, 0, 99)
 			tm.year = v
@@ -1010,7 +1012,7 @@ func strptime(s []byte, format string, tm *tmFields) (int, bool) {
 			}
 		case 'C':
 			v, ok = num(2, 0, 99)
-			tm.year = v*100 - 1900 + tm.year%100
+			century = v
 		case 'm':
 			v, ok = num(2, 1, 12)
 			tm.mon = v - 1
@@ -1079,6 +1081,10 @@ func strptime(s []byte, format string, tm *tmFields) (int, bool) {
 		if !ok {
 			return 0, false
 		}
+	}
+
+	if century >= 0 {
+		tm.year = century*100 - 1900 + (tm.year%100+100)%100
 	}
 
 	return at, true
