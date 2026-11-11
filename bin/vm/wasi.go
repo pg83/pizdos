@@ -1030,9 +1030,7 @@ func wasiRandomGet(ctx uintptr, buf, n uint32) uint32 {
 		return wasiEfault
 	}
 
-	if _, err := rand.Read(b); err != nil {
-		return wasiEio
-	}
+	rand.Read(b)
 
 	return wasiOK
 }
