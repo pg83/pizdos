@@ -67,6 +67,8 @@ def main():
              ("bad-data-mode", program(b"", data=b"\1\3"), "malformed data segment kind"),
              ("bad-simd-constant", program(b"", globals=b"\1\x7b\0\xfd\x0d" + b"\0" * 16 + b"\x0b"), "constant expression required at offset"),
              ("computed-element-offset", program(b"", global_import=True, elements=b"\1\0\x23\0\x0b\1\0"), "unsupported: element segment"),
+             ("low-data", program(b"", data=b"\1\0\x41\0\x0b\1x"), "unsupported: data or the stack in the first KiB"),
+             ("low-stack", program(b"", globals=b"\1\x7f\1\x41\x10\x0b"), "unsupported: data or the stack in the first KiB"),
              ("bad-export-kind", program(b"", exports=text("_start") + b"\4\0"), "malformed export kind"),
              ("undeclared-import-reference", program(b"\x41\0\xd2\0\x26\0", import_name="getpid"), "ref.func of a function no element, export or global names"),
              ("undeclared-intrinsic-reference", program(b"\x41\0\xd2\0\x26\0", import_name="__kernel_strlen"), "unsupported: the address of an import compiled at its calls"),
@@ -76,18 +78,32 @@ def main():
         work = Path(directory)
         source, output = work / "input.wasm", work / "output.o"
         for label, data, diagnostic in cases:
+            low_memory = label in ("low-data", "low-stack")
+            env = dict(env, W2X_MEMORY_TAIL="optimized" if low_memory else "strict")
             source.write_bytes(data)
             reference = subprocess.run([wazero, "-compile", str(source)], capture_output=True, timeout=30)
-            if label not in ("intrinsic-import-address", "computed-element-offset"):
+            if label not in ("intrinsic-import-address", "computed-element-offset", "low-data", "low-stack"):
                 assert reference.returncode != 0, (label, reference)
             else:
                 assert reference.returncode == 0, (label, reference)
-            result = subprocess.run([native, "--strict"], input=data, capture_output=True, env=env, timeout=30)
+            result = subprocess.run([native, *([] if low_memory else ["--strict"])], input=data, capture_output=True, env=env, timeout=30)
             assert result.returncode != 0 and diagnostic.encode() in result.stderr, (label, result.returncode, result.stderr)
             output.write_bytes(b"previous object")
             result = subprocess.run([vm, "-o", str(output), str(source)], capture_output=True, env=env, timeout=30)
             assert result.returncode == 1 and diagnostic.encode() in result.stderr and b"panic:" not in result.stderr, (label, result)
             assert output.read_bytes() == b"previous object" and not list(work.glob(".vm-*")), label
+            if low_memory:
+                strict_env = dict(env, W2X_MEMORY_TAIL="strict")
+                result = subprocess.run([native, "--strict"], input=data, capture_output=True, env=strict_env, timeout=30)
+                assert result.returncode == 0, (label, result)
+                reference = result.stdout
+                compiled = work / "native.o"
+                compiled.write_bytes(reference)
+                result = subprocess.run([vm, "-o", str(output), str(source)], capture_output=True, env=strict_env, timeout=30)
+                assert result.returncode == 0 and output.read_bytes() == reference, (label, result)
+                for obj in (compiled, output):
+                    result = subprocess.run([vm, "run", "--", str(obj)], capture_output=True, env=strict_env, timeout=30)
+                    assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (label, result)
     print(f"compiler rejections: {len(cases)} control, segment, index and import-address errors preserve output with both AOTs")
 
 
