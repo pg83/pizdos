@@ -40,7 +40,10 @@ def program(count, bounded=False, constant_steps=False):
     # edge carries the next key to the same dispatch, with no shared latch.
     code = get(1) + b"\x45\x04\x40\x23\0\x0f\x0b"
     code += b"\x02\x40\x03\x40" + b"\x02\x40" * count
-    code += get(0) + (constant(count - 2) + b"\x71" if bounded else b"") + b"\x0e" + leb(count) + b"".join(leb(i) for i in range(count)) + leb(count - 1)
+    if count == 2:
+        code += get(0) + b"\x0d\1\x0c\0"
+    else:
+        code += get(0) + (constant(count - 2) + b"\x71" if bounded else b"") + b"\x0e" + leb(count) + b"".join(leb(i) for i in range(count)) + leb(count - 1)
     for index in range(count):
         depth = count - index - 1
         code += b"\x0b\x23\0" + constant(index + 1) + b"\x6a\x24\0"
@@ -74,8 +77,10 @@ def main():
     with tempfile.TemporaryDirectory(prefix="pizdos-dispatch-loops-") as directory:
         work = Path(directory)
         source, compiled, embedded = [work / name for name in ("input.wasm", "native.o", "embedded.o")]
-        for count, bounded, constant_steps in ((count, bounded, constant_steps) for count in (17, 33)
+        for count, bounded, constant_steps in ((count, bounded, constant_steps) for count in (2, 17, 33)
                                                for bounded in (False, True) for constant_steps in (False, True)):
+            if count == 2 and bounded:
+                continue
             data, checks = program(count, bounded, constant_steps)
             source.write_bytes(data)
             result = subprocess.run([wazero, "-interpreter", str(source)], capture_output=True, timeout=60)
