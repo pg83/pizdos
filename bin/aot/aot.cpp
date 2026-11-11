@@ -3431,6 +3431,7 @@ namespace {
         Slice<Edge> edges{};
         Slice<i32> values{};
         i64 aux{};
+        u32 pos{};
     };
 
     struct Lrange {
@@ -12132,7 +12133,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             switch (op) {
                 case 0: {
-                    fe->f->blocks[fe->cur].term = Term{TermTrap, {}, {}, {}, trapUnreachable};
+                    fe->f->blocks[fe->cur].term = Term{TermTrap, {}, {}, {}, trapUnreachable, fe->pos};
                     frontendMarkDead(fe);
                     break;
                 }
@@ -23875,7 +23876,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     lowererLowerValue(l, v);
                 }
             }
-            l->pos = 0;
+            l->pos = f->blocks[b].term.pos;
             lowererTerminator(l, b);
             visits.pushBack({b, true, undo});
             for (i32 child = children.first[usize(b)]; child >= 0; child = children.next[usize(child)]) {
