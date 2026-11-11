@@ -320,7 +320,8 @@ func goType(t ValType) reflect.Type {
 		return reflect.TypeFor[uintptr]()
 	}
 
-	throwFmt("unsupported value type %s", typeName(t))
+	// parseTypes admits these six types and v128 at function boundaries.
+	throwFmt("unsupported value type v128")
 
 	return nil
 }

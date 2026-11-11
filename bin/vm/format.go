@@ -1,7 +1,5 @@
 package main
 
-import "fmt"
-
 // Types and constants shared by the ELF metadata and the loader.
 
 type ValType uint8
@@ -62,14 +60,4 @@ type spEntry struct {
 
 func alignTo(x, n int32) int32 {
 	return (x + n - 1) &^ (n - 1)
-}
-
-func typeName(t ValType) string {
-	names := map[ValType]string{I32: "i32", I64: "i64", F32: "f32", F64: "f64", V128: "v128", FuncRef: "funcref", ExternRef: "externref"}
-
-	if name, ok := names[t]; ok {
-		return name
-	}
-
-	return fmt.Sprintf("t%d", t)
 }
