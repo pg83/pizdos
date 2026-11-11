@@ -22,6 +22,15 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
   configure the commands; `stdout:` and `stderr:` are JSON strings,
   `exit-code:` defaults to 0. `host: false` is for kernel-specific cases.
   Tests exercise program behaviour; tests of internal code are forbidden.
+- `./build coverage` reruns the end-to-end cases with separate instrumented
+  tools (`aot_coverage`, `vm_coverage`), including the Python and spec suites.
+  The host supplies GCC 12–15, its assembler, gcov and gcov-tool; select the
+  compiler with `COVERAGE_CXX` if g++ is not on PATH. `COVERAGE_TESTS` selects
+  case names by a regular expression for a focused measurement. Production
+  builds use clang and carry no profiling. Reports in `.build/coverage`
+  list AOT line/branch coverage, VM statement coverage, every case run and
+  uncovered locations. `coverage_check` enforces 99% AOT lines and VM
+  statements; an ordinary report remains available below that threshold.
 - `sh dev/stand/build.sh` supplies the pinned ix revision's libraries and
   tools and runs `./build stand`: decode's im, pdf, djvu, svg and magic
   modules through vm, and their wrappers against the native

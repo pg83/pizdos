@@ -958,6 +958,12 @@ namespace std {
         const T* first;
         usize count;
 
+        constexpr initializer_list()
+            : first(nullptr)
+            , count(0)
+        {
+        }
+
         const T* begin() const {
             return first;
         }
@@ -969,6 +975,13 @@ namespace std {
         usize size() const {
             return count;
         }
+
+    private:
+        constexpr initializer_list(const T* start, usize length)
+            : first(start)
+            , count(length)
+        {
+        }
     };
 }
 
@@ -977,6 +990,19 @@ namespace {
     // values and ELF sizes use their explicit i64/u64 types.
     using Int = i32;
     using Uint = u32;
+
+    // Named traits also work in the constraints of GCC's coverage build.
+    template <typename A, typename B>
+    static constexpr bool sameType = __is_same(A, B);
+
+    template <typename T>
+    static constexpr bool constType = false;
+
+    template <typename T>
+    static constexpr bool constType<const T> = true;
+
+    template <typename T>
+    static constexpr bool scalarType = __is_pointer(T) || __is_enum(T) || sameType<T, bool> || sameType<T, char> || sameType<T, signed char> || sameType<T, unsigned char> || sameType<T, short> || sameType<T, unsigned short> || sameType<T, int> || sameType<T, unsigned> || sameType<T, long> || sameType<T, unsigned long> || sameType<T, long long> || sameType<T, unsigned long long> || sameType<T, wchar_t> || sameType<T, char8_t> || sameType<T, char16_t> || sameType<T, char32_t> || sameType<T, float> || sameType<T, double> || sameType<T, long double>;
     template <typename T>
     using InitialValues = std::initializer_list<T>;
 
@@ -1131,7 +1157,7 @@ namespace {
             if (!count) {
                 return;
             }
-            if constexpr (__is_integral(T) || __is_pointer(T) || __is_floating_point(T) || __is_enum(T)) {
+            if constexpr (scalarType<T>) {
                 zeroBytes(values, count * sizeof(T));
             } else {
                 for (usize i = 0; i < count; ++i) {
@@ -1336,7 +1362,7 @@ namespace {
         {
         }
 
-        Span(InitialValues<Value> source) requires(__is_const(T))
+        Span(InitialValues<Value> source) requires(constType<T>)
             : contiguous(source.begin())
             , count(u32(source.size()))
         {
@@ -1362,7 +1388,7 @@ namespace {
         }
 
         template <typename U>
-        Span(Span<U> source) requires(__is_same(T, const U))
+        Span(Span<U> source) requires(sameType<T, const U>)
             : contiguous(source.contiguous)
             , pages(source.pages)
             , offset(source.offset)

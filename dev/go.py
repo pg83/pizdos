@@ -2,7 +2,7 @@
 """Fetch a Go program's modules, or build the program.
 
     go.py download <go> <source dir> <modules.tar>
-    go.py build <go> <source dir> <output> [--wasip1] [--modules <modules.tar>] [--runtime <dir>] [--embed <file>]
+    go.py build <go> <source dir> <output> [--wasip1] [--cover] [--tags <tags>] [--modules <modules.tar>] [--runtime <dir>] [--embed <file>]
     go.py test <go> <source dir> <stamp> [--runtime <dir>] [--embed <file>]
 
 download runs `go mod download` on the directory's go.mod and go.sum, which
@@ -135,6 +135,12 @@ def build(go, source, output, *flags, work):
     embed(flags, tree)
     env = environment(work)
     fork = take(flags, "--runtime")
+    tags = take(flags, "--tags")
+    options = ["-tags=" + tags] if tags else []
+
+    if "--cover" in flags:
+        flags.remove("--cover")
+        options.extend(["-cover", "-covermode=atomic"])
 
     modules = take(flags, "--modules")
 
@@ -156,7 +162,7 @@ def build(go, source, output, *flags, work):
     overlay = [runtime_overlay(go, fork, work, env)] if fork else []
     output = Path(output).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run([go, "build", "-trimpath", *overlay, "-o", str(output), "."], cwd=tree, env=env, check=True)
+    subprocess.run([go, "build", "-trimpath", *options, *overlay, "-o", str(output), "."], cwd=tree, env=env, check=True)
 
 
 def test(go, source, stamp, *flags, work):

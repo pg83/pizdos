@@ -1,6 +1,7 @@
 import build
 import json
 import os
+import re
 import shutil
 
 
@@ -274,6 +275,16 @@ aot_native = command(
     descr="CC", color="green",
 )
 
+coverage_cxx = os.environ.get("COVERAGE_CXX") or shutil.which("g++") or ""
+aot_coverage = command(
+    name="aot_coverage",
+    inputs=["$(S)/bin/aot/aot.cpp", "$(S)/dev/coverage_build.py", "$(S)/dev/gcov.c"],
+    outputs=["$(B)/coverage/bin/aot", "$(B)/coverage/bin/aot.gcno"],
+    cmd=["python3", "$(S)/dev/coverage_build.py", "$(S)/bin/aot/aot.cpp", "$(S)/dev/gcov.c",
+         "$(B)/coverage/bin/aot", json.dumps({"cc": coverage_cxx, "cppflags": build.cppflags, "ldflags": build.ldflags})],
+    descr="CC", color="green",
+)
+
 aot_measure = command(
     name="aot_measure",
     inputs=["$(S)/dev/aot_measure.c"],
@@ -312,6 +323,16 @@ vm = command(
     deps=[aot_aot, libstr],
     cmd=["python3", "$(S)/dev/go.py", "build", GO, "$(S)/bin/vm", "$(B)/bin/vm/vm", "--runtime", "$(S)/lib/goruntime", "--embed", aot_aot.outputs[0],
          "--embed", libstr.outputs[0]],
+    descr="GO", color="light-blue",
+)
+
+vm_coverage = command(
+    name="vm_coverage",
+    inputs=[*WASM2O_SOURCES, *GO_RUNTIME],
+    outputs=["$(B)/coverage/bin/vm"],
+    deps=[aot_aot, libstr],
+    cmd=["python3", "$(S)/dev/go.py", "build", GO, "$(S)/bin/vm", "$(B)/coverage/bin/vm",
+         "--cover", "--runtime", "$(S)/lib/goruntime", "--embed", aot_aot.outputs[0], "--embed", libstr.outputs[0]],
     descr="GO", color="light-blue",
 )
 
@@ -621,6 +642,18 @@ UNIT_TOOLS = json.dumps({
     "host_ldflags": build.ldflags,
 }, sort_keys=True)
 unit_tests = []
+coverage_cases = []
+coverage_dependencies = []
+coverage_inputs = ["$(S)/dev/coverage.py", "$(S)/tst/unit/run.py", "$(S)/dev/wasm.py", "$(S)/dev/wasm_info.py"]
+coverage_filter = os.environ.get("COVERAGE_TESTS", "")
+
+
+def coverage_case(name, command_line, inputs, dependencies):
+    if coverage_filter and not re.search(coverage_filter, name):
+        return
+    coverage_cases.append({"name": name, "command": command_line})
+    coverage_inputs.extend(inputs)
+    coverage_dependencies.extend(dependencies)
 
 for source in build.glob("$(S)/tst/unit/**/*.cpp"):
     name = source[len("$(S)/tst/unit/"):-len(".cpp")]
@@ -634,6 +667,11 @@ for source in build.glob("$(S)/tst/unit/**/*.cpp"):
         env={"PYTHONDONTWRITEBYTECODE": "1"},
         descr="EE", color="green",
     ))
+    coverage_tools = json.loads(UNIT_TOOLS)
+    coverage_tools.update(vm="$VM", aot="$AOT")
+    coverage_case("unit_" + name.replace("/", "_"),
+                  ["python3", "$(S)/tst/unit/run.py", source, "$OUT", json.dumps(coverage_tools)],
+                  [source, *LIBC_HEADERS], [libc, libcxx])
 
 for test in build.glob("$(S)/tst/test_*.py"):
     name = test.rsplit("/", 1)[-1][len("test_"):-len(".py")]
@@ -652,6 +690,45 @@ for test in build.glob("$(S)/tst/test_*.py"):
         descr="TS",
         color="green",
     ))
+    coverage_arguments = []
+    for node in tested:
+        if node is vm:
+            coverage_arguments.append("$VM")
+        elif node is aot_native:
+            coverage_arguments.append("$AOT")
+        else:
+            coverage_arguments.extend(node.outputs)
+    coverage_case("test_" + name, ["python3", test, *coverage_arguments], [test],
+                  [node for node in tested if node is not vm and node is not aot_native])
+
+coverage_case("test_vm_spec",
+              ["python3", "$(S)/tst/vm_spec.py", "$VM", WAST2JSON, testsuite_tarball.outputs[0], "$OUT.stamp"],
+              ["$(S)/tst/vm_spec.py"], [testsuite_tarball])
+
+coverage = command(
+    name="coverage",
+    inputs=[*dict.fromkeys(coverage_inputs), *WASM2O_SOURCES, "$(S)/bin/aot/aot.cpp"],
+    outputs=["$(B)/coverage/" + name for name in ("summary.json", "summary.txt", "uncovered.txt", "aot.json", "vm.out")]
+            + ["$(B)/coverage/" + case["name"] + ".log" for case in coverage_cases],
+    deps=[aot_coverage, vm_coverage, *dict.fromkeys(coverage_dependencies)],
+    cmd=["python3", "$(S)/dev/coverage.py", "$(B)/coverage", json.dumps({
+        "source_root": "$(S)", "aot": aot_coverage.outputs[0], "vm": vm_coverage.outputs[0],
+        "gcno": aot_coverage.outputs[1], "go": GO,
+        "gcov": os.environ.get("GCOV") or os.path.join(os.path.dirname(coverage_cxx), "gcov"),
+        "gcov_tool": os.environ.get("GCOV_TOOL") or os.path.join(os.path.dirname(coverage_cxx), "gcov-tool"),
+        "cases": coverage_cases,
+    })],
+    descr="CV", color="cyan",
+)
+
+coverage_check = command(
+    name="coverage_check",
+    inputs=["$(S)/dev/coverage.py"],
+    outputs=["$(B)/coverage/check.stamp"],
+    deps=[coverage],
+    cmd=[["python3", "$(S)/dev/coverage.py", "--check", coverage.outputs[0], "99"], touch("$(B)/coverage/check.stamp")],
+    descr="CV", color="cyan",
+)
 
 group("install", libcxx, libc_headers, clang, clang_o, busybox, busybox_abi, busybox_o, doom, doom_o, python, python_o, vm, aot_native, aot, aot_aot, wazero)
 group("unit", *unit_tests)
