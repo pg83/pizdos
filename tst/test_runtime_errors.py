@@ -85,6 +85,7 @@ def main():
                   call(3) + constant(128) + constant(1) + call(1), helper=constant(128) + call(0) + b"\x1a"),
                   "longjmp: the function that set the jmp_buf has returned"))
     cases.append(("missing-heap", program([("malloc", 1)], constant(16) + call(0) + b"\x1a", heap=False), "no __heap_base"))
+    cases.append(("missing-heap-memalign", program([("memalign", 4)], constant(4096) + constant(16) + call(0) + b"\x1a", heap=False), "no __heap_base"))
     imports = [("malloc", 1), ("free", 3), ("realloc", 4), ("malloc_usable_size", 1)]
     allocate = constant(64) + call(0) + b"\x21\0"
     pointer = b"\x20\0"
