@@ -14102,10 +14102,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             funcEmitterJumpTo(e, -1, def);
             return;
         }
-        if (in->aux == 0 && n >= 4 && mInstTable(in)[0] != def) {
-            asmTest(a, 4, in->src, in->src);
-            funcEmitterJumpTo(e, ccE, mInstTable(in)[0]);
-        }
+        // lowererTerminator already emits the zero-case branch and marks
+        // its dispatch aux=1; a covered table is aux=2. For aux=0 either the
+        // table is smaller than four entries or entry zero is the default.
         VReg t0 = mInstTemps(in)[0];
         if (in->aux != 2) {
             asmAluRI(a, aluCmp, 4, in->src, convert<i64>(n));
@@ -23755,25 +23754,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // Merge two disjoint normalized sets. Their buffers are temporary coalescing
     // state: y is consumed, while x keeps the same canonical register ID.
     static void mergeRanges(InlineVec<Lrange, 1>& x, InlineVec<Lrange, 1>& y, InlineVec<Lrange, 1>& scratch) {
-        if (!y.size()) {
-            return;
-        }
-        if (!x.size()) {
-            x = move(y);
-            return;
-        }
+        // allocatorCoalesce rejects empty ranges before calling. At its copy
+        // position p, the source y is live through p and destination x from
+        // p + 1. Unions preserve those ranges, so x cannot precede all of y.
         const usize nx = x.size();
         const usize ny = y.size();
-        if (x[nx - 1].to <= y[0].from) {
-            usize first = 0;
-            if (x[nx - 1].to == y[0].from) {
-                x[nx - 1].to = y[0].to;
-                first = 1;
-            }
-            x.append(subslice(y.view(), Int(first), Int(ny)));
-            y = InlineVec<Lrange, 1>{};
-            return;
-        }
         if (y[ny - 1].to <= x[0].from) {
             usize first = 0;
             if (y[ny - 1].to == x[0].from) {
