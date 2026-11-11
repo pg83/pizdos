@@ -154,7 +154,33 @@ def main():
     bad("eh-short-leb", short_eh(struct.pack("<II", 6, 0) + b"\1\0"), "malformed .eh_frame")
     cie = struct.pack("<I", 0) + b"\1zR\0\1\x78\x10\1"
     bad("eh-short-augmentation", short_eh(struct.pack("<I", len(cie)) + cie), "malformed .eh_frame")
+    for at, value in ((10, ord("X")), (15, 2), (16, 0)):
+        bad(f"eh-augmentation-{at}", obj.replaced(".eh_frame", changed(eh, at, "B", value)), "unsupported .eh_frame augmentation")
+    first_fde = struct.unpack_from("<I", eh)[0] + 4
+    bad("eh-unknown-cie", obj.replaced(".eh_frame", changed(eh, first_fde + 4, "I", 0x7fffffff)), "unsupported FDE")
+    bad("eh-missing-relocations", obj.replaced(".rela.eh_frame", b""), "unsupported FDE")
+    bad("eh-wrong-register", obj.replaced(".eh_frame", changed(eh, 18, "B", 6)), "a CFA not on rsp")
+    bad("eh-unknown-opcode", obj.replaced(".eh_frame", changed(eh, 17, "B", 0x0f)), "unsupported CFA instruction")
+    bad("eh-past-function", obj.replaced(".eh_frame", changed(eh, first_fde + 17, "B", 0x41)), "CFA instructions past their range")
+    bad("eh-fde-augmentation-overflow", obj.replaced(".eh_frame", changed(eh, first_fde + 16, "B", 127)), "malformed .eh_frame")
+    for code in (b"\x0e", b"\x0e\x80", b"\x02", b"\x03\1", b"\x04\1\2\3", b"\x0c\7"):
+        record = struct.pack("<I", 0) + b"\1\0\1\x78\x10" + code
+        bad("eh-truncated-cfa-" + code.hex(), short_eh(struct.pack("<I", len(record)) + record), "malformed .eh_frame")
     valid = [("original", data)]
+    valid.append(("eh-terminator", obj.replaced(".eh_frame", eh + bytes(4))))
+    # Insert transient changes at one PC, restoring the original rule.
+    # The final stack map must be identical after adjacent rules merge.
+    off = 0
+    while off + 4 <= len(eh):
+        size = struct.unpack_from("<I", eh, off)[0]
+        record = eh[off:off + 4 + size]
+        marker = b"\x47\x0e\x18"
+        if marker in record and record.endswith(bytes(4)):
+            rewritten = record.replace(marker, marker + b"\x0e\x10\x0e\x18", 1)[:-4]
+            valid.append(("eh-repeated-cfa-pc", obj.replaced(".eh_frame", eh[:off] + rewritten + eh[off + 4 + size:])))
+            break
+        off += 4 + size
+    assert len(valid) == 3, "fixture has no padded stack map"
     duplicate = changed(relocs[:24], 8, "I", 65535) + relocs
     valid.append(("later-relocation-wins", obj.replaced(".rela.text", duplicate)))
     valid.append(("unsorted-relocations", obj.replaced(".rela.text", b"".join(relocs[i:i + 24] for i in reversed(range(0, len(relocs), 24))))))
