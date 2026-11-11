@@ -70,6 +70,13 @@ def main():
                                         env=env, timeout=30)
                 expected = b"" if operation in ("poll", "connect-poll") else b"host syscall errors: ok\n"
                 assert (result.returncode, result.stdout, result.stderr) == (0, expected, b""), (operation, result)
+            # Startup reads the kernel object using fstat and pread. Returning
+            # zero from a suppressed pread models EOF after its recorded size.
+            for number, error, diagnostic in ((5, errno.EIO, b"input/output error"),
+                                               (17, errno.EIO, b"input/output error"), (17, 0, b"exec format error")):
+                result = subprocess.run([wrapper, f"{error}/{number}", "--", vm, "run", "--", str(obj)],
+                                        capture_output=True, env=env, timeout=30)
+                assert result.returncode == 1 and result.stdout == b"" and diagnostic in result.stderr and b"panic:" not in result.stderr, (number, error, result)
         for name, number in (("clock_time_get", 228), ("clock_res_get", 229)):
             source = work / (name + ".wasm")
             data = wasi_clock(name)

@@ -33,7 +33,7 @@ int main(int argc, char** argv) {
     if (slash != NULL) {
         char* end;
         long value = strtol(next, &end, 10);
-        if (end != slash || value <= 0 || value > 4095) {
+        if (end != slash || value < 0 || value > 4095) {
             return 2;
         }
         error = (unsigned)value;
