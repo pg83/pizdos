@@ -31,7 +31,7 @@ def constant(value):
     return b"\x41" + leb(value, True)
 
 
-def program():
+def program(trapped=False):
     image = bytes((i * 13 + 5) % 251 for i in range(65536))
     loads = [(parameter, offset) for offset in (2048, 2112, 2176) for parameter in (0, 1)]
     calculate = b""
@@ -44,6 +44,8 @@ def program():
         expected = sum(image[(bases[parameter] + offset) & 0xffffffff] for parameter, offset in loads)
         entry += constant(bases[0]) + constant(bases[1]) + b"\x10\0"
         entry += constant(expected) + b"\x47\x04\x40\0\x0b"
+    if trapped:
+        entry += constant(65536) + constant(2048) + b"\x10\0\x1a"
     module = b"\0asm\1\0\0\0" + section(1, b"\2\x60\2\x7f\x7f\1\x7f\x60\0\0")
     module += section(3, b"\2\0\1") + section(5, b"\1\0\1") + section(7, b"\1\6_start\0\1")
     bodies = [b"\0" + body + b"\x0b" for body in (calculate, entry)]
@@ -56,29 +58,31 @@ def main():
     with tempfile.TemporaryDirectory(prefix="pizdos-modes-") as directory:
         work = Path(directory)
         source = work / "input.wasm"
-        source.write_bytes(program())
         for mode, flag in (("optimized", None), ("plain", "--plain"), ("strict", "--strict"), ("profile", "--tail-profile")):
-            env = dict(os.environ, W2X_MEMORY_TAIL="optimized" if mode == "profile" else mode,
-                       W2X_TAIL_PROFILE="1" if mode == "profile" else "")
-            compiled, embedded = work / f"{mode}-native.o", work / f"{mode}-embedded.o"
-            result = subprocess.run([native, *([flag] if flag else [])], input=source.read_bytes(), env=env,
-                                    capture_output=True, timeout=60)
-            assert result.returncode == 0, (mode, result.stderr)
-            compiled.write_bytes(result.stdout)
-            result = subprocess.run([vm, "-o", str(embedded), str(source)], env=env, capture_output=True, timeout=60)
-            assert result.returncode == 0 and compiled.read_bytes() == embedded.read_bytes(), (mode, result)
-            for obj in (compiled, embedded):
-                profile = obj.with_suffix(".jsonl")
-                result = subprocess.run([vm, "run", "--", str(obj)], env=dict(env, W2O_TAIL_PROFILE=str(profile)),
-                                        capture_output=True, timeout=30)
-                assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (mode, result)
-                if mode == "profile":
-                    rows = [json.loads(line) for line in profile.read_text().splitlines()]
-                    functions = [function for row in rows for function in row["functions"]]
-                    for counter in ("guards", "fallbacks", "omitted_checks"):
-                        assert sum(function[counter] for function in functions) > 0, (counter, rows)
-                else:
-                    assert not profile.exists(), mode
+            for trapped in (False, True):
+                source.write_bytes(program(trapped))
+                env = dict(os.environ, W2X_MEMORY_TAIL="optimized" if mode == "profile" else mode,
+                           W2X_TAIL_PROFILE="1" if mode == "profile" else "")
+                compiled, embedded = work / f"{mode}-{trapped}-native.o", work / f"{mode}-{trapped}-embedded.o"
+                result = subprocess.run([native, *([flag] if flag else [])], input=source.read_bytes(), env=env,
+                                        capture_output=True, timeout=60)
+                assert result.returncode == 0, (mode, result.stderr)
+                compiled.write_bytes(result.stdout)
+                result = subprocess.run([vm, "-o", str(embedded), str(source)], env=env, capture_output=True, timeout=60)
+                assert result.returncode == 0 and compiled.read_bytes() == embedded.read_bytes(), (mode, result)
+                for obj in (compiled, embedded):
+                    profile = obj.with_suffix(".jsonl")
+                    result = subprocess.run([vm, "run", "--", str(obj)], env=dict(env, W2O_TAIL_PROFILE=str(profile)),
+                                            capture_output=True, timeout=30)
+                    assert result.returncode == (130 if trapped else 0) and result.stdout == b"", (mode, result)
+                    assert (b"out of bounds memory access" in result.stderr) if trapped else result.stderr == b"", result
+                    if mode == "profile":
+                        rows = [json.loads(line) for line in profile.read_text().splitlines()]
+                        functions = [function for row in rows for function in row["functions"]]
+                        for counter in ("guards", "omitted_checks", *(("fallbacks",) if trapped else ())):
+                            assert sum(function[counter] for function in functions) > 0, (counter, rows)
+                    else:
+                        assert not profile.exists(), mode
     print("compiler modes: identical native/Wasm objects, wrapping loads and fast/fallback profile counters passed")
 
 

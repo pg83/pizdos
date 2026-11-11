@@ -25852,7 +25852,15 @@ int main(int count, char** arguments) {
 #ifdef AOT_CHAOS
     configureNativeChaos();
 #endif
-    const char* usage = "usage: aot [--strict|--asan] < input.wasm > output.o";
+    const char* usage = "usage: aot [--plain|--strict|--asan|--tail-profile] < input.wasm > output.o";
+    if (count == 2 && sameString(arguments[1], "--plain")) {
+        compileOptions(1);
+        return 0;
+    }
+    if (count == 2 && sameString(arguments[1], "--tail-profile")) {
+        compileOptions(7);
+        return 0;
+    }
     if (count == 2 && sameString(arguments[1], "--asan")) {
         compileWithOptions(CompileOptions{false, false, false, true});
         return 0;

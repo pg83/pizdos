@@ -164,6 +164,9 @@ kernel's `/sys`, file systems as processes speaking FUSE's protocol).
   fd streams. `compile()` reads fd 0 and writes ELF to fd 1;
   `compileOptions(flags)` selects tail, range optimization and profiling
   with bits 0, 1 and 2. The default is 3, strict spec compilation is 0.
+  Native `aot --plain` selects the tail without range optimization;
+  `--tail-profile` enables range counters, matching VM compilation with
+  `W2X_TAIL_PROFILE=1`. Both produce the same objects as the embedded compiler.
   Every invocation releases its instance even on compiler or I/O failure.
 - The object is ordinary x86-64 ELF: `aot.cpp` writes it, `elf.go` reads it,
   `symbols.go` parses typed boundary symbols and `meta.go` reads the note.
