@@ -46,7 +46,7 @@ class Object:
         return self.data[header[4]:header[4] + header[5]]
 
     def header(self, name):
-        return self.headers + 64 * self.named[name]
+        return self.headers + 64 * (self.named[name] if isinstance(name, str) else name)
 
     def replaced(self, name, contents):
         out = bytearray(self.data)
@@ -61,6 +61,17 @@ class Object:
         contents += owner + b"\0" * (-len(owner) % 4)
         contents += descriptor + b"\0" * (-len(descriptor) % 4)
         return self.replaced(".note.wasm2o", contents)
+
+    def renamed(self, old, new):
+        table = self.sections[self.named[".symtab"]][6]
+        strings = self.contents(table)
+        symbols = self.contents(".symtab")
+        for at in range(0, len(symbols), 24):
+            start = struct.unpack_from("<I", symbols, at)[0]
+            if strings[start:].split(b"\0", 1)[0].decode() == old:
+                out = self.replaced(table, strings + new.encode() + b"\0")
+                return changed(out, self.sections[self.named[".symtab"]][4] + at, "I", len(strings))
+        raise AssertionError(old)
 
 
 def main():
@@ -102,6 +113,21 @@ def main():
     bad("relocation-symbol", changed(data, relocs_at + 8, "Q", (len(symbols) // 24 + 1) << 32 | 9), "relocation to symbol")
     bad("relocation-type", changed(data, relocs_at + 8, "I", 65535), "unsupported relocation type")
     bad("external-relative", changed(data, relocs_at + 8, "I", 2), "pc-relative relocation to external")
+    for value in (0xffffffff, len(obj.contents(".text")) - 1, 1 << 32):
+        bad(f"relocation-offset-{value}", changed(data, relocs_at, "Q", value), "relocation out of section")
+    external = struct.unpack_from("<Q", relocs, 8)[0] >> 32
+    bad("relocation-section", changed(data, symbols_at + 24 * external + 6, "H", obj.named[".eh_frame"]), "relocation into section")
+    bad("relocation-section-index", changed(data, symbols_at + 24 * external + 6, "H", 65535), "relocation into section")
+    bad("GOT-local", changed(data, symbols_at + 24 * external + 6, "H", obj.named[".text"]), "GOT relocation to a symbol of the object")
+    relative = changed(data, relocs_at + 8, "Q", (function // 24) << 32 | 2)
+    bad("relative-overflow", changed(relative, relocs_at + 16, "q", 1 << 50), "relocation out of range")
+    bad("missing-init", obj.renamed("w2o.init", "w2o.gone"), "no w2o.init")
+    bad("unresolved-external", obj.renamed("w2o.morestack", "unknown.external"), "unresolved symbol unknown.external")
+    for name in ("w2o.export._..", "w2o.export._GG..", "w2o.export._5Fstart...", "w2o.export._5Fstart.z."):
+        bad("export-" + name, obj.renamed("w2o.export._5Fstart..", name), "no exported function _start")
+    for name in ("w2o.export._5Fstart.i.", "w2o.export._5Fstart..i"):
+        bad("export-signature-" + name, obj.renamed("w2o.export._5Fstart..", name), "_start must have no parameters or results")
+    bad("export-vector", obj.renamed("w2o.export._5Fstart..", "w2o.export._5Fstart.v."), "unsupported value type v128")
     bad("note-padding", obj.replaced(".note.wasm2o", b"\0" * 12), "no wasm2o note")
     note = obj.contents(".note.wasm2o")
     bad("note-length", obj.replaced(".note.wasm2o", changed(note, 4, "I", len(note) + 1)), "no wasm2o note")
@@ -123,6 +149,13 @@ def main():
     bad("eh-short-leb", obj.replaced(".eh_frame", struct.pack("<II", 6, 0) + b"\1\0"), "malformed .eh_frame")
     cie = struct.pack("<I", 0) + b"\1zR\0\1\x78\x10\1"
     bad("eh-short-augmentation", obj.replaced(".eh_frame", struct.pack("<I", len(cie)) + cie), "malformed .eh_frame")
+    valid = [("original", data)]
+    duplicate = changed(relocs[:24], 8, "I", 65535) + relocs
+    valid.append(("later-relocation-wins", obj.replaced(".rela.text", duplicate)))
+    valid.append(("unsorted-relocations", obj.replaced(".rela.text", b"".join(relocs[i:i + 24] for i in reversed(range(0, len(relocs), 24))))))
+    extended = Object(obj.replaced(".text", obj.contents(".text") + b"\0" * 8))
+    absolute = struct.pack("<QQq", len(obj.contents(".text")), external << 32 | 1, 0)
+    valid.append(("absolute-external", extended.replaced(".rela.text", relocs + absolute)))
 
     with tempfile.TemporaryDirectory(prefix="pizdos-objects-") as directory:
         work = Path(directory)
@@ -136,17 +169,18 @@ def main():
             program.write_bytes(contents)
             return subprocess.run([vm, "run", "--", str(program)], capture_output=True, env=env, timeout=30)
 
-        result = run(data)
-        assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), result
+        for name, contents in valid:
+            result = run(contents)
+            assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (name, result)
         failures = []
         for name, contents, diagnostic in cases:
             result = run(contents)
             stderr = result.stderr.decode(errors="replace")
             if result.returncode == 0 or diagnostic not in stderr or "panic:" in stderr:
-                failures.append(f"{name}: exit {result.returncode}; expected {diagnostic!r}\n{stderr}")
+                failures.append(f"{name}: exit {result.returncode}; expected {diagnostic!r}\n{stderr[:1800]}")
         if failures:
             sys.exit("\n".join(failures))
-    print(f"objects: native/Wasm AOT agreement, valid execution and {len(cases)} malformed objects rejected")
+    print(f"objects: native/Wasm AOT agreement, {len(valid)} valid objects and {len(cases)} malformed objects rejected")
 
 
 if __name__ == "__main__":
