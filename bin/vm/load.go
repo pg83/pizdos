@@ -567,10 +567,10 @@ func newInstance(c *Code, imports Imports, stack uint64) *Instance {
 	return i
 }
 
-// clone makes an instance of i's code that is a copy of i: its block, the
+// clone makes a kernel instance that is a copy of i: its block, the
 // tables' entries moved to its own, its globals, and of linear memory the
 // bytes [from, to), the rest zero.
-func (i *Instance) clone(imports Imports, stack uint64, from, to uint64) *Instance {
+func (i *Instance) clone(imports *Kernel, stack uint64, from, to uint64) *Instance {
 	c := newInstance(i.code, imports, stack)
 
 	if i.memory != nil {
@@ -603,13 +603,8 @@ func (i *Instance) clone(imports Imports, stack uint64, from, to uint64) *Instan
 
 	c.put64(offTokens, binary.LittleEndian.Uint64(i.block[offTokens:]))
 	moved := c.ctx() - i.ctx()
-	k := 0
-
-	for _, t := range i.obj.meta.tables {
-		if t.imported {
-			continue
-		}
-
+	// The kernel resolves no imported tables, so every table is owned here.
+	for k, t := range i.obj.meta.tables {
 		entries := c.tables[k]
 
 		for e, v := range i.tables[k] {
@@ -619,7 +614,6 @@ func (i *Instance) clone(imports Imports, stack uint64, from, to uint64) *Instan
 		}
 
 		c.put64(t.offset+tableEntries, uint64(uintptr(unsafe.Pointer(unsafe.SliceData(entries)))))
-		k++
 	}
 
 	return c
