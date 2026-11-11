@@ -108,11 +108,22 @@ def program():
             if kind in ("sub", "and", "or", "xor"):
                 add([bits], bits, x + x + bytes([offset + opcode]), samples,
                     lambda a: a if kind in ("and", "or") else 0)
-        # Shift counts are reduced modulo the operand width, including
-        # counts equal to the width and counts with all high bits set.
+        # Immediate shifts and rotates include real movement and counts
+        # reduced modulo the width, including all high bits set.
         for opcode in range(10, 15):
-            for amount in (0, bits, mask - (bits - 1)):
-                add([bits], bits, x + constant(amount, bits) + bytes([offset + opcode]), samples, lambda a: a)
+            for amount in (0, 1, 7, bits - 1, bits, mask - (bits - 1)):
+                def shifted(a):
+                    n = amount % bits
+                    if opcode == 10:
+                        return (a << n) & mask
+                    if opcode == 11:
+                        return signed(a, bits) >> n
+                    if opcode == 12:
+                        return a >> n
+                    if opcode == 13:
+                        return ((a << n) | (a >> (-n % bits))) & mask
+                    return ((a >> n) | (a << (-n % bits))) & mask
+                add([bits], bits, x + constant(amount, bits) + bytes([offset + opcode]), samples, shifted)
         for opcode in (3, 4, 5, 6):
             add([bits], bits, x + constant(1, bits) + bytes([offset + opcode]), samples,
                 lambda a: a if opcode in (3, 4) else 0)
