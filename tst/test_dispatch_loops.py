@@ -35,11 +35,12 @@ def get(index):
     return b"\x20" + leb(index)
 
 
-def program(count):
+def program(count, bounded=False):
     # Each case independently tests its remaining iterations. Its back
     # edge carries the next key to the same dispatch, with no shared latch.
-    code = b"\x02\x40\x03\x40" + b"\x02\x40" * count
-    code += get(0) + b"\x0e" + leb(count) + b"".join(leb(i) for i in range(count)) + leb(count - 1)
+    code = get(1) + b"\x45\x04\x40\x23\0\x0f\x0b"
+    code += b"\x02\x40\x03\x40" + b"\x02\x40" * count
+    code += get(0) + (constant(count - 2) + b"\x71" if bounded else b"") + b"\x0e" + leb(count) + b"".join(leb(i) for i in range(count)) + leb(count - 1)
     for index in range(count):
         depth = count - index - 1
         code += b"\x0b\x23\0" + constant(index + 1) + b"\x6a\x24\0"
@@ -50,10 +51,10 @@ def program(count):
     entry, checks = bytearray(), 0
     for key in (0, 1, count - 1, count, MASK):
         for seed in (0, 1, 17, 0x80000000, MASK):
-            for rounds in (1, 2, 17, 65):
+            for rounds in (0, 1, 2, 17, 65):
                 result, current = 0, key
                 for _ in range(rounds):
-                    index = min(current, count - 1)
+                    index = (current & (count - 2)) if bounded else min(current, count - 1)
                     result = (result + index + 1) & MASK
                     current = (((current + seed * (index + 3)) & MASK) ^ (count + 7)) & MASK
                 entry += constant(0) + b"\x24\0" + constant(key) + constant(rounds) + constant(seed) + b"\x10\0"
@@ -72,8 +73,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix="pizdos-dispatch-loops-") as directory:
         work = Path(directory)
         source, compiled, embedded = [work / name for name in ("input.wasm", "native.o", "embedded.o")]
-        for count in (17, 33):
-            data, checks = program(count)
+        for count, bounded in ((count, bounded) for count in (17, 33) for bounded in (False, True)):
+            data, checks = program(count, bounded)
             source.write_bytes(data)
             result = subprocess.run([wazero, "-interpreter", str(source)], capture_output=True, timeout=60)
             assert result.returncode == 0 and result.stdout == b"", result
