@@ -2489,9 +2489,6 @@ namespace {
     }
 
     static double mathNextafter(double value, double toward) {
-        if (mathIsNaN(value) || mathIsNaN(toward)) {
-            return value + toward;
-        }
         if (value == toward) {
             return toward;
         }
@@ -2508,9 +2505,6 @@ namespace {
     }
 
     static float mathNextafter32(float value, float toward) {
-        if (value != value || toward != toward) {
-            return value + toward;
-        }
         if (value == toward) {
             return toward;
         }
@@ -2659,7 +2653,6 @@ namespace {
     struct FormatValue {
         String text{};
         u64 number = 0;
-        bool negative = false;
 
         FormatValue(String value)
             : text(value)
@@ -2669,7 +2662,6 @@ namespace {
         template <typename T>
         FormatValue(T value)
             : number(u64(value))
-            , negative(value < T(0))
         {
         }
     };
@@ -2686,10 +2678,6 @@ namespace {
                 continue;
             }
             require(++i < format.count, "format end");
-            if (format.data[i] == '%') {
-                out.pushBack('%');
-                continue;
-            }
             u32 width = 0;
             bool padZero = format.data[i] == '0';
             while (format.data[i] >= '0' && format.data[i] <= '9') {
@@ -2705,7 +2693,7 @@ namespace {
             }
             require(kind == 'd' || kind == 'x' || kind == 'X', "format kind");
             u32 base = kind == 'd' ? 10 : 16;
-            u64 number = base == 10 && arg.negative ? -arg.number : arg.number;
+            u64 number = arg.number;
             u8 buffer[32];
             usize at = sizeof(buffer);
             do {
@@ -2713,9 +2701,6 @@ namespace {
                 buffer[--at] = u8(digit < 10 ? '0' + digit : (kind == 'X' ? 'A' : 'a') + digit - 10);
                 number /= base;
             } while (number);
-            if (base == 10 && arg.negative) {
-                buffer[--at] = '-';
-            }
             while (width > sizeof(buffer) - at) {
                 out.pushBack(padZero ? '0' : ' ');
                 --width;
@@ -3600,7 +3585,6 @@ namespace {
         u64 min{};
         u64 max{};
         bool hasMax{};
-        bool is64{};
         bool shared{};
     };
 
@@ -5513,8 +5497,6 @@ namespace {
     static i32 frontendAddOperands(Frontend* fe, i32 local, i32 phi);
 
     static i32 frontendAddParam(Frontend* fe, i32 b, ValType t);
-
-    static ValType frontendAddrType(Frontend* fe);
 
     static void frontendBinary(Frontend* fe, Op op, ValType t);
 
@@ -11999,13 +11981,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return p;
     }
 
-    static ValType frontendAddrType(Frontend* fe) {
-        if (fe->m->mems[0].limits.is64) {
-            return I64;
-        }
-        return I32;
-    }
-
     static void frontendBinary(Frontend* fe, Op op, ValType t) {
         if (fe->cur < 0) {
             return;
@@ -12343,13 +12318,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
                 case 63: {
                     frontendMemIndex(fe);
-                    frontendPush(fe, frontendEmit(fe, OpMemSize, frontendAddrType(fe), 0, Span<const i32>({})));
+                    frontendPush(fe, frontendEmit(fe, OpMemSize, I32, 0, Span<const i32>({})));
                     break;
                 }
                 case 64: {
                     frontendMemIndex(fe);
                     i32 delta = frontendPop(fe);
-                    frontendPush(fe, frontendEmit(fe, OpMemGrow, frontendAddrType(fe), 0, Span<const i32>({delta})));
+                    frontendPush(fe, frontendEmit(fe, OpMemGrow, I32, 0, Span<const i32>({delta})));
                     break;
                 }
                 case 65: {
@@ -12865,9 +12840,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         if (align >= 32) {
             compilerError(String("malformed memop flags"));
-        }
-        if (fe->m->mems[0].limits.is64) {
-            return {convert<i64>(readerLeb(r, 64)), convert<i32>(align)};
         }
         return {convert<i64>(readerU32(r)), convert<i32>(align)};
     }
@@ -17688,13 +17660,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             VReg gy = lowererFloatBits(l, y, size);
             u8 cc = 5;
             if (l->deferred[cond]) {
-                Int parity = {};
-                auto temporary884 = lowererCompare(l, cond);
-                cc = temporary884.v0;
-                parity = temporary884.v1;
-                if (parity != 0) {
-                    compilerError(String("internal error: float comparison deferred to select"));
-                }
+                cc = lowererCompare(l, cond).v0;
             } else {
                 VReg c = lowererUse(l, cond);
                 MInst tst = inst(mTest);
@@ -21781,17 +21747,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         l.hasMax = u8(flags & 1) != 0;
         l.shared = u8(flags & 2) != 0;
-        l.is64 = u8(flags & 4) != 0;
-        if (l.is64) {
+        if ((flags & 4) != 0) {
             compilerError(String("unsupported: memory64"));
         }
-        Uint bits = 32;
-        if (l.is64) {
-            bits = 64;
-        }
-        l.min = readerLeb(r, bits);
+        l.min = readerLeb(r, 32);
         if (l.hasMax) {
-            l.max = readerLeb(r, bits);
+            l.max = readerLeb(r, 32);
         }
         return l;
     }
