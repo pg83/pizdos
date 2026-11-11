@@ -16,12 +16,14 @@ import sys
 import tempfile
 
 
-def leb(value):
+def leb(value, signed=False):
     result = bytearray()
-    while value >= 128:
-        result.append(value & 127 | 128)
+    while True:
+        byte = value & 127
         value >>= 7
-    return bytes(result + bytes([value]))
+        if value == 0 and (not signed or byte < 64) or signed and value == -1 and byte >= 64:
+            return bytes(result + bytes([byte]))
+        result.append(byte | 128)
 
 
 def section(kind, data):
@@ -52,13 +54,18 @@ def wasi_descriptor(name, error=29, filetype=None):
     return module + section(10, b"\1" + leb(len(body)) + body)
 
 
-def wasi_directory(name, filetype):
+def wasi_directory(path, name, filetype):
     owner, function = b"wasi_snapshot_preview1", b"fd_readdir"
-    module = b"\0asm\1\0\0\0" + section(1, b"\2\x60\5\x7f\x7f\x7f\x7e\x7f\1\x7f\x60\0\0")
-    module += section(2, b"\1" + leb(len(owner)) + owner + leb(len(function)) + function + b"\0\0")
-    module += section(3, b"\1\1") + section(5, b"\1\0\1") + section(7, b"\1\6_start\0\1")
-    integer = lambda n: b"\x41" + leb(n)
-    code = integer(0) + integer(4096) + integer(60000) + b"\x42\0" + integer(2048) + b"\x10\0\x04\x40\0\x0b"
+    module = b"\0asm\1\0\0\0" + section(1, b"\3\x60\5\x7f\x7f\x7f\x7e\x7f\1\x7f"
+                                              b"\x60\11\x7f\x7f\x7f\x7f\x7f\x7e\x7e\x7f\x7f\1\x7f\x60\0\0")
+    module += section(2, b"\2" + leb(len(owner)) + owner + leb(len(function)) + function + b"\0\0"
+                      + leb(len(owner)) + owner + b"\11path_open\0\1")
+    module += section(3, b"\1\2") + section(5, b"\1\0\1") + section(7, b"\1\6_start\0\2")
+    integer = lambda n: b"\x41" + leb(n, True)
+    path = str(path).encode()
+    code = b"".join(integer(n) for n in (3, 0, 1024, len(path), 2)) + b"\x42" + leb(1 << 14, True) + b"\x42\0"
+    code += integer(0) + integer(3072) + b"\x10\1\x04\x40\0\x0b" + integer(3072) + b"\x28\2\0\x21\3"
+    code += b"\x20\3" + integer(4096) + integer(60000) + b"\x42\0" + integer(2048) + b"\x10\0\x04\x40\0\x0b"
     code += integer(4096) + b"\x21\0" + integer(4096) + integer(2048) + b"\x28\2\0\x6a\x21\1"
     code += b"\x02\x40\x03\x40\x20\0\x20\1\x4f\x0d\1"
     code += b"\x20\0\x28\2\x10" + integer(4) + b"\x46\x04\x40\x20\0\x28\2\x18"
@@ -66,8 +73,8 @@ def wasi_directory(name, filetype):
     code += b"\x47\x04\x40\0\x0b" + integer(1) + b"\x21\2\x0b\x0b"
     code += b"\x20\0\x20\0\x28\2\x10" + integer(24) + b"\x6a\x6a\x21\0\x0c\0\x0b\x0b"
     code += b"\x20\2\x45\x04\x40\0\x0b\x0b"
-    body = b"\1\3\x7f" + code
-    return module + section(10, b"\1" + leb(len(body)) + body)
+    body = b"\1\4\x7f" + code
+    return module + section(10, b"\1" + leb(len(body)) + body) + section(11, b"\1\0" + integer(1024) + b"\x0b" + leb(len(path)) + path)
 
 
 def main():
@@ -146,7 +153,7 @@ def main():
                     assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (name, result)
         for directory, name, filetype in ((Path("/dev"), b"null", 2), (work / "directory", b"pipe", 0)):
             source = work / "directory.wasm"
-            data = wasi_directory(name, filetype)
+            data = wasi_directory(directory, name, filetype)
             source.write_bytes(data)
             result = subprocess.run([native, "--strict"], input=data, capture_output=True, env=env, timeout=60)
             assert result.returncode == 0, result
@@ -154,12 +161,8 @@ def main():
             result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
             assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), result
             for obj in (compiled, embedded):
-                fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-                try:
-                    result = subprocess.run([vm, "run", "--", str(obj)], stdin=fd, capture_output=True, env=env, timeout=30)
-                    assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (directory, result)
-                finally:
-                    os.close(fd)
+                result = subprocess.run([vm, "run", "--", str(obj)], capture_output=True, env=env, timeout=30)
+                assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (directory, result)
         # ENOTTY has no WASI preview1 equivalent and must become generic I/O error.
         for preset, error, names in (("stdin-stat", errno.EIO, ("fd_fdstat_get", "fd_filestat_get")),
                                      ("stdin-flags", errno.ENOTTY, ("fd_fdstat_get", "fd_fdstat_set_flags"))):
