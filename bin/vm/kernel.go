@@ -217,7 +217,7 @@ func runKernel(path, root string, argv []string, asan bool) int {
 	if asan && !code.obj.meta.asan() {
 		throwFmt("%s: not compiled with --asan", path)
 	}
-	p := k.newProcess(nil)
+	p := throw2(k.newProcess(nil))
 	p.cwd = k.guestPath(throw2(os.Getwd()))
 	env := []string{"PWD=" + p.cwd}
 
@@ -247,13 +247,18 @@ func runKernel(path, root string, argv []string, asan bool) int {
 
 // newProcess makes a process: a child of parent, or the first, the leader
 // of its group and session.
-func (k *Kernel) newProcess(parent *Process) *Process {
+func (k *Kernel) newProcess(parent *Process) (*Process, error) {
+	wake, err := eventfd()
+
+	if err != nil {
+		return nil, err
+	}
+
 	k.mu.Lock()
 	defer k.mu.Unlock()
 
 	k.lastPid++
-	p := &Process{k: k, pid: k.lastPid, umask: 0o022, regexes: map[uint32]*posixRegex{}, seed: 0}
-	p.wake = throw2(eventfd())
+	p := &Process{k: k, pid: k.lastPid, umask: 0o022, regexes: map[uint32]*posixRegex{}, seed: 0, wake: wake}
 
 	if parent == nil {
 		p.pgid, p.sid = p.pid, p.pid
@@ -266,7 +271,7 @@ func (k *Kernel) newProcess(parent *Process) *Process {
 
 	k.procs[p.pid] = p
 
-	return p
+	return p, nil
 }
 
 // programPath is the guest's path of the program a host descriptor reads,

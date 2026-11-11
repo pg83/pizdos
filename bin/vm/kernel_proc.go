@@ -660,7 +660,12 @@ func (p *Process) libcSystem(cmd uint32) uint32 {
 
 	img.envp = p.environment()
 
-	c := p.k.newProcess(p)
+	c, err := p.k.newProcess(p)
+
+	if err != nil {
+		return p.result(0, err)
+	}
+
 	c.inherit(p)
 	c.execReset()
 	done := make(chan int, 1)

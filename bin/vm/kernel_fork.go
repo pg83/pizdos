@@ -63,7 +63,12 @@ func (p *Process) startVfork() uint32 {
 	}
 
 	v.stack = binary.LittleEndian.Uint32(p.inst.block[p.stackPointer():])
-	c := p.k.newProcess(p)
+	c, err := p.k.newProcess(p)
+
+	if err != nil {
+		return p.result(0, err)
+	}
+
 	c.setInstance(p.inst)
 	c.image, c.vfork = p.image, v
 	c.heap, c.static, c.env, c.errnoAt, c.environAt, c.siginfo = p.heap, p.static, p.env, p.errnoAt, p.environAt, p.siginfo
@@ -105,7 +110,12 @@ func (p *Process) fork(setup func(c *Process)) (int32, error) {
 		to = uint64(p.heap.top)
 	}
 
-	c := p.k.newProcess(p)
+	c, err := p.k.newProcess(p)
+
+	if err != nil {
+		return 0, err
+	}
+
 	inst := p.inst.clone(p.k, runStack, from, to)
 	inst.attach(c)
 	c.image = p.image
