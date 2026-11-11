@@ -731,6 +731,7 @@ TESTED = {
     "chaos": [vm, vm_chaos, aot_native, aot_native_chaos, chaos_check],
     "clang": [vm, clang_o, clang, libc, libc_headers, libcxx],
     "compiler_modes": [vm, aot_native],
+    "copy_loops": [vm, aot_native],
     "cxx": [vm, cxx_check_o],
     "data_segments": [vm, aot_native],
     "debug_lines": [vm, aot_native],
