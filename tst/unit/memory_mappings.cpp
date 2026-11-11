@@ -40,6 +40,16 @@ int main() {
     assert(mprotect(anonymous, page * 2, PROT_READ | PROT_WRITE) == 0);
     assert(msync(anonymous, page * 2, MS_SYNC) == 0);
     assert(munmap(anonymous, page * 2) == 0);
+    void* small[3];
+    for (auto& mapping : small) {
+        mapping = mmap(nullptr, 1, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        assert(mapping != MAP_FAILED && uintptr_t(mapping) % page == 0);
+        assert(*static_cast<unsigned char*>(mapping) == 0);
+        *static_cast<unsigned char*>(mapping) = 1;
+    }
+    for (auto mapping : small) {
+        assert(munmap(mapping, 1) == 0);
+    }
 
     int fd = open("mapping.data", O_RDWR | O_CREAT | O_TRUNC, 0600);
     assert(fd >= 0);
