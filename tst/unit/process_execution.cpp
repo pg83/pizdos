@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/prctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -44,6 +45,11 @@ static void waitFor(pid_t child, int expected) {
 }
 
 int main(int argc, char** argv) {
+    if (argc == 0) {
+        char name[16];
+        assert(prctl(PR_GET_NAME, name) == 0 && name[0] == 0);
+        return 17;
+    }
     if (argc == 3 && strcmp(argv[0], "sh") == 0 && strcmp(argv[1], "-c") == 0) {
         assert(strcmp(getenv("MARK"), "inherited") == 0);
         if (strcmp(argv[2], "signal") == 0) {
@@ -82,7 +88,7 @@ int main(int argc, char** argv) {
     char* overridden[] = {inherited[0], inherited[1], const_cast<char*>("overridden"), nullptr};
     char* empty[] = {inherited[0], inherited[1], const_cast<char*>("empty"), nullptr};
     char* environment[] = {const_cast<char*>("MARK=overridden"), const_cast<char*>("PATH=/missing"), nullptr};
-    for (unsigned variant = 0; variant < 11; ++variant) {
+    for (unsigned variant = 0; variant < 12; ++variant) {
         pid_t child = fork();
         assert(child >= 0);
         if (child == 0) {
@@ -109,6 +115,7 @@ int main(int argc, char** argv) {
                     environ = nullptr;
                     execv("/bin/check", empty);
                     break;
+                case 11: execv("/bin/check", nullptr); break;
             }
             abort();
         }
