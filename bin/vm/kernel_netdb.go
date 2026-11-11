@@ -212,11 +212,16 @@ func numericHost(s string) (netip.Addr, uint32, bool) {
 // error is an EAI_ code.
 func (p *Process) resolve(name string) ([]netip.Addr, string, int) {
 	var out []netip.Addr
+	canonical := ""
 
 	for _, e := range p.hostEntries() {
 		for _, n := range e.names {
 			if strings.EqualFold(n, name) {
 				out = append(out, e.addr)
+
+				if canonical == "" {
+					canonical = e.names[0]
+				}
 
 				break
 			}
@@ -224,7 +229,7 @@ func (p *Process) resolve(name string) ([]netip.Addr, string, int) {
 	}
 
 	if len(out) > 0 {
-		return out, name, 0
+		return out, canonical, 0
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), resolveWait)
@@ -246,7 +251,7 @@ func (p *Process) resolve(name string) ([]netip.Addr, string, int) {
 		return nil, "", eaiFail
 	}
 
-	canonical := name
+	canonical = name
 
 	if cname, err := net.DefaultResolver.LookupCNAME(ctx, name); err == nil && cname != "" {
 		canonical = strings.TrimSuffix(cname, ".")
@@ -958,7 +963,7 @@ func (p *Process) libcGetservbyname(name, proto uint32) uint32 {
 
 	s, _ := p.serviceName(port, want)
 
-	return p.servent(serviceEntry{p.str(name), port, s.proto})
+	return p.servent(s)
 }
 
 func (p *Process) libcGetservbyport(port, proto uint32) uint32 {

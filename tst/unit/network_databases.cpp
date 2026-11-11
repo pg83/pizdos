@@ -160,5 +160,12 @@ int main() {
     assert(host && strcmp(host->h_name, "alpha.test") == 0);
     service = getservbyname("stream-alias", "tcp");
     assert(service && strcmp(service->s_name, "pizdos-stream") == 0);
+    hints = {};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_CANONNAME;
+    assert(getaddrinfo("alias", "stream-alias", &hints, &result) == 0);
+    assert(result->ai_canonname && strcmp(result->ai_canonname, "alpha.test") == 0);
+    freeaddrinfo(result);
     puts("network databases: ok");
 }
