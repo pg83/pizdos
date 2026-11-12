@@ -13300,11 +13300,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     break;
                 }
                 case mJcc: {
-                    // Resolve can leave emptied moves before the final jump.
-                    Int last = i + 1;
-                    while (last < n && mInstSilent(&insts[last])) {
-                        ++last;
-                    }
+                    // Lowering keeps the final branch suffix adjacent.
+                    // A paired condition's earlier jump is followed by a
+                    // required comparison or its constant, not silent prep.
+                    const Int last = i + 1;
                     if (last == n - 1 && insts[last].op == mJmp && funcEmitterLands(e, at, in->target)) {
                         const i32 other = insts[last].target;
                         if (!funcEmitterLands(e, at, other)) {
