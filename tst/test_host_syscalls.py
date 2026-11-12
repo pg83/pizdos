@@ -97,6 +97,25 @@ def main():
         (work / "tmp").mkdir()
         (work / "directory").mkdir()
         os.mkfifo(work / "directory/pipe")
+        parts = [f"part{index:02d}-" + "x" * 233 for index in range(20)]
+        descriptors = [os.open(work, os.O_RDONLY | os.O_DIRECTORY)]
+        try:
+            for part in parts:
+                os.mkdir(part, dir_fd=descriptors[-1])
+                descriptors.append(os.open(part, os.O_RDONLY | os.O_DIRECTORY, dir_fd=descriptors[-1]))
+            os.close(os.open("leaf", os.O_WRONLY | os.O_CREAT, 0o600, dir_fd=descriptors[-1]))
+            # Each symlink target is below PATH_MAX; their resolved path is longer.
+            os.symlink("/".join(parts[:10]), "jump", dir_fd=descriptors[0])
+            os.symlink("/".join(parts[10:]), "more", dir_fd=descriptors[10])
+        finally:
+            for descriptor in reversed(descriptors):
+                os.close(descriptor)
+        plain = b"\0asm\1\0\0\0" + section(1, b"\1\x60\0\0") + section(3, b"\1\0")
+        plain += section(7, b"\1\6_start\0\0") + section(10, b"\1\2\0\x0b")
+        result = subprocess.run([native, "--strict"], input=plain, capture_output=True, env=env, timeout=60)
+        assert result.returncode == 0, result.stderr
+        (work / "wasi.o").write_bytes(result.stdout)
+        (work / "wasi.o").chmod(0o700)
         compiled, embedded = work / "native.o", work / "embedded.o"
         result = subprocess.run([native, "--strict"], input=Path(fixture).read_bytes(), capture_output=True, env=env, timeout=60)
         assert result.returncode == 0, result
@@ -116,6 +135,10 @@ def main():
                     assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), (operation, result)
                 if operation == "host-pathname":
                     (work / "host.socket").unlink()
+            for operation in ("long-realpath", "exec-wasi"):
+                result = subprocess.run([vm, "run", "--root", str(work), "--", str(obj), operation],
+                                        capture_output=True, env=env, timeout=30)
+                assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), (operation, result)
             reader, writer = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
             try:
                 # Keep the writer open and empty: reading this inherited

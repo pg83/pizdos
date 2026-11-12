@@ -41,6 +41,18 @@ int main(int argc, char** argv) {
         } else {
             assert(strcmp(address.sun_path, "host.socket") == 0);
         }
+    } else if (strcmp(argv[1], "long-realpath") == 0) {
+        char buffer[4096];
+        memset(buffer, 0x5a, sizeof(buffer));
+        assert(realpath("/jump/more/leaf", buffer) == NULL && errno == ENAMETOOLONG);
+        for (unsigned i = 0; i < sizeof(buffer); ++i) {
+            assert(buffer[i] == 0x5a);
+        }
+        char* allocated = realpath("/jump/more/leaf", NULL);
+        assert(allocated == NULL && errno == ENAMETOOLONG);
+    } else if (strcmp(argv[1], "exec-wasi") == 0) {
+        char* arguments[] = {"wasi", NULL};
+        assert(execv("/wasi.o", arguments) == -1 && errno == ENOEXEC);
     } else if (strcmp(argv[1], "recv-message") == 0) {
         int ends[2];
         assert(socketpair(AF_UNIX, SOCK_STREAM, 0, ends) == 0);
