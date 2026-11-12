@@ -158,15 +158,14 @@ func traceLines(pcs []uintptr) []string {
 }
 
 // goFunction is a Go function's name without its package: the kernel's
-// functions are all of one.
+// functions are all of one. CallersFrames supplies package-qualified Go
+// names; registered module names take the moduleFunction path instead.
+// An unknown frame has an empty name, which the slice also preserves.
 func goFunction(name string) string {
 	start := strings.LastIndexByte(name, '/') + 1
+	dot := strings.IndexByte(name[start:], '.') + 1
 
-	if dot := strings.IndexByte(name[start:], '.'); dot >= 0 {
-		return name[start+dot+1:]
-	}
-
-	return name
+	return name[start+dot:]
 }
 
 // moduleFunction is the name of a function of the module from the name the
