@@ -703,6 +703,10 @@ func (p *Process) gethostbyname(name string, family int) uint32 {
 			p.setHerrno(tryAgain)
 
 			return 0
+		case eaiFail:
+			p.setHerrno(noRecovery)
+
+			return 0
 		default:
 			p.setHerrno(hostNotFound)
 
