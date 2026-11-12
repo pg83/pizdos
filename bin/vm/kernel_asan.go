@@ -180,11 +180,9 @@ func (p *Process) asanDescribe(addr uint64) string {
 	case shadowOK:
 		return "accessible"
 	case shadowRedzone:
-		if ok {
-			return fmt.Sprintf("past the end of the %d-byte block at %#x", asked, start)
-		}
-
-		return "in a red zone"
+		// Only shadowBlock creates red zones for live allocations; freeing
+		// changes the whole block to shadowFreed, including its red zone.
+		return fmt.Sprintf("past the end of the %d-byte block at %#x", asked, start)
 	case shadowFreed:
 		if ok {
 			return fmt.Sprintf("in the freed %d-byte block at %#x", blockSize, start)

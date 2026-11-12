@@ -215,10 +215,7 @@ func (p *Process) daemon(nochdir, noclose uint32) uint32 {
 
 // dupTo2 makes a descriptor refer to a file, closing what it referred to.
 func (p *Process) dupTo2(f *File, fd uint32) {
-	if int(fd) >= len(p.files) {
-		p.files = append(p.files, make([]*Descriptor, int(fd)+1-len(p.files))...)
-	}
-
+	// daemon uses descriptors 0..2, present from runKernel and inherit.
 	f.ref()
 	p.closeFd(int(fd))
 	p.files[fd] = &Descriptor{file: f}

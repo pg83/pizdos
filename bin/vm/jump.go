@@ -48,17 +48,10 @@ func (j *Jump) sp() uint64 {
 func (i *Instance) longjmp(j *Jump, val uint32) {
 	regions := i.obj.meta.regions
 	pc := j.frame[jumpPC] - uint64(i.code.base)
-
-	if j.frame[jumpPC] < uint64(i.code.base) || pc >= uint64(len(i.obj.text)) {
-		return
-	}
-
+	// Only direct returns-twice adapters create these private frames. Their
+	// saved PC follows a call inside this Code's function region; the guest's
+	// jmp_buf never contains or supplies the native frame (kernel_jump.go).
 	k := sort.Search(len(regions), func(k int) bool { return uint64(regions[k].end) > pc })
-
-	if k == len(regions) || uint64(regions[k].start) > pc {
-		return
-	}
-
 	j.code = [2]uint64{uint64(i.code.base) + uint64(regions[k].start), uint64(i.code.base) + uint64(regions[k].end)}
 	land := nativeFunc(reflect.TypeFor[func(uintptr, uint32, uintptr) uint32](), landStub())
 	land.Interface().(func(uintptr, uint32, uintptr) uint32)(uintptr(unsafe.Pointer(j)), val, i.ctx())

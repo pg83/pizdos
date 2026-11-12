@@ -118,10 +118,7 @@ func (p *Process) forkpty(amaster, name, termp, winp uint32) uint32 {
 		f := newFile(slave, true)
 
 		for fd := range 3 {
-			if fd >= len(c.files) {
-				c.files = append(c.files, nil)
-			}
-
+			// inherit preserves the initial three descriptor slots, even closed.
 			c.closeFd(fd)
 
 			if fd > 0 {

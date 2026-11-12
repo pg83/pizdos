@@ -376,14 +376,9 @@ func (p *Process) statvfs(fd int, at uint32) error {
 	b := p.span(at, 72)
 	clear(b)
 	le := binary.LittleEndian
-	frsize := st.Frsize
-
-	if frsize == 0 {
-		frsize = st.Bsize
-	}
-
+	// Linux fs/statfs.c already substitutes f_bsize for a zero f_frsize.
 	le.PutUint32(b, uint32(st.Bsize))
-	le.PutUint32(b[4:], uint32(frsize))
+	le.PutUint32(b[4:], uint32(st.Frsize))
 	le.PutUint64(b[8:], st.Blocks)
 	le.PutUint64(b[16:], st.Bfree)
 	le.PutUint64(b[24:], st.Bavail)
@@ -722,10 +717,8 @@ func (p *Process) libcRealpath(path, resolved uint32) uint32 {
 		return p.pointer(resolved, nil)
 	}
 
-	if len(guest) >= 4096 {
-		return p.pointer(0, syscall.ENAMETOOLONG)
-	}
-
+	// realpath reads /proc/self/fd: Linux bounds that result below PATH_MAX
+	// in fs/proc/base.c. Removing the root prefix can only shorten it.
 	p.putString(resolved, guest)
 
 	return p.pointer(resolved, nil)
