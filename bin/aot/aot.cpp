@@ -21940,9 +21940,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // fact comes from an access done there or later.
     static Slice<Slice<CheckedValue>> checkedValues(Function* f, CfgInfo* ci) {
         Int limit = minimum(16384, 16777216 / length(f->blocks));
-        if (limit == 0) {
-            return {};
-        }
         // The analysis keeps its tables in a pool of its own; only the proofs
         // go to the caller's.
         ObjPool* caller = activePool;
