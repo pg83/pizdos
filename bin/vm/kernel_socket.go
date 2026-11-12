@@ -224,14 +224,14 @@ func (p *Process) connect(f *File, addr []byte) error {
 				wait = min(wait, int((remaining+time.Millisecond-1)/time.Millisecond))
 			}
 
-			if _, werr := p.waitFds(nil, wait, true); werr != nil {
+			if _, werr := p.waitFds(nil, wait, timeout < 0); werr != nil {
 				return werr
 			}
 
 			continue
 		}
 
-		ready, werr := p.waitFds([]pollFd{{fd: int32(f.fd), events: pollOut}}, timeout, true)
+		ready, werr := p.waitFds([]pollFd{{fd: int32(f.fd), events: pollOut}}, timeout, timeout < 0)
 
 		if werr != nil {
 			return werr

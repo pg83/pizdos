@@ -221,7 +221,7 @@ func (p *Process) transferMode(f *File, events int16, mode ioMode, op func() (in
 				wait = 0
 			}
 
-			n, err := p.waitFds([]pollFd{{fd: int32(f.fd), events: events}}, wait, true)
+			n, err := p.waitFds([]pollFd{{fd: int32(f.fd), events: events}}, wait, timeout < 0)
 
 			if err != nil {
 				return 0, err
@@ -239,7 +239,7 @@ func (p *Process) transferMode(f *File, events int16, mode ioMode, op func() (in
 		}
 
 		if err == syscall.EAGAIN && f.pollable && f.owned && !nonblock {
-			ready, err := p.waitFds([]pollFd{{fd: int32(f.fd), events: events}}, timeout, true)
+			ready, err := p.waitFds([]pollFd{{fd: int32(f.fd), events: events}}, timeout, timeout < 0)
 
 			if err != nil {
 				return 0, err
