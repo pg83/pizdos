@@ -20996,6 +20996,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             // Copy k reads, for the header's parameters, what copy k - 1
             // passes back; the last copy's latch goes to the exit.
             const Int values = length(f->values);
+            // Before versioning, operand spans and branch/return payloads
+            // have single live owners. Both remappers consume original IDs;
+            // copies write only new blocks or the skipped original body.
             // The copies take the body's terminators as they were: the
             // latch's changes as the copies are made.
             Slice<Term> terms = makeSlice<Term>(length(body));
@@ -21006,7 +21009,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             for (Int v = 0; v < values; ++v) {
                 map[v] = i32(v);
             }
-                i32 previousLatch = latch;
+            i32 previousLatch = latch;
             for (Int k = 1; k < trips; ++k) {
                 Slice<i32> copy = makeSlice<i32>(blocks);
                 for (Int i = 0; i < length(body); ++i) {
@@ -21017,7 +21020,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     map[params[j]] = backArgs[j];
                 }
                 auto remap = [&](i32 v) {
-                    return v < values ? map[v] : v;
+                    return map[v];
                 };
                 for (Int i = 0; i < length(body); ++i) {
                     const i32 b = body[i];
@@ -21071,9 +21074,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             Edge out = f->blocks[previousLatch].term.edges[1 - back];
             f->blocks[previousLatch].term = Term{TermJump, {}, sliceOf<Edge>({out}), {}, {}};
             auto outside = [&](i32 v) {
-                if (v >= values) {
-                    return v;
-                }
                 const i32 b = f->values[v].block;
                 return b >= 0 && b < blocks && member[b] ? map[v] : v;
             };
