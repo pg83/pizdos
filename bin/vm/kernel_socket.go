@@ -238,7 +238,9 @@ func (p *Process) connect(f *File, addr []byte) error {
 		}
 
 		if ready == 0 {
-			return syscall.ETIMEDOUT
+			// SO_SNDTIMEO ends the guest's wait; the host's nonblocking
+			// connection still runs and may finish after this call returns.
+			return syscall.EINPROGRESS
 		}
 
 		code, gerr := syscall.GetsockoptInt(f.fd, syscall.SOL_SOCKET, syscall.SO_ERROR)
