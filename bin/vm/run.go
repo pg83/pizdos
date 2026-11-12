@@ -35,7 +35,7 @@ func runObject(path, root string, argv []string, asan bool) (code int) {
 		case *wasiExit:
 			code = int(e.code)
 		case *Trap:
-			fmt.Fprintln(os.Stderr, e.message())
+			fmt.Fprintln(os.Stderr, e.Error())
 
 			for _, line := range traceLines(e.stack) {
 				fmt.Fprintln(os.Stderr, "    "+line)

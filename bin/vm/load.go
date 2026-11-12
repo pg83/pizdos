@@ -38,6 +38,21 @@ type Imports interface {
 	table(imp *ImportMeta) uintptr
 }
 
+// FunctionImports supplies the empty state imports of function-only hosts.
+type FunctionImports struct{}
+
+func (FunctionImports) global(*ImportMeta) uintptr {
+	return 0
+}
+
+func (FunctionImports) memory(*ImportMeta) *LinearMemory {
+	return nil
+}
+
+func (FunctionImports) table(*ImportMeta) uintptr {
+	return 0
+}
+
 // Code is an object linked in memory: the text, then .rodata and the GOT.
 // The code reaches its instance through the context, and the Go functions
 // of the GOT take the instance first, so every instance of the object runs
@@ -137,10 +152,6 @@ var trapNames = map[uint32]string{
 }
 
 func (t *Trap) Error() string {
-	return t.message()
-}
-
-func (t *Trap) message() string {
 	if t.code == trapAsan {
 		return "wasm trap: " + trapNames[t.code] + ": " + t.access()
 	}

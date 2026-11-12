@@ -49,7 +49,7 @@ func compileOptions() CompileOptions {
 	return options
 }
 
-type CompilerImports struct{}
+type CompilerImports struct{ FunctionImports }
 
 type CompilerIO struct {
 	input      io.Reader
@@ -58,112 +58,66 @@ type CompilerIO struct {
 }
 
 func (CompilerImports) function(imp *ImportMeta) any {
-	if imp.module != "wasi_snapshot_preview1" {
-		return nil
-	}
-
+	// compilerBlob is fixed at build time: its only imports are these three
+	// wasi_snapshot_preview1 functions, declared by aot.cpp.
 	switch imp.name {
 	case "fd_read":
 		return compilerRead
 	case "fd_write":
 		return compilerWrite
-	case "proc_exit":
-		return compilerExit
 	}
 
-	return nil
+	return compilerExit
 }
 
-func (CompilerImports) global(*ImportMeta) uintptr {
-	return 0
-}
-
-func (CompilerImports) memory(*ImportMeta) *LinearMemory {
-	return nil
-}
-
-func (CompilerImports) table(*ImportMeta) uintptr {
-	return 0
-}
-
-func compilerTransfer(ctx uintptr, fd, iovs, count, done uint32, write bool) uint32 {
+// The private compiler bridge serves aot.cpp's read and writeAll only.
+// Both pass one valid iovec and a valid done pointer; reads use fd 0 and
+// writes fd 1/2. Its single uint32-sized buffer also bounds the byte count.
+func compilerTransfer(ctx uintptr, fd, iovs, done uint32, write bool) uint32 {
 	m := guest(ctx)
 	host := instanceAt(ctx).host.(*CompilerIO)
+	table := span(m, iovs, 8)
+	at := binary.LittleEndian.Uint32(table)
+	size := binary.LittleEndian.Uint32(table[4:])
+	b := span(m, at, uint64(size))
+	var n int
+	var err error
 
-	if count > 1024 || span(m, done, 4) == nil {
-		return wasiEfault
-	}
+	if write {
+		var out io.Writer = host.output
 
-	table := span(m, iovs, uint64(count)*8)
-
-	if table == nil {
-		return wasiEfault
-	}
-
-	if !write && fd != 0 || write && fd != 1 && fd != 2 {
-		return wasiEbadf
-	}
-
-	total := uint64(0)
-
-	for j := uint32(0); j < count; j++ {
-		at := binary.LittleEndian.Uint32(table[j*8:])
-		size := binary.LittleEndian.Uint32(table[j*8+4:])
-		b := span(m, at, uint64(size))
-
-		if b == nil {
-			return wasiEfault
+		if fd == 2 {
+			out = &host.diagnostic
 		}
 
-		var n int
-		var err error
-
-		if write {
-			var out io.Writer = host.output
-
-			if fd == 2 {
-				out = &host.diagnostic
-			}
-
-			if chaosFail("compile-write") {
-				err = io.ErrShortWrite
-			} else {
-				n, err = out.Write(b)
-			}
+		if chaosFail("compile-write") {
+			err = io.ErrShortWrite
 		} else {
-			if chaosFail("compile-read") {
-				err = io.ErrUnexpectedEOF
-			} else {
-				n, err = host.input.Read(b)
-			}
+			n, err = out.Write(b)
 		}
-
-		if err != nil && err != io.EOF {
-			throw(err)
-		}
-
-		total += uint64(n)
-
-		if total > 0xffffffff {
-			return wasiEinval
-		}
-
-		if n < len(b) || err == io.EOF {
-			break
+	} else {
+		if chaosFail("compile-read") {
+			err = io.ErrUnexpectedEOF
+		} else {
+			n, err = host.input.Read(b)
 		}
 	}
 
-	put32(m, done, uint32(total))
+	if err != nil && err != io.EOF {
+		throw(err)
+	}
+
+	put32(m, done, uint32(n))
 
 	return wasiOK
 }
 
 func compilerRead(ctx uintptr, fd, iovs, count, done uint32) uint32 {
-	return compilerTransfer(ctx, fd, iovs, count, done, false)
+	return compilerTransfer(ctx, fd, iovs, done, false)
 }
 
 func compilerWrite(ctx uintptr, fd, iovs, count, done uint32) uint32 {
-	return compilerTransfer(ctx, fd, iovs, count, done, true)
+	return compilerTransfer(ctx, fd, iovs, done, true)
 }
 
 func compilerExit(ctx uintptr, code uint32) {

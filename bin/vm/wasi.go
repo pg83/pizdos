@@ -71,6 +71,7 @@ type wasiExit struct {
 }
 
 type WASI struct {
+	FunctionImports
 	args []string
 	env  []string
 	fds  map[uint32]int
@@ -132,18 +133,6 @@ func (w *WASI) function(imp *ImportMeta) any {
 	}
 
 	return functions[imp.name]
-}
-
-func (w *WASI) global(*ImportMeta) uintptr {
-	return 0
-}
-
-func (w *WASI) memory(*ImportMeta) *LinearMemory {
-	return nil
-}
-
-func (w *WASI) table(*ImportMeta) uintptr {
-	return 0
 }
 
 // wasiAt is the WASI of the instance whose import Go runs.

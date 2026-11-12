@@ -27,6 +27,7 @@ import (
 // which delivers pending signals.
 
 type Kernel struct {
+	FunctionImports
 	// root is an O_PATH descriptor of the root directory, rootPath its host
 	// path.
 	root     int
@@ -177,18 +178,6 @@ func (k *Kernel) function(imp *ImportMeta) any {
 	}
 
 	return k.functions[imp.name]
-}
-
-func (k *Kernel) global(*ImportMeta) uintptr {
-	return 0
-}
-
-func (k *Kernel) memory(*ImportMeta) *LinearMemory {
-	return nil
-}
-
-func (k *Kernel) table(*ImportMeta) uintptr {
-	return 0
 }
 
 // functionTable lists the kernel's functions by import name.
@@ -372,7 +361,7 @@ func (p *Process) runImage(img *execImage, i *Instance, enter func()) (next *exe
 		case *execImage:
 			next = e
 		case *Trap:
-			msg := e.message()
+			msg := e.Error()
 
 			if e.code == trapAsan {
 				msg = who.asanReport(e)
