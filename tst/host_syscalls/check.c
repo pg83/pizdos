@@ -31,7 +31,11 @@
 
 int main(int argc, char** argv) {
     assert(argc == 2);
-    if (strcmp(argv[1], "permanent-dns-error") == 0) {
+    if (strcmp(argv[1], "stop") == 0) {
+        raise(SIGSTOP);
+        // Denial of the first process's host stop must end the VM.
+        return 91;
+    } else if (strcmp(argv[1], "permanent-dns-error") == 0) {
         struct addrinfo hints = {0}, *result = NULL;
         hints.ai_family = AF_INET;
         hints.ai_socktype = SOCK_STREAM;

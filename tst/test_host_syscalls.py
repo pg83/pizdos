@@ -162,6 +162,10 @@ def main():
         result = subprocess.run([vm, "-o", str(embedded), fixture], capture_output=True, env=env, timeout=60)
         assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), result
         for obj in (compiled, embedded):
+            result = subprocess.run([wrapper, f"{errno.EPERM}/stop", "--", vm, "run", "--root", str(work), "--", str(obj), "stop"],
+                                    capture_output=True, env=env, timeout=30)
+            assert result.returncode == 1 and result.stdout == b"", ("stop", result)
+            assert b"[1]: operation not permitted\n" in result.stderr and b"panic:" not in result.stderr, result
             with refusing_dns() as port:
                 result = subprocess.run([interrupt, f"dns/{port}", "--", vm, "run", "--root", str(work), "--", str(obj), "permanent-dns-error"],
                                         capture_output=True, env=dict(env, GODEBUG="netdns=go"), timeout=30)
