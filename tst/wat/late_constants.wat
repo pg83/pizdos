@@ -23,5 +23,31 @@
     (i32.add (local.get $sum) (global.get $tag)))
   ;; END_FUNCTION
 
+  ;; BEGIN_COPY_FUNCTION
+  (func $collapse (param $dest i32) (param $source i32) (param $count i32) (result i32)
+    ;; LOCALS
+    (local $index i32)
+    (if (local.get $count)
+      (then
+        ;; INITIAL
+        (loop $next ;; PARAMETERS
+          ;; RESTORE
+          ;; Both products become zero late. Every iteration writes the
+          ;; same destination byte, so it must retain the final source byte.
+          (i32.store8
+            (i32.add (local.get $dest)
+              (i32.sub
+                (i32.mul (local.get $index) (local.get $p0))
+                (i32.mul (i32.add (local.get $index) (i32.const 1)) (local.get $p0))))
+            (i32.load8_u (i32.add (local.get $source) (local.get $index))))
+          (local.set $index (i32.add (local.get $index) (i32.const 1)))
+          (br_if $next ;; ROTATION
+            (i32.lt_u (local.get $index) (local.get $count)))
+          ;; DROP
+        )))
+    (local.get $index))
+  ;; END_COPY_FUNCTION
+
   (data (i32.const 8229) "\13")
+  ;; COPY_DATA
 )

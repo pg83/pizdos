@@ -9,7 +9,9 @@ import tempfile
 
 def program(template):
     prefix, rest = template.split(";; BEGIN_FUNCTION")
-    body, suffix = rest.split(";; END_FUNCTION")
+    body, rest = rest.split(";; END_FUNCTION")
+    middle, rest = rest.split(";; BEGIN_COPY_FUNCTION")
+    copy_body, suffix = rest.split(";; END_COPY_FUNCTION")
     functions, checks = [], []
     for depth in (8, 12, 16, 20, 32):
         function = body.replace("$scan", f"$scan{depth}")
@@ -35,8 +37,30 @@ def program(template):
                 expected = count * depth * (19 + (1 if bits & 37 else -1))
                 checks.append(f"(if (i32.ne (call $scan{depth} (i32.const 8192) (i32.const {count}) "
                               f"(i32.const {bits})) (i32.const {expected})) (then unreachable))")
-    text = prefix + "\n".join(functions) + suffix.rstrip()[:-1]
-    return text + '\n(func (export "_start")\n' + "\n".join(checks) + "\n))\n", len(checks)
+    assertions = len(checks)
+    copies = []
+    image = bytes((index * 37 + 11) % 251 for index in range(256))
+    for depth in (4, 8, 12, 16):
+        function = copy_body.replace("$collapse", f"$collapse{depth}")
+        function = function.replace(";; LOCALS", " ".join(f"(local $p{i} i32)" for i in range(depth)))
+        function = function.replace(";; INITIAL", " ".join(["(i32.const 0)"] * depth))
+        function = function.replace(";; PARAMETERS", "(param " + " ".join(["i32"] * depth) + ")")
+        function = function.replace(";; RESTORE", " ".join(f"(local.set $p{i})" for i in reversed(range(depth))))
+        rotation = " ".join(f"(local.get $p{i})" for i in range(1, depth)) + " (i32.const 0)"
+        function = function.replace(";; ROTATION", rotation).replace(";; DROP", " ".join(["drop"] * depth))
+        copies.append(function)
+        for count in (0, 1, 17, 97):
+            expected = image[count - 1] if count else 85
+            checks.extend(("(i32.store (i32.const 32767) (i32.const 1431655765))",
+                           f"(if (i32.ne (call $collapse{depth} (i32.const 32768) (i32.const 12288) "
+                           f"(i32.const {count})) (i32.const {count})) (then unreachable))",
+                           f"(if (i32.ne (i32.load (i32.const 32767)) "
+                           f"(i32.const {0x55550055 + (expected << 8)})) (then unreachable))"))
+            assertions += 2
+    data = "".join(f"\\{byte:02x}" for byte in image)
+    suffix = suffix.replace(";; COPY_DATA", f'(data (i32.const 12288) "{data}")')
+    text = prefix + "\n".join(functions) + middle + "\n".join(copies) + suffix.rstrip()[:-1]
+    return text + '\n(func (export "_start")\n' + "\n".join(checks) + "\n))\n", assertions
 
 
 def main():
@@ -60,7 +84,7 @@ def main():
             for obj in (compiled, embedded):
                 result = subprocess.run([vm, "run", "--", str(obj)], capture_output=True, env=env, timeout=30)
                 assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (strict, result)
-    print(f"WAT late constants: {count} checks of 8/12/16/20/32 carried parameters agree with an integer model, wazero and both AOTs")
+    print(f"WAT late constants: {count} checks of carried parameters and zero-coefficient repeated stores agree with an integer model, wazero and both AOTs")
 
 
 if __name__ == "__main__":
