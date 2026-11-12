@@ -120,9 +120,14 @@ def main():
             terminal([*command, "interrupt"], [], b"interrupt: interrupted terminal: ok\r\n", env)
             terminal([wrapper, f"{errno.ENOTTY}/16", "--", *command, "attributes"], [],
                      b"terminal attributes: failed as expected\r\n", env)
-        # A devpts instance mounted inside an isolated user/mount namespace
-        # gives a real terminal a path in the guest root, outside /dev/pts.
-        result = subprocess.run(["unshare", "--user", "--map-root-user", "--mount", "--propagation", "private",
+        # A private mount namespace gives a real terminal a path in the
+        # guest root. GitHub's runner restricts user namespace UID mappings;
+        # use its passwordless sudo for this isolated mount instead.
+        namespace = ["unshare", "--user", "--map-root-user", "--mount", "--propagation", "private"]
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            namespace = ["sudo", "-n", "--preserve-env=GOCOVERDIR,W2X_MEMORY_TAIL,W2X_TAIL_PROFILE",
+                         "unshare", "--mount", "--propagation", "private"]
+        result = subprocess.run([*namespace,
                                  sys.executable, __file__, "--private-name", vm, str(root), str(compiled), str(embedded)],
                                 capture_output=True, env=env, timeout=60)
         assert (result.returncode, result.stdout, result.stderr) == (0, b"private terminal: both AOTs resolve and reopen the guest path\n", b""), result
