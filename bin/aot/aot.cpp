@@ -3401,11 +3401,6 @@ namespace {
         i32 end{};
     };
 
-    struct ParamIndex {
-        i32 index = 0;
-        u32 epoch = 0;
-    };
-
     struct Optimizer {
         Function* f{};
         Vec<i32> alias{};
@@ -3417,10 +3412,6 @@ namespace {
         // Replacements made and replacements applied to the operands.
         u32 replaced = 0;
         u32 applied = 0;
-        Vec<u32> incomingSeen;
-        u32 incomingEpoch = 0;
-        Vec<ParamIndex> repairIndex;
-        u32 repairEpoch = 0;
     };
 
     struct LoopBodyUses;
@@ -20056,32 +20047,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Function* f = o->f;
         Vec<Edge*> out;
         Slice<i32> preds = f->blocks[b].preds;
-        const bool deduplicate = length(preds) > 1;
-        u32 epoch = 0;
-        if (deduplicate) {
-            const usize before = o->incomingSeen.size();
-            const usize count = usize(length(f->blocks));
-            if (before < count) {
-                o->incomingSeen.resize(count);
-                for (usize i = before; i < count; ++i) {
-                    o->incomingSeen[i] = 0;
-                }
-            }
-            epoch = ++o->incomingEpoch;
-            if (!epoch) {
-                o->incomingSeen.visit([](u32& mark) {
-                    mark = 0;
-                });
-                epoch = ++o->incomingEpoch;
-            }
-        }
+        // computePreds groups edges by source block. Cleanup recomputes
+        // after merging, and versionedPreds preserves that order, so repeated
+        // predecessor IDs are adjacent at every caller of incoming.
         for (Int i = 0; i < length(preds); ++i) {
             const i32 q = preds[i];
-            if (deduplicate) {
-                if (o->incomingSeen[usize(q)] == epoch) {
-                    continue;
-                }
-                o->incomingSeen[usize(q)] = epoch;
+            if (i > 0 && q == preds[i - 1]) {
+                continue;
             }
             auto edges = f->blocks[q].term.edges;
             for (Int e = 0; e < length(edges); ++e) {
@@ -20199,32 +20171,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void optimizerRepair(Optimizer* o, i32 h, Map<i32, Bypass> bypasses) {
         Function* f = o->f;
         Slice<i32> params = appendSlice(Slice<i32>{}, f->blocks[h].params);
-        u32 epoch = ++o->repairEpoch;
-        if (!epoch) {
-            o->repairIndex.visit([](ParamIndex& entry) {
-                entry.epoch = 0;
-            });
-            epoch = ++o->repairEpoch;
-        }
-        if (length(params)) {
-            const usize before = o->repairIndex.size();
-            const usize count = usize(length(f->values));
-            if (before < count) {
-                o->repairIndex.resize(count);
-                for (usize i = before; i < count; ++i) {
-                    o->repairIndex[i] = {};
-                }
-            }
-            for (Int j = 0; j < length(params); ++j) {
-                o->repairIndex[usize(params[j])] = {i32(j), epoch};
-            }
-        }
+        // OpParam records its index in aux; dropping parameters updates
+        // it. Repair appends parameters only to blocks other than h, whose
+        // parameter list stays fixed. Verify membership against the snapshot
+        // so removed or unrelated values still report no parameter.
         auto paramIndex = [&](i32 v) -> i32 {
-            if (Uint(v) >= o->repairIndex.size()) {
-                return -1;
+            const Value& param = f->values[v];
+            if (param.op == OpParam && param.block == h && u64(param.aux) < u64(length(params)) && params[param.aux] == v) {
+                return i32(param.aux);
             }
-            const ParamIndex entry = o->repairIndex[usize(v)];
-            return entry.epoch == epoch ? entry.index : -1;
+            return -1;
         };
         Map<Array<i32, 2>, i32> memo = makeMap<Array<i32, 2>, i32>();
         Map<i32, Slice<i32>> preds = makeMap<i32, Slice<i32>>();
