@@ -866,12 +866,9 @@ func (p *Process) unmap(at uint32) {
 }
 
 // unmapAll ends the mappings of an image that ends: shared ones go back to
-// their files. The memory goes with the image.
+// their files. The memory goes with the image. runImage calls it before
+// clearing the instance it installed, including after unwinding vfork.
 func (p *Process) unmapAll() {
-	if p.inst == nil {
-		return
-	}
-
 	for at, m := range p.mappings {
 		p.writeBack(at, m, 0, m.length)
 

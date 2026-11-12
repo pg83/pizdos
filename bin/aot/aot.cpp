@@ -439,9 +439,8 @@ void Heap::releaseSlow(HeapPage* page, void* object) {
 }
 
 void Heap::release(void* object) {
-    if (!object) {
-        return;
-    }
+    // freePage validates its page; buffers, chunks and inline vectors only
+    // release owned allocations. None of the callers passes a null object.
     auto* page = pageOf(object);
     const usize index = page->cls;
     require(index < heapClassCount, "free of unallocated object");
@@ -601,19 +600,11 @@ inline void Buffer::resize(usize size) {
 }
 
 void Buffer::append(const void* data, usize size) {
-    if (size == 0) {
-        return;
-    }
+    // SmallVec's formatter is the only caller: a nonempty displayed name
+    // or at least one formatted digit, both outside the output buffer.
     const usize before = this->size();
-    const auto pointer = reinterpret_cast<uptr>(data);
-    const auto base = reinterpret_cast<uptr>(storage);
-    const bool internal = pointer >= base && pointer - base <= before && size <= before - (pointer - base);
-    const usize offset = internal ? pointer - base : 0;
     reserve(checkedAdd(before, size));
-    if (internal) {
-        data = static_cast<const u8*>(storage) + offset;
-    }
-    moveBytes(static_cast<u8*>(storage) + before, data, size);
+    copyBytes(static_cast<u8*>(storage) + before, data, size);
     header()->used = before + size;
 }
 
@@ -1748,16 +1739,11 @@ namespace {
             if (!source.count) {
                 return;
             }
-            const uptr begin = reinterpret_cast<uptr>(source.contiguous);
-            const uptr own = reinterpret_cast<uptr>(contiguous);
-            const bool internal = own && begin >= own && begin - own < usize(count) * sizeof(T);
-            const usize offset = internal ? (begin - own) / sizeof(T) + source.offset : 0;
+            // Callers append a stack array, another interval's ranges, or
+            // the disjoint coalescing vector consumed by mergeRanges.
             const usize before = count;
             const usize length = source.count;
             resize(before + length);
-            if (internal) {
-                source = subslice(view(), Int(offset), Int(offset + length));
-            }
             for (usize i = 0; i < length; ++i) {
                 (*this)[before + i] = source[Int(i)];
             }
@@ -13959,6 +13945,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             // A swap performs one move of a cycle and renames the sources of
             // the others; the move completing a cycle of two is done with it.
+            // With distinct destinations and no ready move, the remaining
+            // sources are a permutation of them. Only m reads m.src.
             Move m = pending[0];
             funcEmitterSwap(e, m.dst, m.src);
             Slice<Move> rest = makeSlice<Move>(0, length(pending) - 1);
@@ -13966,8 +13954,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 Move o = pending[k];
                 if (o.src == m.dst) {
                     o.src = m.src;
-                } else if (o.src == m.src) {
-                    o.src = m.dst;
                 }
                 if (o.src != o.dst) {
                     rest = appendValues(rest, o);
