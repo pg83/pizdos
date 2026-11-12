@@ -932,6 +932,7 @@ for name, runner, fixture in (("wat_updates", "run_updates.py", "update_branches
                               ("wat_exit_values", "run_exit_values.py", "exit_values.wat"),
                               ("wat_startup_fork", "run_startup_fork.py", "startup_fork.wat"),
                               ("wat_branch_threads", "run_branch_threads.py", "branch_threads.wat"),
+                              ("wat_branch_pairs", "run_branch_pairs.py", "branch_pairs.wat"),
                               ("wat_late_constants", "run_late_constants.py", "late_constants.wat"),
                               ("wat_shared_addresses", "run_shared_addresses.py", "shared_addresses.wat"),
                               ("wat_address_rotation", "run_address_rotation.py", "address_rotation.wat"),
