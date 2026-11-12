@@ -230,10 +230,10 @@ def main():
         result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
         assert result.returncode == 0 and embedded.read_bytes() == data, result.stderr
 
-        def run(contents):
+        def run(contents, asan=False):
             program = work / "input.o"
             program.write_bytes(contents)
-            return subprocess.run([vm, "run", "--", str(program)], capture_output=True, env=env, timeout=30)
+            return subprocess.run([vm, "run", *(["--asan"] if asan else []), "--", str(program)], capture_output=True, env=env, timeout=30)
 
         for name, contents in valid:
             result = run(contents)
@@ -303,8 +303,9 @@ def main():
         trap_module = b"\0asm\1\0\0\0" + wasm_section(1, b"\2\x60\0\1\x7f\x60\0\0")
         trap_module += wasm_section(2, b"\1\6kernel\6getpid\0\0") + wasm_section(3, b"\1\1")
         trap_module += wasm_section(5, b"\1\0\1") + wasm_section(7, b"\1\6_start\0\1")
+        trap_prefix = trap_module
         body = b"\0\x10\0\x1a\0\x0b"
-        trap_module += wasm_section(10, b"\1" + uleb(len(body)) + body)
+        trap_module = trap_prefix + wasm_section(10, b"\1" + uleb(len(body)) + body)
         source.write_bytes(trap_module)
         result = subprocess.run([native], input=trap_module, capture_output=True, env=env, timeout=60)
         assert result.returncode == 0, result.stderr
@@ -321,6 +322,28 @@ def main():
                 result = run(trap_obj.replaced(".text", patched))
                 assert result.returncode == status and result.stdout == b"" and diagnostic in result.stderr, (code, result)
                 assert b"panic:" not in result.stderr, (code, result)
+
+        # An older producer's report can disagree with the current shadow
+        # map. Preserve the reported address and describe that map honestly.
+        body = b"\0\x10\0\x1a\x41\x20\x2d\0\0\x41\0\x47\x04\x40\0\x0b\x0b"
+        asan_module = trap_prefix + wasm_section(10, b"\1" + uleb(len(body)) + body)
+        source.write_bytes(asan_module)
+        result = subprocess.run([native, "--asan"], input=asan_module, capture_output=True, env=env, timeout=60)
+        assert result.returncode == 0, result.stderr
+        native_asan = result.stdout
+        result = subprocess.run([vm, "--asan", "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
+        assert result.returncode == 0 and embedded.read_bytes() == native_asan, result
+        for original in (native_asan, embedded.read_bytes()):
+            result = run(original, asan=True)
+            assert result.returncode == 139 and b"in the first KiB" in result.stderr, result
+            asan_obj = Object(original)
+            text = asan_obj.contents(".text")
+            marker = b"\xb9" + struct.pack("<I", 32)  # mov ecx, reported address
+            assert text.count(marker) == 1, "fixture must have one explicit address report"
+            patched = text.replace(marker, b"\xb9" + struct.pack("<I", 4096))
+            result = run(asan_obj.replaced(".text", patched), asan=True)
+            assert result.returncode == 139 and result.stdout == b"" and b"1-byte load at 0x1000: accessible" in result.stderr, result
+            assert b"panic:" not in result.stderr, result
     print(f"objects: native/Wasm AOT agreement, {len(valid)} valid objects, {len(cases)} malformed objects and unknown/shadowless trap diagnostics checked")
 
 
