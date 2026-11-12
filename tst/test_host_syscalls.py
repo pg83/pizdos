@@ -171,7 +171,7 @@ def main():
                                         capture_output=True, env=dict(env, GODEBUG="netdns=go"), timeout=30)
                 assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), ("permanent-dns-error", result)
             for operation, number in (("retry-open", 437), ("retry-read", 0), ("retry-connect", 42),
-                                      ("temp-collision", "collision")):
+                                      ("retry-poll", 7), ("temp-collision", "collision")):
                 result = subprocess.run([interrupt, str(number), "--", vm, "run", "--root", str(work), "--", str(obj), operation],
                                         input=b"x", capture_output=True, env=env, timeout=30)
                 assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), (operation, result)

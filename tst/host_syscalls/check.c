@@ -51,6 +51,14 @@ int main(int argc, char** argv) {
         char byte;
         assert(read(0, &byte, 1) == 1 && byte == 'x');
         assert(read(0, &byte, 1) == 0);
+    } else if (strcmp(argv[1], "retry-poll") == 0) {
+        int ends[2];
+        assert(pipe(ends) == 0 && write(ends[1], "x", 1) == 1);
+        struct pollfd input = {ends[0], POLLIN, 0};
+        assert(poll(&input, 1, 100) == 1 && input.revents == POLLIN);
+        char byte;
+        assert(read(ends[0], &byte, 1) == 1 && byte == 'x');
+        assert(close(ends[0]) == 0 && close(ends[1]) == 0);
     } else if (strcmp(argv[1], "retry-connect") == 0) {
         int listener = socket(AF_INET, SOCK_STREAM, 0);
         struct sockaddr_in address = {0};
