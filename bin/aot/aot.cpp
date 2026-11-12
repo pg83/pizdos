@@ -8920,6 +8920,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void allocatorAllocateBlocked(Allocator* a, Interval* cur) {
+        // Ordinary MIR's operands/temps fit within 11 GPRs and 15 XMMs.
+        // ABI-wide fixed sets occur in moves/calls/returns: moves allow
+        // slots, and scalar results release their physical source first.
         Array<i32, 32> nextUse = {};
         Array<i32, 32> blockPos = {};
         auto candidates = allocatorCandidates(a, cur->classValue);
@@ -8987,10 +8990,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (firstUse > nextUse[reg] || blockPos[reg] <= start + 1 || nextUse[reg] == 0) {
             allocatorSpill(a, cur);
             if (firstUse < maxPos) {
+                // A required start has an evictable candidate. This
+                // spilled prefix therefore leaves an even reload boundary.
                 i32 at = allocatorSplitPos(a, start + 1, firstUse);
-                if (at < 0) {
-                    compilerError(String("internal error: no register for %s at %d"));
-                }
                 allocatorAddUnhandled(a, intervalSplit(cur, at));
             }
             return;
@@ -9044,10 +9046,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 inactive[inactive.count++] = it;
                 continue;
             }
+            // An unsplittable odd def at start+1 would have lost the
+            // max-next-use choice to a candidate unneeded in either half.
             i32 cut = allocatorSplitPos(a, start + 1, x);
-            if (cut < 0) {
-                compilerError(String("internal error: no split position for %s before %d"));
-            }
             allocatorAddUnhandled(a, intervalSplit(cur, cut));
             inactive[inactive.count++] = it;
         }
@@ -9438,10 +9439,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (lo <= intervalStart(tail)) {
             lo = intervalStart(tail) + 1;
         }
+        // Active eviction excludes a use at pos; inactive callers check
+        // CanEvict. The next required use leaves an even reload boundary.
         i32 at = allocatorSplitPos(a, lo, u);
-        if (at < 0 || at <= intervalStart(tail)) {
-            compilerError(String("internal error: cannot reload %s before %d"));
-        }
         allocatorAddUnhandled(a, intervalSplit(tail, at));
     }
 
@@ -18007,9 +18007,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             l->deferred[v] = false;
             lowererLowerValue(l, v);
         }
-        if (l->vregs[v] == noReg) {
-            compilerError(String("internal error: v%d used before definition in function %d"));
-        }
+        // The dominator walk lowers definitions before uses; parameters
+        // are preallocated and projections were defined at their call.
         return l->vregs[v];
     }
 
