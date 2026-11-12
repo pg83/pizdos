@@ -903,6 +903,7 @@ for name, runner, fixture in (("wat_updates", "run_updates.py", "update_branches
                               ("wat_float_selects", "run_float_selects.py", "float_selects.wat"),
                               ("wat_memory_arithmetic", "run_memory_arithmetic.py", "memory_arithmetic.wat"),
                               ("wat_copy_addresses", "run_copy_addresses.py", "copy_addresses.wat"),
+                              ("wat_dispatch_values", "run_dispatch_values.py", "dispatch_values.wat"),
                               ("wat_loop_escapes", "run_loop_escapes.py", "loop_escapes.wat")):
     runner, fixture = "$(S)/tst/wat/" + runner, "$(S)/tst/wat/" + fixture
     stamp = f"$(B)/tst/{name}.stamp"
