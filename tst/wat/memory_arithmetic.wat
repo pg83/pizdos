@@ -15,6 +15,15 @@
 
   ;; UNSIGNED_ROUNDTRIPS
 
+  (func $merged_unsigned (param $address i32) (param $condition i32) (result i32)
+    (local $first i64)
+    (local.set $first (i64.extend_i32_u (local.get $address)))
+    (i32.load8_u
+      (i32.wrap_i64
+        (if (result i64) (i32.lt_u (local.get $condition) (i32.const 7))
+          (then (i64.extend_i32_u (local.get $address)))
+          (else (local.get $first))))))
+
   (func $divide_between (param $address i32) (param $numerator i32) (param $denominator i32) (result i32)
     (local $before i32)
     (local $quotient i32)

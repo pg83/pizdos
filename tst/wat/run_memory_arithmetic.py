@@ -49,6 +49,13 @@ def program(template):
                                f"(if (i64.ne (call ${name} (i32.const 4096)) (i64.const {expected})) (then unreachable))"))
             checks += 1
     template = template.replace(";; UNSIGNED_ROUNDTRIPS", "\n".join(roundtrips))
+    for address in (4096, 4111, 4127):
+        for condition in (0, 6, 7, 0xffffffff):
+            for byte in (0, 17, 255):
+                statements.extend((f"(i32.store8 (i32.const {address}) (i32.const {byte}))",
+                                   f"(if (i32.ne (call $merged_unsigned (i32.const {address}) (i32.const {condition})) "
+                                   f"(i32.const {byte})) (then unreachable))"))
+                checks += 1
     for bits in (32, 64):
         values = (0.0, -0.0, 1.0, -1.0, 13.25, 2.0 ** -40, 2.0 ** 40)
         for operation in ("add", "mul"):
