@@ -168,6 +168,10 @@ def main():
     bad("metadata-profile", obj.note(memory + b"\2" + uleb(64) + b"\1"), "invalid memory tail profile")
     bad("metadata-shadow", obj.note(memory + b"\4\1"), "invalid shadow slot")
     bad("metadata-lines", obj.note(prefix + b"\10\0\1\0\0\1"), "invalid line table")
+    for offset, count in ((0, 1), (97, 1), (96, 0), (128, 1), (96, 0xffffffff)):
+        bad(f"metadata-functions-{offset}-{count}",
+            obj.note(prefix + b"\20" + uleb(offset) + uleb(count)), "invalid function descriptors")
+    bad("metadata-functions-truncated", obj.note(prefix + b"\20" + uleb(96)), "malformed object metadata")
     eh = obj.contents(".eh_frame")
     bad("eh-length", obj.replaced(".eh_frame", changed(eh, 0, "I", 0xffffffff)), "malformed .eh_frame")
 
@@ -222,6 +226,9 @@ def main():
     extended = Object(obj.replaced(".text", obj.contents(".text") + b"\0" * 8))
     absolute = struct.pack("<QQq", len(obj.contents(".text")), external << 32 | 1, 0)
     valid.append(("absolute-external", extended.replaced(".rela.text", relocs + absolute)))
+    # A legacy note has no descriptor-array flag; ordinary execution must
+    # still accept the object's init and export symbols.
+    valid.append(("legacy-function-metadata", obj.note(prefix + b"\0")))
 
     with tempfile.TemporaryDirectory(prefix="pizdos-objects-") as directory:
         work = Path(directory)

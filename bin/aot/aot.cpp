@@ -3849,6 +3849,8 @@ namespace {
         // on (objCodeLines).
         Slice<String> files{};
         Slice<LineEntry> lines{};
+        u32 functions{};
+        u32 functionCount{};
     };
 
     struct CfgInfo {
@@ -18361,6 +18363,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Module* m = oc->m;
         Layout* lay = oc->lay;
         Meta* meta = activePool->make<Meta>(Meta{convert<u32>(lay->size), {}, {}, {}, {}, {}, {}, {}});
+        meta->functions = convert<u32>(lay->descs);
+        meta->functionCount = convert<u32>(length(m->funcs));
         if (length(m->mems) > 0) {
             Limits l = m->mems[0].limits;
             u64 max = 65536;
@@ -22682,12 +22686,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         // What follows is optional, by its flags: the accessible tail and its
         // slot, the tail's profile counters, the shadow map's slot, the
-        // source lines.
+        // source lines, function descriptors.
         const bool tail = !isNil(m->memory) && m->memory->tail != 0;
         const bool profile = tail && m->memory->profile != 0;
         const bool asan = !isNil(m->memory) && m->memory->shadow != 0;
         const bool lines = length(m->lines) != 0;
-        metaWriterU(w, (tail ? 1 : 0) | (profile ? 2 : 0) | (asan ? 4 : 0) | (lines ? 8 : 0));
+        const bool functions = m->functionCount != 0;
+        metaWriterU(w, (tail ? 1 : 0) | (profile ? 2 : 0) | (asan ? 4 : 0) | (lines ? 8 : 0) | (functions ? 16 : 0));
         if (tail) {
             metaWriterU(w, m->memory->tail);
             metaWriterU(w, convert<u64>(m->memory->tailEnd));
@@ -22713,6 +22718,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 metaWriterU(w, e.line);
                 pc = e.pc;
             }
+        }
+        if (functions) {
+            metaWriterU(w, m->functions);
+            metaWriterU(w, m->functionCount);
         }
         return w->out;
     }

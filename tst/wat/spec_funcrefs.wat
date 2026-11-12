@@ -11,6 +11,8 @@
   (func (export "reference1") (result funcref) (ref.func $fifty_seven))
   (func $identity (export "identity") (param $ref funcref) (result funcref)
     (local.get $ref))
+  (func (export "external_identity") (param externref) (result externref)
+    (local.get 0))
   (func (export "_start")
     (if (i32.ne (call $apply (ref.func $forty_two)) (i32.const 42)) (then unreachable))
     (if (i32.ne (call $apply (ref.func $fifty_seven)) (i32.const 57)) (then unreachable))

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -382,8 +383,26 @@ func (r *specRunner) moduleOf(a *specAction) *Instance {
 	return i
 }
 
+// specFunctionRef resolves a module's numeric function identity. An import
+// without an addressable adapter cannot be passed as a reference.
+func (i *Instance) specFunctionRef(index uint64) (uintptr, bool) {
+	m := i.obj.meta
+
+	if index >= uint64(m.functionCount) {
+		return 0, false
+	}
+
+	at := uint64(m.functions) + index*descBytes
+
+	if binary.LittleEndian.Uint64(i.block[at:]) == 0 {
+		return 0, false
+	}
+
+	return i.ctx() + uintptr(at), true
+}
+
 // specArg converts an argument; ok is false for one the loader cannot pass.
-func specArg(v specValue) (reflect.Value, bool) {
+func specArg(i *Instance, v specValue) (reflect.Value, bool) {
 	var s string
 
 	if json.Unmarshal(v.Value, &s) != nil {
@@ -397,7 +416,17 @@ func specArg(v specValue) (reflect.Value, bool) {
 
 		x, err := strconv.ParseUint(s, 10, 64)
 
-		return reflect.ValueOf(uintptr(x + 1)), err == nil
+		if err != nil {
+			return reflect.Value{}, false
+		}
+
+		if v.Type == "funcref" {
+			ref, ok := i.specFunctionRef(x)
+
+			return reflect.ValueOf(ref), ok
+		}
+
+		return reflect.ValueOf(uintptr(x + 1)), true
 	}
 
 	x, err := strconv.ParseUint(s, 10, 64)
@@ -469,7 +498,13 @@ func (r *specRunner) invoke(a *specAction) (func() []reflect.Value, bool) {
 	}
 
 	for k, v := range a.Args {
-		x, ok := specArg(v)
+		// Both reference kinds use uintptr at the Go boundary, so reflection
+		// alone cannot distinguish an opaque externref from a function.
+		if e.params[k] == FuncRef && v.Type != "funcref" || e.params[k] == ExternRef && v.Type != "externref" {
+			return nil, false
+		}
+
+		x, ok := specArg(i, v)
 
 		if !ok || x.Type() != goType(e.params[k]) {
 			return nil, false
@@ -502,7 +537,7 @@ func specBits(t ValType, bits uint64) reflect.Value {
 }
 
 // matches compares a result with an expected value, NaN patterns included.
-func matches(got reflect.Value, want specValue) (bool, string) {
+func matches(i *Instance, got reflect.Value, want specValue) (bool, string) {
 	var bits uint64
 
 	switch x := got.Interface().(type) {
@@ -549,7 +584,13 @@ func matches(got reflect.Value, want specValue) (bool, string) {
 		return false, shown
 	}
 
-	if want.Type == "funcref" || want.Type == "externref" {
+	if want.Type == "funcref" {
+		ref, ok := i.specFunctionRef(x)
+
+		return ok && bits == uint64(ref), shown
+	}
+
+	if want.Type == "externref" {
 		x++
 	}
 
@@ -589,7 +630,7 @@ func (r *specRunner) assertReturn(c *specCmd) {
 		}
 
 		for k := range out {
-			if ok, shown := matches(out[k], c.Expected[k]); !ok {
+			if ok, shown := matches(r.moduleOf(c.Action), out[k], c.Expected[k]); !ok {
 				r.fail(c.Line, "result %d is %s, expected %s", k, shown, strings.Trim(string(c.Expected[k].Value), `"`))
 
 				return

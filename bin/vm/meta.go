@@ -95,6 +95,9 @@ type Meta struct {
 	// empty for a module without a DWARF line table.
 	files []string
 	lines []lineEntry
+	// functions is the first descriptor in the instance; numeric spec
+	// funcrefs name entries of this array, rather than host addresses.
+	functions, functionCount uint32
 }
 
 type metaReader struct {
@@ -180,7 +183,7 @@ func decodeNote(data []byte) *Meta {
 
 	// What follows is optional, by its flags: the accessible tail and its
 	// slot, the tail's profile counters, the shadow map's slot, the source
-	// lines.
+	// lines, function descriptors.
 	flags := r.u()
 
 	if flags&7 != 0 && m.memory == nil {
@@ -229,6 +232,14 @@ func decodeNote(data []byte) *Meta {
 			if uint64(m.lines[i].file) >= uint64(len(m.files)) || i > 0 && pc == m.lines[i-1].pc {
 				throwFmt("invalid line table")
 			}
+		}
+	}
+
+	if flags&16 != 0 {
+		m.functions, m.functionCount = r.u32(), r.u32()
+
+		if m.functions < headerSize || m.functions&15 != 0 || m.functionCount == 0 || uint64(m.functions)+uint64(m.functionCount)*descBytes > uint64(m.instanceSize) {
+			throwFmt("invalid function descriptors")
 		}
 	}
 
