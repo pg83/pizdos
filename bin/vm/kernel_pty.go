@@ -159,13 +159,13 @@ func (p *Process) forkpty(amaster, name, termp, winp uint32) uint32 {
 }
 
 func (p *Process) libcPosix_openpt(flags uint32) uint32 {
-	fd, err := p.openat2("/dev/ptmx", int(flags&^syscall.O_CLOEXEC), 0)
+	f, err := p.openPath("/dev/ptmx", int(flags&^syscall.O_CLOEXEC), 0)
 
 	if err != nil {
 		return p.result(0, err)
 	}
 
-	return p.result(p.install(newHostObject(fd, true), 0, flags&syscall.O_CLOEXEC != 0))
+	return p.result(p.install(f, 0, flags&syscall.O_CLOEXEC != 0))
 }
 
 // grantpt has nothing to do on Linux's devpts.

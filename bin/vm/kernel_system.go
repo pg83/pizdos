@@ -338,7 +338,9 @@ func (p *Process) libcConfstr(name, buf, n uint32) uint32 {
 }
 
 func (p *Process) libcPathconf(path, name uint32) uint32 {
-	if err := p.onPath(p.str(path), true, func(int) error { return nil }); err != nil {
+	var st syscall.Stat_t
+
+	if err := p.statPath(p.str(path), true, &st); err != nil {
 		return p.result(0, err)
 	}
 

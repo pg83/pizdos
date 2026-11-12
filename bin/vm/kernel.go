@@ -79,10 +79,13 @@ type Process struct {
 	image *execImage
 	files []*Descriptor
 	// root is the root directory paths resolve in, rootPath its host path
-	// and cwd the absolute guest path of the working directory.
+	// and cwd the absolute guest path of the working directory. cwdDir is
+	// the directory fchdir made the working directory, for chroot("."):
+	// a connection to a server has no name but itself.
 	root     Dir
 	rootPath string
 	cwd      string
+	cwdDir   Dir
 	umask    uint32
 	// errnoAt and environAt are where the crt keeps errno and environ, tzAt
 	// tzname, timezone and daylight, herrnoAt h_errno.
@@ -156,11 +159,20 @@ type procExit struct {
 	status int
 }
 
+// newKernel makes a kernel whose first process has a directory of the
+// host for its root, or with no root at all when root is empty: then it
+// is a server, or a program of none.
 func newKernel(root string) *Kernel {
 	k := &Kernel{procs: map[int32]*Process{}, codes: map[fileKey]*Code{}, exit: make(chan int, 1), abstract: fmt.Sprintf("pizdos.%d.", os.Getpid())}
-	fd := throw2(syscall.Open(root, oPath|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0))
-	k.rootPath = throw2(os.Readlink(procFd(fd)))
-	k.root = newHostDir(fd)
+
+	if root == "" {
+		k.root = newNoRoot()
+	} else {
+		fd := throw2(syscall.Open(root, oPath|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0))
+		k.rootPath = throw2(os.Readlink(procFd(fd)))
+		k.root = newHostDir(fd)
+	}
+
 	k.functions = k.functionTable()
 	// The kernel applies the processes' umasks itself.
 	syscall.Umask(0)
@@ -263,7 +275,11 @@ func (k *Kernel) newProcess(parent *Process) (*Process, error) {
 		p.nice, p.policy = parent.nice, parent.policy
 		p.comm, p.undumpable, p.noNewPrivs = parent.comm, parent.undumpable, parent.noNewPrivs
 		p.cwd, p.umask, p.limits, p.seed = parent.cwd, parent.umask, parent.limits, parent.seed
-		p.root, p.rootPath = parent.root, parent.rootPath
+		p.root, p.rootPath, p.cwdDir = parent.root, parent.rootPath, parent.cwdDir
+
+		if p.cwdDir != nil {
+			p.cwdDir.ref()
+		}
 	}
 
 	p.root.ref()
@@ -277,7 +293,7 @@ func (k *Kernel) newProcess(parent *Process) (*Process, error) {
 func (p *Process) programPath(f File) string {
 	pathed, ok := f.(Pathed)
 
-	if !ok {
+	if !ok || p.rootPath == "" {
 		return ""
 	}
 
@@ -296,7 +312,13 @@ func (p *Process) guestPath(host string) string {
 	return guestPathIn(p.rootPath, host)
 }
 
+// guestPathIn is the guest path of a host path in a root of the host at
+// root; a root of a server has none.
 func guestPathIn(root, host string) string {
+	if root == "" {
+		return "/"
+	}
+
 	if root == "/" {
 		return host
 	}
@@ -433,6 +455,7 @@ func (p *Process) terminate(status int) {
 	}
 
 	p.root.unref()
+	p.setCwdDir(nil)
 	p.sig.mu.Lock()
 	p.sig.dead = true
 	syscall.Close(p.wake)

@@ -3,7 +3,8 @@
 package main
 
 import (
-	"os"
+	"bytes"
+	"encoding/binary"
 	"slices"
 	"strings"
 	"syscall"
@@ -107,22 +108,50 @@ func (g *globber) names(dir string) ([]string, error) {
 		path = "."
 	}
 
-	fd, err := g.p.openat2(path, syscall.O_RDONLY|syscall.O_DIRECTORY, 0)
+	f, err := g.p.openPath(path, syscall.O_RDONLY|syscall.O_DIRECTORY, 0)
 
 	if err != nil {
 		return nil, err
 	}
 
-	f := os.NewFile(uintptr(fd), path)
-	defer f.Close()
+	defer f.unref()
+	d, ok := f.(Dir)
 
-	names, err := f.Readdirnames(-1)
+	if !ok {
+		return nil, syscall.ENOTDIR
+	}
 
-	return append([]string{".", ".."}, names...), err
+	names := []string{".", ".."}
+	buf := make([]byte, 4096)
+
+	for {
+		n, err := d.readdir(buf)
+
+		if err != nil || n == 0 {
+			return names, err
+		}
+
+		for at := 0; at+19 <= n; {
+			reclen := int(binary.LittleEndian.Uint16(buf[at+16:]))
+			name := buf[at+19 : at+reclen]
+
+			if end := bytes.IndexByte(name, 0); end >= 0 {
+				name = name[:end]
+			}
+
+			if string(name) != "." && string(name) != ".." {
+				names = append(names, string(name))
+			}
+
+			at += reclen
+		}
+	}
 }
 
 func (g *globber) exists(path string) bool {
-	return g.p.onPath(path, false, func(int) error { return nil }) == nil
+	var st syscall.Stat_t
+
+	return g.p.statPath(path, false, &st) == nil
 }
 
 // walk matches the components left under dir, which ends with a slash or
@@ -266,7 +295,7 @@ func (p *Process) glob(pattern, flags, errfunc, out uint32) uint32 {
 	if flags&globMark != 0 {
 		for i, name := range g.found {
 			var st syscall.Stat_t
-			isDir := p.onPath(name, true, func(fd int) error { return syscall.Fstat(fd, &st) }) == nil && st.Mode&syscall.S_IFMT == syscall.S_IFDIR
+			isDir := p.statPath(name, true, &st) == nil && st.Mode&syscall.S_IFMT == syscall.S_IFDIR
 
 			if isDir && !strings.HasSuffix(name, "/") {
 				g.found[i] = name + "/"

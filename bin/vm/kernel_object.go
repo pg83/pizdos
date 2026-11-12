@@ -63,12 +63,33 @@ type Seeker interface {
 	seek(off int64, whence int) (int64, error)
 }
 
-// A Dir lists its entries as getdents64 does, into a buffer of the guest's
-// struct dirent layout, and has a host path the kernel resolves paths
-// relative to.
+// A Dir resolves paths. A process's start at its root, a Dir, and go to
+// it whole, absolute; what the root is decides who resolves them: a
+// directory of the host with openat2 (kernel_hostdir.go), a server with
+// the file protocol (kernel_remote.go). An open directory is a Dir too:
+// it lists its entries as getdents64 does, into a buffer of the guest's
+// struct dirent layout, and knows its name, which the calls relative to
+// its descriptor start from.
 type Dir interface {
-	Pathed
+	File
+	name(p *Process) (string, error)
 	readdir(b []byte) (int, error)
+	open(p *Process, path string, flags int, mode uint32) (File, error)
+	statPath(p *Process, path string, follow bool, st *syscall.Stat_t) error
+	readlinkPath(p *Process, path string) (string, error)
+	mkdir(p *Process, path string, mode uint32) error
+	unlink(p *Process, path string, dir bool) error
+	rename(p *Process, old, new string) error
+	link(p *Process, old, new string, follow bool) error
+	symlink(p *Process, target, path string) error
+	mknod(p *Process, path string, mode uint32, dev uint64) error
+	accessPath(p *Process, path string, mode, flags uint32) error
+	chmodPath(p *Process, path string, mode uint32) error
+	chownPath(p *Process, path string, uid, gid int, follow bool) error
+	utimesPath(p *Process, path string, ts []syscall.Timespec, follow bool) error
+	truncatePath(p *Process, path string, size int64) error
+	statfsPath(p *Process, path string, st *syscall.Statfs_t) error
+	realpath(p *Process, path string) (string, error)
 }
 
 // A Pathed object has a path on the host: a file of a host file system.
@@ -98,9 +119,12 @@ type Node interface {
 }
 
 // A Socket takes the socket calls as libc makes them, with the guest's
-// addresses and buffers; the addresses it returns are the guest's.
+// addresses and buffers; the addresses it returns are the guest's. A
+// socket of the host or a pair of the kernel is a Transfer too; an open
+// file of a server (kernel_remote.go) is a Socket for the program that
+// speaks the protocol on it itself, and a Transfer only when a file.
 type Socket interface {
-	Transfer
+	File
 	bind(p *Process, at, n uint32) error
 	connect(p *Process, at, n uint32) error
 	listen(backlog int) error
@@ -475,6 +499,11 @@ func (w *waitSet) hostFd(e *pollEntry, fd int) {
 func (w *waitSet) queued(p *Process, e *pollEntry, q *waitQueue) {
 	q.add(p)
 	w.queues = append(w.queues, q)
+	w.asked = append(w.asked, e)
+}
+
+// always has the wait ask an entry's file, which is ready whenever asked.
+func (w *waitSet) always(e *pollEntry) {
 	w.asked = append(w.asked, e)
 }
 

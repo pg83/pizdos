@@ -115,13 +115,14 @@ func compileCommand(args []string) {
 	}
 }
 
-// runCommand runs object.o, a program of the kernel inside the root
-// directory, by default /, or a WASI command: the options come first, then
-// -- and the object with its arguments. argv0 is by default the object's
-// path. --asan runs an object compiled with --asan under the kernel's
-// address sanitizer (kernel_asan.go).
+// runCommand runs object.o, a program of the kernel, or a WASI command:
+// the options come first, then -- and the object with its arguments. The
+// program's root is the host directory of --root, or nothing without it:
+// a server of its own files, or a program that needs none, runs so. argv0
+// is by default the object's path. --asan runs an object compiled with
+// --asan under the kernel's address sanitizer (kernel_asan.go).
 func runCommand(args []string) int {
-	root, argv0, asan := "/", "", false
+	root, argv0, asan := "", "", false
 
 	for len(args) > 0 && args[0] != "--" {
 		switch {

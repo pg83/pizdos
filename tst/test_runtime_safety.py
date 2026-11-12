@@ -86,8 +86,9 @@ def main():
               ("no-linear-memory", "getpid", [], {"memory": False, "expected": 1}, 0, ""),
               ("environment-without-CRT", "getenv", [4096], {"expected": 0}, 0, ""),
               ("exec-without-CRT", "execv", [4096, 4096], {"expected": 0xffffffff}, 0, "")]
-    cases += [("program-short-buffer", "__kernel_program", [4096, 0], {"expected": 0, "error": 34}, 0, ""),
-              ("program-outside-root", "__kernel_program", [4096, 1024], {"expected": 0, "error": 2, "rooted": True}, 0, "")]
+    cases += [("program-short-buffer", "__kernel_program", [4096, 0], {"expected": 0, "error": 34, "rooted": "/"}, 0, ""),
+              ("program-outside-root", "__kernel_program", [4096, 1024], {"expected": 0, "error": 2, "rooted": True}, 0, ""),
+              ("program-without-root", "__kernel_program", [4096, 1024], {"expected": 0, "error": 2}, 0, "")]
     env = dict(os.environ, W2X_MEMORY_TAIL="strict", W2X_TAIL_PROFILE="")
     with tempfile.TemporaryDirectory(prefix="pizdos-runtime-safety-") as directory:
         work = Path(directory)
@@ -106,7 +107,8 @@ def main():
             result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
             assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), (label, result)
             for obj in (compiled, embedded):
-                result = subprocess.run([vm, "run", *(["--root", str(work / "root")] if rooted else []), "-a", "runtime-safety", "--", str(obj)],
+                root = rooted if isinstance(rooted, str) else str(work / "root")
+                result = subprocess.run([vm, "run", *(["--root", root] if rooted else []), "-a", "runtime-safety", "--", str(obj)],
                                         capture_output=True, env=env, timeout=30)
                 assert result.returncode == status and result.stdout == b"" and b"panic:" not in result.stderr, (label, result)
                 if status:

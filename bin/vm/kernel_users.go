@@ -4,8 +4,6 @@ package main
 
 import (
 	"bytes"
-	"io"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -35,16 +33,7 @@ const databaseMax = 16 << 20
 // databaseLines are the lines of a database, split in fields, those of
 // the field count only.
 func (p *Process) databaseLines(path string, fields int) [][]string {
-	fd, err := p.openat2(path, syscall.O_RDONLY, 0)
-
-	if err != nil {
-		return nil
-	}
-
-	f := os.NewFile(uintptr(fd), path)
-	defer f.Close()
-
-	data, err := io.ReadAll(io.LimitReader(f, databaseMax))
+	data, err := p.readPath(path, databaseMax)
 
 	if err != nil {
 		return nil

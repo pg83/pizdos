@@ -101,9 +101,21 @@ func (p *Process) withAddress(at, n uint32, bind bool, call func(addr []byte) er
 	}
 
 	guest := string(path)
+	full, err := p.full(guest)
+
+	if err != nil {
+		return err
+	}
+
+	// A path names a socket of the host: in a root of the host.
+	root, ok := p.root.(*hostDir)
+
+	if !ok {
+		return syscall.EOPNOTSUPP
+	}
 
 	if bind {
-		return p.onName(guest, syscall.EADDRINUSE, func(dirfd int, name string) error {
+		return root.onName(full, syscall.EADDRINUSE, func(dirfd int, name string) error {
 			host := fmt.Sprintf("/proc/self/fd/%d/%s", dirfd, name)
 
 			if len(host) >= sunPathMax {
@@ -120,7 +132,7 @@ func (p *Process) withAddress(at, n uint32, bind bool, call func(addr []byte) er
 		})
 	}
 
-	return p.onPath(guest, true, func(fd int) error {
+	return root.onPath(full, true, func(fd int) error {
 		return call(unixAddress([]byte(procFd(fd))))
 	})
 }
@@ -696,9 +708,40 @@ func (p *Process) libcSocket(domain, kind, protocol uint32) uint32 {
 	return p.result(p.installSocket(host, kind))
 }
 
+// socketpair makes a pair of the kernel's for SOCK_SEQPACKET
+// (kernel_endpoint.go), of the host's for the other kinds.
 func (p *Process) libcSocketpair(domain, kind, protocol, at uint32) uint32 {
 	if domain != afUnix {
 		return p.result(0, syscall.EOPNOTSUPP)
+	}
+
+	if kind&^(sockNonblock|sockCloexec) == sockSeqpacket {
+		if protocol != 0 {
+			return p.result(0, syscall.EPROTONOSUPPORT)
+		}
+
+		a, b := newPair(kind&sockNonblock != 0)
+		cloexec := kind&sockCloexec != 0
+		x, err := p.install(a, 0, cloexec)
+
+		if err != nil {
+			b.unref()
+
+			return p.result(0, err)
+		}
+
+		y, err := p.install(b, 0, cloexec)
+
+		if err != nil {
+			p.closeFd(x)
+
+			return p.result(0, err)
+		}
+
+		p.put32(at, uint32(x))
+		p.put32(at+4, uint32(y))
+
+		return p.result(0, nil)
 	}
 
 	pair, err := syscall.Socketpair(int(domain), int(kind&^(sockNonblock|sockCloexec))|syscall.SOCK_CLOEXEC, int(protocol))

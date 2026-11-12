@@ -166,13 +166,11 @@ func (p *Process) daemon(nochdir, noclose uint32) uint32 {
 	}
 
 	if noclose == 0 {
-		host, err := p.openat2("/dev/null", syscall.O_RDWR, 0)
+		obj, err := p.openPath("/dev/null", syscall.O_RDWR, 0)
 
 		if err != nil {
 			return p.result(0, err)
 		}
-
-		obj := newHostObject(host, true)
 
 		// daemon uses descriptors 0..2, present from runKernel and inherit.
 		for fd := range uint32(3) {
@@ -289,33 +287,33 @@ func (p *Process) prctl(option, va uint32) uint32 {
 // getpass reads a line from the terminal with echo off, as musl's: at most
 // 127 bytes, its newline dropped, in a static block.
 func (p *Process) getpass(prompt uint32) uint32 {
-	fd, err := p.openat2("/dev/tty", syscall.O_RDWR|syscall.O_NOCTTY, 0)
+	f, err := p.openPath("/dev/tty", syscall.O_RDWR|syscall.O_NOCTTY, 0)
 
 	if err != nil {
 		return p.pointer(0, err)
 	}
 
-	defer syscall.Close(fd)
+	defer f.unref()
+	term, isTerm := f.(Ioctl)
+	tty, ok := f.(Transfer)
+
+	if !isTerm || !ok {
+		return p.pointer(0, syscall.ENOTTY)
+	}
 
 	var saved, t hostTermios
 
-	if err := ioctlPtr(fd, tcgets, unsafe.Pointer(&saved)); err != nil {
+	if err := term.ioctl(tcgets, unsafe.Pointer(&saved)); err != nil {
 		return p.pointer(0, err)
 	}
 
 	t = saved
 	t.lflag = t.lflag&^(echo|isig) | icanon
 	t.iflag = t.iflag&^(inlcr|igncr) | icrnl
-	ioctlPtr(fd, tcsets+2, unsafe.Pointer(&t))
-	defer ioctlPtr(fd, tcsets+2, unsafe.Pointer(&saved))
+	term.ioctl(tcsets+2, unsafe.Pointer(&t))
+	defer term.ioctl(tcsets+2, unsafe.Pointer(&saved))
 
-	syscall.Write(fd, []byte(p.str(prompt)))
-	tty, ok := newHostObject(fd, false).(Transfer)
-
-	if !ok {
-		return p.pointer(0, syscall.ENOTTY)
-	}
-
+	tty.write(p, []byte(p.str(prompt)), ioMode{})
 	var line []byte
 
 	for len(line) < 127 {
@@ -333,7 +331,7 @@ func (p *Process) getpass(prompt uint32) uint32 {
 		line = append(line, b[0])
 	}
 
-	syscall.Write(fd, []byte("\n"))
+	tty.write(p, []byte("\n"), ioMode{})
 	block := p.staticResult(staticPass, 128)
 
 	if block == 0 {
@@ -347,26 +345,12 @@ func (p *Process) getpass(prompt uint32) uint32 {
 
 // shells are /etc/shells' paths, or musl's two without it.
 func (p *Process) shells() []string {
-	fd, err := p.openat2("/etc/shells", syscall.O_RDONLY, 0)
+	data, err := p.readPath("/etc/shells", databaseMax)
 
 	if err != nil {
 		return []string{"/bin/sh", "/bin/csh"}
 	}
 
-	var data []byte
-	buf := make([]byte, 4096)
-
-	for len(data) < databaseMax {
-		n, err := syscall.Read(fd, buf)
-
-		if n <= 0 || err != nil {
-			break
-		}
-
-		data = append(data, buf[:n]...)
-	}
-
-	syscall.Close(fd)
 	var out []string
 
 	for _, line := range strings.Split(string(data), "\n") {

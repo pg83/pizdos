@@ -99,25 +99,10 @@ type hostEntry struct {
 
 // fileLines are the lines of a file of the root, comments cut.
 func (p *Process) fileLines(path string) ([]string, bool) {
-	fd, err := p.openat2(path, syscall.O_RDONLY, 0)
+	data, err := p.readPath(path, databaseMax)
 
 	if err != nil {
 		return nil, false
-	}
-
-	defer syscall.Close(fd)
-
-	var data []byte
-	buf := make([]byte, 4096)
-
-	for len(data) < databaseMax {
-		n, err := syscall.Read(fd, buf)
-
-		if n <= 0 || err != nil {
-			break
-		}
-
-		data = append(data, buf[:n]...)
 	}
 
 	var out []string

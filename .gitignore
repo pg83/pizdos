@@ -62,3 +62,8 @@ __pycache__/
 /clang_o
 /host_syscalls_check
 /host_syscalls_filter
+/rootfs
+/rootfs_wasm
+/rootfs_image
+/init_wasm
+/init_o

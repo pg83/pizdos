@@ -142,29 +142,35 @@ func (p *Process) loadFrom(path string, first File, argv []string) (*execImage, 
 			first.ref()
 			first = nil
 		} else {
-			fd, err := p.openat2(path, syscall.O_RDONLY, 0)
+			var err error
+			f, err = p.openPath(path, syscall.O_RDONLY, 0)
 
 			if err != nil {
 				return nil, err
 			}
-
-			f = newHostObject(fd, true)
 		}
 
 		var st syscall.Stat_t
-		node, isNode := f.(Node)
 		t, transfers := f.(Transfer)
 
-		if err := f.stat(&st); err != nil || !isNode || !transfers || st.Mode&syscall.S_IFMT != syscall.S_IFREG {
+		if err := f.stat(&st); err != nil || !transfers || st.Mode&syscall.S_IFMT != syscall.S_IFREG {
 			f.unref()
 
 			return nil, syscall.EACCES
 		}
 
-		if err := node.access(1, 0); err != nil {
+		// Execute permission: a node of the host says, a file of a server
+		// shows its mode.
+		if node, ok := f.(Node); ok {
+			if err := node.access(1, 0); err != nil {
+				f.unref()
+
+				return nil, err
+			}
+		} else if st.Mode&0o111 == 0 {
 			f.unref()
 
-			return nil, err
+			return nil, syscall.EACCES
 		}
 
 		head := make([]byte, 256)
