@@ -116,6 +116,9 @@ int main() {
     assert(ldiv(10, -3).quot == -3 && ldiv(10, -3).rem == 1);
     assert(lldiv(-123456789012LL, 10).quot == -12345678901LL && lldiv(-123456789012LL, 10).rem == -2);
     assert(strerror(0)[0] && strerror(ENOENT)[0] && strerror(99999)[0]);
+    const char* rfs = strerror(73);
+    // Linux's RFS message already begins with capitals; musl may omit it.
+    assert(strcmp(rfs, "RFS specific error") == 0 || strcmp(rfs, "No error information") == 0);
     assert(strerror_r(ENOENT, result, sizeof(result)) == 0 && result[0]);
     assert(strerror_r(ENOENT, result, 1) == ERANGE);
     assert(strerror_r(ENOENT, result, 0) == ERANGE);
