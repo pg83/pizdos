@@ -16662,6 +16662,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     continue;
                 }
                 if (l->deferred[u]) {
+                    // Paired jumps can skip a comparison. Its operands'
+                    // loads must stay in the eager instruction stream.
+                    if (t->kind == TermIf && lowererBranchPair(l, t->value)) {
+                        continue;
+                    }
                     for (Int i = k + 1; ok && i < length(instrs); ++i) {
                         ok = lowererTransparent(f->values[instrs[i]].op);
                     }
