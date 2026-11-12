@@ -1146,9 +1146,7 @@ namespace {
         }
 
         static void reset(T* values, usize count) {
-            if (!count) {
-                return;
-            }
+            // clearElements supplies a nonempty array tail or page chunk.
             if constexpr (scalarType<T>) {
                 zeroBytes(values, count * sizeof(T));
             } else {
@@ -1158,12 +1156,10 @@ namespace {
             }
         }
 
-        void initialize(Int size, Int clearFrom = 0) {
-            require(size >= 0 && Uint(size) <= 0x7fffffff && clearFrom >= 0 && clearFrom <= size, "array too large");
+        // The sole caller creates map buckets: eight initially, then doubles.
+        void initialize(Int size) {
+            require(size > 0 && Uint(size) <= 0x7fffffff, "array too large");
             count = size;
-            if (!size) {
-                return;
-            }
             if (u64(size) * sizeof(T) > pageBytes - sizeof(ObjPool::Chunk)) {
                 kind = Kind::Paged;
                 auto* values = owner->make<PageVec<T>>();
@@ -1172,7 +1168,7 @@ namespace {
             } else {
                 storage = owner->allocate(usize(size) * sizeof(T), alignof(T));
             }
-            clearElements(clearFrom);
+            clearElements(0);
         }
 
         void clearElements(Int clearFrom) {
@@ -2114,9 +2110,8 @@ namespace {
 
     template <typename T, typename U>
     static T shiftLeft(T value, U amount) {
-        if (u64(amount) >= sizeof(T) * 8) {
-            return T(0);
-        }
+        // Fixed bit positions, validated LEB counts and masked Wasm counts;
+        // lowererScaledIndex limits the byte-sized LEA scale to shifts 0..3.
         using Unsigned = u64;
         return T(Unsigned(value) << amount);
     }
@@ -11914,9 +11909,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void frontendBinary(Frontend* fe, Op op, ValType t) {
-        if (fe->cur < 0) {
-            return;
-        }
+        // Only frontendBody/PrefixFC call this; dead code goes to frontendSkip.
         i32 b = frontendPop(fe);
         i32 a = frontendPop(fe);
         frontendPush(fe, frontendEmit(fe, op, t, 0, Span<const i32>({a, b})));
@@ -13323,9 +13316,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void frontendUnary(Frontend* fe, Op op, ValType t) {
-        if (fe->cur < 0) {
-            return;
-        }
+        // Only frontendBody/PrefixFC call this; dead code goes to frontendSkip.
         i32 a = frontendPop(fe);
         frontendPush(fe, frontendEmit(fe, op, t, 0, Span<const i32>({a})));
     }
@@ -23694,9 +23685,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (m.index != noReg) {
             am.index = regNum(m.index);
         }
-        if (am.scale == 0) {
-            am.scale = 1;
-        }
+        // Non-label memory operands have scale 1, 2, 4 or 8 at construction.
         return am;
     }
 
@@ -24244,9 +24233,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static bool sameArgs(Optimizer* o, Slice<i32> x, Slice<i32> y) {
-        if (length(x) != length(y)) {
-            return false;
-        }
+        // optimizerCleanup compares edges to the same block and parameter list.
         for (Int i = 0; i < length(x); ++i) {
             if (optimizerResolve(o, x[i]) != optimizerResolve(o, y[i])) {
                 return false;
