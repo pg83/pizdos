@@ -12,6 +12,15 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+static volatile sig_atomic_t interrupts;
+
+static void interrupted(int) {
+    interrupts = interrupts + 1;
+    if (interrupts > 100) {
+        _exit(89);
+    }
+}
+
 int main() {
     alarm(2);
     int listener = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -30,14 +39,31 @@ int main() {
     assert(connect(client, reinterpret_cast<sockaddr*>(&address), length) == -1 && errno == EAGAIN);
     alarm(0);
 
+    // A repeating signal also covers delivery just before the blocking call.
+    // Without SA_RESTART it interrupts an unlimited backlog wait.
+    struct sigaction action{}, saved{};
+    action.sa_handler = interrupted;
+    assert(sigemptyset(&action.sa_mask) == 0 && sigaction(SIGALRM, &action, &saved) == 0);
+    timeout = {0, 0};
+    assert(setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) == 0);
+    ualarm(20000, 20000);
+    assert(connect(client, reinterpret_cast<sockaddr*>(&address), length) == -1 && errno == EINTR);
+    ualarm(0, 0);
+    assert(interrupts > 0);
+
     // The same socket can connect once accept frees a place in the queue.
-    alarm(2);
-    timeout = {1, 0};
+    // SA_RESTART keeps this wait running while its handler handles signals.
+    action.sa_flags = SA_RESTART;
+    assert(sigaction(SIGALRM, &action, nullptr) == 0);
+    interrupts = 0;
+    timeout = {0, 0};
     assert(setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) == 0);
     pid_t child = fork();
     assert(child >= 0);
     if (child == 0) {
-        assert(close(client) == 0 && close(queued) == 0 && usleep(20000) == 0);
+        assert(signal(SIGALRM, SIG_DFL) != SIG_ERR);
+        alarm(2);
+        assert(close(client) == 0 && close(queued) == 0 && usleep(100000) == 0);
         int first = accept(listener, nullptr, nullptr);
         assert(first >= 0 && close(first) == 0);
         int next = accept(listener, nullptr, nullptr);
@@ -46,7 +72,10 @@ int main() {
         assert(send(next, "y", 1, 0) == 1 && close(next) == 0 && close(listener) == 0);
         _exit(17);
     }
+    ualarm(20000, 20000);
     assert(connect(client, reinterpret_cast<sockaddr*>(&address), length) == 0);
+    ualarm(0, 0);
+    assert(interrupts > 0 && sigaction(SIGALRM, &saved, nullptr) == 0);
     assert(send(client, "x", 1, 0) == 1);
     char byte;
     assert(recv(client, &byte, 1, 0) == 1 && byte == 'y');
