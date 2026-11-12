@@ -18,17 +18,18 @@ def address(base, offset, form):
     return f"(i32.add (local.get ${base}) {index})"
 
 
-def program(template, stride, form, carry, count, dest, other):
+def program(template, stride, form, carry, count, dest, other, variable_step=False):
     statements = []
     for offset in range(stride):
         base = "other" if form == "distinct" and offset else "source"
         statements.append(f"(i32.store8 {address('dest', offset, form)} (i32.load8_u {address(base, offset, form)}))")
     update = {"none": "", "wide": "(local.set $sum (i64.add (local.get $sum) (i64.const 3)))",
               "nonlinear": "(local.set $state (i32.xor (i32.mul (local.get $state) (i32.const 33)) (local.get $index)))"}[carry]
-    template = template.replace(";; COPY", "\n".join(statements)).replace(";; CARRY", update).replace("STRIDE", str(stride))
+    step = f"(i32.add (local.get $delta) (i32.const {stride}))" if variable_step else f"(i32.const {stride})"
+    template = template.replace(";; COPY", "\n".join(statements)).replace(";; CARRY", update).replace("(i32.const STRIDE)", step)
     image, checksum, state, delta = bytearray(IMAGE), 0, 7, 13
     touched = {dest - 32, dest + count + 32, 65535}
-    for index in range(0, count, stride):
+    for index in range(0, count, stride + (delta if variable_step else 0)):
         for offset in range(stride):
             source = other if form == "distinct" and offset else 8192
             shift = delta if form == "subtract" else 0
@@ -54,6 +55,8 @@ def main():
     cases = [(stride, form, carry, count, dest, other) for stride in (1, 2, 3)
              for form in ("add", "subtract", "cancel", "distinct") for carry in ("none", "wide", "nonlinear")
              for count, dest, other in ((0, 32768, 8192), (1, 32768, 12288), (97, 32768, 12288), (97, 8193, 8192))]
+    cases += [(stride, "add", carry, count, dest, 8192, True) for stride in (1, 3) for carry in ("none", "wide")
+              for count, dest in ((0, 32768), (1, 32768), (97, 8193))]
     with tempfile.TemporaryDirectory(prefix="pizdos-wat-copy-addresses-") as directory:
         work = Path(directory)
         source, module, compiled, embedded = (work / name for name in ("input.wat", "input.wasm", "native.o", "embedded.o"))
