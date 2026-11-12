@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <errno.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <arpa/inet.h>
 #include <net/if.h>
@@ -251,6 +252,31 @@ int main(int argc, char** argv) {
         assert(euidaccess("/", R_OK) == -1 && errno == EIO);
         assert(faccessat(AT_FDCWD, "/", W_OK, AT_EACCESS) == -1 && errno == EIO);
         assert(chdir("/") == -1 && errno == EIO);
+    } else if (strcmp(argv[1], "temp-collision") == 0) {
+        char path[] = "/tmp/collision-XXXXXX";
+        assert(mktemp(path) == path && path[0] != 0);
+        assert(access(path, F_OK) == -1 && errno == ENOENT);
+        DIR* directory = opendir("/tmp");
+        assert(directory != NULL);
+        unsigned occupied = 0;
+        struct dirent* entry;
+        while ((entry = readdir(directory)) != NULL) {
+            if (strncmp(entry->d_name, "collision-", 10) != 0) {
+                continue;
+            }
+            char existing[512];
+            assert(snprintf(existing, sizeof(existing), "/tmp/%s", entry->d_name) < (int)sizeof(existing));
+            assert(strcmp(path, existing) != 0);
+            int fd = open(existing, O_RDONLY);
+            char contents[9] = {0};
+            assert(fd >= 0 && read(fd, contents, sizeof(contents)) == 8 && strcmp(contents, "occupied") == 0);
+            assert(close(fd) == 0 && unlink(existing) == 0);
+            ++occupied;
+        }
+        assert(closedir(directory) == 0 && occupied == 1);
+        int fresh = open(path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+        assert(fresh >= 0 && write(fresh, "fresh", 5) == 5);
+        assert(close(fresh) == 0 && unlink(path) == 0);
     } else if (strcmp(argv[1], "temp-files") == 0) {
         char path[] = "/tmp/collision-XXXXXX";
         assert(mkstemp(path) == -1 && errno == EEXIST);

@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <assert.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdint.h>
@@ -24,6 +25,32 @@ struct Program {
     unsigned short count;
     struct Filter* instructions;
 };
+
+// Occupy the first name selected by mktemp before its real existence check.
+// The guest must leave this file intact and return a different unused name.
+static int occupy_candidate(pid_t thread, const struct user_regs_struct* registers) {
+    char path[32] = {0};
+    for (unsigned offset = 0; offset < sizeof(path); offset += sizeof(long)) {
+        errno = 0;
+        long word = ptrace(PTRACE_PEEKDATA, thread, (void*)(registers->rsi + offset), 0);
+        assert(word != -1 || errno == 0);
+        memcpy(path + offset, &word, sizeof(word));
+        if (memchr(&word, 0, sizeof(word))) {
+            break;
+        }
+    }
+    if (strncmp(path, "/tmp/collision-", 15) != 0 || strnlen(path, sizeof(path)) != 21) {
+        return 0;
+    }
+    char descriptor[96];
+    snprintf(descriptor, sizeof(descriptor), "/proc/%ld/fd/%llu", (long)thread, (unsigned long long)registers->rdi);
+    int root = open(descriptor, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    assert(root >= 0);
+    int file = openat(root, path + 1, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    assert(file >= 0 && write(file, "occupied", 8) == 8);
+    assert(close(file) == 0 && close(root) == 0);
+    return 1;
+}
 
 // Route DNS sockets to the test's loopback responder, preserving real UDP
 // traffic. Other connections and all socket return values stay the host's.
@@ -64,12 +91,14 @@ static int redirect_dns(pid_t thread, uintptr_t at, unsigned port) {
 // Return EINTR once at the real syscall boundary, then let the host handle
 // every retry. Seccomp limits ptrace stops to the selected syscall; traced
 // Go threads inherit the filter and tracing through PTRACE_O_TRACECLONE.
-// dns/<port> routes DNS connections to a real local responder instead.
+// dns/<port> routes DNS connections to a real local responder instead;
+// collision creates a real file before mktemp checks its first candidate.
 int main(int argc, char** argv) {
     assert(argc >= 5 && strcmp(argv[2], "--") == 0);
     unsigned dns_port = strncmp(argv[1], "dns/", 4) == 0 ? atoi(argv[1] + 4) : 0;
     assert(dns_port <= 65535);
-    int number = dns_port ? 42 : atoi(argv[1]);
+    int collision = strcmp(argv[1], "collision") == 0;
+    int number = dns_port ? 42 : collision ? 437 : atoi(argv[1]);
     struct stat input;
     assert(fstat(0, &input) == 0);
     pid_t child = fork();
@@ -125,6 +154,10 @@ int main(int argc, char** argv) {
             }
             if (dns_port) {
                 injected += redirect_dns(thread, registers.rsi, dns_port);
+            } else if (collision) {
+                if (!injected) {
+                    injected = occupy_candidate(thread, &registers);
+                }
             } else if (!injected && selected) {
                 registers.orig_rax = (unsigned long long)-1;
                 registers.rax = (unsigned long long)-EINTR;

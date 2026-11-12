@@ -5,7 +5,8 @@
 
 A seccomp filter restricts only each child VM process. It returns selected error numbers for
 selected syscalls, leaving the parent and later commands unaffected.
-Ptrace supplies one EINTR or routes DNS packets to a local test responder.
+Ptrace supplies one EINTR, routes DNS packets to a local test responder,
+or occupies the first mktemp candidate with a real file.
 """
 import errno
 import contextlib
@@ -165,7 +166,8 @@ def main():
                 result = subprocess.run([interrupt, f"dns/{port}", "--", vm, "run", "--root", str(work), "--", str(obj), "permanent-dns-error"],
                                         capture_output=True, env=dict(env, GODEBUG="netdns=go"), timeout=30)
                 assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), ("permanent-dns-error", result)
-            for operation, number in (("retry-open", 437), ("retry-read", 0), ("retry-connect", 42)):
+            for operation, number in (("retry-open", 437), ("retry-read", 0), ("retry-connect", 42),
+                                      ("temp-collision", "collision")):
                 result = subprocess.run([interrupt, str(number), "--", vm, "run", "--root", str(work), "--", str(obj), operation],
                                         input=b"x", capture_output=True, env=env, timeout=30)
                 assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), (operation, result)
