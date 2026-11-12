@@ -14,12 +14,12 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-// A pipe holds 64 KiB: small writes merge into it, a write of at most
-// PIPE_BUF bytes goes whole or not at all, a larger one as far as the room
-// goes, and a reader drains what writers left before it sees their end.
+// POSIX's pipe: a write of at most PIPE_BUF bytes goes whole or not at
+// all, a full pipe takes nothing until it is read, a larger write goes as
+// far as it can, and a reader drains what writers left before it sees
+// their end. The capacity is the implementation's: filled until EAGAIN.
 
-static const int capacity = 65536;
-static char buffer[2 * 65536];
+static char buffer[1 << 20];
 
 static void drain(int fd, int expected) {
     int total = 0;
@@ -30,6 +30,22 @@ static void drain(int fd, int expected) {
     }
     assert(total == expected);
     assert(read(fd, buffer, 1) == -1 && errno == EAGAIN);
+}
+
+// fill writes units of size until the pipe takes no more, and tells how
+// many bytes it took.
+static int fill(int fd, int size) {
+    int total = 0;
+    for (;;) {
+        ssize_t n = write(fd, buffer, size);
+        if (n < 0) {
+            assert(errno == EAGAIN);
+            return total;
+        }
+        assert(n == size);
+        total += size;
+        assert(total < (int)sizeof(buffer));
+    }
 }
 
 int main() {
@@ -43,31 +59,30 @@ int main() {
     assert(read(ends[1], buffer, 1) == -1 && errno == EBADF);
     assert(read(ends[0], buffer, 0) == 0 && write(ends[1], buffer, 0) == 0);
 
-    // Single bytes fill the pipe to its capacity; one more waits.
-    for (int i = 0; i < capacity; ++i) {
-        assert(write(ends[1], "b", 1) == 1);
-    }
+    // Whole writes of PIPE_BUF fill the pipe; an empty pipe takes at least
+    // one; a full one takes nothing, not a byte, and is not writable.
+    memset(buffer, 'c', sizeof(buffer));
+    int held = fill(ends[1], PIPE_BUF);
+    assert(held >= PIPE_BUF && held % PIPE_BUF == 0);
     int available = 0;
-    assert(ioctl(ends[0], FIONREAD, &available) == 0 && available == capacity);
-    assert(write(ends[1], "b", 1) == -1 && errno == EAGAIN);
+    assert(ioctl(ends[0], FIONREAD, &available) == 0 && available == held);
+    assert(write(ends[1], buffer, 1) == -1 && errno == EAGAIN);
     pollfd out = {ends[1], POLLOUT, 0};
     assert(poll(&out, 1, 0) == 0);
-    drain(ends[0], capacity);
+    drain(ends[0], held);
     assert(poll(&out, 1, 0) == 1 && (out.revents & POLLOUT));
 
-    // Whole chunks of PIPE_BUF fill it too; a chunk goes whole or not at all.
-    memset(buffer, 'c', sizeof(buffer));
-    for (int i = 0; i < capacity / PIPE_BUF; ++i) {
-        assert(write(ends[1], buffer, PIPE_BUF) == PIPE_BUF);
-    }
-    assert(write(ends[1], buffer, PIPE_BUF) == -1 && errno == EAGAIN);
-    assert(write(ends[1], buffer, 1) == -1 && errno == EAGAIN);
-    drain(ends[0], capacity);
+    // Single bytes fill it too, however many it holds.
+    held = fill(ends[1], 1);
+    assert(held >= 1);
+    assert(ioctl(ends[0], FIONREAD, &available) == 0 && available == held);
+    drain(ends[0], held);
 
     // A write larger than the pipe goes as far as the room: the rest waits.
-    assert(write(ends[1], buffer, sizeof(buffer)) == capacity);
+    ssize_t part = write(ends[1], buffer, sizeof(buffer));
+    assert(part > 0 && part < (ssize_t)sizeof(buffer));
     assert(write(ends[1], buffer, sizeof(buffer)) == -1 && errno == EAGAIN);
-    drain(ends[0], capacity);
+    drain(ends[0], (int)part);
 
     // A short read leaves the rest of what was written for the next.
     assert(write(ends[1], "hello", 5) == 5 && write(ends[1], "world", 5) == 5);
@@ -86,6 +101,7 @@ int main() {
     // A blocking writer and reader in two processes move more than the
     // pipe holds, in order.
     assert(pipe(ends) == 0);
+    const int capacity = 65536;
     pid_t child = fork();
     assert(child >= 0);
     if (child == 0) {

@@ -10,30 +10,26 @@ import (
 	"unsafe"
 )
 
-// A pipe is the kernel's, not the host's: a queue of chunks, chan []byte,
-// between its two ends, which are files of the kernel a process reads
-// and writes without a host descriptor. It holds pipeSize bytes, as
-// Linux's does: a write of at most pipeChunk bytes, PIPE_BUF, goes whole
-// or not at all, a larger one in parts as room comes. A read takes what is
-// there, up to its buffer; an end of the chunk it took is kept for the
-// next read. The last writer's close ends the data, the last reader's
-// makes a write EPIPE and SIGPIPE. A blocking end waits as a host object
-// does (kernel_object.go): a change of the pipe wakes the waiters.
-const (
-	pipeSize  = 65536
-	pipeChunk = 4096
-)
+// A pipe is one direction of a pair (kernel_endpoint.go): a channel of
+// packets, each a write, read as a stream of bytes. A write of at most
+// pipeChunk bytes is one packet, whole or not at all, as POSIX asks of a
+// write of at most PIPE_BUF; a larger one goes as several, which POSIX
+// allows of a larger write. The pipe holds queueMax packets: a capacity
+// in writes, where POSIX asks only that an empty pipe take PIPE_BUF. The
+// last writer's close ends the data, the last reader's makes a write EPIPE
+// and SIGPIPE. A blocking end waits as every file of the kernel does: on
+// the pipe's change.
+
+const pipeChunk = 4096
 
 type pipe struct {
-	mu sync.Mutex
-	// front is what a read left of the chunk it took, chunks the whole
-	// chunks after it, back the chunk being filled after those; bytes
-	// counts them all.
-	front  []byte
-	chunks chan []byte
-	back   []byte
-	bytes  int
-	// readers and writers count the open ends.
+	ch *channel
+	// front is what a read left of the packet it took, the next read's;
+	// bytes counts it and the packets queued, for FIONREAD; readers and
+	// writers count the open ends.
+	mu      sync.Mutex
+	front   []byte
+	bytes   atomic.Int64
 	readers int
 	writers int
 	changed changed
@@ -62,7 +58,7 @@ func (p *Process) pipe(at, flags uint32) uint32 {
 		return p.result(0, syscall.EINVAL)
 	}
 
-	pp := &pipe{chunks: make(chan []byte, pipeSize/pipeChunk), readers: 1, writers: 1, ino: pipeInodes.Add(1), made: time.Now()}
+	pp := &pipe{ch: newChannel(), readers: 1, writers: 1, ino: pipeInodes.Add(1), made: time.Now()}
 	ends := [2]*pipeEnd{{pipe: pp}, {pipe: pp, writer: true}}
 	cloexec := flags&syscall.O_CLOEXEC != 0
 	var fds [2]int
@@ -95,8 +91,9 @@ func (e *pipeEnd) ref() {
 	e.refs.Add(1)
 }
 
-// unref closes the end when its last reference goes: the pipe loses a
-// reader or a writer, which the other end's waiters learn.
+// unref closes the end when its last reference goes: the last reader
+// finishes the channel, so a writer learns of it, the last writer closes
+// it, so a reader sees the end of the data.
 func (e *pipeEnd) unref() {
 	if e.refs.Add(-1) != 0 {
 		return
@@ -107,8 +104,18 @@ func (e *pipeEnd) unref() {
 
 	if e.writer {
 		pp.writers--
+
+		if pp.writers == 0 {
+			close(pp.ch.ch)
+		}
 	} else {
 		pp.readers--
+
+		if pp.readers == 0 {
+			close(pp.ch.done)
+			pp.ch.drain()
+			pp.front = nil
+		}
 	}
 
 	pp.mu.Unlock()
@@ -132,24 +139,24 @@ func (e *pipeEnd) stat(st *syscall.Stat_t) error {
 func (e *pipeEnd) poll(events int16) int16 {
 	pp := e.pipe
 	pp.mu.Lock()
-	defer pp.mu.Unlock()
-
+	front, readers, writers := len(pp.front), pp.readers, pp.writers
+	pp.mu.Unlock()
 	mask := int16(0)
 
 	if e.writer {
-		if pipeSize-pp.bytes >= pipeChunk {
+		if len(pp.ch.ch) < cap(pp.ch.ch) {
 			mask |= pollOut | pollWrnorm
 		}
 
-		if pp.readers == 0 {
+		if readers == 0 {
 			mask |= pollErr
 		}
 	} else {
-		if pp.bytes > 0 {
+		if front > 0 || len(pp.ch.ch) > 0 || writers == 0 {
 			mask |= pollIn | pollRdnorm
 		}
 
-		if pp.writers == 0 {
+		if writers == 0 {
 			mask |= pollHup
 		}
 	}
@@ -183,97 +190,45 @@ func (e *pipeEnd) ioctl(req uintptr, arg unsafe.Pointer) error {
 		return syscall.ENOTTY
 	}
 
-	pp := e.pipe
-	pp.mu.Lock()
-	*(*int32)(arg) = int32(pp.bytes)
-	pp.mu.Unlock()
+	*(*int32)(arg) = int32(e.pipe.bytes.Load())
 
 	return nil
 }
 
-// next is the chunk a read goes on with after the front: the first whole
-// one, else the back.
-func (pp *pipe) next() []byte {
-	select {
-	case c := <-pp.chunks:
-		return c
-	default:
-	}
+// take is what the pipe has for a read now, into b, as far as it fits:
+// what a read left first, then the packets queued, of which what does not
+// fit is left. ok is false with nothing queued, eof with the writers gone
+// and nothing left.
+func (pp *pipe) take(b []byte) (n int, eof, ok bool) {
+	pp.mu.Lock()
+	defer pp.mu.Unlock()
 
-	c := pp.back
-	pp.back = nil
-
-	return c
-}
-
-// take reads what the pipe holds into b, under the lock: 0 at the end of
-// the data, EAGAIN when there is none yet.
-func (pp *pipe) take(b []byte) (int, error) {
-	if pp.bytes == 0 {
-		if pp.writers == 0 {
-			return 0, nil
-		}
-
-		return 0, syscall.EAGAIN
-	}
-
-	n := 0
-
-	for n < len(b) && pp.bytes > 0 {
+	for n < len(b) {
 		if len(pp.front) == 0 {
-			pp.front = pp.next()
+			select {
+			case pk, live := <-pp.ch.ch:
+				if !live {
+					pp.bytes.Add(-int64(n))
+
+					return n, n == 0, true
+				}
+
+				pp.front = pk.data
+			default:
+				pp.bytes.Add(-int64(n))
+
+				return n, false, n > 0
+			}
 		}
 
 		c := copy(b[n:], pp.front)
 		pp.front = pp.front[c:]
 		n += c
-		pp.bytes -= c
 	}
 
-	return n, nil
-}
+	pp.bytes.Add(-int64(n))
 
-// put writes b to the pipe, under the lock, as far as the room goes:
-// EAGAIN when there is none, or not enough for a write that goes whole.
-// The write end polls writable with a chunk of room, as Linux's does with
-// a free page: then a write that goes whole does, and a larger one makes
-// progress.
-func (pp *pipe) put(b []byte) (int, error) {
-	if pp.readers == 0 {
-		return 0, syscall.EPIPE
-	}
-
-	room := pipeSize - pp.bytes
-
-	if room == 0 || len(b) <= pipeChunk && len(b) > room {
-		return 0, syscall.EAGAIN
-	}
-
-	n := min(len(b), room)
-
-	for at := 0; at < n; {
-		if pp.back == nil {
-			pp.back = make([]byte, 0, pipeChunk)
-		}
-
-		c := copy(pp.back[len(pp.back):pipeChunk], b[at:n])
-		pp.back = pp.back[:len(pp.back)+c]
-		at += c
-
-		if len(pp.back) == pipeChunk {
-			select {
-			case pp.chunks <- pp.back:
-			default:
-				throwFmt("internal error: pipe chunks overflow")
-			}
-
-			pp.back = nil
-		}
-	}
-
-	pp.bytes += n
-
-	return n, nil
+	return n, false, true
 }
 
 func (e *pipeEnd) read(p *Process, b []byte, mode ioMode) (int, error) {
@@ -292,16 +247,14 @@ func (e *pipeEnd) read(p *Process, b []byte, mode ioMode) (int, error) {
 	pp := e.pipe
 
 	for {
-		pp.mu.Lock()
-		n, err := pp.take(b)
-		pp.mu.Unlock()
+		n, eof, ok := pp.take(b)
 
-		if n > 0 {
-			pp.changed.bump()
-		}
+		if ok {
+			if !eof {
+				pp.changed.bump()
+			}
 
-		if err != syscall.EAGAIN {
-			return n, err
+			return n, nil
 		}
 
 		if mode.nonblock || e.nonblock.Load() {
@@ -314,6 +267,9 @@ func (e *pipeEnd) read(p *Process, b []byte, mode ioMode) (int, error) {
 	}
 }
 
+// write queues b as packets of at most pipeChunk bytes, each whole or not
+// at all, waiting for room between them; what was queued before a signal
+// or EAGAIN is the count.
 func (e *pipeEnd) write(p *Process, b []byte, mode ioMode) (int, error) {
 	if chaosFail("write") {
 		return 0, syscall.EIO
@@ -323,28 +279,11 @@ func (e *pipeEnd) write(p *Process, b []byte, mode ioMode) (int, error) {
 		return 0, syscall.EBADF
 	}
 
-	if len(b) == 0 {
-		return 0, nil
-	}
-
 	pp := e.pipe
 	total := 0
 
-	for {
-		pp.mu.Lock()
-		n, err := pp.put(b[total:])
-		pp.mu.Unlock()
-
-		// Every write wakes, not only the one that fills an empty pipe:
-		// an edge-triggered epoll wants each, as Linux gives once the pipe
-		// was polled.
-		if n > 0 {
-			pp.changed.bump()
-		}
-
-		total += n
-
-		if err == syscall.EPIPE {
+	for total < len(b) {
+		if pp.ch.finished() {
 			if !mode.quiet {
 				p.sendSelf(int(syscall.SIGPIPE))
 			}
@@ -353,11 +292,20 @@ func (e *pipeEnd) write(p *Process, b []byte, mode ioMode) (int, error) {
 				return total, nil
 			}
 
-			return 0, err
+			return 0, syscall.EPIPE
 		}
 
-		if total == len(b) {
-			return total, nil
+		chunk := b[total:min(len(b), total+pipeChunk)]
+		pk := packet{data: append([]byte(nil), chunk...)}
+
+		select {
+		case pp.ch.ch <- pk:
+			pp.bytes.Add(int64(len(chunk)))
+			pp.changed.bump()
+			total += len(chunk)
+
+			continue
+		default:
 		}
 
 		if mode.nonblock || e.nonblock.Load() {
@@ -376,6 +324,8 @@ func (e *pipeEnd) write(p *Process, b []byte, mode ioMode) (int, error) {
 			return 0, err
 		}
 	}
+
+	return total, nil
 }
 
 func (e *pipeEnd) pread(p *Process, b []byte, off int64) (int, error) {
