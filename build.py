@@ -899,21 +899,22 @@ for test in build.glob("$(S)/tst/test_*.py"):
     coverage_case("test_" + name, ["python3", test, *coverage_arguments], [test],
                   [node for node in tested if node not in (vm, aot_native, vm_chaos, aot_native_chaos)])
 
-wat_updates = command(
-    name="test_wat_updates",
-    inputs=["$(S)/tst/wat/run_updates.py", "$(S)/tst/wat/update_branches.wat"],
-    outputs=["$(B)/tst/wat_updates.stamp"],
-    deps=[vm, aot_native, wazero],
-    cmd=[["python3", "$(S)/tst/wat/run_updates.py", vm.outputs[0], aot_native.outputs[0], wazero.outputs[0], WAT2WASM,
-          "$(S)/tst/wat/update_branches.wat"], touch("$(B)/tst/wat_updates.stamp")],
-    descr="EE", color="green",
-)
-tests.append(wat_updates)
-e2e_tests.append(wat_updates)
-coverage_case("test_wat_updates",
-              ["python3", "$(S)/tst/wat/run_updates.py", "$VM", "$AOT", wazero.outputs[0], WAT2WASM,
-               "$(S)/tst/wat/update_branches.wat"],
-              ["$(S)/tst/wat/run_updates.py", "$(S)/tst/wat/update_branches.wat"], [wazero])
+for name, runner, fixture in (("wat_updates", "run_updates.py", "update_branches.wat"),
+                              ("wat_float_selects", "run_float_selects.py", "float_selects.wat")):
+    runner, fixture = "$(S)/tst/wat/" + runner, "$(S)/tst/wat/" + fixture
+    stamp = f"$(B)/tst/{name}.stamp"
+    case_test = command(
+        name="test_" + name,
+        inputs=[runner, fixture],
+        outputs=[stamp],
+        deps=[vm, aot_native, wazero],
+        cmd=[["python3", runner, vm.outputs[0], aot_native.outputs[0], wazero.outputs[0], WAT2WASM, fixture], touch(stamp)],
+        descr="EE", color="green",
+    )
+    tests.append(case_test)
+    e2e_tests.append(case_test)
+    coverage_case("test_" + name, ["python3", runner, "$VM", "$AOT", wazero.outputs[0], WAT2WASM, fixture],
+                  [runner, fixture], [wazero])
 
 coverage_case("test_vm_spec",
               ["python3", "$(S)/tst/vm_spec.py", "$VM", WAST2JSON, testsuite_tarball.outputs[0], "$OUT.stamp", "$AOT"],

@@ -8,8 +8,9 @@ is a call of a kernel import. Bare metal is a port of that program to
 hardware, not a different kernel.
 
 CI builds the native and Wasm compilers with Clang 23, runs the AOT/VM e2e
-C++ cases, Python CLI checks and WebAssembly spec suite, and uploads native
-AOT, Wasm AOT and VM coverage to Codecov using OIDC. Run `./build coverage`
+C++ cases, hand-written WAT programs, Python CLI checks and the WebAssembly
+spec suite, and uploads native AOT, Wasm AOT and VM coverage to Codecov using
+OIDC. Run `./build coverage`
 to collect the reports and `./build coverage_check` to enforce the 100% floor.
 `./build e2e` runs the same AOT/VM cases against production builds.
 Application integration tests have separate `test_busybox`, `test_clang`,
