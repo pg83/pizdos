@@ -491,8 +491,8 @@ python_o = command(
 )
 
 # A system from one object: rootfs, the first process, serves the image
-# linked into it, busybox with its links and init, to what it starts
-# (bin/rootfs, bin/init, lib/nim/fs.nim).
+# linked into it, busybox with its links, python and init, to what it
+# starts (bin/rootfs, bin/init, lib/nim/fs.nim).
 def nim_program(name, source, output, deps=(), options=()):
     return command(
         name=name,
@@ -520,8 +520,10 @@ if NIM:
         name="rootfs_image",
         inputs=["$(S)/bin/rootfs/image.py"],
         outputs=["$(B)/bin/rootfs/rootfs.tar"],
-        deps=[busybox_o, busybox, init_o],
-        cmd=["python3", "$(S)/bin/rootfs/image.py", busybox_o.outputs[0], busybox.outputs[1], init_o.outputs[0], "$(B)/bin/rootfs/rootfs.tar"],
+        deps=[busybox_o, busybox, init_o, python_o, python],
+        cmd=["python3", "$(S)/bin/rootfs/image.py", "$(B)/bin/rootfs/rootfs.tar",
+             "--busybox", busybox_o.outputs[0], busybox.outputs[1], "--init", init_o.outputs[0],
+             "--python", python_o.outputs[0], python.outputs[1]],
         descr="IM",
         color="cyan",
     )

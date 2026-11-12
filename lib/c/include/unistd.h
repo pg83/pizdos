@@ -171,6 +171,7 @@ char* getlogin(void);
 int getlogin_r(char*, size_t);
 int gethostname(char*, size_t);
 int sethostname(const char*, size_t);
+int getentropy(void*, size_t);
 int getdomainname(char*, size_t);
 int setdomainname(const char*, size_t);
 long gethostid(void);

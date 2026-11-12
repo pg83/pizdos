@@ -457,6 +457,7 @@ func (k *Kernel) functionTable() map[string]any {
 		"setusershell":           libcSetusershell,
 		"endusershell":           libcEndusershell,
 		"gethostname":            libcGethostname,
+		"getentropy":             libcGetentropy,
 		"getdomainname":          libcGetdomainname,
 		"sethostname":            libcSethostname,
 		"setdomainname":          libcSetdomainname,
@@ -2281,6 +2282,10 @@ func libcEndusershell(ctx uintptr) {
 
 func libcGethostname(ctx uintptr, name, n uint32) uint32 {
 	return proc(ctx).libcGethostname(name, n)
+}
+
+func libcGetentropy(ctx uintptr, buf, n uint32) uint32 {
+	return proc(ctx).libcGetentropy(buf, n)
 }
 
 func libcGetdomainname(ctx uintptr, name, n uint32) uint32 {

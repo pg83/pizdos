@@ -64,6 +64,7 @@ type
     nkObject  ## an object of the kernel the server hands out: a tty, a disk
     nkNull    ## reads nothing, takes everything
     nkZero    ## reads zeros
+    nkRandom  ## reads the kernel's random bytes
 
   Node* = ref object
     name*: string
@@ -77,7 +78,7 @@ type
     of nkFile: data*: string
     of nkLink: target*: string
     of nkObject: fd*: cint
-    of nkNull, nkZero: discard
+    of nkNull, nkZero, nkRandom: discard
 
   Endpoint = object
     fd: cint
@@ -98,6 +99,7 @@ type
 # lib/c has these; Nim's posix does not declare them all.
 proc chroot*(path: cstring): cint {.importc, header: "<unistd.h>".}
 proc c_signal(sig: cint, handler: proc(s: cint) {.noconv.}): pointer {.importc: "signal", header: "<signal.h>".}
+proc getentropy(buf: pointer, n: csize_t): cint {.importc, header: "<unistd.h>".}
 
 # ---- packets --------------------------------------------------------------
 
@@ -245,14 +247,14 @@ proc mode(n: Node): uint32 =
   of nkDir: 0o040755
   of nkFile: 0o100000'u32 or (if n.perm != 0: n.perm else: 0o644'u32)
   of nkLink: 0o120777
-  of nkObject, nkNull, nkZero: 0o020666
+  of nkObject, nkNull, nkZero, nkRandom: 0o020666
 
 proc dtype(n: Node): uint8 =
   case n.kind
   of nkDir: dtDir
   of nkFile: dtReg
   of nkLink: dtLnk
-  of nkObject, nkNull, nkZero: dtChr
+  of nkObject, nkNull, nkZero, nkRandom: dtChr
 
 proc statOf(n: Node): Stat =
   result = Stat(ino: n.ino, mode: n.mode, nlink: 1)
@@ -438,6 +440,16 @@ proc read(s: var Server, reply: cint, node: Node, h: Header, body: openArray[byt
     ok(reply)
   of nkZero:
     ok(reply, newSeq[byte](min(n, maxPacket - 16)))
+  of nkRandom:
+    var bytes = newSeq[byte](min(n, maxPacket - 16))
+    var at = 0
+    while at < bytes.len:
+      let chunk = min(256, bytes.len - at)
+      if getentropy(bytes[at].addr, csize_t(chunk)) != 0:
+        err(reply, EIO)
+        return
+      at += chunk
+    ok(reply, bytes)
   else:
     err(reply, EISDIR)
 
@@ -448,7 +460,7 @@ proc write(s: var Server, reply: cint, node: Node, h: Header, body: openArray[by
   let data = body[8 .. ^1]
   var count = uint32(data.len)
   case node.kind
-  of nkNull, nkZero:
+  of nkNull, nkZero, nkRandom:
     ok(reply, count.bytes)
   of nkFile:
     if not s.writable:

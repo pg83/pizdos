@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """`vm run -- rootfs`: a system from one object and nothing of the host's
-file system. rootfs serves the image linked into it, init mounts its /dev
-and starts busybox's shell on the terminal, and the shell's status is
-vm's.
+file system. rootfs serves the image linked into it, busybox and python,
+init mounts its /dev and starts busybox's shell on the terminal, and the
+shell's status is vm's.
 
     test_rootfs.py <vm> <rootfs>
 """
@@ -25,6 +25,9 @@ test -x /bin/busybox && echo executable
 (echo nothing > /tmp/x) 2>/dev/null || echo read-only
 sh -c 'exit 5'; echo inner=$?
 seq 1 20000 | sort -rn | head -1
+head -c 8 /dev/urandom | wc -c
+python3 -c 'import os, sys; print(2 ** 100, sys.version_info[:2], len(os.urandom(5)), os.path.exists("/usr/lib/python314.zip"))'
+python3 -c 'import json, os; print(json.dumps(sorted(n for n in os.listdir("/usr/bin") if n.startswith("python"))))'
 exit 3
 """
 
@@ -44,6 +47,9 @@ executable
 read-only
 inner=5
 20000
+8
+1267650600228229401496703205376 (3, 14) 5 True
+["python", "python3"]
 """
 
 

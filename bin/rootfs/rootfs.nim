@@ -10,8 +10,20 @@
 import std/[strutils, tables, posix]
 import fs
 
-const imagePath {.strdefine.} = ""
-const image = staticRead(imagePath)  # a ustar archive (bin/rootfs/image.py)
+# The image is a ustar archive (bin/rootfs/image.py) linked in as data
+# (dev/nim.py --image).
+proc imageBase(): ptr UncheckedArray[byte] {.importc: "rootfs_image_base", header: "image.h".}
+var imageSize {.importc: "rootfs_image_size", header: "image.h".}: cuint
+let image = imageBase()
+
+# bytesAt is a slice of the image as a string, its NULs stripped for a
+# header field.
+proc bytesAt(at, n: int, field = false): string =
+  result = newString(n)
+  if n > 0:
+    copyMem(result[0].addr, image[at].addr, n)
+  if field:
+    result = result.strip(chars = {'\0'})
 
 var
   server: Server
@@ -37,12 +49,13 @@ proc load(s: var Server) =
   ## The entries of the archive, a header block of 512 bytes each, the
   ## data of a file in the blocks after it.
   var at = 0
-  while at + 512 <= image.len and image[at] != '\0':
-    let name = image[at ..< at + 100].strip(chars = {'\0'})
-    let perm = uint32(octal(image[at + 100 ..< at + 108])) and 0o777
-    let size = octal(image[at + 124 ..< at + 136])
-    let kind = image[at + 156]
-    let target = image[at + 157 ..< at + 257].strip(chars = {'\0'})
+  let total = int(imageSize)
+  while at + 512 <= total and image[at] != 0:
+    let name = bytesAt(at, 100, field = true)
+    let perm = uint32(octal(bytesAt(at + 100, 8))) and 0o777
+    let size = octal(bytesAt(at + 124, 12))
+    let kind = char(image[at + 156])
+    let target = bytesAt(at + 157, 100, field = true)
     let path = name.strip(chars = {'/'}, leading = false)
     let slash = path.rfind('/')
     let dir = s.dirOf(if slash >= 0: path[0 ..< slash] else: "")
@@ -55,7 +68,7 @@ proc load(s: var Server) =
       s.node(dir, base, nkLink).target = target
     else:
       let file = s.node(dir, base, nkFile)
-      file.data = image[at + 512 ..< at + 512 + size]
+      file.data = bytesAt(at + 512, size)
       file.perm = perm
     at += 512 + (size + 511) div 512 * 512
 

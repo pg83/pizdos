@@ -13,12 +13,15 @@ var
 
 proc devfs(): Server =
   ## The terminal is descriptor 0, inherited from the first process: the
-  ## object itself goes to whoever opens /dev/tty.
+  ## object itself goes to whoever opens /dev/tty. urandom is the kernel's
+  ## entropy, through getentropy.
   result = Server(writable: false)
   result.root = result.node(nil, "", nkDir)
   result.node(result.root, "tty", nkObject).fd = 0
   discard result.node(result.root, "null", nkNull)
   discard result.node(result.root, "zero", nkZero)
+  discard result.node(result.root, "urandom", nkRandom)
+  discard result.node(result.root, "random", nkRandom)
 
 proc spawn(path: string, argv, env: openArray[string]): Pid =
   result = fork()

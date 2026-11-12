@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
 	"fmt"
 	"math"
 	"path"
@@ -443,6 +444,19 @@ func (p *Process) libcEndusershell() {
 
 // The host's names, which no process may set; the host id is
 // musl's, 0.
+// getentropy fills a buffer of at most 256 bytes with the host's random
+// bytes: what a system without a /dev/urandom of the host's reads them
+// through, its devfs included.
+func (p *Process) libcGetentropy(buf, n uint32) uint32 {
+	if n > 256 {
+		return p.result(0, syscall.EIO)
+	}
+
+	rand.Read(p.span(buf, n))
+
+	return p.result(0, nil)
+}
+
 func (p *Process) libcGethostname(name, n uint32) uint32 {
 	var u syscall.Utsname
 

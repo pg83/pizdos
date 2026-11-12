@@ -4,7 +4,8 @@ wasm32 against lib/c's headers, wasm-ld links it with libc.a.
 
     nim.py <nim> <clang> <wasm-ld> <libc-include> <libc.a> <main.nim> <out.wasm> [--image FILE] [nim option]...
 
---image FILE defines imagePath as FILE for the program to staticRead.
+--image FILE links the file in as data: rootfs_image_base(), its bytes,
+and rootfs_image_size, declared by image.h for the program to import.
 
 Nim's runtime is ORC with goto exceptions and panics, no threads and no
 signal handler of its own: malloc is lib/c's. Nim's main takes three
@@ -47,6 +48,29 @@ int __main_argc_argv(int argc, char** argv) {
 }
 """
 
+IMAGE_S = """\
+\t.section .rodata.rootfs_image,"",@
+\t.globl rootfs_image
+\t.p2align 4
+rootfs_image:
+\t.incbin "{path}"
+\t.size rootfs_image, {size}
+\t.globl rootfs_image_size
+\t.p2align 2
+rootfs_image_size:
+\t.int32 {size}
+\t.size rootfs_image_size, 4
+"""
+
+IMAGE_H = """\
+extern const unsigned char rootfs_image[];
+extern const unsigned int rootfs_image_size;
+
+static inline const unsigned char* rootfs_image_base(void) {
+    return rootfs_image;
+}
+"""
+
 
 def nim_lib(nim):
     """The directory of nimbase.h: nim dump lists the library paths after its
@@ -71,9 +95,11 @@ def nim_lib(nim):
 def main():
     nim, cc, ld, include, libc, source, output = sys.argv[1:8]
     extra = sys.argv[8:]
+    image = None
 
     if extra[:1] == ["--image"]:
-        extra = [f"-d:imagePath={Path(extra[1]).resolve()}", *extra[2:]]
+        image, extra = Path(extra[1]).resolve(), extra[2:]
+
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     lib = nim_lib(nim)
@@ -84,8 +110,14 @@ def main():
         subprocess.run([nim, *NIM_FLAGS, *extra, f"--nimcache:{cache}", str(Path(source).resolve())], check=True)
         (work / "shim.c").write_text(SHIM)
         sources = sorted(cache.glob("*.c")) + [work / "shim.c"]
-        flags = ["-O2", "-w", "-isystem", include, "-I", str(lib)]
+        flags = ["-O2", "-w", "-isystem", include, "-I", str(lib), "-I", str(work)]
         units = [(c, work / (c.stem + ".o"), flags) for c in sources]
+
+        if image is not None:
+            (work / "image.h").write_text(IMAGE_H)
+            (work / "image.s").write_text(IMAGE_S.format(path=image, size=image.stat().st_size))
+            units.append((work / "image.s", work / "image.o", []))
+
         wasm.compile_all(cc, units)
         subprocess.run([ld, *LINK, "-o", str(output), *(str(o) for _, o, _ in units), libc], check=True)
 
