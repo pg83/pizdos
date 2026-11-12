@@ -30,6 +30,7 @@ cd /tmp && echo x > y && touch -d @1000000000 y && stat -c %Y y && cd /
 sh -c 'exit 5'; echo inner=$?
 seq 1 20000 | sort -rn | head -1
 head -c 8 /dev/urandom | wc -c
+printf ab | od -An -tx1
 python3 -c 'import os, sys; print(2 ** 100, sys.version_info[:2], len(os.urandom(5)), os.path.exists("/usr/lib/python314.zip"))'
 python3 -c 'import json, os; print(json.dumps(sorted(n for n in os.listdir("/usr/bin") if n.startswith("python"))))'
 python3 -c 'import tempfile; f = tempfile.NamedTemporaryFile("w+", dir="/tmp"); f.write("x" * 5000); f.seek(0); print(len(f.read()), f.name.startswith("/tmp/"))'
@@ -59,6 +60,7 @@ b
 inner=5
 20000
 8
+ 61 62
 1267650600228229401496703205376 (3, 14) 5 True
 ["python", "python3"]
 5000 True
