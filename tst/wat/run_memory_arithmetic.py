@@ -38,6 +38,17 @@ def program(template):
                                            f"(i32.const {int(expected)})) (then unreachable))"))
                         checks += 1
     template = template.replace(";; COMPARISONS", "\n".join(comparisons))
+    roundtrips = []
+    for width in (8, 16, 32):
+        name = f"unsigned_roundtrip_{width}"
+        roundtrips.append(f"(func ${name} (param $address i32) (result i64) "
+                          f"(i64.extend_i32_u (i32.wrap_i64 (i64.load{width}_u (local.get $address)))))")
+        for raw in (0, 1, 0x7f, 0x80, 0xffff, 0x80000000, 0xffffffff, 0x8765432189abcdef):
+            expected = raw & ((1 << width) - 1)
+            statements.extend((f"(i64.store (i32.const 4096) (i64.const {signed(raw, 64)}))",
+                               f"(if (i64.ne (call ${name} (i32.const 4096)) (i64.const {expected})) (then unreachable))"))
+            checks += 1
+    template = template.replace(";; UNSIGNED_ROUNDTRIPS", "\n".join(roundtrips))
     for bits in (32, 64):
         values = (0.0, -0.0, 1.0, -1.0, 13.25, 2.0 ** -40, 2.0 ** 40)
         for operation in ("add", "mul"):
