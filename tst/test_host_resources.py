@@ -11,10 +11,6 @@ import sys
 import tempfile
 
 
-def limit_descriptors():
-    resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
-
-
 def bootstrap_program():
     # A kernel entry that checks getpid() == 1 without allocating or doing I/O.
     sections = [(1, b"\2\x60\0\1\x7f\x60\0\0"),
@@ -36,10 +32,13 @@ def main():
         result = subprocess.run([vm, "-o", str(embedded), fixture], capture_output=True, env=env, timeout=60)
         assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), result
         for obj in (compiled, embedded):
-            for operation in ("objects", "fork", "vfork", "forkpty"):
-                result = subprocess.run([vm, "run", "--root", str(work), "--", str(obj), operation], capture_output=True,
-                                        env=env, preexec_fn=limit_descriptors, timeout=30)
-                assert (result.returncode, result.stdout, result.stderr) == (0, b"host resource recovery: ok\n", b""), (operation, result)
+            for soft in (8, 64):
+                def restrict():
+                    resource.setrlimit(resource.RLIMIT_NOFILE, (soft, 64))
+                for operation in ("objects", "fork", "vfork", "forkpty"):
+                    result = subprocess.run([vm, "run", "--root", str(work), "--", str(obj), operation], capture_output=True,
+                                            env=env, preexec_fn=restrict, timeout=30)
+                    assert (result.returncode, result.stdout, result.stderr) == (0, b"host resource recovery: ok\n", b""), (soft, operation, result)
         source = work / "bootstrap.wasm"
         data = bootstrap_program()
         source.write_bytes(data)
