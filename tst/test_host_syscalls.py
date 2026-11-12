@@ -80,7 +80,7 @@ def wasi_directory(path, name, filetype):
 
 
 def main():
-    vm, native, fixture, wrapper = sys.argv[1:]
+    vm, native, fixture, wrapper, interrupt = sys.argv[1:]
     # Linux amd64 syscall numbers: uname, sysinfo, getrusage, getgroups;
     # fstatfs, utimensat, syncfs, sync, pwrite64; prlimit64, getrlimit.
     cases = [("system", errno.EIO, (63, 99, 98, 115, 100)), ("filesystem", errno.EIO, (138, 280, 306, 162, 18)),
@@ -123,6 +123,10 @@ def main():
         result = subprocess.run([vm, "-o", str(embedded), fixture], capture_output=True, env=env, timeout=60)
         assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), result
         for obj in (compiled, embedded):
+            for operation, number in (("retry-open", 437), ("retry-read", 0), ("retry-connect", 42)):
+                result = subprocess.run([interrupt, str(number), "--", vm, "run", "--root", str(work), "--", str(obj), operation],
+                                        input=b"x", capture_output=True, env=env, timeout=30)
+                assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), (operation, result)
             for operation in ("host-abstract", "host-pathname"):
                 with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as inherited:
                     if operation == "host-abstract":

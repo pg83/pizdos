@@ -755,6 +755,14 @@ host_syscalls_filter = command(
     descr="CC", color="green",
 )
 
+host_syscalls_interrupt = command(
+    name="host_syscalls_interrupt",
+    inputs=["$(S)/tst/host_syscalls/interrupt.c"],
+    outputs=["$(B)/tst/host_syscalls/interrupt"],
+    cmd=[CLANG, *build.cppflags, *build.cflags, "-O2", "$(S)/tst/host_syscalls/interrupt.c", "-o", "$(B)/tst/host_syscalls/interrupt", *build.ldflags],
+    descr="CC", color="green",
+)
+
 E2E_TESTED = {
     "aot": [aot, aot_command, wazero, vm, chaos_check],
     "asan": [vm, asan_check_o, libc_check_o],
@@ -788,7 +796,7 @@ E2E_TESTED = {
     "invariant_results": [vm, aot_native, wazero],
     "host_io": [vm, aot_native],
     "host_resources": [vm, aot_native, host_resources_check],
-    "host_syscalls": [vm, aot_native, host_syscalls_check, host_syscalls_filter],
+    "host_syscalls": [vm, aot_native, host_syscalls_check, host_syscalls_filter, host_syscalls_interrupt],
     "host_signals": [vm, aot_native, wazero],
     "libc": [vm, libc_check_o],
     "large_functions": [vm, aot_native],

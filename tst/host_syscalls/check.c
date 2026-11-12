@@ -30,7 +30,32 @@
 
 int main(int argc, char** argv) {
     assert(argc == 2);
-    if (strcmp(argv[1], "host-abstract") == 0 || strcmp(argv[1], "host-pathname") == 0) {
+    if (strcmp(argv[1], "retry-open") == 0) {
+        int fd = open("/tmp/retry", O_CREAT | O_TRUNC | O_RDWR, 0600);
+        assert(fd >= 0 && write(fd, "x", 1) == 1);
+        char byte;
+        assert(pread(fd, &byte, 1, 0) == 1 && byte == 'x');
+        assert(close(fd) == 0 && unlink("/tmp/retry") == 0);
+    } else if (strcmp(argv[1], "retry-read") == 0) {
+        char byte;
+        assert(read(0, &byte, 1) == 1 && byte == 'x');
+        assert(read(0, &byte, 1) == 0);
+    } else if (strcmp(argv[1], "retry-connect") == 0) {
+        int listener = socket(AF_INET, SOCK_STREAM, 0);
+        struct sockaddr_in address = {0};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        assert(listener >= 0 && bind(listener, (struct sockaddr*)&address, sizeof(address)) == 0);
+        socklen_t size = sizeof(address);
+        assert(getsockname(listener, (struct sockaddr*)&address, &size) == 0 && listen(listener, 1) == 0);
+        int client = socket(AF_INET, SOCK_STREAM, 0);
+        assert(client >= 0 && connect(client, (struct sockaddr*)&address, size) == 0);
+        int accepted = accept(listener, NULL, NULL);
+        assert(accepted >= 0 && send(client, "x", 1, 0) == 1);
+        char byte;
+        assert(recv(accepted, &byte, 1, 0) == 1 && byte == 'x');
+        assert(close(client) == 0 && close(accepted) == 0 && close(listener) == 0);
+    } else if (strcmp(argv[1], "host-abstract") == 0 || strcmp(argv[1], "host-pathname") == 0) {
         struct sockaddr_un address;
         socklen_t length = sizeof(address);
         memset(&address, 0xff, sizeof(address));
