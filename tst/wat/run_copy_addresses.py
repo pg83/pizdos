@@ -27,6 +27,11 @@ def address(base, offset, form):
 
 def program(template, stride, form, carry, count, dest, other, variable_step=False, mixed_offset=False):
     initial = IMAGE
+    if form == "backward_bound":
+        template = template.replace("(local.set $state (i32.const 7))", """(local.set $state (i32.const 7))
+          (local.set $index (i32.add (i32.const 128) (i32.and (local.get $count) (i32.const 7))))""")
+        template = template.replace("(i32.lt_u (local.get $index) (local.get $count))",
+                                    "(i32.lt_u (local.get $index) (i32.and (local.get $count) (i32.const 7)))")
     if form == "amplified":
         template = template.replace("(memory 1)", "(memory 2)")
         initial += bytes((index * 37 + 11) % 251 for index in range(65536, 131072))
@@ -60,13 +65,16 @@ def program(template, stride, form, carry, count, dest, other, variable_step=Fal
     step = f"(i32.add (local.get $delta) (i32.const {stride}))" if variable_step else f"(i32.const {stride})"
     template = template.replace(";; COPY", "\n".join(statements)).replace(";; CARRY", update).replace("(i32.const STRIDE)", step)
     offset_update = "(local.set $offset (i32.add (i32.add (local.get $offset) (i32.const 3)) (local.get $delta)))" if mixed_offset else ""
+    if form == "secondary":
+        offset_update = "(local.set $offset (i32.add (local.get $offset) (i32.const 3)))"
     if mixed_offset:
         template = template.replace("(local.get $index)", "(local.get $offset)", 1)
     template = template.replace(";; OFFSET", offset_update)
     image, checksum, state, delta = bytearray(initial), 0, 7, 13
     touched = {dest - 32, dest + count + 32, len(initial) - 1}
     moving_offset = 0
-    for index in range(0, count, stride + (delta if variable_step else 0)):
+    indices = (128 + (count & 7),) if form == "backward_bound" and count else range(0, count, stride + (delta if variable_step else 0))
+    for index in indices:
         for offset in range(stride):
             source = other if form == "distinct" and offset else 8192
             shift = delta if form in ("subtract", "hoisted") else 0
@@ -94,7 +102,7 @@ def program(template, stride, form, carry, count, dest, other, variable_step=Fal
         elif carry == "tail_read":
             state = image[8192 + index]
             touched.add(8192 + index)
-        moving_offset += 3 + delta
+        moving_offset += 3 + (0 if form == "secondary" else delta)
     expected = checksum + state + (int(count != 0) if form == "threaded" else 0)
     checks = [f"(if (i64.ne (call $copy (i32.const {dest}) (i32.const 8192) (i32.const {other}) "
               f"(i32.const {count}) (i32.const {delta})) (i64.const {expected})) (then unreachable))"]
@@ -120,6 +128,10 @@ def main():
     cases += [(stride, "add", "none", count, 32768, 8192, False, True) for stride in (1, 2, 3) for count in (0, 1, 97)]
     cases += [(1, "amplified", "none", count, 32768, 8192) for count in (0, 1, 2)]
     cases += [(stride, "threaded", "none", count, dest, 8192) for stride in (1, 2)
+              for count, dest in ((0, 32768), (1, 32768), (97, 32768), (97, 8193))]
+    cases += [(stride, "secondary", "none", count, 32768, 8192, False, True)
+              for stride in (1, 2, 3) for count in (0, 1, 97)]
+    cases += [(stride, "backward_bound", "none", count, dest, 8192) for stride in (1, 2, 3)
               for count, dest in ((0, 32768), (1, 32768), (97, 32768), (97, 8193))]
     with tempfile.TemporaryDirectory(prefix="pizdos-wat-copy-addresses-") as directory:
         work = Path(directory)
