@@ -935,6 +935,7 @@ for name, runner, fixture in (("wat_updates", "run_updates.py", "update_branches
                               ("wat_late_constants", "run_late_constants.py", "late_constants.wat"),
                               ("wat_shared_addresses", "run_shared_addresses.py", "shared_addresses.wat"),
                               ("wat_address_rotation", "run_address_rotation.py", "address_rotation.wat"),
+                              ("wat_adjacent_loops", "run_adjacent_loops.py", "adjacent_loops.wat"),
                               ("wat_wide_allocation_limit", "run_wide_allocation_limit.py", "wide_allocation_limit.wat"),
                               ("wat_loop_escapes", "run_loop_escapes.py", "loop_escapes.wat")):
     runner, fixture = "$(S)/tst/wat/" + runner, "$(S)/tst/wat/" + fixture
