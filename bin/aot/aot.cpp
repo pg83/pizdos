@@ -10327,7 +10327,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             auto instructions = mf->blocks[b].insts.view();
             for (Int i = length(instructions) - 1; i >= 0; --i) {
                 MInst* in = &instructions[i];
-                const i32 k = slot(in->dst);
+                // Resolve permits stack destinations only in parallel moves;
+                // the following passes add none to scalar moves.
                 if (in->op == mParMove) {
                     auto& moves = mInstExtra(in)->moves;
                     usize kept = 0;
@@ -10338,8 +10339,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         }
                     }
                     moves.resize(kept);
-                } else if ((in->op == mMov || in->op == mFMov) && k >= 0 && !live(k)) {
-                    *in = inst(mNop);
                 }
                 transfer(in);
             }
@@ -10468,13 +10467,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     continue;
                 }
                 const u8 width = in->imm == 255 ? 1 : 2;
-                Int next = i + 1;
-                while (next < length(insts) && insts[next].op == mNop) {
-                    ++next;
-                }
-                if (next < length(insts) && (insts[next].op == mJcc || insts[next].op == mSetcc || insts[next].op == mCmov || insts[next].op == mFSelect)) {
-                    continue;
-                }
+                // Register masks do not supply branch/select flags:
+                // lowererCompare emits a comparison, and RMW flag branches
+                // use memory ALUs. FSelect emits its own float comparison.
                 const VReg r = in->dst;
                 // Back through the block, and a block it alone enters from.
                 i32 b = order[j];
