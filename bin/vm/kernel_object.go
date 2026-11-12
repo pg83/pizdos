@@ -98,16 +98,23 @@ type Pathed interface {
 	hostPath() (string, error)
 }
 
-// A Node is a file of a host file system: what the metadata calls of a
-// descriptor work on.
-type Node interface {
-	Pathed
+// An Attrs has the attributes a descriptor's calls set: a file of the
+// host and an open file of a server (kernel_remote.go) both.
+type Attrs interface {
+	File
 	truncate(size int64) error
 	sync(data bool) error
-	syncfs() error
 	chmod(mode uint32) error
 	chown(uid, gid int) error
 	utimes(ts []syscall.Timespec) error
+}
+
+// A Node is a file of a host file system: what the calls the host makes
+// on a descriptor work on.
+type Node interface {
+	Attrs
+	Pathed
+	syncfs() error
 	access(mode, flags uint32) error
 	readlink(out []byte) (int, error)
 	statfs(st *syscall.Statfs_t) error
@@ -228,6 +235,20 @@ func (p *Process) dirAt(fd uint32) (Dir, error) {
 	}
 
 	return nil, syscall.ENOTDIR
+}
+
+func (p *Process) attrsAt(fd uint32) (Attrs, error) {
+	obj, err := p.fd(fd)
+
+	if err != nil {
+		return nil, err
+	}
+
+	if a, ok := obj.(Attrs); ok {
+		return a, nil
+	}
+
+	return nil, syscall.EINVAL
 }
 
 func (p *Process) nodeAt(fd uint32) (Node, error) {

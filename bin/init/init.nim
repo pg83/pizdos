@@ -1,13 +1,14 @@
 ## init: pid 2, from the image. Its root is the rootfs server. It serves
-## /dev itself: the terminal the kernel gave vm, null and zero; mounts it;
-## starts the shell on the terminal with a clean environment; reaps what
-## ends under it, and ends with the shell's status.
+## /dev itself: the terminal the kernel gave vm, null, zero and urandom;
+## and /tmp, a tree in its memory; mounts both; starts the shell on the
+## terminal with a clean environment; reaps what ends under it, and ends
+## with the shell's status.
 
 import std/posix
 import fs
 
 var
-  dev: Server
+  dev, tmp: Server
   shellPid: Pid
   shellStatus = -1'i32
 
@@ -47,9 +48,15 @@ proc main() =
   let (ours, theirs) = pair()
   dev.listen(ours)
   mountAt("/dev", theirs)
+  tmp = Server(writable: true)
+  tmp.root = tmp.node(nil, "", nkDir)
+  tmp.root.perm = 0o1777
+  let (tmpOurs, tmpTheirs) = pair()
+  tmp.listen(tmpOurs)
+  mountAt("/tmp", tmpTheirs)
   reapOnChild(proc(s: cint) {.noconv.} = discard)
   shellPid = spawn("/bin/sh", ["sh"], ["PATH=/bin:/usr/bin:/sbin:/usr/sbin", "HOME=/", "TERM=vt100"])
-  dev.serve(reap)
+  serve([dev.addr, tmp.addr], reap)
   quit(max(shellStatus, 0))
 
 main()

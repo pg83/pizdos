@@ -14,7 +14,7 @@
 ##   Header { op u32, arg u32 }
 ##
 ##   on a directory's endpoint, the path relative to it, ".." staying in it:
-##     OPEN      arg flags   path          OK stat; fds[0] an object: the file is it
+##     OPEN      arg flags   mode u32 path OK stat; fds[0] an object: the file is it
 ##     STAT      arg flags   path          OK stat; AT_SYMLINK_NOFOLLOW
 ##     READLINK              path          OK target
 ##     MKDIR     arg mode    path
@@ -22,13 +22,25 @@
 ##     RENAME                old 0 new
 ##     SYMLINK               target 0 path
 ##     MOUNT                 path          fds = [root of the server, reply]
+##     CHMOD     arg mode    path
+##     CHOWN     arg follow  uid u32 gid u32 path
+##     UTIMES    arg when    atime u64 mtime u64 path   when: 1 follow,
+##                                         2 atime now, 4 mtime now,
+##                                         8 atime kept, 16 mtime kept
+##     TRUNCATE              size u64 path
 ##   on a node's endpoint:
 ##     READ      arg len     off u64       OK data
 ##     WRITE                 off u64 data  OK count u32
 ##     READDIR   arg index                 OK (ino u64, type u8, name, 0)*
 ##     FSTAT                               OK stat
+##     FCHMOD    arg mode
+##     FCHOWN                uid u32 gid u32
+##     FUTIMES   arg when    atime u64 mtime u64
+##     FTRUNCATE             size u64
+##     FSYNC     arg data
 ##   replies: OK, ERR with arg the errno
-##   stat { ino u64, size u64, mtime u64 nanoseconds, mode u32, nlink u32 }
+##   stat { ino u64, size u64, mtime u64 nanoseconds, mode u32, nlink u32,
+##          uid u32, gid u32, atime u64 }
 
 import std/[tables, strutils, posix]
 
@@ -36,7 +48,14 @@ const
   atSymlinkNofollow* = 0x100'u32
   atRemovedir* = 0x200'u32
   oCreat* = 0o100'u32
+  oExcl* = 0o200'u32
+  oTrunc* = 0o1000'u32
   oNofollow* = 0o400000'u32
+  whenFollow = 1'u32
+  whenAtimeNow = 2'u32
+  whenMtimeNow = 4'u32
+  whenAtimeKept = 8'u32
+  whenMtimeKept = 16'u32
   oDirectory* = 0o200000'i32
   msgCmsgCloexec = 0x40000000'i32
   sockCloexec = 0o2000000'i32
@@ -50,14 +69,16 @@ const
 type
   Op* = enum
     opOpen = 1, opStat, opReadlink, opMkdir, opUnlink, opRename, opSymlink,
-    opMount, opRead, opWrite, opReaddir, opFstat, opOk, opErr
+    opMount, opRead, opWrite, opReaddir, opFstat, opChmod, opChown, opUtimes,
+    opTruncate, opFchmod, opFchown, opFutimes, opFtruncate, opFsync, opOk, opErr
 
   Header* {.packed.} = object
     op*, arg*: uint32
 
   Stat* {.packed.} = object
     ino*, size*, mtime*: uint64
-    mode*, nlink*: uint32
+    mode*, nlink*, uid*, gid*: uint32
+    atime*: uint64
 
   NodeKind* = enum
     nkDir, nkFile, nkLink
@@ -71,6 +92,8 @@ type
     parent*: Node
     ino*: uint64
     perm*: uint32  ## the permission bits of a file, 0 for the kind's own
+    uid*, gid*: uint32
+    atime*, mtime*: uint64  ## nanoseconds
     case kind*: NodeKind
     of nkDir:
       children*: OrderedTable[string, Node]
@@ -184,13 +207,19 @@ proc err(ep: cint, e: cint) =
 
 # ---- the tree -------------------------------------------------------------
 
+proc now(): uint64 =
+  var ts: Timespec
+  discard clock_gettime(CLOCK_REALTIME, ts)
+  uint64(ts.tv_sec) * 1_000_000_000'u64 + uint64(ts.tv_nsec)
+
 proc node*(s: var Server, parent: Node, name: string, kind: NodeKind): Node =
   inc s.inodes
-  result = Node(name: name, parent: parent, ino: s.inodes, kind: kind)
+  result = Node(name: name, parent: parent, ino: s.inodes, kind: kind, atime: now(), mtime: now())
   if kind == nkDir:
     result.mount = -1
   if parent != nil:
     parent.children[name] = result
+    parent.mtime = result.mtime
 
 proc fail(e: cint): Walk = Walk(err: e)
 
@@ -257,7 +286,7 @@ proc dtype(n: Node): uint8 =
   of nkObject, nkNull, nkZero, nkRandom: dtChr
 
 proc statOf(n: Node): Stat =
-  result = Stat(ino: n.ino, mode: n.mode, nlink: 1)
+  result = Stat(ino: n.ino, mode: n.mode, nlink: 1, uid: n.uid, gid: n.gid, atime: n.atime, mtime: n.mtime)
   case n.kind
   of nkFile: result.size = uint64(n.data.len)
   of nkLink: result.size = uint64(n.target.len)
@@ -265,19 +294,31 @@ proc statOf(n: Node): Stat =
 
 # ---- calls on paths ---------------------------------------------------------
 
-proc forward(w: Walk, h: Header, body: openArray[byte], fds: seq[cint]) =
-  ## The same call, the rest of the path, the same endpoints: on to the
-  ## server mounted where the walk ended.
-  var packet = newSeq[byte]()
-  if h.op == uint32(opRename) or h.op == uint32(opSymlink):
+# pathAt is where the path of a call starts in its body: after what
+# comes before it.
+proc pathAt(op: Op, body: openArray[byte]): int =
+  case op
+  of opOpen: 4
+  of opChown, opTruncate: 8
+  of opUtimes: 16
+  of opSymlink:
     var at = 0
-    let first = str(body, at)
-    packet.add first.toOpenArrayByte(0, first.high)
-    packet.add 0
+    discard str(body, at)
+    at
+  else: 0
+
+proc forwardAfter(w: Walk, h: Header, prefix: openArray[byte], fds: seq[cint]) =
+  ## The same call, what came before its path, the rest of the path, the
+  ## same endpoints: on to the server mounted where the walk ended.
+  var packet = newSeq[byte]()
+  packet.add prefix
   packet.add w.rest.toOpenArrayByte(0, w.rest.high)
   send(w.node.mount, Op(h.op), h.arg, packet, fds)
   for fd in fds:
     discard close(fd)
+
+proc forward(w: Walk, h: Header, body: openArray[byte], fds: seq[cint]) =
+  forwardAfter(w, h, body.toOpenArray(0, min(pathAt(Op(h.op), body), body.len) - 1), fds)
 
 template resolved(reply: cint, walked: Walk, h: Header, body, fds): Node =
   ## The node a walk reached, or the reply that ends the request. The walk
@@ -295,12 +336,16 @@ template resolved(reply: cint, walked: Walk, h: Header, body, fds): Node =
 proc open(s: var Server, c: Node, h: Header, body: openArray[byte], fds: seq[cint]) =
   let reply = fds[^1]
   var at = 0
+  let mode = u32(body, at)
   let path = str(body, at)
   var w = walk(c, c, path, (h.arg and oNofollow) == 0)
+  if w.err == 0 and not w.forward and (h.arg and (oCreat or oExcl)) == (oCreat or oExcl):
+    w = fail(EEXIST)
   if w.err == ENOENT and (h.arg and oCreat) != 0:
     let (p, name) = parentOf(c, path)
     if p.err == 0 and not p.forward and s.writable:
       w = Walk(node: s.node(p.node, name, nkFile))
+      w.node.perm = mode and 0o7777
     elif p.err == 0 and not p.forward:
       w = fail(EROFS)
   let node = resolved(reply, w, h, body, fds)
@@ -309,6 +354,13 @@ proc open(s: var Server, c: Node, h: Header, body: openArray[byte], fds: seq[cin
     ok(reply, fds = [node.fd])  # the object itself becomes the caller's
     discard close(reply)
   else:
+    if (h.arg and oTrunc) != 0 and node.kind == nkFile and (h.arg and 3) != 0:
+      if not s.writable:
+        err(reply, EROFS)
+        discard close(reply)
+        return
+      node.data = ""
+      node.mtime = now()
     var st = node.statOf
     s.eps.add Endpoint(fd: reply, node: node)
     ok(reply, st.bytes)
@@ -378,7 +430,11 @@ proc rename(s: var Server, c: Node, h: Header, body: openArray[byte], fds: seq[c
   if src.err != 0 or dst.err != 0:
     err(reply, if src.err != 0: src.err else: dst.err)
   elif src.forward and src.node == dst.node:
-    forward(src, h, body, fds)  # both names in one mounted server: its rename
+    # Both names in one mounted server: its rename, of its paths.
+    var old = newSeq[byte]()
+    old.add src.rest.toOpenArrayByte(0, src.rest.high)
+    old.add 0
+    forwardAfter(dst, h, old, fds)
     return
   elif src.forward or dst.forward:
     err(reply, EXDEV)
@@ -394,6 +450,81 @@ proc rename(s: var Server, c: Node, h: Header, body: openArray[byte], fds: seq[c
     dst.node.children[newName] = n
     ok(reply)
   discard close(reply)
+
+# The attributes of a node: set when the server is writable.
+
+proc setTimes(node: Node, mask: uint32, atime, mtime: uint64) =
+  if (mask and whenAtimeKept) == 0:
+    node.atime = (if (mask and whenAtimeNow) != 0: now() else: atime)
+  if (mask and whenMtimeKept) == 0:
+    node.mtime = (if (mask and whenMtimeNow) != 0: now() else: mtime)
+
+proc attr(s: var Server, c: Node, h: Header, body: openArray[byte], fds: seq[cint]) =
+  ## chmod, chown, utimes and truncate of a path.
+  let reply = fds[^1]
+  var at = 0
+  var uid, gid: uint32
+  var atime, mtime, size: uint64
+  case Op(h.op)
+  of opChown:
+    uid = u32(body, at)
+    gid = u32(body, at)
+  of opUtimes:
+    atime = u64(body, at)
+    mtime = u64(body, at)
+  of opTruncate:
+    size = u64(body, at)
+  else: discard
+  let follow = Op(h.op) == opChmod or Op(h.op) == opTruncate or (h.arg and whenFollow) != 0
+  let node = resolved(reply, walk(c, c, str(body, at), follow), h, body, fds)
+  if not s.writable:
+    err(reply, EROFS)
+  else:
+    case Op(h.op)
+    of opChmod: node.perm = h.arg and 0o7777
+    of opChown:
+      if uid != 0xffffffff'u32: node.uid = uid
+      if gid != 0xffffffff'u32: node.gid = gid
+    of opUtimes: node.setTimes(h.arg, atime, mtime)
+    of opTruncate:
+      if node.kind != nkFile:
+        err(reply, EISDIR)
+        discard close(reply)
+        return
+      node.data.setLen(int(size))
+      node.mtime = now()
+    else: discard
+    ok(reply)
+  discard close(reply)
+
+proc fattr(s: var Server, reply: cint, node: Node, h: Header, body: openArray[byte]) =
+  ## fchmod, fchown, futimes, ftruncate and fsync of an open node.
+  var at = 0
+  if Op(h.op) == opFsync:
+    ok(reply)
+    return
+  if not s.writable:
+    err(reply, EROFS)
+    return
+  case Op(h.op)
+  of opFchmod: node.perm = h.arg and 0o7777
+  of opFchown:
+    let uid = u32(body, at)
+    let gid = u32(body, at)
+    if uid != 0xffffffff'u32: node.uid = uid
+    if gid != 0xffffffff'u32: node.gid = gid
+  of opFutimes:
+    let atime = u64(body, at)
+    let mtime = u64(body, at)
+    node.setTimes(h.arg, atime, mtime)
+  of opFtruncate:
+    if node.kind != nkFile:
+      err(reply, EINVAL)
+      return
+    node.data.setLen(int(u64(body, at)))
+    node.mtime = now()
+  else: discard
+  ok(reply)
 
 proc mount(s: var Server, c: Node, h: Header, body: openArray[byte], fds: seq[cint]) =
   ## A server's root endpoint goes on a directory of ours: names under it
@@ -470,6 +601,7 @@ proc write(s: var Server, reply: cint, node: Node, h: Header, body: openArray[by
       node.data.setLen(off + data.len)
     for i, b in data:
       node.data[off + i] = char(b)
+    node.mtime = now()
     ok(reply, count.bytes)
   else:
     err(reply, EISDIR)
@@ -524,6 +656,10 @@ proc handle(s: var Server, i: int) =
   of opUnlink: s.unlink(ep.node, h, body, fds)
   of opRename: s.rename(ep.node, h, body, fds)
   of opMount: s.mount(ep.node, h, body, fds)
+  of opChmod, opChown, opUtimes, opTruncate: s.attr(ep.node, h, body, fds)
+  of opFchmod, opFchown, opFutimes, opFtruncate, opFsync:
+    s.fattr(fds[^1], ep.node, h, body)
+    discard close(fds[^1])
   of opRead:
     s.read(fds[^1], ep.node, h, body)
     discard close(fds[^1])
@@ -541,24 +677,32 @@ proc handle(s: var Server, i: int) =
     for fd in fds:
       discard close(fd)
 
-proc serve*(s: var Server, idle: proc(): bool = nil) =
-  ## Until the last endpoint closes: then nobody can reach the server.
-  ## idle runs after every wait, interrupted ones too, and ends the loop
-  ## by returning false.
-  while s.eps.len > 0:
-    var fds = newSeq[TPollfd](s.eps.len)
-    for i, ep in s.eps:
-      fds[i] = TPollfd(fd: ep.fd, events: POLLIN)
+proc serve*(servers: openArray[ptr Server], idle: proc(): bool = nil) =
+  ## Serves the servers, one process's, until the last endpoint of them
+  ## all closes: then nobody can reach them. idle runs after every wait,
+  ## interrupted ones too, and ends the loop by returning false.
+  while true:
+    var fds: seq[TPollfd]
+    var owner: seq[(ptr Server, int)]
+    for s in servers:
+      for i, ep in s[].eps:
+        fds.add TPollfd(fd: ep.fd, events: POLLIN)
+        owner.add (s, i)
+    if fds.len == 0:
+      return
     let n = poll(fds[0].addr, Tnfds(fds.len), -1)
     when defined(fsDebug):
-      stderr.writeLine("fs: poll " & $n & " errno " & $errno & " eps " & $s.eps.len)
+      stderr.writeLine("fs: poll " & $n & " errno " & $errno & " eps " & $fds.len)
     if idle != nil and not idle():
       return
     if n <= 0:
       continue
-    for i in countdown(fds.high, 0):
-      if (fds[i].revents and (POLLIN or POLLHUP)) != 0:
-        s.handle(i)
+    for k in countdown(fds.high, 0):
+      if (fds[k].revents and (POLLIN or POLLHUP)) != 0:
+        owner[k][0][].handle(owner[k][1])
+
+proc serve*(s: var Server, idle: proc(): bool = nil) =
+  serve([s.addr], idle)
 
 # ---- for programs that make servers and mounts ------------------------------
 

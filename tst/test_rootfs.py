@@ -22,12 +22,17 @@ head -c 4 /dev/zero | wc -c
 cd /usr/bin && pwd
 readlink /bin/sh
 test -x /bin/busybox && echo executable
-(echo nothing > /tmp/x) 2>/dev/null || echo read-only
+(echo nothing > /etc/x) 2>/dev/null || echo read-only
+echo hi > /tmp/a && echo more >> /tmp/a && cat /tmp/a | wc -l
+chmod 600 /tmp/a && stat -c %a /tmp/a && truncate -s 2 /tmp/a && wc -c < /tmp/a
+mkdir /tmp/d && mv /tmp/a /tmp/d/b && ls /tmp/d && rm -r /tmp/d && ls /tmp | wc -l
+cd /tmp && echo x > y && touch -d @1000000000 y && stat -c %Y y && cd /
 sh -c 'exit 5'; echo inner=$?
 seq 1 20000 | sort -rn | head -1
 head -c 8 /dev/urandom | wc -c
 python3 -c 'import os, sys; print(2 ** 100, sys.version_info[:2], len(os.urandom(5)), os.path.exists("/usr/lib/python314.zip"))'
 python3 -c 'import json, os; print(json.dumps(sorted(n for n in os.listdir("/usr/bin") if n.startswith("python"))))'
+python3 -c 'import tempfile; f = tempfile.NamedTemporaryFile("w+", dir="/tmp"); f.write("x" * 5000); f.seek(0); print(len(f.read()), f.name.startswith("/tmp/"))'
 exit 3
 """
 
@@ -45,11 +50,18 @@ sh
 busybox
 executable
 read-only
+2
+600
+2
+b
+0
+1000000000
 inner=5
 20000
 8
 1267650600228229401496703205376 (3, 14) 5 True
 ["python", "python3"]
+5000 True
 """
 
 

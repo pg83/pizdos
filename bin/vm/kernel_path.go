@@ -84,12 +84,12 @@ func (p *Process) onAt(dirfd int32, path string, flags uint32, byPath func(full 
 	return byPath(full, flags&atSymlinkNofollow == 0)
 }
 
-// nodeCall is a call on a descriptor's node; another file has no such
-// call: EINVAL.
-func nodeCall(call func(n Node) error) func(f File) error {
+// attrsCall is a call on a descriptor's attributes; a file without any
+// has no such call: EINVAL.
+func attrsCall(call func(a Attrs) error) func(f File) error {
 	return func(f File) error {
-		if n, ok := f.(Node); ok {
-			return call(n)
+		if a, ok := f.(Attrs); ok {
+			return call(a)
 		}
 
 		return syscall.EINVAL
@@ -754,16 +754,16 @@ func (p *Process) libcChmod(path, mode uint32) uint32 {
 func (p *Process) libcFchmodat(dirfd, path, mode, flags uint32) uint32 {
 	return p.result(0, p.onAt(int32(dirfd), p.str(path), flags, func(full string, follow bool) error {
 		return p.root.chmodPath(p, full, mode&0o7777)
-	}, nodeCall(func(n Node) error {
-		return n.chmod(mode & 0o7777)
+	}, attrsCall(func(a Attrs) error {
+		return a.chmod(mode & 0o7777)
 	})))
 }
 
 func (p *Process) libcFchownat(dirfd, path, uid, gid, flags uint32) uint32 {
 	return p.result(0, p.onAt(int32(dirfd), p.str(path), flags, func(full string, follow bool) error {
 		return p.root.chownPath(p, full, int(int32(uid)), int(int32(gid)), follow)
-	}, nodeCall(func(n Node) error {
-		return n.chown(int(int32(uid)), int(int32(gid)))
+	}, attrsCall(func(a Attrs) error {
+		return a.chown(int(int32(uid)), int(int32(gid)))
 	})))
 }
 

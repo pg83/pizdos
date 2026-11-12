@@ -362,7 +362,7 @@ func (p *Process) libcCopy_file_range(in, offIn, out, offOut, n, flags uint32) u
 }
 
 func (p *Process) libcFdatasync(fd uint32) uint32 {
-	n, err := p.nodeAt(fd)
+	n, err := p.attrsAt(fd)
 
 	if err == nil {
 		err = n.sync(true)
@@ -591,7 +591,7 @@ func (p *Process) libcCfsetispeed(at, speed uint32) uint32 {
 }
 
 func (p *Process) libcFsync(fd uint32) uint32 {
-	n, err := p.nodeAt(fd)
+	n, err := p.attrsAt(fd)
 
 	if err == nil {
 		err = n.sync(false)
@@ -601,7 +601,7 @@ func (p *Process) libcFsync(fd uint32) uint32 {
 }
 
 func (p *Process) libcFtruncate(fd uint32, size uint64) uint32 {
-	n, err := p.nodeAt(fd)
+	n, err := p.attrsAt(fd)
 
 	if err == nil {
 		err = n.truncate(int64(size))
@@ -639,7 +639,7 @@ func (p *Process) libcFstat(fd, at uint32) uint32 {
 }
 
 func (p *Process) libcFchmod(fd, mode uint32) uint32 {
-	n, err := p.nodeAt(fd)
+	n, err := p.attrsAt(fd)
 
 	if err == nil {
 		err = n.chmod(mode & 0o7777)
@@ -649,7 +649,7 @@ func (p *Process) libcFchmod(fd, mode uint32) uint32 {
 }
 
 func (p *Process) libcFchown(fd, uid, gid uint32) uint32 {
-	n, err := p.nodeAt(fd)
+	n, err := p.attrsAt(fd)
 
 	if err == nil {
 		err = n.chown(int(int32(uid)), int(int32(gid)))
@@ -659,7 +659,7 @@ func (p *Process) libcFchown(fd, uid, gid uint32) uint32 {
 }
 
 func (p *Process) libcFutimes(fd, times uint32) uint32 {
-	n, err := p.nodeAt(fd)
+	n, err := p.attrsAt(fd)
 
 	if err == nil {
 		err = n.utimes(p.timevals(times))
@@ -669,7 +669,7 @@ func (p *Process) libcFutimes(fd, times uint32) uint32 {
 }
 
 func (p *Process) libcFutimens(fd, times uint32) uint32 {
-	n, err := p.nodeAt(fd)
+	n, err := p.attrsAt(fd)
 
 	if err == nil {
 		err = n.utimes(p.timespecs(times))

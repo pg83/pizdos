@@ -29,7 +29,7 @@ import (
 //	where the request came: on the endpoint of a directory a path op is
 //	relative to it, ".." stays in it; on the endpoint of a node a node op
 //	is the node's.
-//	  OPEN      arg flags   path          OK stat; a file among the
+//	  OPEN      arg flags   mode u32 path OK stat; a file among the
 //	                                      reply's files is the file itself
 //	  STAT      arg flags   path          OK stat; AT_SYMLINK_NOFOLLOW
 //	  READLINK              path          OK target
@@ -38,12 +38,24 @@ import (
 //	  RENAME                old 0 new
 //	  SYMLINK               target 0 path
 //	  MOUNT                 path          files: a server's root, then the reply
+//	  CHMOD     arg mode    path
+//	  CHOWN     arg follow  uid u32 gid u32 path
+//	  UTIMES    arg when    atime u64 mtime u64 path   when: 1 follow,
+//	                                      2 atime now, 4 mtime now,
+//	                                      8 atime kept, 16 mtime kept
+//	  TRUNCATE              size u64 path
 //	  READ      arg len     off u64       OK data
 //	  WRITE                 off u64 data  OK count u32
 //	  READDIR   arg index                 OK (ino u64, type u8, name, 0)*
 //	  FSTAT                               OK stat
+//	  FCHMOD    arg mode
+//	  FCHOWN                uid u32 gid u32
+//	  FUTIMES   arg when    atime u64 mtime u64
+//	  FTRUNCATE             size u64
+//	  FSYNC     arg data
 //	replies: OK, ERR with arg the errno
-//	stat { ino u64, size u64, mtime u64 nanoseconds, mode u32, nlink u32 }
+//	stat { ino u64, size u64, mtime u64 nanoseconds, mode u32, nlink u32,
+//	       uid u32, gid u32, atime u64 }
 const (
 	rOpen uint32 = iota + 1
 	rStat
@@ -57,10 +69,27 @@ const (
 	rWrite
 	rReaddir
 	rFstat
+	rChmod
+	rChown
+	rUtimes
+	rTruncate
+	rFchmod
+	rFchown
+	rFutimes
+	rFtruncate
+	rFsync
 	rOk
 	rErr
 	remoteHeader = 8
-	remoteStat   = 32
+	remoteStat   = 48
+	// The whens of UTIMES and FUTIMES.
+	whenFollow    = 1
+	whenAtimeNow  = 2
+	whenMtimeNow  = 4
+	whenAtimeKept = 8
+	whenMtimeKept = 16
+	utimeNow      = 1<<30 - 1
+	utimeOmit     = 1<<30 - 2
 	// remoteData is the most a read asks or a write sends in one packet.
 	remoteData = packetMax - remoteHeader - 8
 )
@@ -71,8 +100,9 @@ type remoteNode struct {
 	end  *pairEnd
 	path string
 	refs atomic.Int32
-	// accmode is the O_ACCMODE it was opened with.
+	// accmode is the O_ACCMODE it was opened with, append its O_APPEND.
 	accmode  int
+	append   bool
 	nonblock atomic.Bool
 	// pos is the position of read, write and seek; index the next entry
 	// of readdir.
@@ -92,9 +122,11 @@ var (
 	_ Transfer = (*remoteFile)(nil)
 	_ Seeker   = (*remoteFile)(nil)
 	_ Socket   = (*remoteFile)(nil)
+	_ Attrs    = (*remoteFile)(nil)
 	_ Dir      = (*remoteDir)(nil)
 	_ Seeker   = (*remoteDir)(nil)
 	_ Socket   = (*remoteDir)(nil)
+	_ Attrs    = (*remoteDir)(nil)
 	_ Dir      = (*noRoot)(nil)
 )
 
@@ -145,6 +177,10 @@ func (n *remoteNode) poll(events int16) int16 {
 
 func (n *remoteNode) flags() (int, error) {
 	fl := n.accmode
+
+	if n.append {
+		fl |= syscall.O_APPEND
+	}
 
 	if n.nonblock.Load() {
 		fl |= syscall.O_NONBLOCK
@@ -299,12 +335,96 @@ func decodeStat(b []byte, st *syscall.Stat_t) error {
 
 	le := binary.LittleEndian
 	*st = syscall.Stat_t{Ino: le.Uint64(b), Size: int64(le.Uint64(b[8:])), Mode: le.Uint32(b[24:]), Nlink: uint64(le.Uint32(b[28:])),
-		Uid: uint32(syscall.Getuid()), Gid: uint32(syscall.Getgid()), Blksize: 4096}
+		Uid: le.Uint32(b[32:]), Gid: le.Uint32(b[36:]), Blksize: 4096}
 	st.Blocks = (st.Size + 511) / 512
 	st.Mtim = syscall.NsecToTimespec(int64(le.Uint64(b[16:])))
-	st.Atim, st.Ctim = st.Mtim, st.Mtim
+	st.Atim = syscall.NsecToTimespec(int64(le.Uint64(b[40:])))
+	st.Ctim = st.Mtim
 
 	return nil
+}
+
+// whens is the when of UTIMES for the times of a call: nil is now for
+// both, UTIME_NOW and UTIME_OMIT in a nanoseconds field are what they say.
+func whens(ts []syscall.Timespec, follow bool) (uint32, []byte) {
+	when := uint32(0)
+	body := make([]byte, 16)
+
+	if follow {
+		when |= whenFollow
+	}
+
+	if ts == nil {
+		return when | whenAtimeNow | whenMtimeNow, body
+	}
+
+	for i, t := range ts[:2] {
+		now, kept := uint32(whenAtimeNow), uint32(whenAtimeKept)
+
+		if i == 1 {
+			now, kept = whenMtimeNow, whenMtimeKept
+		}
+
+		switch t.Nsec {
+		case utimeNow:
+			when |= now
+		case utimeOmit:
+			when |= kept
+		default:
+			binary.LittleEndian.PutUint64(body[8*i:], uint64(t.Sec)*1e9+uint64(t.Nsec))
+		}
+	}
+
+	return when, body
+}
+
+// The Attrs role, of a file or a directory of a server.
+
+func (n *remoteNode) simple(op, arg uint32, body []byte) error {
+	pk, err := n.on(op, arg, body)
+
+	if err != nil {
+		return err
+	}
+
+	dropFiles(pk.files)
+
+	return nil
+}
+
+func (n *remoteNode) truncate(size int64) error {
+	var body [8]byte
+	binary.LittleEndian.PutUint64(body[:], uint64(size))
+
+	return n.simple(rFtruncate, 0, body[:])
+}
+
+func (n *remoteNode) sync(data bool) error {
+	arg := uint32(0)
+
+	if data {
+		arg = 1
+	}
+
+	return n.simple(rFsync, arg, nil)
+}
+
+func (n *remoteNode) chmod(mode uint32) error {
+	return n.simple(rFchmod, mode, nil)
+}
+
+func (n *remoteNode) chown(uid, gid int) error {
+	var body [8]byte
+	binary.LittleEndian.PutUint32(body[:], uint32(uid))
+	binary.LittleEndian.PutUint32(body[4:], uint32(gid))
+
+	return n.simple(rFchown, 0, body[:])
+}
+
+func (n *remoteNode) utimes(ts []syscall.Timespec) error {
+	when, body := whens(ts, false)
+
+	return n.simple(rFutimes, when, body)
 }
 
 func (n *remoteNode) stat(st *syscall.Stat_t) error {
@@ -330,7 +450,9 @@ func (d *remoteDir) open(p *Process, path string, flags int, mode uint32) (File,
 		return nil, syscall.EIO
 	}
 
-	pk, mine, err := d.call(rOpen, uint32(flags), pathBody(path), nil)
+	body := make([]byte, 4)
+	binary.LittleEndian.PutUint32(body, mode)
+	pk, mine, err := d.call(rOpen, uint32(flags), append(body, pathBody(path)...), nil)
 
 	if err != nil {
 		return nil, err
@@ -352,7 +474,7 @@ func (d *remoteDir) open(p *Process, path string, flags int, mode uint32) (File,
 		return nil, err
 	}
 
-	node := remoteNode{end: mine, path: filepath.Clean("/" + path), accmode: flags & 3}
+	node := remoteNode{end: mine, path: filepath.Clean("/" + path), accmode: flags & 3, append: flags&syscall.O_APPEND != 0}
 	node.refs.Store(1)
 
 	if st.Mode&syscall.S_IFMT == syscall.S_IFDIR {
@@ -407,8 +529,8 @@ func (d *remoteDir) readlinkPath(p *Process, path string) (string, error) {
 	return string(pk.data), nil
 }
 
-// simple is a call on a path that answers OK or an error.
-func (d *remoteDir) simple(p *Process, op, arg uint32, body []byte) error {
+// simplePath is a call on a path that answers OK or an error.
+func (d *remoteDir) simplePath(op, arg uint32, body []byte) error {
 	pk, mine, err := d.call(op, arg, body, nil)
 
 	if err != nil {
@@ -421,7 +543,7 @@ func (d *remoteDir) simple(p *Process, op, arg uint32, body []byte) error {
 }
 
 func (d *remoteDir) mkdir(p *Process, path string, mode uint32) error {
-	return d.simple(p, rMkdir, mode, pathBody(path))
+	return d.simplePath(rMkdir, mode, pathBody(path))
 }
 
 func (d *remoteDir) unlink(p *Process, path string, dir bool) error {
@@ -431,11 +553,11 @@ func (d *remoteDir) unlink(p *Process, path string, dir bool) error {
 		flags = atRemovedir
 	}
 
-	return d.simple(p, rUnlink, flags, pathBody(path))
+	return d.simplePath(rUnlink, flags, pathBody(path))
 }
 
 func (d *remoteDir) rename(p *Process, old, new string) error {
-	return d.simple(p, rRename, 0, pathBody(old, new))
+	return d.simplePath(rRename, 0, pathBody(old, new))
 }
 
 // Hard links and device nodes are not in the protocol.
@@ -444,7 +566,7 @@ func (d *remoteDir) link(p *Process, old, new string, follow bool) error {
 }
 
 func (d *remoteDir) symlink(p *Process, target, path string) error {
-	return d.simple(p, rSymlink, 0, append(append([]byte(target), 0), relative(path)...))
+	return d.simplePath(rSymlink, 0, append(append([]byte(target), 0), relative(path)...))
 }
 
 func (d *remoteDir) mknod(p *Process, path string, mode uint32, dev uint64) error {
@@ -469,21 +591,34 @@ func (d *remoteDir) accessPath(p *Process, path string, mode, flags uint32) erro
 	return nil
 }
 
-// The attributes a server keeps are its own: not in the protocol yet.
 func (d *remoteDir) chmodPath(p *Process, path string, mode uint32) error {
-	return syscall.EPERM
+	return d.simplePath(rChmod, mode, pathBody(path))
 }
 
 func (d *remoteDir) chownPath(p *Process, path string, uid, gid int, follow bool) error {
-	return syscall.EPERM
+	body := make([]byte, 8)
+	binary.LittleEndian.PutUint32(body, uint32(uid))
+	binary.LittleEndian.PutUint32(body[4:], uint32(gid))
+	arg := uint32(0)
+
+	if follow {
+		arg = whenFollow
+	}
+
+	return d.simplePath(rChown, arg, append(body, pathBody(path)...))
 }
 
 func (d *remoteDir) utimesPath(p *Process, path string, ts []syscall.Timespec, follow bool) error {
-	return syscall.EPERM
+	when, body := whens(ts, follow)
+
+	return d.simplePath(rUtimes, when, append(body, pathBody(path)...))
 }
 
 func (d *remoteDir) truncatePath(p *Process, path string, size int64) error {
-	return syscall.EPERM
+	body := make([]byte, 8)
+	binary.LittleEndian.PutUint64(body, uint64(size))
+
+	return d.simplePath(rTruncate, 0, append(body, pathBody(path)...))
 }
 
 // statfsPath tells a file system of nothing: no sizes, no limits but
@@ -629,9 +764,21 @@ func (f *remoteFile) read(p *Process, b []byte, mode ioMode) (int, error) {
 	return n, err
 }
 
+// write writes at the position, or at the end with O_APPEND, which the
+// server's size says.
 func (f *remoteFile) write(p *Process, b []byte, mode ioMode) (int, error) {
 	if chaosFail("write") {
 		return 0, syscall.EIO
+	}
+
+	if f.append {
+		var st syscall.Stat_t
+
+		if err := f.stat(&st); err != nil {
+			return 0, err
+		}
+
+		atomic.StoreInt64(&f.pos, st.Size)
 	}
 
 	n, err := f.writeAt(p, b, atomic.LoadInt64(&f.pos))
