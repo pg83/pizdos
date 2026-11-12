@@ -15,7 +15,7 @@ from pathlib import Path
 SCRIPT = """\
 echo hello from $0
 cat /etc/motd
-ls /bin | head -3
+ls /bin | grep -x -e ash -e cat -e sh
 ls -d /dev/null /dev/tty /dev/zero
 echo dropped > /dev/null
 head -c 4 /dev/zero | wc -c
@@ -35,8 +35,8 @@ WANT = """\
 hello from sh
 pizdos
 ash
-busybox
 cat
+sh
 /dev/null
 /dev/tty
 /dev/zero
