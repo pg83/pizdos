@@ -15,6 +15,15 @@
 
   ;; UNSIGNED_ROUNDTRIPS
 
+  ;; The left operand has a constant range without being a literal. The
+  ;; right operand's range crosses below zero before the bitwise mask.
+  (func $left_mask (param $address i32) (param $value i32) (result i32)
+    (i32.load8_u
+      (i32.add (i32.const 4096)
+        (i32.and
+          (i32.add (i32.shr_u (i32.load8_u (local.get $address)) (i32.const 8)) (i32.const 255))
+          (i32.sub (i32.and (local.get $value) (i32.const 255)) (i32.const 256))))))
+
   (func $merged_unsigned (param $address i32) (param $condition i32) (result i32)
     (local $first i64)
     (local.set $first (i64.extend_i32_u (local.get $address)))

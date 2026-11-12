@@ -49,6 +49,15 @@ def program(template):
                                f"(if (i64.ne (call ${name} (i32.const 4096)) (i64.const {expected})) (then unreachable))"))
             checks += 1
     template = template.replace(";; UNSIGNED_ROUNDTRIPS", "\n".join(roundtrips))
+    for index in range(256):
+        statements.append(f"(i32.store8 (i32.const {4096 + index}) (i32.const {(index * 37 + 11) % 251}))")
+    for byte in (0, 1, 127, 128, 255):
+        for value in (0, 1, 127, 128, 255, 256, 0x7fffffff, 0x80000000, 0xffffffff):
+            expected = ((value & 255) * 37 + 11) % 251
+            statements.extend((f"(i32.store8 (i32.const 8192) (i32.const {byte}))",
+                               f"(if (i32.ne (call $left_mask (i32.const 8192) (i32.const {signed(value)})) "
+                               f"(i32.const {expected})) (then unreachable))"))
+            checks += 1
     for address in (4096, 4111, 4127):
         for condition in (0, 6, 7, 0xffffffff):
             for byte in (0, 17, 255):
