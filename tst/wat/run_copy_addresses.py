@@ -30,6 +30,16 @@ def program(template, stride, form, carry, count, dest, other, variable_step=Fal
     if form == "amplified":
         template = template.replace("(memory 1)", "(memory 2)")
         initial += bytes((index * 37 + 11) % 251 for index in range(65536, 131072))
+    if form == "threaded":
+        template = template.replace("(local $offset i32)", """(local $offset i32)
+          (local $gate i32)
+          (local.set $gate (block $entry (result i32)
+            (br_if $entry (i32.const 1) (local.get $count))
+            drop
+            (i32.const 0)))""")
+        template = template.replace("(if (local.get $count)", "(if (local.get $gate)")
+        template = template.replace("(i64.extend_i32_u (local.get $state))",
+                                    "(i64.extend_i32_u (i32.add (local.get $state) (local.get $gate)))")
     statements = []
     for offset in range(stride):
         base = "other" if form == "distinct" and offset else "source"
@@ -85,7 +95,7 @@ def program(template, stride, form, carry, count, dest, other, variable_step=Fal
             state = image[8192 + index]
             touched.add(8192 + index)
         moving_offset += 3 + delta
-    expected = checksum + state
+    expected = checksum + state + (int(count != 0) if form == "threaded" else 0)
     checks = [f"(if (i64.ne (call $copy (i32.const {dest}) (i32.const 8192) (i32.const {other}) "
               f"(i32.const {count}) (i32.const {delta})) (i64.const {expected})) (then unreachable))"]
     for location in sorted(touched):
@@ -109,6 +119,8 @@ def main():
     cases += [(stride, "spaced", "none", count, 32768, 8192) for stride in (2, 3) for count in (0, 1, 97)]
     cases += [(stride, "add", "none", count, 32768, 8192, False, True) for stride in (1, 2, 3) for count in (0, 1, 97)]
     cases += [(1, "amplified", "none", count, 32768, 8192) for count in (0, 1, 2)]
+    cases += [(stride, "threaded", "none", count, dest, 8192) for stride in (1, 2)
+              for count, dest in ((0, 32768), (1, 32768), (97, 32768), (97, 8193))]
     with tempfile.TemporaryDirectory(prefix="pizdos-wat-copy-addresses-") as directory:
         work = Path(directory)
         source, module, compiled, embedded = (work / name for name in ("input.wat", "input.wasm", "native.o", "embedded.o"))
