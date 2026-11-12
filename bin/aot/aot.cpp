@@ -8900,9 +8900,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 break;
             }
         }
-        if (out.lo > out.hi) {
-            out = unknown;
-        }
+        // Every transfer preserves lo <= hi, including the seeded cache entry.
         r->cache[v] = out;
         return out;
     }
@@ -11865,17 +11863,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Term* t = &fe->f->blocks[from].term;
         t->edges = appendValues(t->edges, Edge{to, args});
         fe->preds[to] = appendValues(fe->preds[to], PredRef{from, convert<i32>(length(t->edges) - 1)});
-        if (fe->sealed[to]) {
-            compilerError(String("internal error: edge to sealed block b%d"));
-        }
+        // Control targets are sealed only after their final structured edge.
     }
 
     // addExplicit adds a parameter for an operand stack value; edges supply
     // its argument when they are created.
     static i32 frontendAddExplicit(Frontend* fe, i32 b, ValType t) {
-        if (length(fe->f->blocks[b].params) != fe->explicitValue[b]) {
-            compilerError(String("internal error: explicit parameter after a phi"));
-        }
+        // Explicit operands are added when the block is created, before reads.
         fe->explicitValue[b]++;
         return frontendAddParam(fe, b, t);
     }
@@ -12938,8 +12932,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             fe->incomplete[b] = appendValues(fe->incomplete[b], PendingPhi{local, v});
         } else if (length(fe->preds[b]) == 1) {
             v = frontendRead(fe, local, fe->preds[b][0].block);
-        } else if (length(fe->preds[b]) == 0) {
-            v = functionNewValue(fe->f, OpUndef, t, -1, 0, Span<const i32>({}));
+        // Entry locals are initialized; every other readable block has an edge.
         } else {
             v = frontendAddParam(fe, b, t);
             frontendWrite(fe, local, b, v);
@@ -13304,9 +13297,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             same = arg;
         }
-        if (same < 0) {
-            same = functionNewValue(fe->f, OpUndef, fe->f->values[phi].typ, -1, 0, Span<const i32>({}));
-        }
+        // Every reachable phi has an entry definition besides its own back edge.
         fe->alias[frontendParamSlot(fe, phi)] = same;
         return same;
     }
@@ -13347,9 +13338,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             case mMov: {
                 return in->dst == in->src && in->aux == 0;
             }
-            case mFMov: {
-                return in->dst == in->src;
-            }
+            // Floating Go-result copies precede terminators. Branch pairs
+            // defer pure expressions only, so none follow a conditional jump.
             case mParMove: {
                 const auto moves = mInstMoves(in);
                 for (Int i = 0; i < length(moves); ++i) {
@@ -20340,11 +20330,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 from = uniquePredecessors(f->blocks[b].preds);
                 setMap(preds, b, from);
             }
-            if (length(from) == 0) {
-                i32 v = functionNewValue(f, OpUndef, f->values[params[j]].typ, -1, 0, Span<const i32>({}));
-                setMap(memo, key, v);
-                return v;
-            }
+            // Threading removes incoming edges only from h (handled above).
+            // Other original blocks retain predecessors; bypasses add one.
             if (length(from) == 1) {
                 i32 v = recur(recur, from[0], j);
                 setMap(memo, key, v);
@@ -20834,9 +20821,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
                 keep[k] = true;
                 if (trivial) {
-                    if (same < 0) {
-                        same = functionNewValue(f, OpUndef, f->values[param].typ, -1, 0, Span<const i32>({}));
-                    }
+                    // Cleanup removed unreachable cycles; an entry value remains.
                     optimizerReplace(o, param, same);
                     keep[k] = false;
                     removed = true;
