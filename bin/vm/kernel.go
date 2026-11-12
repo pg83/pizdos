@@ -698,14 +698,14 @@ func (p *Process) constant(s string) uint32 {
 
 // errors
 
+// errnoOf unwraps a kernel error: syscall.Errno, an os/net wrapper of one,
+// or code's diagnostic wrapping ENOEXEC. Kernel helpers do not return other
+// errors; directory enumeration uses Readdirnames(-1), which has no EOF error.
 func errnoOf(err error) syscall.Errno {
 	var e syscall.Errno
+	errors.As(err, &e)
 
-	if errors.As(err, &e) {
-		return e
-	}
-
-	return syscall.EIO
+	return e
 }
 
 func (p *Process) setErrno(e syscall.Errno) {
