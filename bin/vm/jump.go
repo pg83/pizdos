@@ -152,7 +152,7 @@ func (i *Instance) frames(j *Jump, entry string) (*Frames, bool) {
 	}
 
 	// The copied frames return into the resume stub's continuation.
-	lo, hi := goFunctionRange(resumeReturnStub())
+	lo, hi := resumeReturnRange()
 	resume := [2]uint64{uint64(lo), uint64(hi)}
 
 	buf := make([]byte, 16<<10)

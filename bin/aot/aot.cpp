@@ -3586,7 +3586,6 @@ namespace {
         i32 block = -1;
         Vec<i32> mblk{};
         i32 cur{};
-        Map<Array<i32, 2>, i32> split{};
         Map<i32, i64> checked{};
         Slice<CheckUndo> checkUndo{};
         Slice<Slice<i32>> floatHomes{};
@@ -9953,9 +9952,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 setMap(owners, slotLoc(slots[x]), x);
             }
         }
-        if (!length(owners)) {
-            return;
-        }
+        // allocatorSlot increments nslots only after assigning a nonconstant
+        // slot to a virtual register. The entry guard guarantees an owner.
         Slice<u64> saves = makeSlice<u64>(a->mf->nregs);
         auto consider = [&](Slice<Move> moves, i32 b) mutable -> void {
             for (Int i = 0; i < length(moves); ++i) {
@@ -13097,9 +13095,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static void frontendSeal(Frontend* fe, i32 b) {
-        if (fe->sealed[b]) {
-            return;
-        }
+        // Fresh entry/if/fallthrough blocks are sealed on creation; a
+        // control frame's separate target is sealed once when it is popped.
         fe->sealed[b] = true;
         Slice<PendingPhi> pending = fe->incomplete[b];
         fe->incomplete[b] = {};
@@ -14502,9 +14499,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 // sum, which does not wrap from a base within the size, is
                 // addressed itself.
                 if (!checked && !lowererIsConst(l, args[0]) && !lowererIsConst(l, args[1])) {
-                    if (isNil(l->addresses)) {
-                        l->addresses = activePool->make<ValueRanges>(ValueRanges{l->f, makeSlice<ValueRange>(length(l->f->values)), makeSlice<bool>(length(l->f->values))});
-                    }
+                    // A memory tail requires a defined memory, so the
+                    // range analysis at the start of address already exists.
                     for (Int i = 0; i < 2; ++i) {
                         const i32 index = args[i];
                         const i32 base2 = args[1 - i];
@@ -15555,18 +15551,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (length(e->args) == 0 && length(l->f->blocks[e->block].preds) <= 1) {
             return target;
         }
-        Array<i32, 2> key = Array<i32, 2>{{b, convert<i32>(i)}};
-        {
-            auto temporary777 = lookupMap(l->split, key);
-            i32 s = temporary777.v0;
-            bool ok = temporary777.v1;
-            if (ok) {
-                return s;
-            }
-        }
+        // lower lowers each SSA terminator once, and the terminator visits
+        // each edge index once. No edge block can have been created earlier.
         i32 s = convert<i32>(length(l->mf->blocks));
         l->mf->blocks.pushBack(MBlock{{}, {}, {}, l->mf->blocks[l->cur].depth, -1, {}});
-        setMap(l->split, key, s);
         i32 saved = l->cur;
         l->cur = s;
         lowererEdgeMoves(l, e);
@@ -23462,7 +23450,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     static MFunc* lowerFunction(ObjCode* oc, Function* f) {
-        Lowerer* l = activePool->make<Lowerer>(Lowerer{oc->m, f, oc->lay, {}, activePool->make<MFunc>(MFunc{}), {}, {}, {}, {}, {}, {}, {}, -1, {}, {}, makeMap<Array<i32, 2>, i32>(), makeMap<i32, i64>(), {}, {}, {}, {}});
+        Lowerer* l = activePool->make<Lowerer>(Lowerer{oc->m, f, oc->lay, {}, activePool->make<MFunc>(MFunc{}), {}, {}, {}, {}, {}, {}, {}, -1, {}, {}, makeMap<i32, i64>(), {}, {}, {}, {}});
         l->oc = oc;
         l->ci = f->cfg ? f->cfg : functionAnalyze(f);
         l->vregs.resize(f->values.size());

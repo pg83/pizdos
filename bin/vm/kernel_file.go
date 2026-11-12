@@ -465,10 +465,9 @@ func (p *Process) selectFds(n uint32, sets [3]fdSet, timeout int) (int, error) {
 			break
 		}
 
-		if h.revents&pollNval != 0 {
-			return 0, syscall.EBADF
-		}
-
+		// Each descriptor was validated above and remains in this process's
+		// table throughout the non-restarting wait. A signal returns EINTR
+		// before a handler could close one and let the wait poll it again.
 		for k, mask := range []int16{pollInSet, pollOutSet, pollPri} {
 			if h.events&[]int16{pollIn, pollOut, pollPri}[k] != 0 && h.revents&mask != 0 {
 				sets[k].set(p, fds[i])

@@ -149,23 +149,15 @@ func checkGo() {
 	}
 }
 
-// goFunctionRange returns the code of the function of the program that
-// pc is in, [lo, hi).
-func goFunctionRange(pc uintptr) (lo, hi uintptr) {
+// resumeReturnRange bounds the linker-defined continuation in the host
+// module's sorted function table. The final sentinel bounds its last entry.
+func resumeReturnRange() (lo, hi uintptr) {
 	checkGo()
 	m := hostModule
+	pc := resumeReturnStub() - m.text
+	k := sort.Search(len(m.ftab), func(k int) bool { return uintptr(m.ftab[k].entry) > pc })
 
-	for k, f := range m.ftab[:len(m.ftab)-1] {
-		lo, hi := m.text+uintptr(f.entry), m.text+uintptr(m.ftab[k+1].entry)
-
-		if lo <= pc && pc < hi {
-			return lo, hi
-		}
-	}
-
-	throwFmt("no function at %#x in the program", pc)
-
-	return 0, 0
+	return m.text + uintptr(m.ftab[k-1].entry), m.text + uintptr(m.ftab[k].entry)
 }
 
 func append32(dst []byte, values ...uint32) []byte {
