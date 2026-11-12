@@ -15,6 +15,29 @@ def signed(value, bits=32):
 
 def program(template):
     statements, checks = [], 0
+    comparisons = []
+    for bits in (32, 64):
+        values = (0, 1, 17, (1 << (bits - 1)) - 1, 1 << (bits - 1), (1 << bits) - 1)
+        for relation in ("eq", "ne", "lt_s", "lt_u", "gt_s", "gt_u", "le_s", "le_u", "ge_s", "ge_u"):
+            for reverse in (False, True):
+                name = f"compare_{bits}_{relation}_{int(reverse)}"
+                operands = [f"(i{bits}.load (local.get $address))", "(local.get $value)"]
+                if reverse:
+                    operands.reverse()
+                comparisons.append(f"(func ${name} (param $address i32) (param $value i{bits}) (result i32) "
+                                   f"(i{bits}.{relation} {' '.join(operands)}))")
+                for left in values:
+                    for right in values:
+                        a, b = (right, left) if reverse else (left, right)
+                        if relation.endswith("_s"):
+                            a, b = signed(a, bits), signed(b, bits)
+                        expected = {"eq": a == b, "ne": a != b, "lt": a < b, "gt": a > b,
+                                    "le": a <= b, "ge": a >= b}[relation.split("_")[0]]
+                        statements.extend((f"(i{bits}.store (i32.const 4096) (i{bits}.const {signed(left, bits)}))",
+                                           f"(if (i32.ne (call ${name} (i32.const 4096) (i{bits}.const {signed(right, bits)})) "
+                                           f"(i32.const {int(expected)})) (then unreachable))"))
+                        checks += 1
+    template = template.replace(";; COMPARISONS", "\n".join(comparisons))
     for bits in (32, 64):
         values = (0.0, -0.0, 1.0, -1.0, 13.25, 2.0 ** -40, 2.0 ** 40)
         for operation in ("add", "mul"):
@@ -65,7 +88,7 @@ def main():
             for obj in (compiled, embedded):
                 result = subprocess.run([vm, "run", "--", str(obj)], capture_output=True, env=env, timeout=30)
                 assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), result
-    print(f"WAT memory arithmetic: {checks} floating load operands and intervening signed divisions agree with numeric models, wazero and both AOTs")
+    print(f"WAT memory arithmetic: {checks} signed/unsigned comparisons, floating load operands and intervening signed divisions agree with numeric models, wazero and both AOTs")
 
 
 if __name__ == "__main__":

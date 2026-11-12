@@ -11,6 +11,8 @@
   (func $mul64 (param $address i32) (param $right f64) (result f64)
     (f64.mul (f64.load (local.get $address)) (local.get $right)))
 
+  ;; COMPARISONS
+
   (func $divide_between (param $address i32) (param $numerator i32) (param $denominator i32) (result i32)
     (local $before i32)
     (local $quotient i32)
