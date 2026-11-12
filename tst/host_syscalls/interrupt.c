@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <assert.h>
 #include <errno.h>
+#include <netinet/in.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -24,12 +25,51 @@ struct Program {
     struct Filter* instructions;
 };
 
+// Route DNS sockets to the test's loopback responder, preserving real UDP
+// traffic. Other connections and all socket return values stay the host's.
+static int redirect_dns(pid_t thread, uintptr_t at, unsigned port) {
+    unsigned char bytes[32];
+    errno = 0;
+    long first = ptrace(PTRACE_PEEKDATA, thread, (void*)at, 0);
+    assert(first != -1 || errno == 0);
+    memcpy(bytes, &first, sizeof(first));
+    uint16_t family, original_port;
+    memcpy(&family, bytes, 2);
+    memcpy(&original_port, bytes + 2, 2);
+    if ((family != AF_INET && family != AF_INET6) || original_port != htons(53)) {
+        return 0;
+    }
+    unsigned size = family == AF_INET ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
+    for (unsigned offset = sizeof(long); offset < size; offset += sizeof(long)) {
+        errno = 0;
+        long word = ptrace(PTRACE_PEEKDATA, thread, (void*)(at + offset), 0);
+        assert(word != -1 || errno == 0);
+        memcpy(bytes + offset, &word, sizeof(word));
+    }
+    if (family == AF_INET) {
+        struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons(port), .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
+        memcpy(bytes, &address, sizeof(address));
+    } else {
+        struct sockaddr_in6 address = {.sin6_family = AF_INET6, .sin6_port = htons(port), .sin6_addr = in6addr_loopback};
+        memcpy(bytes, &address, sizeof(address));
+    }
+    for (unsigned offset = 0; offset < size; offset += sizeof(long)) {
+        long word;
+        memcpy(&word, bytes + offset, sizeof(word));
+        assert(ptrace(PTRACE_POKEDATA, thread, (void*)(at + offset), (void*)word) == 0);
+    }
+    return 1;
+}
+
 // Return EINTR once at the real syscall boundary, then let the host handle
 // every retry. Seccomp limits ptrace stops to the selected syscall; traced
 // Go threads inherit the filter and tracing through PTRACE_O_TRACECLONE.
+// dns/<port> routes DNS connections to a real local responder instead.
 int main(int argc, char** argv) {
     assert(argc >= 5 && strcmp(argv[2], "--") == 0);
-    int number = atoi(argv[1]);
+    unsigned dns_port = strncmp(argv[1], "dns/", 4) == 0 ? atoi(argv[1] + 4) : 0;
+    assert(dns_port <= 65535);
+    int number = dns_port ? 42 : atoi(argv[1]);
     struct stat input;
     assert(fstat(0, &input) == 0);
     pid_t child = fork();
@@ -63,7 +103,7 @@ int main(int argc, char** argv) {
         assert(thread > 0);
         if (WIFEXITED(status) || WIFSIGNALED(status)) {
             if (thread == child) {
-                assert(injected == 1);
+                assert(dns_port ? injected > 0 : injected == 1);
                 return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
             }
             continue;
@@ -83,7 +123,9 @@ int main(int argc, char** argv) {
                 struct stat target;
                 selected = stat(path, &target) == 0 && target.st_dev == input.st_dev && target.st_ino == input.st_ino;
             }
-            if (!injected && selected) {
+            if (dns_port) {
+                injected += redirect_dns(thread, registers.rsi, dns_port);
+            } else if (!injected && selected) {
                 registers.orig_rax = (unsigned long long)-1;
                 registers.rax = (unsigned long long)-EINTR;
                 assert(ptrace(PTRACE_SETREGS, thread, 0, &registers) == 0);

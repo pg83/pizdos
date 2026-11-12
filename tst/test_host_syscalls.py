@@ -1,21 +1,59 @@
 #!/usr/bin/env python3
 """Propagate real Linux syscall failures through guest libc calls.
 
-    test_host_syscalls.py <vm> <native-aot> <fixture.wasm> <filter>
+    test_host_syscalls.py <vm> <native-aot> <fixture.wasm> <filter> <interrupt>
 
 A seccomp filter restricts only each child VM process. It returns selected error numbers for
 selected syscalls, leaving the parent and later commands unaffected.
+Ptrace supplies one EINTR or routes DNS packets to a local test responder.
 """
 import errno
 import contextlib
 import os
 from pathlib import Path
 import resource
+import select
 import socket
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
+import threading
+
+
+@contextlib.contextmanager
+def refusing_dns():
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as ipv4, socket.socket(socket.AF_INET6, socket.SOCK_DGRAM) as ipv6:
+        ipv4.bind(("127.0.0.1", 0))
+        port = ipv4.getsockname()[1]
+        ipv6.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        ipv6.bind(("::1", port))
+        stop, answered = threading.Event(), []
+
+        def serve():
+            while not stop.is_set():
+                ready, _, _ = select.select([ipv4, ipv6], [], [], 0.05)
+                for server in ready:
+                    query, peer = server.recvfrom(4096)
+                    assert len(query) >= 12 and query[4:6] == b"\0\1", query
+                    end = 12
+                    while query[end]:
+                        end += query[end] + 1
+                    end += 5  # NUL, question type and class.
+                    # Echo the question with QR/RD/RA and FORMERR, no records.
+                    reply = query[:2] + struct.pack("!HHHHH", 0x8181, 1, 0, 0, 0) + query[12:end]
+                    server.sendto(reply, peer)
+                    answered.append(query[:2])
+
+        thread = threading.Thread(target=serve)
+        thread.start()
+        try:
+            yield port
+        finally:
+            stop.set()
+            thread.join(timeout=2)
+            assert not thread.is_alive() and answered, "DNS responder was not used"
 
 
 def leb(value, signed=False):
@@ -123,6 +161,10 @@ def main():
         result = subprocess.run([vm, "-o", str(embedded), fixture], capture_output=True, env=env, timeout=60)
         assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), result
         for obj in (compiled, embedded):
+            with refusing_dns() as port:
+                result = subprocess.run([interrupt, f"dns/{port}", "--", vm, "run", "--root", str(work), "--", str(obj), "permanent-dns-error"],
+                                        capture_output=True, env=dict(env, GODEBUG="netdns=go"), timeout=30)
+                assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), ("permanent-dns-error", result)
             for operation, number in (("retry-open", 437), ("retry-read", 0), ("retry-connect", 42)):
                 result = subprocess.run([interrupt, str(number), "--", vm, "run", "--root", str(work), "--", str(obj), operation],
                                         input=b"x", capture_output=True, env=env, timeout=30)

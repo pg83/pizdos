@@ -30,7 +30,13 @@
 
 int main(int argc, char** argv) {
     assert(argc == 2);
-    if (strcmp(argv[1], "retry-open") == 0) {
+    if (strcmp(argv[1], "permanent-dns-error") == 0) {
+        struct addrinfo hints = {0}, *result = NULL;
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        assert(getaddrinfo("permanent-error.invalid.", "80", &hints, &result) == EAI_FAIL && result == NULL);
+        assert(gethostbyname("permanent-error.invalid.") == NULL && h_errno == NO_RECOVERY);
+    } else if (strcmp(argv[1], "retry-open") == 0) {
         int fd = open("/tmp/retry", O_CREAT | O_TRUNC | O_RDWR, 0600);
         assert(fd >= 0 && write(fd, "x", 1) == 1);
         char byte;
