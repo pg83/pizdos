@@ -43,12 +43,13 @@ func hostLimits() [rlimitCount]rlimit {
 	return out
 }
 
-// code links the object a host descriptor reads, or finds it linked: the
-// error is ENOEXEC when the file is not an object of the kernel.
-func (k *Kernel) code(fd int, name string) (*Code, error) {
+// code links the object a file holds, or finds it linked: the error is
+// ENOEXEC when the file is not an object of the kernel, EACCES when it
+// cannot be read at an offset.
+func (k *Kernel) code(p *Process, f File, name string) (*Code, error) {
 	var st syscall.Stat_t
 
-	if err := syscall.Fstat(fd, &st); err != nil {
+	if err := f.stat(&st); err != nil {
 		return nil, err
 	}
 
@@ -61,10 +62,16 @@ func (k *Kernel) code(fd int, name string) (*Code, error) {
 		return c, nil
 	}
 
+	t, ok := f.(Transfer)
+
+	if !ok {
+		return nil, syscall.EACCES
+	}
+
 	data := make([]byte, st.Size)
 
 	for at := 0; at < len(data); {
-		n, err := syscall.Pread(fd, data[at:], int64(at))
+		n, err := t.pread(p, data[at:], int64(at))
 
 		if err != nil {
 			return nil, err
@@ -102,12 +109,12 @@ func (k *Kernel) code(fd int, name string) (*Code, error) {
 
 // exec replaces the process's program; it returns only an error.
 func (p *Process) exec(path string, argv, envp []string) error {
-	return p.execFrom(path, -1, argv, envp)
+	return p.execFrom(path, nil, argv, envp)
 }
 
-// execFrom is exec of the file a host descriptor reads, when fd is one.
-func (p *Process) execFrom(path string, fd int, argv, envp []string) error {
-	img, err := p.loadFrom(path, fd, argv)
+// execFrom is exec of a file, when one is given: fexecve's.
+func (p *Process) execFrom(path string, f File, argv, envp []string) error {
+	img, err := p.loadFrom(path, f, argv)
 
 	if err != nil {
 		return err
@@ -122,46 +129,50 @@ func (p *Process) execFrom(path string, fd int, argv, envp []string) error {
 // loadProgram is exec's search: a wasm object, or the interpreter of a #!
 // script, with argv rewritten for it; the image has no environment yet.
 func (p *Process) loadProgram(path string, argv []string) (*execImage, error) {
-	return p.loadFrom(path, -1, argv)
+	return p.loadFrom(path, nil, argv)
 }
 
-// loadFrom is loadProgram of the file a host descriptor reads, when first
-// is one: fexecve's.
-func (p *Process) loadFrom(path string, first int, argv []string) (*execImage, error) {
+// loadFrom is loadProgram of a file, when one is given: fexecve's. A
+// program is a regular file the process may execute.
+func (p *Process) loadFrom(path string, first File, argv []string) (*execImage, error) {
 	for range 4 {
-		fd, err := first, error(nil)
+		f := first
 
-		if first >= 0 {
-			fd, err = dupHigh(first)
-			first = -1
+		if first != nil {
+			first.ref()
+			first = nil
 		} else {
-			fd, err = p.openat2(path, syscall.O_RDONLY, 0)
-		}
+			fd, err := p.openat2(path, syscall.O_RDONLY, 0)
 
-		if err != nil {
-			return nil, err
+			if err != nil {
+				return nil, err
+			}
+
+			f = newHostObject(fd, true)
 		}
 
 		var st syscall.Stat_t
+		node, isNode := f.(Node)
+		t, transfers := f.(Transfer)
 
-		if err := syscall.Fstat(fd, &st); err != nil || st.Mode&syscall.S_IFMT != syscall.S_IFREG {
-			syscall.Close(fd)
+		if err := f.stat(&st); err != nil || !isNode || !transfers || st.Mode&syscall.S_IFMT != syscall.S_IFREG {
+			f.unref()
 
 			return nil, syscall.EACCES
 		}
 
-		if err := atCall(sysFaccessat2, fd, "", 1, atEmptyPath); err != nil {
-			syscall.Close(fd)
+		if err := node.access(1, 0); err != nil {
+			f.unref()
 
 			return nil, err
 		}
 
 		head := make([]byte, 256)
-		n, _ := syscall.Pread(fd, head, 0)
-		head = head[:n]
+		n, _ := t.pread(p, head, 0)
+		head = head[:max(n, 0)]
 
 		if bytes.HasPrefix(head, []byte("#!")) {
-			syscall.Close(fd)
+			f.unref()
 			line, _, _ := bytes.Cut(head[2:], []byte("\n"))
 			fields := strings.Fields(string(line))
 
@@ -185,9 +196,9 @@ func (p *Process) loadFrom(path string, first int, argv []string) (*execImage, e
 			continue
 		}
 
-		code, err := p.k.code(fd, path)
-		program := p.programPath(fd)
-		syscall.Close(fd)
+		code, err := p.k.code(p, f, path)
+		program := p.programPath(f)
+		f.unref()
 
 		if err != nil {
 			return nil, err
@@ -615,17 +626,19 @@ func (p *Process) libcFexecve(fd, argv, envp uint32) uint32 {
 		return p.result(0, err)
 	}
 
-	if obj.host() < 0 {
+	pathed, ok := obj.(Pathed)
+
+	if !ok {
 		return p.result(0, syscall.EACCES)
 	}
 
-	host, err := hostPath(obj.host())
+	host, err := pathed.hostPath()
 
 	if err != nil {
 		return p.result(0, err)
 	}
 
-	return p.result(0, p.execFrom(p.guestPath(host), obj.host(), p.strings(argv), p.strings(envp)))
+	return p.result(0, p.execFrom(p.guestPath(host), obj, p.strings(argv), p.strings(envp)))
 }
 
 func (p *Process) libcExecl(path, arg0, va uint32) uint32 {

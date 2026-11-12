@@ -11,7 +11,7 @@ import (
 )
 
 // A pipe is the kernel's, not the host's: a queue of chunks, chan []byte,
-// between its two ends, which are objects of the kernel a process reads
+// between its two ends, which are files of the kernel a process reads
 // and writes without a host descriptor. It holds pipeSize bytes, as
 // Linux's does: a write of at most pipeChunk bytes, PIPE_BUF, goes whole
 // or not at all, a larger one in parts as room comes. A read takes what is
@@ -115,20 +115,12 @@ func (e *pipeEnd) unref() {
 	pp.waiters.wake()
 }
 
-func (e *pipeEnd) host() int {
-	return -1
-}
-
-func (e *pipeEnd) queue() *waitQueue {
-	return &e.pipe.waiters
+func (e *pipeEnd) watch(p *Process, w *waitSet, entry *pollEntry) {
+	w.queued(p, entry, &e.pipe.waiters)
 }
 
 // stat is a FIFO's: the ends share an inode of the kernel's.
 func (e *pipeEnd) stat(st *syscall.Stat_t) error {
-	if chaosFail("file-stat") {
-		return syscall.EIO
-	}
-
 	pp := e.pipe
 	*st = syscall.Stat_t{Ino: pp.ino, Mode: syscall.S_IFIFO | 0o600, Nlink: 1, Uid: uint32(syscall.Getuid()), Gid: uint32(syscall.Getgid()), Blksize: pipeChunk}
 	st.Atim = syscall.NsecToTimespec(pp.made.UnixNano())

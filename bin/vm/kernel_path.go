@@ -85,11 +85,19 @@ func (p *Process) openat2(path string, flags int, mode uint32) (int, error) {
 		}
 	}
 
+	// Paths resolve on the host: the root is a directory of the host,
+	// until a Dir resolves paths itself.
+	root, ok := p.root.(*hostDir)
+
+	if !ok {
+		return -1, syscall.ENOENT
+	}
+
 	name := throw2(syscall.BytePtrFromString(full))
 	how := openHow{flags: uint64(flags | syscall.O_CLOEXEC), mode: uint64(mode), resolve: resolveInRoot}
 
 	for {
-		r, _, e := syscall.Syscall6(sysOpenat2, uintptr(p.root.host()), uintptr(unsafe.Pointer(name)), uintptr(unsafe.Pointer(&how)), unsafe.Sizeof(how), 0, 0)
+		r, _, e := syscall.Syscall6(sysOpenat2, uintptr(root.fd), uintptr(unsafe.Pointer(name)), uintptr(unsafe.Pointer(&how)), unsafe.Sizeof(how), 0, 0)
 
 		if e == syscall.EINTR || e == syscall.EAGAIN {
 			continue
@@ -199,47 +207,22 @@ func (p *Process) atPath(dirfd int32, path string) (string, error) {
 	return p.guestPath(dir) + "/" + path, nil
 }
 
-// atFile is the host descriptor an *at call with AT_EMPTY_PATH and an
-// empty path works on: the directory descriptor's own. An object of the
-// kernel is no file of the host: EBADF.
-func (p *Process) atFile(dirfd int32, path string, flags uint32) (int, bool, error) {
-	if path != "" || flags&atEmptyPath == 0 {
-		return -1, false, nil
-	}
+// onAt runs a call on what an *at call names: byPath on the O_PATH
+// descriptor of the path, or byFile on the descriptor's own file when the
+// path is empty with AT_EMPTY_PATH.
+func (p *Process) onAt(dirfd int32, path string, flags uint32, byPath func(fd int) error, byFile func(f File) error) error {
+	if path == "" && flags&atEmptyPath != 0 {
+		if dirfd == atFdcwd {
+			return p.onPath(".", true, byPath)
+		}
 
-	if dirfd == atFdcwd {
-		fd, err := p.openat2(".", oPath, 0)
+		obj, err := p.fd(uint32(dirfd))
 
-		return fd, true, err
-	}
-
-	obj, err := p.fd(uint32(dirfd))
-
-	if err != nil {
-		return -1, true, err
-	}
-
-	if obj.host() < 0 {
-		return -1, true, syscall.EBADF
-	}
-
-	fd, err := dupHigh(obj.host())
-
-	return fd, true, err
-}
-
-// onAt runs a call on the O_PATH descriptor of what an *at call names.
-func (p *Process) onAt(dirfd int32, path string, flags uint32, call func(fd int) error) error {
-	fd, empty, err := p.atFile(dirfd, path, flags)
-
-	if empty {
 		if err != nil {
 			return err
 		}
 
-		defer syscall.Close(fd)
-
-		return call(fd)
+		return byFile(obj)
 	}
 
 	full, err := p.atPath(dirfd, path)
@@ -248,7 +231,19 @@ func (p *Process) onAt(dirfd int32, path string, flags uint32, call func(fd int)
 		return err
 	}
 
-	return p.onPath(full, flags&atSymlinkNofollow == 0, call)
+	return p.onPath(full, flags&atSymlinkNofollow == 0, byPath)
+}
+
+// nodeCall is a call on a descriptor's node; another file has no such
+// call: EINVAL.
+func nodeCall(call func(n Node) error) func(f File) error {
+	return func(f File) error {
+		if n, ok := f.(Node); ok {
+			return call(n)
+		}
+
+		return syscall.EINVAL
+	}
 }
 
 func atCall(trap uintptr, dirfd int, path string, args ...uintptr) error {
@@ -406,6 +401,8 @@ func (p *Process) libcFstatat(dirfd, path, at, flags uint32) uint32 {
 	var st syscall.Stat_t
 	err := p.onAt(int32(dirfd), p.str(path), flags, func(fd int) error {
 		return fileStat(fd, &st)
+	}, func(f File) error {
+		return statFile(f, &st)
 	})
 
 	if err == nil {
@@ -421,9 +418,17 @@ func (p *Process) libcAccess(path, mode uint32) uint32 {
 	}))
 }
 
+// faccessat of a descriptor's own file: a file of the kernel is the
+// process's to use.
 func (p *Process) libcFaccessat(dirfd, path, mode, flags uint32) uint32 {
 	return p.result(0, p.onAt(int32(dirfd), p.str(path), flags, func(fd int) error {
 		return access(fd, mode, flags)
+	}, func(f File) error {
+		if n, ok := f.(Node); ok {
+			return n.access(mode, flags)
+		}
+
+		return nil
 	}))
 }
 
@@ -660,6 +665,15 @@ func (p *Process) libcReadlinkat(dirfd, path, buf, size uint32) uint32 {
 		n, e = readlinkFd(fd, out, p.u8(path) != 0)
 
 		return e
+	}, func(f File) error {
+		var e error
+		n, e = 0, syscall.EINVAL
+
+		if node, ok := f.(Node); ok {
+			n, e = node.readlink(out)
+		}
+
+		return e
 	})
 
 	return p.result(n, err)
@@ -770,13 +784,17 @@ func (p *Process) libcChmod(path, mode uint32) uint32 {
 func (p *Process) libcFchmodat(dirfd, path, mode, flags uint32) uint32 {
 	return p.result(0, p.onAt(int32(dirfd), p.str(path), flags, func(fd int) error {
 		return atCall(sysFchmodat2, fd, "", uintptr(mode&0o7777), atEmptyPath)
-	}))
+	}, nodeCall(func(n Node) error {
+		return n.chmod(mode & 0o7777)
+	})))
 }
 
 func (p *Process) libcFchownat(dirfd, path, uid, gid, flags uint32) uint32 {
 	return p.result(0, p.onAt(int32(dirfd), p.str(path), flags, func(fd int) error {
 		return syscall.Fchownat(fd, "", int(int32(uid)), int(int32(gid)), atEmptyPath)
-	}))
+	}, nodeCall(func(n Node) error {
+		return n.chown(int(int32(uid)), int(int32(gid)))
+	})))
 }
 
 func (p *Process) libcMknod(path, mode uint32, dev uint64) uint32 {
@@ -1147,7 +1165,7 @@ func (p *Process) libcFdopendir(fd uint32) uint32 {
 
 	var st syscall.Stat_t
 
-	if err := obj.stat(&st); err != nil {
+	if err := statFile(obj, &st); err != nil {
 		return p.pointer(0, err)
 	}
 

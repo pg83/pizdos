@@ -11,25 +11,24 @@ import (
 
 // An open file is a File: what a descriptor refers to, shared by the
 // descriptors and processes that refer to it, and what every kind of call
-// asks of it. What else an object can do is a role, an interface a call
+// asks of it. What else a file can do is a role, an interface a call
 // casts to: a Transfer reads and writes, a Seeker seeks, a Dir lists
 // entries, a Node is a file of a host file system with its metadata, a
-// Socket speaks sockets, an Ioctl takes ioctls, a Locker takes locks. An
-// object of the host (kernel_host.go) is a host descriptor and plays the
-// roles the host's kind of file does; an object of the kernel (a pipe,
-// kernel_pipe.go) plays only its own.
+// Socket speaks sockets, an Ioctl takes ioctls, a Locker takes locks. A
+// file of the host (kernel_host.go) plays the roles the host's kind of
+// file does and keeps its host descriptor to itself; a file of the kernel
+// (a pipe, kernel_pipe.go) plays only its own.
 type File interface {
 	// ref takes a reference, unref drops one; the last closes the object.
 	ref()
 	unref()
 	// stat is fstat.
 	stat(st *syscall.Stat_t) error
-	// host is the host descriptor the object is, or -1 for an object of the
-	// kernel: a wait on a host object polls its descriptor, a wait on an
-	// object of the kernel asks its queue to be woken by its changes.
-	host() int
+	// poll is the events ready now of those asked; watch adds the file to
+	// a wait (waitSet): what the host polls for it, or the queue its
+	// changes wake the process through.
 	poll(events int16) int16
-	queue() *waitQueue
+	watch(p *Process, w *waitSet, e *pollEntry)
 	// flags are the status flags of fcntl: the access mode, O_NONBLOCK and
 	// what else the object keeps; setFlags sets those F_SETFL may.
 	flags() (int, error)
@@ -84,12 +83,18 @@ type Node interface {
 	Pathed
 	truncate(size int64) error
 	sync(data bool) error
+	syncfs() error
 	chmod(mode uint32) error
 	chown(uid, gid int) error
 	utimes(ts []syscall.Timespec) error
+	access(mode, flags uint32) error
+	readlink(out []byte) (int, error)
 	statfs(st *syscall.Statfs_t) error
 	fadvise(off, n int64, advice int) error
 	fallocate(off, n int64) error
+	// copyRange is copy_file_range to another node, with the offsets of
+	// the call when given.
+	copyRange(dst Node, from, to *int64, n int, flags int) (int, error)
 }
 
 // A Socket takes the socket calls as libc makes them, with the guest's
@@ -257,23 +262,6 @@ func (p *Process) lockerAt(fd uint32) (Locker, error) {
 	return nil, syscall.EBADF
 }
 
-// hostAt is the host descriptor of a descriptor's object, for a call the
-// host makes between two of its descriptors: EBADF for an object of the
-// kernel.
-func (p *Process) hostAt(fd uint32) (int, error) {
-	obj, err := p.fd(fd)
-
-	if err != nil {
-		return -1, err
-	}
-
-	if host := obj.host(); host >= 0 {
-		return host, nil
-	}
-
-	return -1, syscall.EBADF
-}
-
 // install puts an object at the lowest free descriptor from min; the
 // descriptor takes the reference.
 func (p *Process) install(obj File, min int, cloexec bool) (int, error) {
@@ -340,7 +328,7 @@ func (p *Process) placeAt(obj File, fd uint32, cloexec bool) {
 	p.files[fd] = &Descriptor{obj: obj, cloexec: cloexec}
 }
 
-// A waitQueue is the processes waiting on an object of the kernel: a
+// A waitQueue is the processes waiting on a file of the kernel: a
 // change of the object wakes them, as a signal would, to look again.
 type waitQueue struct {
 	mu    sync.Mutex
@@ -466,30 +454,50 @@ type pollEntry struct {
 	revents int16
 }
 
+// A waitSet is what one wait looks at: the host descriptors it polls, by
+// the entries they are of, and the entries of files of the kernel it asks
+// again whenever their queues wake the process.
+type waitSet struct {
+	host   []pollFd
+	polled []*pollEntry
+	asked  []*pollEntry
+	queues []*waitQueue
+}
+
+// hostFd has the wait poll a host descriptor for an entry.
+func (w *waitSet) hostFd(e *pollEntry, fd int) {
+	w.host = append(w.host, pollFd{fd: int32(fd), events: e.events})
+	w.polled = append(w.polled, e)
+}
+
+// queued has the wait ask an entry's file again when its queue wakes the
+// process.
+func (w *waitSet) queued(p *Process, e *pollEntry, q *waitQueue) {
+	q.add(p)
+	w.queues = append(w.queues, q)
+	w.asked = append(w.asked, e)
+}
+
+func (w *waitSet) leave(p *Process) {
+	for _, q := range w.queues {
+		q.remove(p)
+	}
+}
+
 // waitObjects waits as waitFds does until an object is ready for its
-// events: a host object when the host says so, an object of the kernel
+// events: a file of the host when the host says so, a file of the kernel
 // when it does, asked again whenever it wakes the process. It returns how
 // many are ready.
 func (p *Process) waitObjects(entries []pollEntry, timeout int, restart bool) (int, error) {
-	host := make([]pollFd, 0, len(entries)+1)
-	from := make([]int, 0, len(entries))
-	kernel := false
+	var w waitSet
 
 	for i := range entries {
-		e := &entries[i]
-		e.revents = 0
-
-		if fd := e.obj.host(); fd >= 0 {
-			host = append(host, pollFd{fd: int32(fd), events: e.events})
-			from = append(from, i)
-		} else if q := e.obj.queue(); q != nil {
-			q.add(p)
-			defer q.remove(p)
-			kernel = true
-		}
+		entries[i].revents = 0
+		entries[i].obj.watch(p, &w, &entries[i])
 	}
 
-	host = append(host, pollFd{fd: int32(p.wake), events: pollIn})
+	defer w.leave(p)
+	host := append(w.host, pollFd{fd: int32(p.wake), events: pollIn})
 	end := deadline(timeout)
 
 	for {
@@ -503,15 +511,11 @@ func (p *Process) waitObjects(entries []pollEntry, timeout int, restart bool) (i
 
 		ready := 0
 
-		if kernel {
-			for i := range entries {
-				if e := &entries[i]; e.obj.host() < 0 {
-					e.revents = e.obj.poll(e.events)
+		for _, e := range w.asked {
+			e.revents = e.obj.poll(e.events)
 
-					if e.revents != 0 {
-						ready++
-					}
-				}
+			if e.revents != 0 {
+				ready++
 			}
 		}
 
@@ -543,8 +547,8 @@ func (p *Process) waitObjects(entries []pollEntry, timeout int, restart bool) (i
 			continue
 		}
 
-		for k, i := range from {
-			entries[i].revents = host[k].revents
+		for k, e := range w.polled {
+			e.revents = host[k].revents
 		}
 
 		return ready + n, nil

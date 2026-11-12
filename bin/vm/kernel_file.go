@@ -317,24 +317,19 @@ func (p *Process) libcPwrite(fd, buf, n uint32, off uint64) uint32 {
 	return p.result(t.pwrite(p, p.span(buf, n), int64(off)))
 }
 
-// copy_file_range is the host's between the host descriptors; an offset
-// given is read from the guest's memory and written back. An object of
-// the kernel is not a file of the host: EINVAL, as a pipe is to Linux.
+// copy_file_range copies between two nodes; an offset given is read from
+// the guest's memory and written back.
 func (p *Process) libcCopy_file_range(in, offIn, out, offOut, n, flags uint32) uint32 {
-	src, err := p.fd(in)
+	src, err := p.nodeAt(in)
 
 	if err != nil {
 		return p.result(0, err)
 	}
 
-	dst, err := p.fd(out)
+	dst, err := p.nodeAt(out)
 
 	if err != nil {
 		return p.result(0, err)
-	}
-
-	if src.host() < 0 || dst.host() < 0 {
-		return p.result(0, syscall.EINVAL)
 	}
 
 	var from, to *int64
@@ -349,11 +344,10 @@ func (p *Process) libcCopy_file_range(in, offIn, out, offOut, n, flags uint32) u
 		*to = int64(p.u64(offOut))
 	}
 
-	r, _, e := syscall.Syscall6(sysCopyFileRange, uintptr(src.host()), uintptr(unsafe.Pointer(from)), uintptr(dst.host()),
-		uintptr(unsafe.Pointer(to)), uintptr(n), uintptr(flags))
+	r, err := src.copyRange(dst, from, to, int(n), int(flags))
 
-	if e != 0 {
-		return p.result(0, e)
+	if err != nil {
+		return p.result(0, err)
 	}
 
 	if from != nil {
@@ -364,7 +358,7 @@ func (p *Process) libcCopy_file_range(in, offIn, out, offOut, n, flags uint32) u
 		p.put64(offOut, uint64(*to))
 	}
 
-	return p.result(int(r), nil)
+	return p.result(r, nil)
 }
 
 func (p *Process) libcFdatasync(fd uint32) uint32 {
@@ -381,8 +375,8 @@ func (p *Process) libcSync() {
 	syscall.Sync()
 }
 
-// syncfs syncs the host file system of a host object; an object of the
-// kernel has nothing to sync.
+// syncfs syncs the file system of a node; another file has nothing to
+// sync.
 func (p *Process) libcSyncfs(fd uint32) uint32 {
 	obj, err := p.fd(fd)
 
@@ -390,13 +384,11 @@ func (p *Process) libcSyncfs(fd uint32) uint32 {
 		return p.result(0, err)
 	}
 
-	if host := obj.host(); host >= 0 {
-		if _, _, e := syscall.Syscall(sysSyncfs, uintptr(host), 0, 0); e != 0 {
-			return p.result(0, e)
-		}
+	if n, ok := obj.(Node); ok {
+		err = n.syncfs()
 	}
 
-	return p.result(0, nil)
+	return p.result(0, err)
 }
 
 func (p *Process) libcFlock(fd, op uint32) uint32 {
@@ -618,6 +610,16 @@ func (p *Process) libcFtruncate(fd uint32, size uint64) uint32 {
 	return p.result(0, err)
 }
 
+// statFile reads a file's metadata for a guest operation on a
+// descriptor.
+func statFile(f File, st *syscall.Stat_t) error {
+	if chaosFail("file-stat") {
+		return syscall.EIO
+	}
+
+	return f.stat(st)
+}
+
 func (p *Process) libcFstat(fd, at uint32) uint32 {
 	obj, err := p.fd(fd)
 
@@ -627,7 +629,7 @@ func (p *Process) libcFstat(fd, at uint32) uint32 {
 
 	var st syscall.Stat_t
 
-	if err := obj.stat(&st); err != nil {
+	if err := statFile(obj, &st); err != nil {
 		return p.result(0, err)
 	}
 

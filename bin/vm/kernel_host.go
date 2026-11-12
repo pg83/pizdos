@@ -10,7 +10,7 @@ import (
 	"unsafe"
 )
 
-// An object of the host is a host descriptor of the kernel's: a hostFile
+// A file of the host is a host descriptor of the kernel's: a hostFile
 // is a regular file, a device, a terminal or a FIFO of the root, a hostDir
 // a directory, a hostSocket a socket (kernel_socket.go). A pollable one
 // can block: a FIFO, a terminal, a socket, another character device. One
@@ -116,16 +116,28 @@ func (o *hostObject) unref() {
 	}
 }
 
-func (o *hostObject) host() int {
+// hostFdOf is the host descriptor of a file of the host, for a call the
+// host makes between two of them.
+func hostFdOf(f File) (int, bool) {
+	h, ok := f.(interface{ hostFd() int })
+
+	if !ok {
+		return -1, false
+	}
+
+	return h.hostFd(), true
+}
+
+func (o *hostObject) hostFd() int {
 	return o.fd
 }
 
-func (o *hostObject) queue() *waitQueue {
-	return nil
+func (o *hostObject) watch(p *Process, w *waitSet, e *pollEntry) {
+	w.hostFd(e, o.fd)
 }
 
 func (o *hostObject) stat(st *syscall.Stat_t) error {
-	return fileStat(o.fd, st)
+	return syscall.Fstat(o.fd, st)
 }
 
 func (o *hostObject) poll(events int16) int16 {
@@ -198,8 +210,9 @@ func procFd(fd int) string {
 	return fmt.Sprintf("/proc/self/fd/%d", fd)
 }
 
-// fileStat reads metadata for guest operations. Resource setup keeps using
-// Fstat directly, so a one-shot failure can be observed by the guest.
+// fileStat reads metadata for a guest operation on a path. Resource setup
+// and the loader use Fstat and File.stat directly, so a one-shot failure
+// can be observed by the guest.
 func fileStat(fd int, st *syscall.Stat_t) error {
 	if chaosFail("file-stat") {
 		return syscall.EIO
@@ -210,6 +223,45 @@ func fileStat(fd int, st *syscall.Stat_t) error {
 
 func (o *hostObject) truncate(size int64) error {
 	return syscall.Ftruncate(o.fd, size)
+}
+
+func (o *hostObject) syncfs() error {
+	if _, _, e := syscall.Syscall(sysSyncfs, uintptr(o.fd), 0, 0); e != 0 {
+		return e
+	}
+
+	return nil
+}
+
+// access checks the file for mode, as the real ids do or, with AT_EACCESS,
+// the effective ones.
+func (o *hostObject) access(mode, flags uint32) error {
+	return access(o.fd, mode, flags)
+}
+
+// readlink reads the link the descriptor is, O_PATH of one: EINVAL for
+// any other file.
+func (o *hostObject) readlink(out []byte) (int, error) {
+	return readlinkFd(o.fd, out, false)
+}
+
+// copyRange is the host's copy_file_range; another node is a file of the
+// host too, or no file for it: EINVAL.
+func (o *hostObject) copyRange(dst Node, from, to *int64, n int, flags int) (int, error) {
+	fd, ok := hostFdOf(dst)
+
+	if !ok {
+		return 0, syscall.EINVAL
+	}
+
+	r, _, e := syscall.Syscall6(sysCopyFileRange, uintptr(o.fd), uintptr(unsafe.Pointer(from)), uintptr(fd),
+		uintptr(unsafe.Pointer(to)), uintptr(n), uintptr(flags))
+
+	if e != 0 {
+		return 0, e
+	}
+
+	return int(r), nil
 }
 
 func (o *hostObject) sync(data bool) error {

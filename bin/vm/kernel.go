@@ -158,8 +158,9 @@ type procExit struct {
 
 func newKernel(root string) *Kernel {
 	k := &Kernel{procs: map[int32]*Process{}, codes: map[fileKey]*Code{}, exit: make(chan int, 1), abstract: fmt.Sprintf("pizdos.%d.", os.Getpid())}
-	k.root = newHostDir(throw2(syscall.Open(root, oPath|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0)))
-	k.rootPath = throw2(os.Readlink(procFd(k.root.host())))
+	fd := throw2(syscall.Open(root, oPath|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0))
+	k.rootPath = throw2(os.Readlink(procFd(fd)))
+	k.root = newHostDir(fd)
 	k.functions = k.functionTable()
 	// The kernel applies the processes' umasks itself.
 	syscall.Umask(0)
@@ -200,17 +201,17 @@ func importsKernel(obj *Object) bool {
 func runKernel(path, root string, argv []string, asan bool) int {
 	k := newKernel(root)
 	k.asan = asan
-	fd := throw2(syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC, 0))
-	code, err := k.code(fd, path)
+	p := throw2(k.newProcess(nil))
+	f := newHostObject(throw2(syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC, 0)), true)
+	code, err := k.code(p, f, path)
 	throw(err)
 
 	if asan && !code.obj.meta.asan() {
 		throwFmt("%s: not compiled with --asan", path)
 	}
 
-	p := throw2(k.newProcess(nil))
-	program := p.programPath(fd)
-	syscall.Close(fd)
+	program := p.programPath(f)
+	f.unref()
 	p.cwd = p.guestPath(throw2(os.Getwd()))
 	env := []string{"PWD=" + p.cwd}
 
@@ -271,10 +272,16 @@ func (k *Kernel) newProcess(parent *Process) (*Process, error) {
 	return p, nil
 }
 
-// programPath is the guest's path of the program a host descriptor reads,
-// or empty when it is outside the root.
-func (p *Process) programPath(fd int) string {
-	host, err := hostPath(fd)
+// programPath is the guest's path of a program's file, or empty when it
+// is outside the root or has no path.
+func (p *Process) programPath(f File) string {
+	pathed, ok := f.(Pathed)
+
+	if !ok {
+		return ""
+	}
+
+	host, err := pathed.hostPath()
 
 	if err != nil || host != p.rootPath && p.rootPath != "/" && !strings.HasPrefix(host, p.rootPath+"/") {
 		return ""

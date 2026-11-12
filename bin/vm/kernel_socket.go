@@ -376,8 +376,8 @@ func hostAlign(n int) int {
 }
 
 // hostControl is the host's control messages of a guest's: the descriptors
-// of SCM_RIGHTS become the host's; an object of the kernel has none to
-// pass, EINVAL.
+// of SCM_RIGHTS become the host's; a file of the kernel has none for the
+// host to pass, EINVAL.
 func (p *Process) hostControl(at, n uint32) ([]byte, error) {
 	var out []byte
 
@@ -401,11 +401,13 @@ func (p *Process) hostControl(at, n uint32) ([]byte, error) {
 					return nil, err
 				}
 
-				if obj.host() < 0 {
+				fd, ok := hostFdOf(obj)
+
+				if !ok {
 					return nil, syscall.EINVAL
 				}
 
-				fds = binary.LittleEndian.AppendUint32(fds, uint32(obj.host()))
+				fds = binary.LittleEndian.AppendUint32(fds, uint32(fd))
 			}
 
 			data = fds
