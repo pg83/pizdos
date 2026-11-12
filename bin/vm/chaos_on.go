@@ -47,7 +47,7 @@ func chaosRules(text string, points map[string]uint32) []ChaosRule {
 
 func setupVmChaos() {
 	points := map[string]uint32{"mmap": 0, "compile-read": 0, "compile-write": 0, "memory-grow": 0,
-		"openat": 0, "read": 0, "write": 0, "fork": 0, "file-stat": 0, "readlink": 0, "eventfd": 0}
+		"openat": 0, "read": 0, "write": 0, "fork": 0, "file-stat": 0, "readlink": 0}
 	chaosState.rules = map[string]uint32{}
 
 	for _, rule := range chaosRules(os.Getenv("PIZDOS_VM_CHAOS"), points) {

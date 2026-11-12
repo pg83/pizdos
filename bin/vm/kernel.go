@@ -138,9 +138,10 @@ type Process struct {
 	// (kernel_signal.go).
 	token   atomic.Uintptr
 	chasing atomic.Bool
-	// wake is an eventfd a blocking call polls with its descriptors: a
-	// signal sent to the process makes it readable.
-	wake int
+	// wake is what a blocking call sleeps on: a signal sent to the
+	// process, a change of a file it waits for, of its children, of its
+	// own state, each put the wake in it, and the call looks again.
+	wake chan struct{}
 }
 
 // execImage is a program a process runs; panicked by exec, it unwinds the
@@ -168,9 +169,7 @@ func newKernel(root string) *Kernel {
 	if root == "" {
 		k.root = newNoRoot()
 	} else {
-		fd := throw2(syscall.Open(root, oPath|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0))
-		k.rootPath = throw2(os.Readlink(procFd(fd)))
-		k.root = newHostDir(fd)
+		k.root, k.rootPath = throw3(openHostRoot(root))
 	}
 
 	k.functions = k.functionTable()
@@ -214,7 +213,7 @@ func runKernel(path, root string, argv []string, asan bool) int {
 	k := newKernel(root)
 	k.asan = asan
 	p := throw2(k.newProcess(nil))
-	f := newHostObject(throw2(syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC, 0)), true)
+	f := throw2(openHostFile(path))
 	code, err := k.code(p, f, path)
 	throw(err)
 
@@ -233,13 +232,11 @@ func runKernel(path, root string, argv []string, asan bool) int {
 		}
 	}
 
-	for fd := range 3 {
-		host, err := dupHigh(fd)
-
-		if err == nil {
-			p.files = append(p.files, &Descriptor{obj: newHostObject(host, false)})
-		} else {
+	for _, f := range hostStdio() {
+		if f == nil {
 			p.files = append(p.files, nil)
+		} else {
+			p.files = append(p.files, &Descriptor{obj: f})
 		}
 	}
 
@@ -254,17 +251,11 @@ func runKernel(path, root string, argv []string, asan bool) int {
 // newProcess makes a process: a child of parent, or the first, the leader
 // of its group and session.
 func (k *Kernel) newProcess(parent *Process) (*Process, error) {
-	wake, err := eventfd()
-
-	if err != nil {
-		return nil, err
-	}
-
 	k.mu.Lock()
 	defer k.mu.Unlock()
 
 	k.lastPid++
-	p := &Process{k: k, pid: k.lastPid, umask: 0o022, regexes: map[uint32]*posixRegex{}, seed: 0, wake: wake}
+	p := &Process{k: k, pid: k.lastPid, umask: 0o022, regexes: map[uint32]*posixRegex{}, seed: 0, wake: make(chan struct{}, 1)}
 
 	if parent == nil {
 		p.pgid, p.sid = p.pid, p.pid
@@ -458,7 +449,6 @@ func (p *Process) terminate(status int) {
 	p.setCwdDir(nil)
 	p.sig.mu.Lock()
 	p.sig.dead = true
-	syscall.Close(p.wake)
 	p.sig.mu.Unlock()
 	k := p.k
 	k.mu.Lock()

@@ -144,7 +144,7 @@ int main(int argc, char** argv) {
             assert(ptrace(PTRACE_GETREGS, thread, 0, &registers) == 0);
             assert(registers.orig_rax == (unsigned)number);
             // Select the guest's inherited input even after duplication;
-            // startup reads and the eventfd used for signals must succeed.
+            // startup reads must succeed.
             int selected = number != 0;
             if (number == 0) {
                 char path[96];

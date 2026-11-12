@@ -25,8 +25,7 @@ type File interface {
 	// stat is fstat.
 	stat(st *syscall.Stat_t) error
 	// poll is the events ready now of those asked; watch adds the file to
-	// a wait (waitSet): what the host polls for it, or the queue its
-	// changes wake the process through.
+	// a wait (waitSet): the queue its changes wake the process through.
 	poll(events int16) int16
 	watch(p *Process, w *waitSet, e *pollEntry)
 	// flags are the status flags of fcntl: the access mode, O_NONBLOCK and
@@ -412,13 +411,50 @@ func (q *waitQueue) wake() {
 }
 
 // wakeSignal reports whether a signal interrupts a blocking call: one the
-// process would deliver now. It drains the wake descriptor first, so a
-// signal sent after the check makes the next poll return.
+// process would deliver now. It takes the wake first, so a wake after the
+// check ends the next sleep.
 func (p *Process) wakeSignal() bool {
-	var b [8]byte
-	syscall.Read(p.wake, b[:])
+	select {
+	case <-p.wake:
+	default:
+	}
 
 	return p.sig.deliverable() != 0
+}
+
+// sleepUntil sleeps until the process is woken or a deadline passes, zero
+// for none; it tells whether the deadline passed.
+func (p *Process) sleepUntil(end time.Time) bool {
+	if end.IsZero() {
+		<-p.wake
+
+		return false
+	}
+
+	d := time.Until(end)
+
+	if d <= 0 {
+		return true
+	}
+
+	t := time.NewTimer(d)
+	defer t.Stop()
+
+	select {
+	case <-p.wake:
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+// idle waits for timeout milliseconds, forever when negative, or until a
+// signal interrupts: then the error is EINTR, after the handlers ran when
+// all of them restart calls and restart is set.
+func (p *Process) idle(timeout int, restart bool) error {
+	_, err := p.waitObjects(nil, timeout, restart)
+
+	return err
 }
 
 // deadline is when a wait of timeout milliseconds ends, or zero for none.
@@ -430,68 +466,6 @@ func deadline(timeout int) time.Time {
 	return time.Now().Add(time.Duration(timeout) * time.Millisecond)
 }
 
-// left is the milliseconds to a deadline, -1 for none, and whether it
-// passed.
-func left(end time.Time) (int, bool) {
-	if end.IsZero() {
-		return -1, false
-	}
-
-	d := time.Until(end)
-
-	if d <= 0 {
-		return 0, true
-	}
-
-	return waitMs(d), false
-}
-
-// waitFds polls host descriptors and the wake descriptor until one is ready,
-// the timeout in milliseconds passes, or a signal interrupts: then the
-// error is EINTR, after the handlers ran when all of them restart calls and
-// restart is set.
-func (p *Process) waitFds(fds []pollFd, timeout int, restart bool) (int, error) {
-	all := append(fds, pollFd{fd: int32(p.wake), events: pollIn})
-	end := deadline(timeout)
-
-	for {
-		if p.wakeSignal() {
-			if restart && p.interrupted() {
-				continue
-			}
-
-			return 0, syscall.EINTR
-		}
-
-		for i := range all {
-			all[i].revents = 0
-		}
-
-		wait, passed := left(end)
-		n, err := poll(all, wait)
-
-		if err == syscall.EINTR {
-			continue
-		}
-
-		if err != nil {
-			return 0, err
-		}
-
-		if all[len(all)-1].revents != 0 {
-			n--
-
-			if n == 0 && !passed {
-				continue
-			}
-		}
-
-		copy(fds, all)
-
-		return n, nil
-	}
-}
-
 // pollEntry is an object and the events asked of it, revents those ready.
 type pollEntry struct {
 	obj     File
@@ -499,20 +473,14 @@ type pollEntry struct {
 	revents int16
 }
 
-// A waitSet is what one wait looks at: the host descriptors it polls, by
-// the entries they are of, and the entries of files of the kernel it asks
-// again whenever their queues wake the process.
+// A waitSet is what one wait looks at: the entries it asks again whenever
+// their files' queues wake the process, what it arms before every sleep,
+// and what it undoes when it leaves.
 type waitSet struct {
-	host   []pollFd
-	polled []*pollEntry
 	asked  []*pollEntry
 	queues []*waitQueue
-}
-
-// hostFd has the wait poll a host descriptor for an entry.
-func (w *waitSet) hostFd(e *pollEntry, fd int) {
-	w.host = append(w.host, pollFd{fd: int32(fd), events: e.events})
-	w.polled = append(w.polled, e)
+	arms   []func()
+	leaves []func()
 }
 
 // queued has the wait ask an entry's file again when its queue wakes the
@@ -528,16 +496,32 @@ func (w *waitSet) always(e *pollEntry) {
 	w.asked = append(w.asked, e)
 }
 
+// armed has the wait run arm before every sleep, after it asked the files:
+// a file that is told of a wait from outside the kernel arms the telling.
+func (w *waitSet) armed(arm func()) {
+	w.arms = append(w.arms, arm)
+}
+
+// left has the wait run leave when it ends.
+func (w *waitSet) left(leave func()) {
+	w.leaves = append(w.leaves, leave)
+}
+
 func (w *waitSet) leave(p *Process) {
 	for _, q := range w.queues {
 		q.remove(p)
 	}
+
+	for _, leave := range w.leaves {
+		leave()
+	}
 }
 
-// waitObjects waits as waitFds does until an object is ready for its
-// events: a file of the host when the host says so, a file of the kernel
-// when it does, asked again whenever it wakes the process. It returns how
-// many are ready.
+// waitObjects waits until an object is ready for its events, asking every
+// one again whenever one wakes the process, the timeout in milliseconds
+// passes, or a signal interrupts: then the error is EINTR, after the
+// handlers ran when all of them restart calls and restart is set. It
+// returns how many are ready.
 func (p *Process) waitObjects(entries []pollEntry, timeout int, restart bool) (int, error) {
 	var w waitSet
 
@@ -547,7 +531,6 @@ func (p *Process) waitObjects(entries []pollEntry, timeout int, restart bool) (i
 	}
 
 	defer w.leave(p)
-	host := append(w.host, pollFd{fd: int32(p.wake), events: pollIn})
 	end := deadline(timeout)
 
 	for {
@@ -569,39 +552,17 @@ func (p *Process) waitObjects(entries []pollEntry, timeout int, restart bool) (i
 			}
 		}
 
-		for i := range host {
-			host[i].revents = 0
-		}
-
-		wait, passed := left(end)
-
 		if ready > 0 {
-			wait = 0
+			return ready, nil
 		}
 
-		n, err := poll(host, wait)
-
-		if err == syscall.EINTR {
-			continue
+		for _, arm := range w.arms {
+			arm()
 		}
 
-		if err != nil {
-			return 0, err
+		if p.sleepUntil(end) {
+			return 0, nil
 		}
-
-		if host[len(host)-1].revents != 0 {
-			n--
-		}
-
-		if n == 0 && ready == 0 && !passed {
-			continue
-		}
-
-		for k, e := range w.polled {
-			e.revents = host[k].revents
-		}
-
-		return ready + n, nil
 	}
 }
 
@@ -610,23 +571,7 @@ func (p *Process) waitObject(obj File, events int16, timeout int, restart bool) 
 	return p.waitObjects([]pollEntry{{obj: obj, events: events}}, timeout, restart)
 }
 
-type pollFd struct {
-	fd      int32
-	events  int16
-	revents int16
-}
-
-func poll(fds []pollFd, timeout int) (int, error) {
-	r, _, e := syscall.Syscall(syscall.SYS_POLL, uintptr(unsafe.Pointer(&fds[0])), uintptr(len(fds)), uintptr(timeout))
-
-	if e != 0 {
-		return 0, e
-	}
-
-	return int(r), nil
-}
-
-// waitMs is a timeout in milliseconds of poll, rounded up and bounded.
+// waitMs is a timeout in milliseconds, rounded up and bounded.
 func waitMs(d time.Duration) int {
 	return int(min((d+time.Millisecond-1)/time.Millisecond, maxPollWaitMs))
 }

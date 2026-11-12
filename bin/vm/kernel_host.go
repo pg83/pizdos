@@ -10,15 +10,16 @@ import (
 	"unsafe"
 )
 
-// A file of the host is a host descriptor of the kernel's: a hostFile
-// is a regular file, a device, a terminal or a FIFO of the root, a hostDir
-// a directory, a hostSocket a socket (kernel_socket.go). A pollable one
-// can block: a FIFO, a terminal, a socket, another character device. One
-// the kernel opened itself is nonblocking on the host and a guest's call
-// blocks by polling, unless the guest set O_NONBLOCK; one inherited from
-// the host keeps its host flags, and a call polls first. Either way a
-// blocking call polls the process's wake descriptor too, so a signal
-// interrupts it.
+// A file of the host is a host descriptor of the kernel's, kept here and
+// in kernel_hostdir.go, kernel_socket.go and kernel_pty.go, nowhere else:
+// a hostFile is a regular file, a device, a terminal or a FIFO of the
+// root, a hostDir a directory, a hostSocket a socket. A pollable one can
+// block: a FIFO, a terminal, a socket, another character device. To a
+// wait it is a file of the kernel like any other: a queue, which the
+// host's readiness wakes through a goroutine sleeping in the host's poll
+// (tell). One the kernel opened itself is nonblocking on the host and a
+// guest's call blocks by waiting, unless the guest set O_NONBLOCK; one
+// inherited from the host keeps its host flags, and a call waits first.
 type hostObject struct {
 	fd       int
 	refs     atomic.Int32
@@ -26,6 +27,10 @@ type hostObject struct {
 	owned    bool
 	// nonblock is the guest's O_NONBLOCK.
 	nonblock atomic.Bool
+	// waiters is the queue of the waits on the object; telling says a
+	// goroutine is waiting on the host for input, and one for output.
+	waiters waitQueue
+	telling [2]atomic.Bool
 }
 
 // hostStream is a host object that transfers: a file or a socket. A
@@ -132,8 +137,36 @@ func (o *hostObject) hostFd() int {
 	return o.fd
 }
 
+// watch has a wait ask the object again when its queue wakes the process,
+// and tell the host of the wait before each sleep; an object that cannot
+// block is ready whenever asked.
 func (o *hostObject) watch(p *Process, w *waitSet, e *pollEntry) {
-	w.hostFd(e, o.fd)
+	if !o.pollable {
+		w.always(e)
+
+		return
+	}
+
+	w.queued(p, e, &o.waiters)
+	w.armed(func() { o.tell(e.events) })
+}
+
+// tell has a goroutine sleep in the host's poll for the input or the
+// output asked, and wake the queue once: one goroutine a direction at a
+// time, as the queue wakes every wait. One that outlives the waits wakes
+// nobody.
+func (o *hostObject) tell(events int16) {
+	for i, bits := range [2]int16{pollIn | pollPri | pollRdnorm, pollOut | pollWrnorm} {
+		if events&bits == 0 || !o.telling[i].CompareAndSwap(false, true) {
+			continue
+		}
+
+		go func() {
+			pollWait(o.fd, bits)
+			o.telling[i].Store(false)
+			o.waiters.wake()
+		}()
+	}
 }
 
 func (o *hostObject) stat(st *syscall.Stat_t) error {
@@ -141,13 +174,46 @@ func (o *hostObject) stat(st *syscall.Stat_t) error {
 }
 
 func (o *hostObject) poll(events int16) int16 {
-	fds := []pollFd{{fd: int32(o.fd), events: events}}
+	return pollNow(o.fd, events)
+}
 
-	if n, err := poll(fds, 0); err != nil || n == 0 {
-		return 0
+type pollFd struct {
+	fd      int32
+	events  int16
+	revents int16
+}
+
+// pollNow asks the host which of events a descriptor is ready for now; a
+// refusal is an error, which the call that follows tells.
+func pollNow(fd int, events int16) int16 {
+	fds := []pollFd{{fd: int32(fd), events: events}}
+
+	for {
+		r, _, e := syscall.Syscall(syscall.SYS_POLL, uintptr(unsafe.Pointer(&fds[0])), 1, 0)
+
+		switch {
+		case e == syscall.EINTR:
+			continue
+		case e != 0:
+			return pollErr
+		case r == 0:
+			return 0
+		}
+
+		return fds[0].revents
 	}
+}
 
-	return fds[0].revents
+// pollWait sleeps in the host's poll until a descriptor is ready for
+// events, or the host refuses.
+func pollWait(fd int, events int16) {
+	fds := []pollFd{{fd: int32(fd), events: events}}
+
+	for {
+		if _, _, e := syscall.Syscall(syscall.SYS_POLL, uintptr(unsafe.Pointer(&fds[0])), 1, ^uintptr(0)); e != syscall.EINTR {
+			return
+		}
+	}
 }
 
 // flags are the host's, with the guest's O_NONBLOCK.
@@ -385,7 +451,7 @@ func (s *hostStream) transfer(p *Process, events int16, mode ioMode, op func() (
 				wait = 0
 			}
 
-			n, err := p.waitFds([]pollFd{{fd: int32(s.fd), events: events}}, wait, timeout < 0)
+			n, err := p.waitObject(s, events, wait, timeout < 0)
 
 			if err != nil {
 				return 0, err
@@ -403,7 +469,7 @@ func (s *hostStream) transfer(p *Process, events int16, mode ioMode, op func() (
 		}
 
 		if err == syscall.EAGAIN && s.pollable && s.owned && !nonblock {
-			ready, err := p.waitFds([]pollFd{{fd: int32(s.fd), events: events}}, timeout, timeout < 0)
+			ready, err := p.waitObject(s, events, timeout, timeout < 0)
 
 			if err != nil {
 				return 0, err
@@ -473,18 +539,49 @@ func dupHigh(fd int) (int, error) {
 	return fcntl(fd, syscall.F_DUPFD_CLOEXEC, 3)
 }
 
-func eventfd() (int, error) {
-	if chaosFail("eventfd") {
-		return 0, syscall.EMFILE
+// hostStdio is the three standard descriptors of vm as files of the
+// first process, nil where vm has none.
+func hostStdio() []File {
+	files := make([]File, 3)
+
+	for fd := range 3 {
+		if host, err := dupHigh(fd); err == nil {
+			files[fd] = newHostObject(host, false)
+		}
 	}
 
-	r, _, e := syscall.RawSyscall(syscall.SYS_EVENTFD2, 0, syscall.O_CLOEXEC|syscall.O_NONBLOCK, 0)
+	return files
+}
 
-	if e != 0 {
-		return 0, e
+// openHostRoot opens a directory of the host for the root of the first
+// process, and tells its path.
+func openHostRoot(path string) (Dir, string, error) {
+	fd, err := syscall.Open(path, oPath|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0)
+
+	if err != nil {
+		return nil, "", err
 	}
 
-	return int(r), nil
+	real, err := os.Readlink(procFd(fd))
+
+	if err != nil {
+		syscall.Close(fd)
+
+		return nil, "", err
+	}
+
+	return newHostDir(fd), real, nil
+}
+
+// openHostFile opens a file of the host to read: the program vm runs.
+func openHostFile(path string) (File, error) {
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC, 0)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return newHostObject(fd, true), nil
 }
 
 // raiseFileLimit lets the kernel hold as many host descriptors as it may:

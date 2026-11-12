@@ -721,7 +721,7 @@ func (p *Process) sleep(d time.Duration) time.Duration {
 
 		ms := min(left.Milliseconds()+1, 1<<30)
 
-		if _, err := p.waitFds(nil, int(ms), false); err != nil {
+		if p.idle(int(ms), false) != nil {
 			return max(time.Until(end), 0)
 		}
 	}

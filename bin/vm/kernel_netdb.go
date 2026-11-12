@@ -268,24 +268,6 @@ func (p *Process) reverse(addr netip.Addr) (string, bool) {
 	return "", false
 }
 
-// configured tells whether a family has an address: as musl's AI_ADDRCONFIG,
-// a datagram socket of it connects to its loopback.
-func configured(family int) bool {
-	fd, err := syscall.Socket(family, syscall.SOCK_DGRAM|syscall.SOCK_CLOEXEC, ipprotoUDP)
-
-	if err != nil {
-		return false
-	}
-
-	defer syscall.Close(fd)
-
-	if family == afInet {
-		return syscall.Connect(fd, &syscall.SockaddrInet4{Port: 65535, Addr: [4]byte{127, 0, 0, 1}}) == nil
-	}
-
-	return syscall.Connect(fd, &syscall.SockaddrInet6{Port: 65535, Addr: [16]byte{15: 1}}) == nil
-}
-
 // sockaddr is the bytes of an address's struct sockaddr_in or _in6.
 func sockaddr(addr netip.Addr, port int, scope uint32) []byte {
 	if addr.Is4() {

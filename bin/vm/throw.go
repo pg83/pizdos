@@ -20,6 +20,12 @@ func throw2[T any](value T, err error) T {
 	return value
 }
 
+func throw3[T, U any](value T, other U, err error) (T, U) {
+	throw(err)
+
+	return value, other
+}
+
 func throwFmt(format string, args ...any) {
 	throw(fmt.Errorf(format, args...))
 }

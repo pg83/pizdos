@@ -13,9 +13,9 @@
 
 static int attempt(const char* operation) {
     if (strcmp(operation, "system") == 0) {
+        // A shell that cannot be loaded ends with 127, as system reports.
         int status = system("exit7");
-        if (status == -1) {
-            assert(errno == EMFILE);
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 127) {
             return 1;
         }
         assert(WIFEXITED(status) && WEXITSTATUS(status) == 7);

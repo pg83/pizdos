@@ -149,6 +149,21 @@ func (d *hostDir) onPath(path string, follow bool, call func(fd int) error) erro
 	return call(fd)
 }
 
+// utimensat sets the times of path in dirfd, or of dirfd for a nil path.
+func utimensat(dirfd int, name *byte, ts []syscall.Timespec, flags int) error {
+	var times uintptr
+
+	if ts != nil {
+		times = uintptr(unsafe.Pointer(&ts[0]))
+	}
+
+	if _, _, e := syscall.Syscall6(syscall.SYS_UTIMENSAT, uintptr(dirfd), uintptr(unsafe.Pointer(name)), times, uintptr(flags), 0, 0); e != 0 {
+		return e
+	}
+
+	return nil
+}
+
 func atCall(trap uintptr, dirfd int, path string, args ...uintptr) error {
 	name := throw2(syscall.BytePtrFromString(path))
 	a := [4]uintptr{}

@@ -261,14 +261,14 @@ func (s *hostSocket) connectTo(p *Process, addr []byte) error {
 				wait = min(wait, int((remaining+time.Millisecond-1)/time.Millisecond))
 			}
 
-			if _, werr := p.waitFds(nil, wait, timeout < 0); werr != nil {
+			if werr := p.idle(wait, timeout < 0); werr != nil {
 				return werr
 			}
 
 			continue
 		}
 
-		ready, werr := p.waitFds([]pollFd{{fd: int32(s.fd), events: pollOut}}, timeout, timeout < 0)
+		ready, werr := p.waitObject(s, pollOut, timeout, timeout < 0)
 
 		if werr != nil {
 			return werr
@@ -292,6 +292,24 @@ func (s *hostSocket) connectTo(p *Process, addr []byte) error {
 
 		return nil
 	}
+}
+
+// configured tells whether a family has an address: as musl's AI_ADDRCONFIG,
+// a datagram socket of it connects to its loopback.
+func configured(family int) bool {
+	fd, err := syscall.Socket(family, syscall.SOCK_DGRAM|syscall.SOCK_CLOEXEC, ipprotoUDP)
+
+	if err != nil {
+		return false
+	}
+
+	defer syscall.Close(fd)
+
+	if family == afInet {
+		return syscall.Connect(fd, &syscall.SockaddrInet4{Port: 65535, Addr: [4]byte{127, 0, 0, 1}}) == nil
+	}
+
+	return syscall.Connect(fd, &syscall.SockaddrInet6{Port: 65535, Addr: [16]byte{15: 1}}) == nil
 }
 
 func (s *hostSocket) listen(backlog int) error {

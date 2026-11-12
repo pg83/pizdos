@@ -396,11 +396,13 @@ func (p *Process) stopped(sig int) {
 	p.halted, p.report = true, sig<<8|stoppedBy
 	p.k.mu.Unlock()
 	p.tellParent(saNocldstop)
-	wake := []pollFd{{fd: int32(p.wake), events: pollIn}}
 
 	for {
-		var b [8]byte
-		syscall.Read(p.wake, b[:])
+		select {
+		case <-p.wake:
+		default:
+		}
+
 		p.k.mu.Lock()
 		halted := p.halted
 		p.k.mu.Unlock()
@@ -412,8 +414,7 @@ func (p *Process) stopped(sig int) {
 			return
 		}
 
-		wake[0].revents = 0
-		poll(wake, -1)
+		<-p.wake
 	}
 }
 
@@ -460,8 +461,6 @@ func (p *Process) tellParent(flag uint32) {
 // error is EINTR, after the handlers ran when they all restart calls.
 // Ready comes first, as a call that has its result returns it.
 func (p *Process) waitEvent(ready func() bool) error {
-	wake := []pollFd{{fd: int32(p.wake), events: pollIn}}
-
 	for {
 		signal := p.wakeSignal()
 
@@ -477,11 +476,7 @@ func (p *Process) waitEvent(ready func() bool) error {
 			return syscall.EINTR
 		}
 
-		wake[0].revents = 0
-
-		if _, err := poll(wake, -1); err != nil && err != syscall.EINTR {
-			return err
-		}
+		<-p.wake
 	}
 }
 

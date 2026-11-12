@@ -51,14 +51,6 @@ int main(int argc, char** argv) {
         char byte;
         assert(read(0, &byte, 1) == 1 && byte == 'x');
         assert(read(0, &byte, 1) == 0);
-    } else if (strcmp(argv[1], "retry-poll") == 0) {
-        int ends[2];
-        assert(pipe(ends) == 0 && write(ends[1], "x", 1) == 1);
-        struct pollfd input = {ends[0], POLLIN, 0};
-        assert(poll(&input, 1, 100) == 1 && input.revents == POLLIN);
-        char byte;
-        assert(read(ends[0], &byte, 1) == 1 && byte == 'x');
-        assert(close(ends[0]) == 0 && close(ends[1]) == 0);
     } else if (strcmp(argv[1], "retry-connect") == 0) {
         int listener = socket(AF_INET, SOCK_STREAM, 0);
         struct sockaddr_in address = {0};
@@ -184,7 +176,7 @@ int main(int argc, char** argv) {
         size = sizeof(address);
         assert(getpeername(fd, (struct sockaddr*)&address, &size) == -1 && errno == EIO);
         assert(close(fd) == 0);
-    } else if (strcmp(argv[1], "connect-status") == 0 || strcmp(argv[1], "connect-poll") == 0) {
+    } else if (strcmp(argv[1], "connect-status") == 0) {
         int server = socket(AF_INET, SOCK_STREAM, 0), client = socket(AF_INET, SOCK_STREAM, 0);
         assert(server >= 0 && client >= 0);
         struct sockaddr_in address = {0};
@@ -207,19 +199,6 @@ int main(int argc, char** argv) {
         assert(fcntl(fd, F_SETFL, O_APPEND) == -1 && errno == EIO);
         assert((fcntl(fd, F_GETFL) & O_APPEND) == 0);
         assert(close(fd) == 0 && unlink("/tmp/locks") == 0);
-    } else if (strcmp(argv[1], "poll") == 0) {
-        assert(poll(NULL, 0, 1) == -1 && errno == EIO);
-        assert(poll(NULL, 65537, 0) == -1 && errno == EINVAL);
-        struct timeval instant = {0};
-        assert(select(0, NULL, NULL, NULL, &instant) == -1 && errno == EIO);
-        struct timespec invalid = {-1, 0};
-        assert(pselect(0, NULL, NULL, NULL, &invalid, NULL) == -1 && errno == EINVAL);
-        int ends[2];
-        assert(pipe(ends) == 0);
-        char byte;
-        assert(read(ends[0], &byte, 1) == -1 && errno == EIO);
-        assert(write(1, "", 0) == -1 && errno == EIO);
-        assert(close(ends[0]) == 0 && close(ends[1]) == 0);
         pid_t child = fork();
         assert(child >= 0);
         if (child == 0) {
@@ -303,9 +282,6 @@ int main(int argc, char** argv) {
         assert(limit.rlim_cur == RLIM_INFINITY && limit.rlim_max == RLIM_INFINITY);
     } else {
         return 2;
-    }
-    if (strcmp(argv[1], "poll") == 0 || strcmp(argv[1], "connect-poll") == 0) {
-        return 0;
     }
     puts("host syscall errors: ok");
     return 0;

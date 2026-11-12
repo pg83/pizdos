@@ -99,7 +99,7 @@ def main():
                 skip = 8 if operation in ("openat", "daemon") else 2
                 point = "file-stat" if operation in ("fstat", "fstatat", "stat", "lstat", "fdopendir", "msync") else operation
                 if operation == "system":
-                    point, skip = "eventfd", 1
+                    point, skip = "openat", 1
                 elif operation == "daemon":
                     point = "openat"
                 elif operation == "forkpty":

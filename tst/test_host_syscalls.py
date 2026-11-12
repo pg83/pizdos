@@ -126,8 +126,7 @@ def main():
              ("limits", errno.EIO, (302, 97)), ("network", errno.EIO, (41,)), ("retry", errno.EAGAIN, (41,)),
              ("socket-names", errno.EIO, (51, 52)), ("connect-status", errno.EIO, (55,)),
              ("recv-message", errno.EIO, (47,)),
-             ("locks", errno.EIO, ("fcntl",)), ("poll", errno.EIO, (7,)), ("connect-poll", errno.EIO, (7,)),
-             ("descriptor-flags", errno.EIO, ("getfl",)), ("access", errno.EIO, (439,)),
+             ("locks", errno.EIO, ("fcntl",)), ("descriptor-flags", errno.EIO, ("getfl",)), ("access", errno.EIO, (439,)),
              ("pty-attributes", errno.EIO, ("pty-attributes",)),
              ("temp-files", errno.EEXIST, (437,)), ("temp-directories", errno.EEXIST, (258,))]
     env = dict(os.environ, W2X_MEMORY_TAIL="strict", W2X_TAIL_PROFILE="")
@@ -170,8 +169,7 @@ def main():
                 result = subprocess.run([interrupt, f"dns/{port}", "--", vm, "run", "--root", str(work), "--", str(obj), "permanent-dns-error"],
                                         capture_output=True, env=dict(env, GODEBUG="netdns=go"), timeout=30)
                 assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), ("permanent-dns-error", result)
-            for operation, number in (("retry-open", 437), ("retry-read", 0), ("retry-connect", 42),
-                                      ("retry-poll", 7), ("temp-collision", "collision")):
+            for operation, number in (("retry-open", 437), ("retry-read", 0), ("retry-connect", 42), ("temp-collision", "collision")):
                 result = subprocess.run([interrupt, str(number), "--", vm, "run", "--root", str(work), "--", str(obj), operation],
                                         input=b"x", capture_output=True, env=env, timeout=30)
                 assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), (operation, result)
@@ -205,8 +203,7 @@ def main():
                 result = subprocess.run([wrapper, str(error) + "/" + ",".join(map(str, numbers)), "--", vm, "run", "--root", str(work), "--", str(obj), operation], capture_output=True,
                                         env=env, timeout=30,
                                         preexec_fn=(lambda: resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))) if operation == "pty-attributes" else None)
-                expected = b"" if operation in ("poll", "connect-poll") else b"host syscall errors: ok\n"
-                assert (result.returncode, result.stdout, result.stderr) == (0, expected, b""), (operation, result)
+                assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), (operation, result)
             # Startup reads the kernel object using fstat and pread. Returning
             # zero from a suppressed pread models EOF after its recorded size.
             for number, error, diagnostic in ((5, errno.EIO, b"input/output error"),

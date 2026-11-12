@@ -130,7 +130,7 @@ func (p *Process) waitLock(block bool, try func() error) error {
 			return err
 		}
 
-		if _, err := p.waitFds(nil, 10, true); err != nil {
+		if err := p.idle(10, true); err != nil {
 			return err
 		}
 	}
@@ -1102,21 +1102,6 @@ func (p *Process) timespecs(at uint32) []syscall.Timespec {
 		{Sec: int64(le.Uint64(b)), Nsec: int64(int32(le.Uint32(b[8:])))},
 		{Sec: int64(le.Uint64(b[16:])), Nsec: int64(int32(le.Uint32(b[24:])))},
 	}
-}
-
-// utimensat sets the times of path in dirfd, or of dirfd for a nil path.
-func utimensat(dirfd int, name *byte, ts []syscall.Timespec, flags int) error {
-	var times uintptr
-
-	if ts != nil {
-		times = uintptr(unsafe.Pointer(&ts[0]))
-	}
-
-	if _, _, e := syscall.Syscall6(syscall.SYS_UTIMENSAT, uintptr(dirfd), uintptr(unsafe.Pointer(name)), times, uintptr(flags), 0, 0); e != 0 {
-		return e
-	}
-
-	return nil
 }
 
 func (p *Process) libcReadv(fd, iovs, count uint32) uint32 {

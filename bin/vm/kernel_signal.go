@@ -250,14 +250,10 @@ func (p *Process) interrupt() {
 // wakeUp makes a blocking call of the process look again: for a signal, or
 // a change of its children.
 func (p *Process) wakeUp() {
-	p.sig.mu.Lock()
-
-	if !p.sig.dead {
-		var one = [8]byte{1}
-		syscall.Write(p.wake, one[:])
+	select {
+	case p.wake <- struct{}{}:
+	default:
 	}
-
-	p.sig.mu.Unlock()
 }
 
 // sendSelf sends a signal the process raised itself; it takes it on its
@@ -444,12 +440,18 @@ func (p *Process) sigprocmask(how, set, old uint32) error {
 // EINTR.
 func (p *Process) sigwait(set uint64, timeout time.Duration) (int, error) {
 	set &^= unblockable
-	end := time.Now().Add(timeout)
-	wake := []pollFd{{fd: int32(p.wake), events: pollIn}}
+	var end time.Time
+
+	if timeout >= 0 {
+		end = time.Now().Add(timeout)
+	}
 
 	for {
-		var b [8]byte
-		syscall.Read(p.wake, b[:])
+		select {
+		case <-p.wake:
+		default:
+		}
+
 		p.sig.mu.Lock()
 
 		if ready := p.sig.pending & set; ready != 0 {
@@ -469,20 +471,9 @@ func (p *Process) sigwait(set uint64, timeout time.Duration) (int, error) {
 			return 0, syscall.EINTR
 		}
 
-		ms := -1
-
-		if timeout >= 0 {
-			left := time.Until(end)
-
-			if left <= 0 {
-				return 0, syscall.EAGAIN
-			}
-
-			ms = int(min(left.Milliseconds()+1, 1<<30))
+		if p.sleepUntil(end) {
+			return 0, syscall.EAGAIN
 		}
-
-		wake[0].revents = 0
-		poll(wake, ms)
 	}
 }
 
@@ -823,7 +814,7 @@ func (p *Process) libcSiginterrupt(sig, flag uint32) uint32 {
 
 func (p *Process) libcPause() uint32 {
 	for {
-		if _, err := p.waitFds(nil, -1, false); err != nil {
+		if p.idle(-1, false) != nil {
 			break
 		}
 	}
@@ -835,7 +826,7 @@ func (p *Process) libcSigsuspend(set uint32) uint32 {
 	old := p.setMask(p.u64(set))
 
 	for {
-		if _, err := p.waitFds(nil, -1, false); err != nil {
+		if p.idle(-1, false) != nil {
 			break
 		}
 	}
