@@ -103,7 +103,18 @@ func (p *Process) forkpty(amaster, name, termp, winp uint32) uint32 {
 		p.putString(name, ptsName(n))
 	}
 
+	// Reserve the parent's descriptor before creating a child: EMFILE must
+	// leave no child behind. The child drops its inherited master below.
+	fd, err := p.install(newFile(master, true), 0, false)
+
+	if err != nil {
+		syscall.Close(slave)
+
+		return p.result(0, err)
+	}
+
 	pid, err := p.fork(func(c *Process) {
+		c.closeFd(fd)
 		f := newFile(slave, true)
 
 		for fd := range 3 {
@@ -126,15 +137,9 @@ func (p *Process) forkpty(amaster, name, termp, winp uint32) uint32 {
 	})
 
 	if err != nil {
-		syscall.Close(master)
+		p.closeFd(fd)
 		syscall.Close(slave)
 
-		return p.result(0, err)
-	}
-
-	fd, err := p.install(newFile(master, true), 0, false)
-
-	if err != nil {
 		return p.result(0, err)
 	}
 
