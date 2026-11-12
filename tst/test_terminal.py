@@ -16,6 +16,24 @@ import termios
 import time
 
 
+def heapless_password():
+    # Reserve the static table's page and the heap segment's 31 other pages.
+    # getpass then needs another size class and must report ENOMEM after input.
+    def section(kind, body):
+        assert len(body) < 128
+        return bytes([kind, len(body)]) + body
+
+    data = b"\0asm\1\0\0\0" + section(1, b"\2\x60\1\x7f\1\x7f\x60\0\0")
+    data += section(2, b"\3\6kernel\7getpass\0\0\6kernel\14setusershell\0\1\6kernel\6malloc\0\0") + section(3, b"\1\1")
+    data += section(5, b"\1\1\1\x21") + section(6, b"\1\x7f\0\x41\x80\x80\4\x0b")
+    data += section(7, b"\2\6_start\0\3\13__heap_base\3\0")
+    code = b"\0\x10\1\x41\x1f\x41\x10\x74\x10\2\x45\x04\x40\0\x0b"
+    code += b"\x41\x80\x20\x10\0\x04\x40\0\x0b"
+    code += b"\x41\0\x28\2\0\x41\14\x47\x04\x40\0\x0b\x0b"
+    data += section(10, b"\1" + bytes([len(code)]) + code)
+    return data + section(11, b"\1\0\x41\x80\x20\x0b\6oom: \0")
+
+
 def terminal(command, answers, expected, env):
     master, slave = pty.openpty()
 
@@ -76,6 +94,15 @@ def main():
             terminal([*command, "interrupt"], [], b"interrupt: interrupted terminal: ok\r\n", env)
             terminal([wrapper, f"{errno.ENOTTY}/16", "--", *command, "attributes"], [],
                      b"terminal attributes: failed as expected\r\n", env)
+        source = root / "heapless.wasm"
+        source.write_bytes(heapless_password())
+        result = subprocess.run([native], input=source.read_bytes(), capture_output=True, env=env, timeout=60)
+        assert result.returncode == 0, result.stderr
+        compiled.write_bytes(result.stdout)
+        result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
+        assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), result
+        for obj in (compiled, embedded):
+            terminal([vm, "run", "--root", str(root), "--", str(obj)], [(b"oom: ", b"\n")], b"oom: \r\n", env)
     print("terminal: native/Wasm AOT agree, passwords remain unechoed, attributes restored and errors reported")
 
 
