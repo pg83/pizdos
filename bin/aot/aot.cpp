@@ -9193,25 +9193,21 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return out;
     }
 
-    // canEvict tells whether evict can take the register from it at pos.
+    // canEvict checks an inactive interval on the blocked path. An odd pos
+    // just after a use would have left its register available to TryFree;
+    // a hole cannot start there because touching use/def ranges are merged.
     static bool allocatorCanEvict(Allocator* a, Interval* it, i32 pos) {
         i32 start = intervalStart(it);
         if (start < pos) {
-            i32 at = {};
-            if ((pos & 1) != 0 && intervalPrevUse(it, pos) == pos - 1) {
-                at = pos;
-            } else {
-                i32 lo = intervalPrevUse(it, pos) + 1;
-                if (lo <= start) {
-                    lo = start + 1;
-                }
-                at = allocatorSplitPos(a, lo, pos);
+            i32 lo = intervalPrevUse(it, pos) + 1;
+            if (lo <= start) {
+                lo = start + 1;
             }
+            const i32 at = allocatorSplitPos(a, lo, pos);
             if (at >= 0 && at > start) {
                 start = intervalCovered(it, at);
             }
-            // A failed split precedes every use: otherwise the even boundary
-            // after the last use, or the odd-position shortcut, always fits.
+            // If no split fits, there has been no use since start.
         }
         i32 u = intervalNextUse(it, pos);
         if (u == maxPos) {
@@ -14164,10 +14160,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return it->ranges[k].from;
     }
 
+    // BuildIntervals creates ranges with operands; splits stay strictly
+    // inside their interval. A header live-in is also live-out of its DFS
+    // predecessor, so even the first join split retains an earlier range.
     static bool intervalCovers(Interval* it, i32 p) {
-        if (!length(it->ranges)) {
-            return false;
-        }
         if (p < it->ranges[0].from || p >= it->end) {
             return false;
         }
