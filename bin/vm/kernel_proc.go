@@ -428,7 +428,7 @@ func (p *Process) libcGetgroups(n, list uint32) uint32 {
 		return p.result(len(groups), nil)
 	}
 
-	if int(n) < len(groups) {
+	if int(int32(n)) < len(groups) {
 		return p.result(0, syscall.EINVAL)
 	}
 
