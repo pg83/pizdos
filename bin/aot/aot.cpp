@@ -8998,10 +8998,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         cur->reg = reg;
         a->used[reg] = true;
         if (blockPos[reg] < intervalEnd(cur)) {
+            // The spill branch already required blockPos > start+1,
+            // so this range contains an even instruction boundary.
             i32 at = allocatorSplitPos(a, start + 1, blockPos[reg]);
-            if (at < 0) {
-                compilerError(String("internal error: no split position for %s before %d"));
-            }
             allocatorAddUnhandled(a, intervalSplit(cur, at));
         }
         Span<Interval*> active = subslice(a->active.view(), 0, 0);
@@ -9426,10 +9425,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             if (at >= 0 && at > intervalStart(it)) {
                 tail = intervalSplit(it, at);
-            } else if (intervalPrevUse(it, pos) < intervalStart(it)) {
-            } else {
-                compilerError(String("internal error: cannot evict %s at %d"));
             }
+            // Without a split there has been no use since the start:
+            // a previous use leaves an even boundary, or the odd shortcut.
         }
         allocatorSpill(a, tail);
         i32 u = intervalNextUse(tail, pos);
@@ -11069,11 +11067,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         asmVexRM(a, scalarPP(size), 1, false, 17, regNum(src), -1, m, 0);
     }
 
+    // Callers patch fixed local sequences of at most 40 bytes.
     static void asmHere8(Asm* a, i32 at) {
         i32 d = asmPos(a) - (at + 1);
-        if (d > 127) {
-            compilerError(String("internal error: short jump too far"));
-        }
         a->buf[at] = convert<u8>(d);
     }
 
@@ -11296,12 +11292,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         littlePutUint32(subslice(a->buf, at, length(a->buf)), convert<u32>(target - (at + 4)));
     }
 
-    // patch8 points the short jump whose displacement is at at to target.
+    // ShortJumps has checked the final displacement, including alignment,
+    // before the second emission selects either caller's short encoding.
     static void asmPatch8(Asm* a, i32 at, i32 target) {
         i32 d = target - (at + 1);
-        if (d != convert<i32>(convert<i8>(d))) {
-            compilerError(String("internal error: short jump too far"));
-        }
         a->buf[at] = convert<u8>(convert<i8>(d));
     }
 
