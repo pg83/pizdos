@@ -9090,10 +9090,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         };
         const auto copyIndex = a->copyIndex.view();
         const auto copyRegs = a->copyRegs.view();
+        // forEachOperand omits absent operands (memory base/index and
+        // shadow source); required operands and listed uses/defs are present.
         auto accepts = [&](VReg r) {
-            if (r == noReg) {
-                return false;
-            }
             if constexpr (copiesOnly) {
                 return !vRegIsPhys(r) && copyIndex[allocatorVindex(a, r)] >= 0;
             }
@@ -22048,12 +22047,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         // An access the lowering proves from the ranges of its address
         // checks nothing, its base least of all: a base whose range dips
         // below zero may have wrapped around while the sum did not.
-        const bool own = length(f->module->mems) > 0 && !f->module->mems[0].imported;
+        // Only windowBase calls this: its nonzero memoryTail requires an
+        // owned memory, checked by moduleLowFree before lowering starts.
         ValueRanges* ranges = nullptr;
         auto inRange = [&](i32 addr, i64 end) {
-            if (!own) {
-                return false;
-            }
             if (!ranges) {
                 ranges = activePool->make<ValueRanges>(ValueRanges{f, makeSlice<ValueRange>(length(f->values)), makeSlice<bool>(length(f->values))});
             }
