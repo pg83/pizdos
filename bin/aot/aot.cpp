@@ -9492,9 +9492,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return h;
         }
         Interval* it = a->intervals[allocatorVindex(a, h)];
-        if (isNil(it)) {
-            return noReg;
-        }
+        // allocatorHint creates both virtual intervals before recording a hint.
         i32 p = intervalStart(cur);
         for (Int i = -1; i < length(it->children); ++i) {
             Interval* c = i < 0 ? it : it->children[i];
@@ -10060,7 +10058,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         });
     }
 
-    // partAt returns the part of root's value covering p, or null.
+    // partAt returns the part covering p, a known live point. Its callers
+    // visit liveIn; splitting partitions the original interval's coverage.
     static Interval* allocatorPartAt(Interval* root, i32 p) {
         if (intervalCovers(root, p)) {
             return root;
@@ -10068,10 +10067,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         const Int k = sortSearch(length(root->children), [&](Int i) {
             return intervalStart(root->children[i]) > p;
         });
-        if (k && intervalCovers(root->children[k - 1], p)) {
-            return root->children[k - 1];
-        }
-        return nullptr;
+        return root->children[k - 1];
     }
 
     // definitions counts the definitions of each virtual register and finds
@@ -10625,15 +10621,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             Slice<Part> parts = {};
             bitsetEach(a->liveIn[b], [&](Int x) {
                 Interval* root = a->intervals[x];
-                if (isNil(root) || !length(root->ranges)) {
-                    return;
-                }
+                // BuildIntervals covers each liveIn value at from. Earlier
+                // joins only cut prefixes, in increasing block order.
                 Interval* part = root;
                 if (length(root->children)) {
                     part = root->children[length(root->children) - 1];
-                }
-                if (intervalStart(part) >= from || !intervalCovers(part, from)) {
-                    return;
                 }
                 Interval* child = intervalSplit(part, from);
                 parts = appendValues(parts, Part{child, length(child->uses) + length(child->memUses)});
@@ -10679,11 +10671,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             bitsetEach(a->liveIn[b], [&](Int x) {
                 Interval* root = a->intervals[x];
-                if (isNil(root) || a->slots[x] < 0) {
+                if (a->slots[x] < 0) {
                     return;
                 }
                 Interval* part = allocatorPartAt(root, from);
-                if (isNil(part) || part->reg == noReg) {
+                if (part->reg == noReg) {
                     return;
                 }
                 const VReg r = firstVirtual + VReg(x);
@@ -10717,11 +10709,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             const i32 from = a->blockFrom[b];
             bitsetEach(a->liveIn[b], [&](Int x) {
                 Interval* root = a->intervals[x];
-                if (isNil(root)) {
-                    return;
-                }
                 Interval* part = allocatorPartAt(root, from);
-                if (isNil(part) || part->reg == noReg || intervalNextUse(part, from) < intervalEnd(part) || (length(part->memUses) && part->memUses[length(part->memUses) - 1] >= from)) {
+                if (part->reg == noReg || intervalNextUse(part, from) < intervalEnd(part) || (length(part->memUses) && part->memUses[length(part->memUses) - 1] >= from)) {
                     return;
                 }
                 const VReg r = firstVirtual + VReg(x);
@@ -22203,10 +22192,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return low < length(checked) && checked[low].value == j ? checked[low].end : 0;
         };
         // reach is how far argument j is checked at the end of block p.
+        // add recursively tracks every incoming argument; exceeding its
+        // budget returns before this analysis, so j is always tracked.
         auto reach = [&](i32 p, i32 j) -> i64 {
-            if (j < 0) {
-                return 0;
-            }
             i64 end = lookup(rows[p], j);
             if (sumBase[j] >= 0) {
                 end = maximum(end, lookup(rows[p], sumBase[j]) - sumConst[j]);
@@ -22268,9 +22256,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     }
                     end = minimum(end, reach(e.pred, tracked[e.edge->args[f->values[p].aux]]));
                 }
-                if (end == i64(4611686018427387904LL)) {
-                    end = 0;
-                }
+                // A reachable non-entry block has a predecessor earlier in
+                // RPO. Its reached row always contributes a finite bound.
                 if (round >= 2 && before[j] >= 0 && end < before[j]) {
                     end = 0;
                 }
