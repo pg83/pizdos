@@ -86,9 +86,9 @@ func dropFiles(files []File) {
 	}
 }
 
-// pairState is what both ends share: the waiters of both, the inode.
+// pairState is what both ends share: the change both wait on, the inode.
 type pairState struct {
-	waiters waitQueue
+	changed changed
 	ino     uint64
 	made    time.Time
 }
@@ -164,11 +164,11 @@ func (e *pairEnd) unref() {
 
 	close(e.to.ch)
 	e.dead.Store(true)
-	e.shared.waiters.wake()
+	e.shared.changed.bump()
 }
 
-func (e *pairEnd) watch(w *waitSet, entry *pollEntry) {
-	w.queued(entry, &e.shared.waiters)
+func (e *pairEnd) changes(events int16) []<-chan struct{} {
+	return []<-chan struct{}{e.shared.changed.wait()}
 }
 
 func (e *pairEnd) stat(st *syscall.Stat_t) error {
@@ -234,7 +234,7 @@ func (e *pairEnd) send(p *Process, data []byte, files []File, mode ioMode) error
 
 		select {
 		case e.to.ch <- pk:
-			e.shared.waiters.wake()
+			e.shared.changed.bump()
 
 			return nil
 		default:
@@ -247,7 +247,7 @@ func (e *pairEnd) send(p *Process, data []byte, files []File, mode ioMode) error
 		if p == nil {
 			select {
 			case e.to.ch <- pk:
-				e.shared.waiters.wake()
+				e.shared.changed.bump()
 
 				return nil
 			case <-e.to.done:
@@ -315,7 +315,7 @@ func (e *pairEnd) recv(p *Process, mode ioMode, peek bool) (packet, bool, error)
 
 		if ok {
 			if !eof && !peek {
-				e.shared.waiters.wake()
+				e.shared.changed.bump()
 			}
 
 			return pk, eof, nil
@@ -332,7 +332,7 @@ func (e *pairEnd) recv(p *Process, mode ioMode, peek bool) (packet, bool, error)
 				return packet{}, true, nil
 			}
 
-			e.shared.waiters.wake()
+			e.shared.changed.bump()
 
 			return pk, false, nil
 		}
@@ -446,7 +446,7 @@ func (e *pairEnd) shutdown(how int) error {
 		e.noWrite.Store(true)
 	}
 
-	e.shared.waiters.wake()
+	e.shared.changed.bump()
 
 	return nil
 }

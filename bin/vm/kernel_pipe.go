@@ -36,7 +36,7 @@ type pipe struct {
 	// readers and writers count the open ends.
 	readers int
 	writers int
-	waiters waitQueue
+	changed changed
 	ino     uint64
 	made    time.Time
 }
@@ -112,11 +112,11 @@ func (e *pipeEnd) unref() {
 	}
 
 	pp.mu.Unlock()
-	pp.waiters.wake()
+	pp.changed.bump()
 }
 
-func (e *pipeEnd) watch(w *waitSet, entry *pollEntry) {
-	w.queued(entry, &e.pipe.waiters)
+func (e *pipeEnd) changes(events int16) []<-chan struct{} {
+	return []<-chan struct{}{e.pipe.changed.wait()}
 }
 
 // stat is a FIFO's: the ends share an inode of the kernel's.
@@ -297,7 +297,7 @@ func (e *pipeEnd) read(p *Process, b []byte, mode ioMode) (int, error) {
 		pp.mu.Unlock()
 
 		if n > 0 {
-			pp.waiters.wake()
+			pp.changed.bump()
 		}
 
 		if err != syscall.EAGAIN {
@@ -339,7 +339,7 @@ func (e *pipeEnd) write(p *Process, b []byte, mode ioMode) (int, error) {
 		// an edge-triggered epoll wants each, as Linux gives once the pipe
 		// was polled.
 		if n > 0 {
-			pp.waiters.wake()
+			pp.changed.bump()
 		}
 
 		total += n

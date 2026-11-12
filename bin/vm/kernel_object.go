@@ -3,6 +3,7 @@
 package main
 
 import (
+	"reflect"
 	"sync"
 	"syscall"
 	"time"
@@ -25,10 +26,11 @@ type File interface {
 	unref()
 	// stat is fstat.
 	stat(st *syscall.Stat_t) error
-	// poll is the events ready now of those asked; watch adds the file to
-	// a wait (waitSet): the queue its changes wake the waiter through.
+	// poll is the events ready now of those asked; changes are the
+	// channels that close when the file may become ready for events, a
+	// wait selects on them (changed): none for a file ready whenever asked.
 	poll(events int16) int16
-	watch(w *waitSet, e *pollEntry)
+	changes(events int16) []<-chan struct{}
 	// flags are the status flags of fcntl: the access mode, O_NONBLOCK and
 	// what else the object keeps; setFlags sets those F_SETFL may.
 	flags() (int, error)
@@ -373,48 +375,46 @@ func (p *Process) placeAt(obj File, fd uint32, cloexec bool) {
 	p.files[fd] = &Descriptor{obj: obj, cloexec: cloexec}
 }
 
-// A waker is what a change of a file wakes to look again: a process in a
-// blocking call, or an epoll the file is in.
-type waker interface {
-	wakeUp()
+// A changed is the one wake a change gives everyone waiting on an object:
+// a channel the waiters select on, which the change closes and the next
+// wait replaces. Nobody waiting, nothing is made.
+type changed struct {
+	mu sync.Mutex
+	ch chan struct{}
 }
 
-// A waitQueue is the wakers waiting on a file of the kernel: a change of
-// the object wakes them, as a signal would a process, to look again.
-type waitQueue struct {
-	mu     sync.Mutex
-	wakers []waker
-}
+// wait is the channel the next change closes.
+func (c *changed) wait() <-chan struct{} {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-func (q *waitQueue) add(w waker) {
-	q.mu.Lock()
-	q.wakers = append(q.wakers, w)
-	q.mu.Unlock()
-}
-
-func (q *waitQueue) remove(w waker) {
-	q.mu.Lock()
-
-	for i, r := range q.wakers {
-		if r == w {
-			q.wakers[i] = q.wakers[len(q.wakers)-1]
-			q.wakers = q.wakers[:len(q.wakers)-1]
-
-			break
-		}
+	if c.ch == nil {
+		c.ch = make(chan struct{})
 	}
 
-	q.mu.Unlock()
+	return c.ch
 }
 
-func (q *waitQueue) wake() {
-	q.mu.Lock()
+// bump is a change: the waiters wake.
+func (c *changed) bump() {
+	c.mu.Lock()
 
-	for _, w := range q.wakers {
-		w.wakeUp()
+	if c.ch != nil {
+		close(c.ch)
+		c.ch = nil
 	}
 
-	q.mu.Unlock()
+	c.mu.Unlock()
+}
+
+// closed tells whether a channel of wait has closed since.
+func closed(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
 }
 
 // wakeSignal reports whether a signal interrupts a blocking call: one the
@@ -480,65 +480,13 @@ type pollEntry struct {
 	revents int16
 }
 
-// A waitSet is what one wait of a waker looks at: the entries it asks
-// again whenever their files' queues wake the waiter, what it arms before
-// every sleep, and what it undoes when it leaves.
-type waitSet struct {
-	by     waker
-	asked  []*pollEntry
-	queues []*waitQueue
-	arms   []func()
-	leaves []func()
-}
-
-// queued has the wait ask an entry's file again when its queue wakes the
-// waiter.
-func (w *waitSet) queued(e *pollEntry, q *waitQueue) {
-	q.add(w.by)
-	w.queues = append(w.queues, q)
-	w.asked = append(w.asked, e)
-}
-
-// always has the wait ask an entry's file, which is ready whenever asked.
-func (w *waitSet) always(e *pollEntry) {
-	w.asked = append(w.asked, e)
-}
-
-// armed has the wait run arm before every sleep, after it asked the files:
-// a file that is told of a wait from outside the kernel arms the telling.
-func (w *waitSet) armed(arm func()) {
-	w.arms = append(w.arms, arm)
-}
-
-// left has the wait run leave when it ends.
-func (w *waitSet) left(leave func()) {
-	w.leaves = append(w.leaves, leave)
-}
-
-func (w *waitSet) leave() {
-	for _, q := range w.queues {
-		q.remove(w.by)
-	}
-
-	for _, leave := range w.leaves {
-		leave()
-	}
-}
-
-// waitObjects waits until an object is ready for its events, asking every
-// one again whenever one wakes the process, the timeout in milliseconds
-// passes, or a signal interrupts: then the error is EINTR, after the
-// handlers ran when all of them restart calls and restart is set. It
-// returns how many are ready.
+// waitObjects waits until an object is ready for its events: it asks them
+// all, and when none is, selects on their changes, the process's wake and
+// the deadline of timeout milliseconds, then asks again. A signal
+// interrupts it: then the error is EINTR, after the handlers ran when all
+// of them restart calls and restart is set. It returns how many are
+// ready.
 func (p *Process) waitObjects(entries []pollEntry, timeout int, restart bool) (int, error) {
-	w := waitSet{by: p}
-
-	for i := range entries {
-		entries[i].revents = 0
-		entries[i].obj.watch(&w, &entries[i])
-	}
-
-	defer w.leave()
 	end := deadline(timeout)
 
 	for {
@@ -552,10 +500,10 @@ func (p *Process) waitObjects(entries []pollEntry, timeout int, restart bool) (i
 
 		ready := 0
 
-		for _, e := range w.asked {
-			e.revents = e.obj.poll(e.events)
+		for i := range entries {
+			entries[i].revents = entries[i].obj.poll(entries[i].events)
 
-			if e.revents != 0 {
+			if entries[i].revents != 0 {
 				ready++
 			}
 		}
@@ -564,14 +512,41 @@ func (p *Process) waitObjects(entries []pollEntry, timeout int, restart bool) (i
 			return ready, nil
 		}
 
-		for _, arm := range w.arms {
-			arm()
+		cases := []reflect.SelectCase{recvCase(p.wake)}
+		var timer *time.Timer
+
+		if !end.IsZero() {
+			d := time.Until(end)
+
+			if d <= 0 {
+				return 0, nil
+			}
+
+			timer = time.NewTimer(d)
+			cases = append(cases, recvCase(timer.C))
 		}
 
-		if p.sleepUntil(end) {
-			return 0, nil
+		for i := range entries {
+			for _, ch := range entries[i].obj.changes(entries[i].events) {
+				cases = append(cases, recvCase(ch))
+			}
+		}
+
+		chosen, _, _ := reflect.Select(cases)
+
+		if timer != nil {
+			timer.Stop()
+
+			if chosen == 1 {
+				return 0, nil
+			}
 		}
 	}
+}
+
+// recvCase is a receive from any channel, for a select over a list.
+func recvCase[T any](ch <-chan T) reflect.SelectCase {
+	return reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(ch)}
 }
 
 // waitObject waits until one object is ready for events.

@@ -10,17 +10,18 @@ import (
 	"time"
 )
 
-// An epoll is a file of the kernel that watches files of the kernel. It
-// is a waker in the queue of every member, as a process in a blocking
-// call is: a change of a member notes the member changed and wakes the
-// epoll's own waiters, the processes in epoll_wait and whatever polls the
-// epoll. epoll_wait looks at the changed members only, never at them all:
-// a level-triggered member that is ready stays changed until it is not,
-// an edge-triggered one is reported once a change, a one-shot one once
-// until EPOLL_CTL_MOD. A file whose readiness the host must be asked for,
-// or that is ready whenever asked, cannot be a member: EPERM, as a regular
-// file is on Linux. The epoll keeps a reference to a member's file, so a
-// member is removed before its last close, or stays until the epoll's.
+// An epoll is a list of files of the kernel. epoll_wait asks each member
+// whether it is ready and, when none is, selects on the changes of them
+// all, as every wait of the kernel does: a member is a file like any
+// other, with no subscription of its own. A level-triggered member is
+// reported while it is ready, an edge-triggered one once a change of its
+// file, a one-shot one once until EPOLL_CTL_MOD; the next epoll_wait goes
+// on from where the last stopped, so every member gets its turn. A file
+// that is ready whenever asked and never changes, a regular file, cannot
+// be a member: EPERM, as on Linux. A set can be a member of a set: its
+// changes are its members'. The epoll keeps a reference to a member's
+// file, so a member is removed before its last close, or stays until the
+// epoll's.
 //
 // The guest's struct epoll_event is 16 bytes: events u32, data u64 at 8.
 
@@ -44,12 +45,13 @@ type Epoll interface {
 type epoll struct {
 	mu      sync.Mutex
 	members map[epollKey]*epollMember
-	// changed is the members whose files woke the epoll, in order.
-	changed []*epollMember
-	waiters waitQueue
-	refs    atomic.Int32
-	ino     uint64
-	made    time.Time
+	// order is the members as added, next where the next epoll_wait
+	// starts among them.
+	order []*epollMember
+	next  int
+	refs  atomic.Int32
+	ino   uint64
+	made  time.Time
 }
 
 // An epollKey names a member as Linux does: by the descriptor it was
@@ -60,15 +62,13 @@ type epollKey struct {
 }
 
 type epollMember struct {
-	ep     *epoll
 	key    epollKey
 	events uint32
 	data   uint64
-	entry  pollEntry
-	// watch is the member's wait on its file, listed whether it is in
-	// changed, disabled whether a one-shot report or its removal ended it.
-	watch    waitSet
-	listed   bool
+	// last is the changes of the file when it was last reported: an
+	// edge-triggered member with the same ones, unclosed, has not changed
+	// and is not reported again. disabled is a one-shot member reported.
+	last     []<-chan struct{}
 	disabled bool
 }
 
@@ -90,20 +90,18 @@ func (ep *epoll) ref() {
 	ep.refs.Add(1)
 }
 
-// unref on the last reference leaves every member's file.
+// unref on the last reference lets every member's file go.
 func (ep *epoll) unref() {
 	if ep.refs.Add(-1) != 0 {
 		return
 	}
 
 	ep.mu.Lock()
-	members := ep.members
-	ep.members = map[epollKey]*epollMember{}
-	ep.changed = nil
+	members := ep.order
+	ep.members, ep.order = map[epollKey]*epollMember{}, nil
 	ep.mu.Unlock()
 
 	for _, m := range members {
-		m.watch.leave()
 		m.key.obj.unref()
 	}
 }
@@ -117,16 +115,26 @@ func (ep *epoll) stat(st *syscall.Stat_t) error {
 	return nil
 }
 
+// poll: the epoll is readable when a member would be reported.
 func (ep *epoll) poll(events int16) int16 {
-	if ep.scan(0, nil) {
+	if ep.take(nil, 1) > 0 {
 		return (pollIn | pollRdnorm) & events
 	}
 
 	return 0
 }
 
-func (ep *epoll) watch(w *waitSet, e *pollEntry) {
-	w.queued(e, &ep.waiters)
+// changes are the members'.
+func (ep *epoll) changes(events int16) []<-chan struct{} {
+	var all []<-chan struct{}
+
+	for _, m := range ep.snapshot() {
+		if !m.disabled {
+			all = append(all, m.key.obj.changes(int16(m.events))...)
+		}
+	}
+
+	return all
 }
 
 func (ep *epoll) flags() (int, error) {
@@ -154,29 +162,25 @@ func (ep *epoll) pwrite(p *Process, b []byte, off int64) (int, error) {
 	return 0, syscall.EINVAL
 }
 
-// wakeUp is a change of the member's file: the member is changed, and the
-// epoll's waiters look.
-func (m *epollMember) wakeUp() {
-	ep := m.ep
+// snapshot is the members in order, starting from next.
+func (ep *epoll) snapshot() []*epollMember {
 	ep.mu.Lock()
+	defer ep.mu.Unlock()
 
-	if !m.listed && !m.disabled {
-		m.listed = true
-		ep.changed = append(ep.changed, m)
+	if len(ep.order) == 0 {
+		return nil
 	}
 
-	ep.mu.Unlock()
-	ep.waiters.wake()
+	at := ep.next % len(ep.order)
+
+	return append(append([]*epollMember(nil), ep.order[at:]...), ep.order[:at]...)
 }
 
 // contains tells whether an epoll is a member of the epoll, at any depth:
 // a loop would wake forever.
 func (ep *epoll) contains(inner *epoll) bool {
-	ep.mu.Lock()
-	defer ep.mu.Unlock()
-
-	for key := range ep.members {
-		if e, ok := key.obj.(*epoll); ok && (e == inner || e.contains(inner)) {
+	for _, m := range ep.snapshot() {
+		if e, ok := m.key.obj.(*epoll); ok && (e == inner || e.contains(inner)) {
 			return true
 		}
 	}
@@ -190,17 +194,14 @@ func (ep *epoll) ctl(op uint32, key epollKey, events uint32, data uint64) error 
 		return ep.add(key, events, data)
 	case epollCtlMod:
 		ep.mu.Lock()
+		defer ep.mu.Unlock()
 		m := ep.members[key]
 
 		if m == nil {
-			ep.mu.Unlock()
-
 			return syscall.ENOENT
 		}
 
-		m.events, m.data, m.disabled = events, data, false
-		ep.mu.Unlock()
-		ep.check(m)
+		m.events, m.data, m.disabled, m.last = events, data, false, nil
 
 		return nil
 	case epollCtlDel:
@@ -214,10 +215,16 @@ func (ep *epoll) ctl(op uint32, key epollKey, events uint32, data uint64) error 
 		}
 
 		delete(ep.members, key)
-		m.disabled = true
-		ep.unlist(m)
+
+		for i, o := range ep.order {
+			if o == m {
+				ep.order = append(ep.order[:i], ep.order[i+1:]...)
+
+				break
+			}
+		}
+
 		ep.mu.Unlock()
-		m.watch.leave()
 		key.obj.unref()
 
 		return nil
@@ -231,163 +238,95 @@ func (ep *epoll) add(key epollKey, events uint32, data uint64) error {
 		return syscall.ELOOP
 	}
 
-	ep.mu.Lock()
-	_, dup := ep.members[key]
-	ep.mu.Unlock()
-
-	if dup {
-		return syscall.EEXIST
-	}
-
-	m := &epollMember{ep: ep, key: key, events: events, data: data, entry: pollEntry{obj: key.obj, events: int16(events)}}
-	m.watch.by = m
-	key.obj.watch(&m.watch, &m.entry)
-
-	if len(m.watch.queues) == 0 || len(m.watch.arms) > 0 {
-		m.watch.leave()
-
+	if len(key.obj.changes(int16(events))) == 0 {
 		return syscall.EPERM
 	}
 
 	ep.mu.Lock()
+	defer ep.mu.Unlock()
 
 	if _, dup := ep.members[key]; dup {
-		ep.mu.Unlock()
-		m.watch.leave()
-
 		return syscall.EEXIST
 	}
 
 	key.obj.ref()
+	m := &epollMember{key: key, events: events, data: data}
 	ep.members[key] = m
-	ep.mu.Unlock()
-	ep.check(m)
+	ep.order = append(ep.order, m)
 
 	return nil
 }
 
-// check notes a member that is ready now, as its file would.
-func (ep *epoll) check(m *epollMember) {
-	if m.key.obj.poll(int16(m.events)) != 0 {
-		m.wakeUp()
-	}
-}
-
-// unlist takes a member out of changed, under the lock.
-func (ep *epoll) unlist(m *epollMember) {
-	if !m.listed {
-		return
+// changedSince tells whether a file changed since it was reported with
+// its changes last: other channels, or a closed one.
+func changedSince(last, now []<-chan struct{}) bool {
+	if len(last) != len(now) {
+		return true
 	}
 
-	m.listed = false
-	kept := ep.changed[:0]
-
-	for _, c := range ep.changed {
-		if c != m {
-			kept = append(kept, c)
+	for i := range now {
+		if now[i] != last[i] || closed(now[i]) {
+			return true
 		}
 	}
 
-	ep.changed = kept
+	return false
 }
 
-// take reports up to max ready members into a guest's epoll_event array
-// and tells how many.
+// take reports up to max members that are ready into a guest's
+// epoll_event array, or only counts them without an array, and tells how
+// many; the next take starts after the last reported.
 func (ep *epoll) take(buf []byte, max int) int {
+	members := ep.snapshot()
 	n := 0
-	ep.scan(max, func(m *epollMember, revents int16) {
-		binary.LittleEndian.PutUint32(buf[epollEventSize*n:], uint32(uint16(revents)))
-		binary.LittleEndian.PutUint64(buf[epollEventSize*n+8:], m.data)
-		n++
-	})
 
-	return n
-}
+	for i, m := range members {
+		ep.mu.Lock()
+		events, disabled, last := m.events, m.disabled, m.last
+		ep.mu.Unlock()
 
-// scan looks at the changed members, asking their files outside the lock:
-// one that is ready goes to report, up to max of them, and tells true;
-// one that is not is no longer changed. Without report it only tells.
-func (ep *epoll) scan(max int, report func(m *epollMember, revents int16)) bool {
-	type look struct {
-		m      *epollMember
-		events uint32
-	}
-
-	ep.mu.Lock()
-	list := make([]look, 0, len(ep.changed))
-
-	for _, m := range ep.changed {
-		list = append(list, look{m, m.events})
-
-		if report != nil {
-			m.listed = false
+		if disabled {
+			continue
 		}
-	}
 
-	if report != nil {
-		ep.changed = nil
-	}
-
-	ep.mu.Unlock()
-	found, fired := false, 0
-	// rest is what the call did not look at, again what it reported and
-	// stays ready: changed in that order, as Linux keeps it fair.
-	var rest, again, once []*epollMember
-
-	for i, l := range list {
-		revents := l.m.key.obj.poll(int16(l.events))
+		revents := m.key.obj.poll(int16(events))
 
 		if revents == 0 {
 			continue
 		}
 
-		found = true
+		var now []<-chan struct{}
 
-		if report == nil {
-			break
-		}
+		if events&epollEt != 0 {
+			now = m.key.obj.changes(int16(events))
 
-		report(l.m, revents)
-		fired++
-
-		switch {
-		case l.events&epollOneshot != 0:
-			once = append(once, l.m)
-		case l.events&epollEt != 0:
-		default:
-			again = append(again, l.m)
-		}
-
-		if fired == max {
-			for _, l := range list[i+1:] {
-				rest = append(rest, l.m)
+			if !changedSince(last, now) {
+				continue
 			}
+		}
+
+		if buf == nil {
+			return 1
+		}
+
+		binary.LittleEndian.PutUint32(buf[epollEventSize*n:], uint32(uint16(revents)))
+		binary.LittleEndian.PutUint64(buf[epollEventSize*n+8:], m.data)
+		n++
+		ep.mu.Lock()
+		m.last = now
+		m.disabled = events&epollOneshot != 0
+		ep.mu.Unlock()
+
+		if n == max {
+			ep.mu.Lock()
+			ep.next += i + 1
+			ep.mu.Unlock()
 
 			break
 		}
 	}
 
-	if report == nil {
-		return found
-	}
-
-	ep.mu.Lock()
-
-	for _, m := range once {
-		m.disabled = true
-		ep.unlist(m)
-	}
-
-	for _, m := range append(rest, again...) {
-		if !m.listed && !m.disabled && ep.members[m.key] == m {
-			m.listed = true
-			ep.changed = append(ep.changed, m)
-		}
-	}
-
-	ep.mu.Unlock()
-
-	return found
+	return n
 }
 
 // epollAt is the Epoll of a descriptor: another file is EINVAL.

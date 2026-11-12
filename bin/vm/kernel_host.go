@@ -27,9 +27,9 @@ type hostObject struct {
 	owned    bool
 	// nonblock is the guest's O_NONBLOCK.
 	nonblock atomic.Bool
-	// waiters is the queue of the waits on the object; telling says a
-	// goroutine is waiting on the host for input, and one for output.
-	waiters waitQueue
+	// changed wakes the waits on the object; telling says a goroutine is
+	// waiting on the host for input, and one for output.
+	changed changed
 	telling [2]atomic.Bool
 }
 
@@ -137,23 +137,22 @@ func (o *hostObject) hostFd() int {
 	return o.fd
 }
 
-// watch has a wait ask the object again when its queue wakes the waiter,
-// and tell the host of the wait before each sleep; an object that cannot
-// block is ready whenever asked.
-func (o *hostObject) watch(w *waitSet, e *pollEntry) {
+// changes tells the host of the wait and gives the change the host's
+// readiness bumps; an object that cannot block is ready whenever asked.
+func (o *hostObject) changes(events int16) []<-chan struct{} {
 	if !o.pollable {
-		w.always(e)
-
-		return
+		return nil
 	}
 
-	w.queued(e, &o.waiters)
-	w.armed(func() { o.tell(e.events) })
+	ch := o.changed.wait()
+	o.tell(events)
+
+	return []<-chan struct{}{ch}
 }
 
 // tell has a goroutine sleep in the host's poll for the input or the
-// output asked, and wake the queue once: one goroutine a direction at a
-// time, as the queue wakes every wait. One that outlives the waits wakes
+// output asked, and bump the change once: one goroutine a direction at a
+// time, as a change wakes every wait. One that outlives the waits wakes
 // nobody.
 func (o *hostObject) tell(events int16) {
 	for i, bits := range [2]int16{pollIn | pollPri | pollRdnorm, pollOut | pollWrnorm} {
@@ -164,7 +163,7 @@ func (o *hostObject) tell(events int16) {
 		go func() {
 			pollWait(o.fd, bits)
 			o.telling[i].Store(false)
-			o.waiters.wake()
+			o.changed.bump()
 		}()
 	}
 }
