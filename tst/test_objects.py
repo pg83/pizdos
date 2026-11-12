@@ -270,7 +270,31 @@ def main():
                     contents = Object(contents).renamed(name, "ordinary_" + name)
                 result = run(contents)
                 assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (selected, result)
-    print(f"objects: native/Wasm AOT agreement, {len(valid)} valid objects and {len(cases)} malformed objects rejected")
+
+        # Objects can outlive the producer that assigned trap numbers.
+        # Unknown codes and an ASAN report without a shadow map stay readable.
+        trap_module = b"\0asm\1\0\0\0" + wasm_section(1, b"\2\x60\0\1\x7f\x60\0\0")
+        trap_module += wasm_section(2, b"\1\6kernel\6getpid\0\0") + wasm_section(3, b"\1\1")
+        trap_module += wasm_section(5, b"\1\0\1") + wasm_section(7, b"\1\6_start\0\1")
+        body = b"\0\x10\0\x1a\0\x0b"
+        trap_module += wasm_section(10, b"\1" + uleb(len(body)) + body)
+        source.write_bytes(trap_module)
+        result = subprocess.run([native], input=trap_module, capture_output=True, env=env, timeout=60)
+        assert result.returncode == 0, result.stderr
+        native_trap = result.stdout
+        result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
+        assert result.returncode == 0 and embedded.read_bytes() == native_trap, result
+        for original in (native_trap, embedded.read_bytes()):
+            trap_obj = Object(original)
+            text = trap_obj.contents(".text")
+            marker = b"\xbb\1\0\0\0"  # mov ebx, trapUnreachable, before helperTrap
+            assert text.count(marker) == 1, "fixture must have one explicit unreachable trap"
+            for code, status, diagnostic in ((42, 132, b"wasm trap 42"), (12, 139, b"no shadow map")):
+                patched = text.replace(marker, b"\xbb" + struct.pack("<I", code))
+                result = run(trap_obj.replaced(".text", patched))
+                assert result.returncode == status and result.stdout == b"" and diagnostic in result.stderr, (code, result)
+                assert b"panic:" not in result.stderr, (code, result)
+    print(f"objects: native/Wasm AOT agreement, {len(valid)} valid objects, {len(cases)} malformed objects and unknown/shadowless trap diagnostics checked")
 
 
 if __name__ == "__main__":
