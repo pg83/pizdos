@@ -934,6 +934,7 @@ for name, runner, fixture in (("wat_updates", "run_updates.py", "update_branches
                               ("wat_branch_threads", "run_branch_threads.py", "branch_threads.wat"),
                               ("wat_branch_pairs", "run_branch_pairs.py", "branch_pairs.wat"),
                               ("wat_branch_pair_addresses", "run_branch_pair_addresses.py", "branch_pair_addresses.wat"),
+                              ("wat_branch_pair_constants", "run_branch_pair_constants.py", "branch_pair_constants.wat"),
                               ("wat_diamond_lifetimes", "run_diamond_lifetimes.py", "diamond_lifetimes.wat"),
                               ("wat_conversion_diamonds", "run_conversion_diamonds.py", "conversion_diamonds.wat"),
                               ("wat_threaded_parameters", "run_threaded_parameters.py", "threaded_parameters.wat"),
