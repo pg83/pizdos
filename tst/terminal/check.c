@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
@@ -15,6 +16,18 @@ static void alarmHandler(int signal) {
 
 int main(int argc, char** argv) {
     assert(argc == 2);
+    if (!strcmp(argv[1], "private-name")) {
+        char* name = ttyname(0);
+        assert(name && !strncmp(name, "/ttys/", 6) && name[6] >= '0' && name[6] <= '9');
+        char copied[128];
+        assert(ttyname_r(0, copied, sizeof(copied)) == 0 && !strcmp(name, copied));
+        int reopened = open(copied, O_RDWR | O_NOCTTY);
+        struct termios inherited, actual;
+        assert(reopened >= 0 && tcgetattr(0, &inherited) == 0 && tcgetattr(reopened, &actual) == 0);
+        assert(inherited.c_lflag == actual.c_lflag && close(reopened) == 0);
+        puts("private terminal name: ok");
+        return 0;
+    }
     if (!strcmp(argv[1], "missing")) {
         assert(getpass("unreachable: ") == NULL);
         assert(errno == ENXIO || errno == ENODEV);

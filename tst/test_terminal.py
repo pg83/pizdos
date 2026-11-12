@@ -9,11 +9,34 @@ import os
 from pathlib import Path
 import pty
 import select
+import struct
 import subprocess
 import sys
 import tempfile
 import termios
 import time
+
+
+def private_name(vm, root, objects):
+    devices = Path(root) / "ttys"
+    devices.mkdir()
+    subprocess.run(["mount", "-t", "devpts", "-o", "newinstance,ptmxmode=666,mode=620", "devpts", str(devices)], check=True)
+    master = os.open(devices / "ptmx", os.O_RDWR | os.O_NOCTTY)
+    try:
+        fcntl.ioctl(master, 0x40045431, struct.pack("i", 0))  # TIOCSPTLCK.
+        number = struct.unpack("I", fcntl.ioctl(master, 0x80045430, bytes(4)))[0]  # TIOCGPTN.
+        slave = os.open(devices / str(number), os.O_RDWR | os.O_NOCTTY)
+        try:
+            for obj in objects:
+                result = subprocess.run([vm, "run", "--root", root, "--", obj, "private-name"], stdin=slave,
+                                        capture_output=True, timeout=30)
+                assert (result.returncode, result.stdout, result.stderr) == (0, b"private terminal name: ok\n", b""), result
+        finally:
+            os.close(slave)
+    finally:
+        os.close(master)
+        subprocess.run(["umount", str(devices)], check=True)
+    print("private terminal: both AOTs resolve and reopen the guest path")
 
 
 def heapless_password():
@@ -73,6 +96,9 @@ def terminal(command, answers, expected, env):
 
 
 def main():
+    if sys.argv[1] == "--private-name":
+        private_name(sys.argv[2], sys.argv[3], sys.argv[4:])
+        return
     vm, native, module, wrapper = sys.argv[1:]
     env = dict(os.environ, W2X_MEMORY_TAIL="optimized", W2X_TAIL_PROFILE="")
     with tempfile.TemporaryDirectory(prefix="pizdos-terminal-") as directory:
@@ -94,6 +120,12 @@ def main():
             terminal([*command, "interrupt"], [], b"interrupt: interrupted terminal: ok\r\n", env)
             terminal([wrapper, f"{errno.ENOTTY}/16", "--", *command, "attributes"], [],
                      b"terminal attributes: failed as expected\r\n", env)
+        # A devpts instance mounted inside an isolated user/mount namespace
+        # gives a real terminal a path in the guest root, outside /dev/pts.
+        result = subprocess.run(["unshare", "--user", "--map-root-user", "--mount", "--propagation", "private",
+                                 sys.executable, __file__, "--private-name", vm, str(root), str(compiled), str(embedded)],
+                                capture_output=True, env=env, timeout=60)
+        assert (result.returncode, result.stdout, result.stderr) == (0, b"private terminal: both AOTs resolve and reopen the guest path\n", b""), result
         source = root / "heapless.wasm"
         source.write_bytes(heapless_password())
         result = subprocess.run([native], input=source.read_bytes(), capture_output=True, env=env, timeout=60)
