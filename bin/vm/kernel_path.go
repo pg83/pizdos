@@ -125,7 +125,9 @@ func (p *Process) openPath(path string, flags int, mode uint32) (File, error) {
 }
 
 // readPath reads a file of the root whole, up to max bytes: the kernel's
-// own reads of the databases and tables under the root.
+// own reads of the databases and tables under the root. The error is the
+// open's; what cannot be read, a directory, is read as empty, as musl
+// reads it through fopen.
 func (p *Process) readPath(path string, max int) ([]byte, error) {
 	f, err := p.openPath(path, syscall.O_RDONLY, 0)
 
@@ -137,7 +139,7 @@ func (p *Process) readPath(path string, max int) ([]byte, error) {
 	t, ok := f.(Transfer)
 
 	if !ok {
-		return nil, syscall.EISDIR
+		return nil, nil
 	}
 
 	var data []byte
@@ -146,11 +148,7 @@ func (p *Process) readPath(path string, max int) ([]byte, error) {
 	for len(data) < max {
 		n, err := t.read(p, buf, ioMode{})
 
-		if err != nil {
-			return nil, err
-		}
-
-		if n == 0 {
+		if err != nil || n == 0 {
 			break
 		}
 
