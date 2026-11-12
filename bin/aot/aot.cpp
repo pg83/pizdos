@@ -9996,10 +9996,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 consider(mapValue(atStart, k), mapKey(atStart, k));
             }
         }
-        // The saves after the definitions, and the definitions that end
-        // their block, after which the resolver has no place for a save.
+        // Every block ends in a jump, switch, return or trap. Those have
+        // no virtual definitions (switch scratch operands are roleTemp),
+        // so every definition leaves a position for its save.
         Slice<u64> defined = makeSlice<u64>(a->mf->nregs);
-        Slice<bool> last = makeSlice<bool>(a->mf->nregs);
         auto eachDefinition = [&](auto&& f) {
             auto order = a->order.view();
             for (Int j = 0; j < length(order); ++j) {
@@ -10019,17 +10019,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
             }
         };
-        eachDefinition([&](Int x, VReg r, i32 b, Int i, i32 p) {
-            if (i + 1 == length(a->mf->blocks[b].insts)) {
-                last[x] = true;
-            } else if (!isSlot(allocatorLocation(a, r, p + 1))) {
+        eachDefinition([&](Int x, VReg r, i32 b, Int, i32 p) {
+            if (!isSlot(allocatorLocation(a, r, p + 1))) {
                 defined[x] += weight(b);
             }
         });
         Slice<bool> save = makeSlice<bool>(a->mf->nregs);
         bool any = false;
         for (Int x = 0; x < a->mf->nregs; ++x) {
-            if (saves[x] != 0 && !last[x] && defined[x] < saves[x]) {
+            if (saves[x] != 0 && defined[x] < saves[x]) {
                 save[x] = true;
                 any = true;
             }
@@ -14226,9 +14224,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 if (from < last->from) {
                     last->from = from;
                 }
-                if (to > last->to) {
-                    last->to = to;
-                }
+                // BuildIntervals visits decreasing block/instruction ends;
+                // a new overlapping range can only extend the start.
                 return;
             }
         }
@@ -14291,20 +14288,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return intervalEnd(it) <= p;
     }
 
-    // Instructions arrive in descending position order. Within one
-    // instruction, definitions and uses may revisit its two positions.
+    // BuildIntervals visits decreasing instructions, recording definitions
+    // at p+1 before uses at p. Scratch registers are fresh, never copy
+    // operands, and cannot alias a definition after coalescing. Positions
+    // therefore descend, with repetitions allowed within one instruction.
     static void intervalRecordUse(Interval* it, i32 p) {
         auto& uses = it->uses;
         const usize count = uses.size();
         if (!count || p < uses[count - 1]) {
             uses.pushBack(p);
-        } else if (p != uses[count - 1]) {
-            const i32 last = uses[count - 1];
-            require((p & 1) && last == p - 1, "out of order interval use");
-            if (count == 1 || uses[count - 2] != p) {
-                uses[count - 1] = p;
-                uses.pushBack(last);
-            }
         }
     }
 
