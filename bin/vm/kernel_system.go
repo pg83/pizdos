@@ -156,7 +156,7 @@ func (p *Process) terminalName(fd uint32) (string, syscall.Errno) {
 		return "", syscall.ENOTTY
 	}
 
-	name, err := os.Readlink(procFd(f.fd))
+	name, err := p.k.hostPath(f.fd)
 
 	if err != nil {
 		return "", errnoOf(err)

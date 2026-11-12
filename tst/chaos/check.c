@@ -2,6 +2,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <pty.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,6 +12,49 @@
 #include <unistd.h>
 
 static int attempt(const char* operation) {
+    if (strcmp(operation, "chdir") == 0) {
+        int result = chdir("/");
+        assert(result == 0 || (result == -1 && errno == EIO));
+        return result < 0;
+    }
+    if (strcmp(operation, "fchdir") == 0 || strcmp(operation, "relative-open") == 0 || strcmp(operation, "fexecve") == 0) {
+        int execute = strcmp(operation, "fexecve") == 0;
+        int fd = open(execute ? "/dev/null" : "/", O_RDONLY);
+        assert(fd >= 0);
+        int result;
+        if (execute) {
+            char* args[] = {"null", NULL};
+            result = fexecve(fd, args, NULL);
+        } else if (strcmp(operation, "fchdir") == 0) {
+            result = fchdir(fd);
+        } else {
+            result = openat(fd, "dev/null", O_RDONLY);
+        }
+        int failed = result < 0 && errno == EIO;
+        assert(failed || (execute ? result == -1 && errno == EACCES : result >= 0));
+        if (!execute && strcmp(operation, "relative-open") == 0 && result >= 0) {
+            assert(close(result) == 0);
+        }
+        assert(close(fd) == 0);
+        return failed;
+    }
+    if (strcmp(operation, "ttyname") == 0) {
+        int master, slave;
+        assert(openpty(&master, &slave, NULL, NULL, NULL) == 0);
+        char name[128];
+        memset(name, 0x5a, sizeof(name));
+        int error = ttyname_r(slave, name, sizeof(name));
+        assert(error == 0 || error == EIO);
+        if (error != 0) {
+            for (unsigned i = 0; i < sizeof(name); ++i) {
+                assert(name[i] == 0x5a);
+            }
+        } else {
+            assert(strncmp(name, "/dev/pts/", 9) == 0);
+        }
+        assert(close(master) == 0 && close(slave) == 0);
+        return error != 0;
+    }
     if (strcmp(operation, "fstat") == 0 || strcmp(operation, "fstatat") == 0 || strcmp(operation, "stat") == 0 || strcmp(operation, "lstat") == 0) {
         struct stat metadata;
         memset(&metadata, 0x5a, sizeof(metadata));

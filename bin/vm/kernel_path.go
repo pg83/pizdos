@@ -249,6 +249,10 @@ func (p *Process) onAt(dirfd int32, path string, flags uint32, call func(fd int)
 
 // hostPath is the host path of a host descriptor.
 func (k *Kernel) hostPath(fd int) (string, error) {
+	if chaosFail("readlink") {
+		return "", syscall.EIO
+	}
+
 	return os.Readlink(fmt.Sprintf("/proc/self/fd/%d", fd))
 }
 
