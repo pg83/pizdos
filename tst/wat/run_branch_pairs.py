@@ -24,7 +24,12 @@ def program(template):
         "divide": ("(i32.div_u (local.get $y) (i32.or (local.get $z) (i32.const 1)))", lambda y, z: y // (z | 1)),
     }
     cases = ((0, 0, 0), (17, 0, 0), (18, 256, 0), (0, 255, 255),
-             (0, 258, 2), (18, 258, 2), (1, MASK, 31), (17, 0x80000000, 17))
+             (0, 258, 2), (18, 258, 2), (1, MASK, 31), (17, 0x80000000, 17),
+             (0, 258, 509), (18, 258, 509), (0, 255, 0), (18, 255, 0),
+             (0, 32, 32), (18, 32, 32), (0, 9, 3), (18, 9, 3))
+    for _, model in operations.values():
+        assert {(x < 17, model(y, z) == z) for x, y, z in cases} == {
+            (False, False), (False, True), (True, False), (True, True)}
     for width in (0, 8, 16, 24):
         payload = [(index + 1) * 101 for index in range(width)]
         parameters = " ".join("(param i32)" for _ in payload)
