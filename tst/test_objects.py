@@ -271,6 +271,33 @@ def main():
                 result = run(contents)
                 assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (selected, result)
 
+        # An assembler may put a public entry label inside a code region,
+        # after padding. The frame copier only supports entries that begin
+        # their region: reject fork with ENOSYS while ordinary calls work.
+        entry = next(struct.unpack_from("<Q", symbols, at + 8)[0] for at in range(0, len(symbols), 24)
+                     if strings[struct.unpack_from("<I", symbols, at)[0]:].split(b"\0", 1)[0] == b"w2o.export._5Fstart..")
+        for original in (native_fork, embedded.read_bytes()):
+            original_obj = Object(original)
+            frames = bytearray(original_obj.contents(".eh_frame"))
+            relocations = bytearray(original_obj.contents(".rela.eh_frame"))
+            for at in range(0, len(relocations), 24):
+                offset, _, addend = struct.unpack_from("<QQq", relocations, at)
+                if addend != entry:
+                    continue
+                size = struct.unpack_from("<I", frames, offset + 4)[0]
+                # Extend into the alignment gap and delay the first CFA
+                # change equally; every executed PC keeps its stack rule.
+                assert entry > 0 and 0x40 <= frames[offset + 9] < 0x7f
+                struct.pack_into("<q", relocations, at + 16, entry - 1)
+                struct.pack_into("<I", frames, offset + 4, size + 1)
+                frames[offset + 9] += 1
+                break
+            else:
+                raise AssertionError("fixture has no entry frame")
+            prefixed = Object(original_obj.replaced(".eh_frame", frames)).replaced(".rela.eh_frame", relocations)
+            result = run(prefixed)
+            assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), ("entry-inside-region", result)
+
         # Objects can outlive the producer that assigned trap numbers.
         # Unknown codes and an ASAN report without a shadow map stay readable.
         trap_module = b"\0asm\1\0\0\0" + wasm_section(1, b"\2\x60\0\1\x7f\x60\0\0")
