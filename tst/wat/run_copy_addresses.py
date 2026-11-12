@@ -11,6 +11,9 @@ IMAGE = bytes((i * 37 + 11) % 251 if i >= 4096 else 0 for i in range(65536))
 
 def address(base, offset, form):
     index = f"(i32.add (local.get $index) (i32.const {offset}))"
+    if form == "amplified":
+        index = (f"(i32.add (i32.add (i32.shl (local.get $index) (i32.const 16)) "
+                 f"(local.get $index)) (i32.const {offset}))")
     if form == "spaced":
         index = f"(i32.add (local.get $index) (i32.const {offset * 7}))"
     if form == "subtract":
@@ -23,6 +26,10 @@ def address(base, offset, form):
 
 
 def program(template, stride, form, carry, count, dest, other, variable_step=False, mixed_offset=False):
+    initial = IMAGE
+    if form == "amplified":
+        template = template.replace("(memory 1)", "(memory 2)")
+        initial += bytes((index * 37 + 11) % 251 for index in range(65536, 131072))
     statements = []
     for offset in range(stride):
         base = "other" if form == "distinct" and offset else "source"
@@ -46,16 +53,17 @@ def program(template, stride, form, carry, count, dest, other, variable_step=Fal
     if mixed_offset:
         template = template.replace("(local.get $index)", "(local.get $offset)", 1)
     template = template.replace(";; OFFSET", offset_update)
-    image, checksum, state, delta = bytearray(IMAGE), 0, 7, 13
-    touched = {dest - 32, dest + count + 32, 65535}
+    image, checksum, state, delta = bytearray(initial), 0, 7, 13
+    touched = {dest - 32, dest + count + 32, len(initial) - 1}
     moving_offset = 0
     for index in range(0, count, stride + (delta if variable_step else 0)):
         for offset in range(stride):
             source = other if form == "distinct" and offset else 8192
             shift = delta if form in ("subtract", "hoisted") else 0
             spacing = offset * 7 if form == "spaced" else offset
-            write_index = moving_offset if mixed_offset and offset == 0 else index
-            read, write = source + index + spacing - shift, dest + write_index + spacing - shift
+            read_index = index * 65537 if form == "amplified" else index
+            write_index = moving_offset if mixed_offset and offset == 0 else read_index
+            read, write = source + read_index + spacing - shift, dest + write_index + spacing - shift
             loaded = image[read]
             image[write] = loaded
             if carry == "last":
@@ -82,7 +90,7 @@ def program(template, stride, form, carry, count, dest, other, variable_step=Fal
               f"(i32.const {count}) (i32.const {delta})) (i64.const {expected})) (then unreachable))"]
     for location in sorted(touched):
         checks.append(f"(if (i32.ne (i32.load8_u (i32.const {location})) (i32.const {image[location]})) (then unreachable))")
-    data = "".join(f"\\{byte:02x}" for byte in IMAGE[4096:])
+    data = "".join(f"\\{byte:02x}" for byte in initial[4096:])
     return template.rstrip()[:-1] + f'\n(data (i32.const 4096) "{data}")\n(func (export "_start")\n' + "\n".join(checks) + "\n))\n"
 
 
@@ -100,6 +108,7 @@ def main():
               for count, dest in ((0, 32768), (1, 32768), (97, 32768), (97, 8193))]
     cases += [(stride, "spaced", "none", count, 32768, 8192) for stride in (2, 3) for count in (0, 1, 97)]
     cases += [(stride, "add", "none", count, 32768, 8192, False, True) for stride in (1, 2, 3) for count in (0, 1, 97)]
+    cases += [(1, "amplified", "none", count, 32768, 8192) for count in (0, 1, 2)]
     with tempfile.TemporaryDirectory(prefix="pizdos-wat-copy-addresses-") as directory:
         work = Path(directory)
         source, module, compiled, embedded = (work / name for name in ("input.wat", "input.wasm", "native.o", "embedded.o"))
