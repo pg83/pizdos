@@ -917,6 +917,7 @@ for name, runner, fixture in (("wat_updates", "run_updates.py", "update_branches
                               ("wat_result_masks", "run_result_masks.py", "result_masks.wat"),
                               ("wat_exit_values", "run_exit_values.py", "exit_values.wat"),
                               ("wat_startup_fork", "run_startup_fork.py", "startup_fork.wat"),
+                              ("wat_branch_threads", "run_branch_threads.py", "branch_threads.wat"),
                               ("wat_loop_escapes", "run_loop_escapes.py", "loop_escapes.wat")):
     runner, fixture = "$(S)/tst/wat/" + runner, "$(S)/tst/wat/" + fixture
     stamp = f"$(B)/tst/{name}.stamp"
