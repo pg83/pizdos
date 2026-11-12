@@ -7,12 +7,14 @@
     (local $index i32)
     (local $sum i64)
     (local $state i32)
+    (local $offset i32)
     (local.set $state (i32.const 7))
     (if (local.get $count)
       (then
         (loop $next
           ;; COPY
           ;; CARRY
+          ;; OFFSET
           (local.set $index (i32.add (local.get $index) (i32.const STRIDE)))
           (br_if $next (i32.lt_u (local.get $index) (local.get $count))))))
     (global.set $checksum (i64.add (local.get $sum) (i64.extend_i32_u (local.get $state))))
