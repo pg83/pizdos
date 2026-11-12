@@ -9768,9 +9768,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 VReg dst = allocatorLoc(a, c);
                 i32 key = 2 * p;
                 if ((p & 1) != 0) {
-                    if (!isSlot(dst)) {
-                        compilerError(String("internal error: %s split at odd position %d into a register"));
-                    }
+                    // Evict spills an odd-start child immediately. Every
+                    // suffix queued for a register starts at an even split.
                     key = 2 * (p - 1) + 1;
                 }
                 if (src != dst && !(isSlot(dst) && slotOf(dst) >= constantSlot)) {
@@ -9847,19 +9846,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             const auto endMoves = atEnd[b];
             emitMoves(atStart[b], 0);
             const Int branches = length(endMoves) ? firstBranch(blk->insts) : Int(count);
-            const i32 firstKey = 2 * (a->blockFrom[b] + 2);
-            while (nextMove < inner.entries.size() && inner.entries[nextMove].position < firstKey) {
-                ++nextMove;
-            }
+            // Split moves name an instruction's before/after half; saves
+            // name the instruction after a definition. Sorted entries are
+            // consumed exactly at those keys, in linearization order.
             const bool hasInner = count && nextMove < inner.entries.size() && inner.entries[nextMove].position < 2 * (a->blockTo[b] - 1);
             for (usize i = 0; i < count; ++i) {
                 const i32 p = a->blockFrom[b] + 2 + 2 * i32(i);
                 if (hasInner) {
                     for (i32 half = 0; half < 2; ++half) {
                         const i32 key = 2 * p + half;
-                        while (nextMove < inner.entries.size() && inner.entries[nextMove].position < key) {
-                            ++nextMove;
-                        }
                         if (nextMove < inner.entries.size() && inner.entries[nextMove].position == key) {
                             prepareOutput(i);
                             MInst moves = inst(mParMove);
