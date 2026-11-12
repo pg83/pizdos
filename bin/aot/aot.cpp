@@ -5420,13 +5420,13 @@ namespace {
 
     static bool loopDominates(CfgInfo* ci, i32 a, i32 b);
 
-    // loopEachDominated calls f with every block an analyzed block h
-    // dominates: its subtree of the dominator tree, then the blocks added
-    // after the analysis under it. It stops when f returns true.
+    // loopEachDominated visits h's original dominator subtree while loops
+    // are versioned in RPO. Earlier copies lie under earlier preheaders,
+    // outside h's subtree. It stops when f returns true.
     template <typename F>
     static bool loopEachDominated(CfgInfo* ci, i32 h, F f);
 
-    static void cfgInfoPreorder(CfgInfo* ci, Function* f);
+    static void cfgInfoPreorder(CfgInfo* ci);
 
     static void cfgInfoDominators(CfgInfo* ci, Function* f);
 
@@ -7336,9 +7336,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             auto account = [&](bool restore) {
                 for (Int i = 0; i < length(l->order); ++i) {
                     const auto& block = f->blocks[l->order[i]];
-                    if (block.dead) {
-                        continue;
-                    }
+                    // order contains live original members; cloning only
+                    // appends blocks and never marks those members dead.
                     for (Int j = 0; j < length(block.instrs); ++j) {
                         const auto args = functionArgs(f, block.instrs[j]);
                         for (Int k = 0; k < length(args); ++k) {
@@ -7383,9 +7382,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             // appends below only grow edges inside the original/copied loop.
             outsideUses.pushBack(use);
         };
-        // Only blocks the header dominates and unreachable ones use values
-        // of the loop; the order of the uses found does not matter. Blocks
-        // added by this versioning use none.
+        // Cleanup removed unreachable blocks. Outside uses are in the
+        // header's dominator subtree; their order does not matter.
         auto scan = [&](i32 b) -> bool {
             if (b >= oldBlocks || f->blocks[b].dead || (b < length(l->members) && l->members[b])) {
                 return false;
@@ -7414,9 +7412,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return false;
         };
         loopEachDominated(l->ci, l->header, scan);
-        for (Int i = length(l->ci->order); i < length(l->ci->preorder); ++i) {
-            scan(l->ci->preorder[i]);
-        }
         if (escapedValues.size() > 1) {
             sortValues(escapedValues.view(), [&](Int i, Int j) {
                 return escapedValues[usize(i)] < escapedValues[usize(j)];
@@ -11672,7 +11667,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // preorder numbers the dominator tree depth first; unreachable blocks
     // have no place in it.
-    static void cfgInfoPreorder(CfgInfo* ci, Function* f) {
+    static void cfgInfoPreorder(CfgInfo* ci) {
         const Int n = length(ci->idom);
         DominatorChildren children = cfgInfoChildren(ci);
         ci->preorder = makeSlice<i32>(length(ci->order));
@@ -11698,24 +11693,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 stack.pushBack(child);
             }
         }
-        for (Int b = 0; b < n; ++b) {
-            if (ci->rpoIndex[b] < 0 && !f->blocks[b].dead) {
-                ci->preorder = appendValues(ci->preorder, i32(b));
-            }
-        }
     }
 
     template <typename F>
     static bool loopEachDominated(CfgInfo* ci, i32 h, F f) {
         for (Int i = ci->enter[h]; i < ci->leave[h]; ++i) {
             if (f(ci->preorder[i])) {
-                return true;
-            }
-        }
-        const Int analyzed = length(ci->rpoIndex);
-        for (Int k = 0; k < length(ci->added); ++k) {
-            const i32 b = i32(analyzed + k);
-            if (loopDominates(ci, h, b) && f(b)) {
                 return true;
             }
         }
@@ -24584,7 +24567,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             PoolScope cfgScope(cfgPool);
             ci = activePool->make<CfgInfo>(CfgInfo{appendSlice(Slice<i32>{}, full->order), appendSlice(Slice<i32>{}, full->rpoIndex), appendSlice(Slice<i32>{}, full->idom), {}, appendSlice(Slice<bool>{}, full->header), {}, {}, {}, {}});
-            cfgInfoPreorder(ci, f);
+            cfgInfoPreorder(ci);
         }
         // Versioning sends the preheader's edge to blocks of its own, which
         // enter the original loop first, and adds no other edge between
