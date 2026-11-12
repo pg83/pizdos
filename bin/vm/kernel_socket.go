@@ -356,11 +356,9 @@ func (p *Process) guestControl(host []byte, at, room uint32, cloexec bool) (uint
 
 	for len(host) >= hostCmsgHeader {
 		length := int(binary.LittleEndian.Uint64(host))
-
-		if length < hostCmsgHeader || length > len(host) {
-			break
-		}
-
+		// recvmsg is the sole caller. Linux's put_cmsg/scm_detach_fds
+		// produce a bounded cmsg_len even when control data is truncated;
+		// guest-supplied headers are validated separately by hostControl.
 		level, kind := binary.LittleEndian.Uint32(host[8:]), binary.LittleEndian.Uint32(host[12:])
 		data := host[hostCmsgHeader:length]
 		host = host[min(hostAlign(length), len(host)):]
