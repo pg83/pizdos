@@ -52,6 +52,11 @@ func (k *Kernel) functionTable() map[string]any {
 		"cfsetispeed":            libcCfsetispeed,
 		"poll":                   libcPoll,
 		"ppoll":                  libcPpoll,
+		"epoll_create":           libcEpoll_create,
+		"epoll_create1":          libcEpoll_create1,
+		"epoll_ctl":              libcEpoll_ctl,
+		"epoll_wait":             libcEpoll_wait,
+		"epoll_pwait":            libcEpoll_pwait,
 		"fsync":                  libcFsync,
 		"ftruncate":              libcFtruncate,
 		"fstat":                  libcFstat,
@@ -2522,4 +2527,24 @@ func libcIf_freenameindex(ctx uintptr, block uint32) {
 
 func libcCrypt(ctx uintptr, key, setting uint32) uint32 {
 	return proc(ctx).libcCrypt(key, setting)
+}
+
+func libcEpoll_create(ctx uintptr, size uint32) uint32 {
+	return proc(ctx).libcEpoll_create(size)
+}
+
+func libcEpoll_create1(ctx uintptr, flags uint32) uint32 {
+	return proc(ctx).libcEpoll_create1(flags)
+}
+
+func libcEpoll_ctl(ctx uintptr, epfd, op, fd, at uint32) uint32 {
+	return proc(ctx).libcEpoll_ctl(epfd, op, fd, at)
+}
+
+func libcEpoll_wait(ctx uintptr, epfd, at, max, timeout uint32) uint32 {
+	return proc(ctx).libcEpoll_wait(epfd, at, max, timeout)
+}
+
+func libcEpoll_pwait(ctx uintptr, epfd, at, max, timeout, mask uint32) uint32 {
+	return proc(ctx).libcEpoll_pwait(epfd, at, max, timeout, mask)
 }

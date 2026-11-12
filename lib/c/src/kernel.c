@@ -33,6 +33,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/epoll.h>
 #include <sys/file.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -194,6 +195,13 @@ KERNEL(const char*, hstrerror, (int a), (a))
 /* poll.h */
 KERNEL(int, poll, (struct pollfd* a, nfds_t b, int c), (a, b, c))
 KERNEL(int, ppoll, (struct pollfd* a, nfds_t b, const struct timespec* c, const sigset_t* d), (a, b, c, d))
+
+/* sys/epoll.h */
+KERNEL(int, epoll_create, (int a), (a))
+KERNEL(int, epoll_create1, (int a), (a))
+KERNEL(int, epoll_ctl, (int a, int b, int c, struct epoll_event* d), (a, b, c, d))
+KERNEL(int, epoll_wait, (int a, struct epoll_event* b, int c, int d), (a, b, c, d))
+KERNEL(int, epoll_pwait, (int a, struct epoll_event* b, int c, int d, const sigset_t* e), (a, b, c, d, e))
 
 /* pty.h */
 KERNEL(int, openpty, (int* a, int* b, char* c, const struct termios* d, const struct winsize* e), (a, b, c, d, e))

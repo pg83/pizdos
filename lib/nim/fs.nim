@@ -42,7 +42,7 @@
 ##   stat { ino u64, size u64, mtime u64 nanoseconds, mode u32, nlink u32,
 ##          uid u32, gid u32, atime u64 }
 
-import std/[tables, strutils, posix]
+import std/[tables, strutils, posix, epoll]
 
 const
   atSymlinkNofollow* = 0x100'u32
@@ -110,7 +110,7 @@ type
   Server* = object
     root*: Node
     writable*: bool
-    eps: seq[Endpoint]
+    eps: Table[cint, Endpoint]  ## by descriptor
     inodes: uint64
 
   Walk = object
@@ -333,6 +333,8 @@ template resolved(reply: cint, walked: Walk, h: Header, body, fds): Node =
     return
   w.node
 
+proc listen*(s: var Server, ep: cint, node: Node = nil)
+
 proc open(s: var Server, c: Node, h: Header, body: openArray[byte], fds: seq[cint]) =
   let reply = fds[^1]
   var at = 0
@@ -362,7 +364,7 @@ proc open(s: var Server, c: Node, h: Header, body: openArray[byte], fds: seq[cin
       node.data = ""
       node.mtime = now()
     var st = node.statOf
-    s.eps.add Endpoint(fd: reply, node: node)
+    s.listen(reply, node)
     ok(reply, st.bytes)
 
 proc stat(s: var Server, c: Node, h: Header, body: openArray[byte], fds: seq[cint]) =
@@ -623,20 +625,41 @@ proc readdir(s: var Server, reply: cint, node: Node, h: Header) =
   ok(reply, entries)
 
 # ---- the loop ---------------------------------------------------------------
+#
+# One epoll of the process watches every endpoint of its servers: an
+# endpoint joins it when it is listened on, leaves it before it closes.
+
+const EPOLL_CLOEXEC = 0o2000000'i32
+
+var watcher = -1'i32
+
+proc watch(fd: cint) =
+  if watcher >= 0:
+    var ev: EpollEvent
+    ev.events = uint32(EPOLLIN)
+    ev.data.fd = fd
+    if epoll_ctl(watcher, EPOLL_CTL_ADD, fd, ev.addr) != 0:
+      fatal("fs: epoll_ctl")
+
+proc unwatch(fd: cint) =
+  if watcher >= 0:
+    discard epoll_ctl(watcher, EPOLL_CTL_DEL, fd, nil)
 
 proc listen*(s: var Server, ep: cint, node: Node = nil) =
   ## An endpoint the server answers on, open on node, or on the root.
   discard fcntl(ep, F_SETFD, FD_CLOEXEC)
-  s.eps.add Endpoint(fd: ep, node: if node == nil: s.root else: node)
+  s.eps[ep] = Endpoint(fd: ep, node: if node == nil: s.root else: node)
+  watch(ep)
 
-proc handle(s: var Server, i: int) =
-  let ep = s.eps[i]
+proc handle(s: var Server, fd: cint) =
+  let ep = s.eps[fd]
   var h: Header
   var body: seq[byte]
   var fds: seq[cint]
   if not recv(ep.fd, h, body, fds):
+    unwatch(ep.fd)
     discard close(ep.fd)  # the other end closed: the file is closed
-    s.eps.del(i)
+    s.eps.del(fd)
     return
   when defined(fsDebug):
     stderr.writeLine("fs: op " & $h.op & " arg " & $h.arg & " body " & $body.len & " fds " & $fds.len)
@@ -681,25 +704,34 @@ proc serve*(servers: openArray[ptr Server], idle: proc(): bool = nil) =
   ## Serves the servers, one process's, until the last endpoint of them
   ## all closes: then nobody can reach them. idle runs after every wait,
   ## interrupted ones too, and ends the loop by returning false.
+  watcher = epoll_create1(EPOLL_CLOEXEC)
+  if watcher < 0:
+    fatal("fs: epoll_create1")
+  for s in servers:
+    for fd in s[].eps.keys:
+      watch(fd)
+  var events: array[64, EpollEvent]
   while true:
-    var fds: seq[TPollfd]
-    var owner: seq[(ptr Server, int)]
+    var open = 0
     for s in servers:
-      for i, ep in s[].eps:
-        fds.add TPollfd(fd: ep.fd, events: POLLIN)
-        owner.add (s, i)
-    if fds.len == 0:
+      open += s[].eps.len
+    if open == 0:
+      discard close(watcher)
+      watcher = -1
       return
-    let n = poll(fds[0].addr, Tnfds(fds.len), -1)
+    let n = epoll_wait(watcher, events[0].addr, cint(events.len), -1)
     when defined(fsDebug):
-      stderr.writeLine("fs: poll " & $n & " errno " & $errno & " eps " & $fds.len)
+      stderr.writeLine("fs: epoll_wait " & $n & " errno " & $errno & " eps " & $open)
     if idle != nil and not idle():
       return
     if n <= 0:
       continue
-    for k in countdown(fds.high, 0):
-      if (fds[k].revents and (POLLIN or POLLHUP)) != 0:
-        owner[k][0][].handle(owner[k][1])
+    for i in 0 ..< n:
+      let fd = cint(events[i].data.fd)
+      for s in servers:
+        if fd in s[].eps:
+          s[].handle(fd)
+          break
 
 proc serve*(s: var Server, idle: proc(): bool = nil) =
   serve([s.addr], idle)

@@ -137,17 +137,17 @@ func (o *hostObject) hostFd() int {
 	return o.fd
 }
 
-// watch has a wait ask the object again when its queue wakes the process,
+// watch has a wait ask the object again when its queue wakes the waiter,
 // and tell the host of the wait before each sleep; an object that cannot
 // block is ready whenever asked.
-func (o *hostObject) watch(p *Process, w *waitSet, e *pollEntry) {
+func (o *hostObject) watch(w *waitSet, e *pollEntry) {
 	if !o.pollable {
 		w.always(e)
 
 		return
 	}
 
-	w.queued(p, e, &o.waiters)
+	w.queued(e, &o.waiters)
 	w.armed(func() { o.tell(e.events) })
 }
 

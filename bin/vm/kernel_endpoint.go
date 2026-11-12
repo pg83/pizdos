@@ -167,8 +167,8 @@ func (e *pairEnd) unref() {
 	e.shared.waiters.wake()
 }
 
-func (e *pairEnd) watch(p *Process, w *waitSet, entry *pollEntry) {
-	w.queued(p, entry, &e.shared.waiters)
+func (e *pairEnd) watch(w *waitSet, entry *pollEntry) {
+	w.queued(entry, &e.shared.waiters)
 }
 
 func (e *pairEnd) stat(st *syscall.Stat_t) error {

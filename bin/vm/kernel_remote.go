@@ -167,7 +167,7 @@ func (n *remoteNode) unref() {
 	}
 }
 
-func (n *remoteNode) watch(p *Process, w *waitSet, e *pollEntry) {
+func (n *remoteNode) watch(w *waitSet, e *pollEntry) {
 	w.always(e)
 }
 
@@ -852,11 +852,11 @@ func (r *noRoot) poll(events int16) int16 {
 	return events & (pollIn | pollOut | pollRdnorm | pollWrnorm)
 }
 
-func (r *noRoot) watch(p *Process, w *waitSet, e *pollEntry) { w.always(e) }
-func (r *noRoot) flags() (int, error)                        { return syscall.O_RDONLY, nil }
-func (r *noRoot) setFlags(fl int) error                      { return nil }
-func (r *noRoot) name(p *Process) (string, error)            { return "/", nil }
-func (r *noRoot) readdir(b []byte) (int, error)              { return 0, nil }
+func (r *noRoot) watch(w *waitSet, e *pollEntry)  { w.always(e) }
+func (r *noRoot) flags() (int, error)             { return syscall.O_RDONLY, nil }
+func (r *noRoot) setFlags(fl int) error           { return nil }
+func (r *noRoot) name(p *Process) (string, error) { return "/", nil }
+func (r *noRoot) readdir(b []byte) (int, error)   { return 0, nil }
 
 // itself tells whether a path names the root itself, the one thing there
 // is.

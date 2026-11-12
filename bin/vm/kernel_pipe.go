@@ -115,8 +115,8 @@ func (e *pipeEnd) unref() {
 	pp.waiters.wake()
 }
 
-func (e *pipeEnd) watch(p *Process, w *waitSet, entry *pollEntry) {
-	w.queued(p, entry, &e.pipe.waiters)
+func (e *pipeEnd) watch(w *waitSet, entry *pollEntry) {
+	w.queued(entry, &e.pipe.waiters)
 }
 
 // stat is a FIFO's: the ends share an inode of the kernel's.
@@ -332,11 +332,13 @@ func (e *pipeEnd) write(p *Process, b []byte, mode ioMode) (int, error) {
 
 	for {
 		pp.mu.Lock()
-		empty := pp.bytes == 0
 		n, err := pp.put(b[total:])
 		pp.mu.Unlock()
 
-		if n > 0 && empty {
+		// Every write wakes, not only the one that fills an empty pipe:
+		// an edge-triggered epoll wants each, as Linux gives once the pipe
+		// was polled.
+		if n > 0 {
 			pp.waiters.wake()
 		}
 

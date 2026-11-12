@@ -14,10 +14,11 @@ import (
 // asks of it. What else a file can do is a role, an interface a call
 // casts to: a Transfer reads and writes, a Seeker seeks, a Dir lists
 // entries, a Node is a file of a host file system with its metadata, a
-// Socket speaks sockets, an Ioctl takes ioctls, a Locker takes locks. A
-// file of the host (kernel_host.go) plays the roles the host's kind of
-// file does and keeps its host descriptor to itself; a file of the kernel
-// (a pipe, kernel_pipe.go) plays only its own.
+// Socket speaks sockets, an Ioctl takes ioctls, a Locker takes locks, an
+// Epoll watches files (kernel_epoll.go). A file of the host
+// (kernel_host.go) plays the roles the host's kind of file does and keeps
+// its host descriptor to itself; a file of the kernel (a pipe,
+// kernel_pipe.go) plays only its own.
 type File interface {
 	// ref takes a reference, unref drops one; the last closes the object.
 	ref()
@@ -25,9 +26,9 @@ type File interface {
 	// stat is fstat.
 	stat(st *syscall.Stat_t) error
 	// poll is the events ready now of those asked; watch adds the file to
-	// a wait (waitSet): the queue its changes wake the process through.
+	// a wait (waitSet): the queue its changes wake the waiter through.
 	poll(events int16) int16
-	watch(p *Process, w *waitSet, e *pollEntry)
+	watch(w *waitSet, e *pollEntry)
 	// flags are the status flags of fcntl: the access mode, O_NONBLOCK and
 	// what else the object keeps; setFlags sets those F_SETFL may.
 	flags() (int, error)
@@ -372,26 +373,32 @@ func (p *Process) placeAt(obj File, fd uint32, cloexec bool) {
 	p.files[fd] = &Descriptor{obj: obj, cloexec: cloexec}
 }
 
-// A waitQueue is the processes waiting on a file of the kernel: a
-// change of the object wakes them, as a signal would, to look again.
-type waitQueue struct {
-	mu    sync.Mutex
-	procs []*Process
+// A waker is what a change of a file wakes to look again: a process in a
+// blocking call, or an epoll the file is in.
+type waker interface {
+	wakeUp()
 }
 
-func (q *waitQueue) add(p *Process) {
+// A waitQueue is the wakers waiting on a file of the kernel: a change of
+// the object wakes them, as a signal would a process, to look again.
+type waitQueue struct {
+	mu     sync.Mutex
+	wakers []waker
+}
+
+func (q *waitQueue) add(w waker) {
 	q.mu.Lock()
-	q.procs = append(q.procs, p)
+	q.wakers = append(q.wakers, w)
 	q.mu.Unlock()
 }
 
-func (q *waitQueue) remove(p *Process) {
+func (q *waitQueue) remove(w waker) {
 	q.mu.Lock()
 
-	for i, r := range q.procs {
-		if r == p {
-			q.procs[i] = q.procs[len(q.procs)-1]
-			q.procs = q.procs[:len(q.procs)-1]
+	for i, r := range q.wakers {
+		if r == w {
+			q.wakers[i] = q.wakers[len(q.wakers)-1]
+			q.wakers = q.wakers[:len(q.wakers)-1]
 
 			break
 		}
@@ -403,8 +410,8 @@ func (q *waitQueue) remove(p *Process) {
 func (q *waitQueue) wake() {
 	q.mu.Lock()
 
-	for _, p := range q.procs {
-		p.wakeUp()
+	for _, w := range q.wakers {
+		w.wakeUp()
 	}
 
 	q.mu.Unlock()
@@ -473,10 +480,11 @@ type pollEntry struct {
 	revents int16
 }
 
-// A waitSet is what one wait looks at: the entries it asks again whenever
-// their files' queues wake the process, what it arms before every sleep,
-// and what it undoes when it leaves.
+// A waitSet is what one wait of a waker looks at: the entries it asks
+// again whenever their files' queues wake the waiter, what it arms before
+// every sleep, and what it undoes when it leaves.
 type waitSet struct {
+	by     waker
 	asked  []*pollEntry
 	queues []*waitQueue
 	arms   []func()
@@ -484,9 +492,9 @@ type waitSet struct {
 }
 
 // queued has the wait ask an entry's file again when its queue wakes the
-// process.
-func (w *waitSet) queued(p *Process, e *pollEntry, q *waitQueue) {
-	q.add(p)
+// waiter.
+func (w *waitSet) queued(e *pollEntry, q *waitQueue) {
+	q.add(w.by)
 	w.queues = append(w.queues, q)
 	w.asked = append(w.asked, e)
 }
@@ -507,9 +515,9 @@ func (w *waitSet) left(leave func()) {
 	w.leaves = append(w.leaves, leave)
 }
 
-func (w *waitSet) leave(p *Process) {
+func (w *waitSet) leave() {
 	for _, q := range w.queues {
-		q.remove(p)
+		q.remove(w.by)
 	}
 
 	for _, leave := range w.leaves {
@@ -523,14 +531,14 @@ func (w *waitSet) leave(p *Process) {
 // handlers ran when all of them restart calls and restart is set. It
 // returns how many are ready.
 func (p *Process) waitObjects(entries []pollEntry, timeout int, restart bool) (int, error) {
-	var w waitSet
+	w := waitSet{by: p}
 
 	for i := range entries {
 		entries[i].revents = 0
-		entries[i].obj.watch(p, &w, &entries[i])
+		entries[i].obj.watch(&w, &entries[i])
 	}
 
-	defer w.leave(p)
+	defer w.leave()
 	end := deadline(timeout)
 
 	for {
