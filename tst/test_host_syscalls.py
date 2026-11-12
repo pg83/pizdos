@@ -86,6 +86,7 @@ def main():
     cases = [("system", errno.EIO, (63, 99, 98, 115, 100)), ("filesystem", errno.EIO, (138, 280, 306, 162, 18)),
              ("limits", errno.EIO, (302, 97)), ("network", errno.EIO, (41,)), ("retry", errno.EAGAIN, (41,)),
              ("socket-names", errno.EIO, (51, 52)), ("connect-status", errno.EIO, (55,)),
+             ("recv-message", errno.EIO, (47,)),
              ("locks", errno.EIO, ("fcntl",)), ("poll", errno.EIO, (7,)), ("connect-poll", errno.EIO, (7,)),
              ("descriptor-flags", errno.EIO, ("getfl",)), ("access", errno.EIO, (439,)),
              ("pty-attributes", errno.EIO, ("pty-attributes",)),

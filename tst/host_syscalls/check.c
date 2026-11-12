@@ -41,6 +41,21 @@ int main(int argc, char** argv) {
         } else {
             assert(strcmp(address.sun_path, "host.socket") == 0);
         }
+    } else if (strcmp(argv[1], "recv-message") == 0) {
+        int ends[2];
+        assert(socketpair(AF_UNIX, SOCK_STREAM, 0, ends) == 0);
+        assert(write(ends[0], "r", 1) == 1);
+        char buffer[8];
+        memset(buffer, 0x5a, sizeof(buffer));
+        struct iovec vector = {buffer, sizeof(buffer)};
+        struct msghdr message = {0};
+        message.msg_iov = &vector;
+        message.msg_iovlen = 1;
+        assert(recvmsg(ends[1], &message, 0) == -1 && errno == EIO);
+        for (unsigned i = 0; i < sizeof(buffer); ++i) {
+            assert(buffer[i] == 0x5a);
+        }
+        assert(close(ends[0]) == 0 && close(ends[1]) == 0);
     } else if (strcmp(argv[1], "system") == 0) {
         struct utsname names;
         char buffer[256];
