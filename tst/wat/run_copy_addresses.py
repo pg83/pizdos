@@ -13,6 +13,8 @@ def address(base, offset, form):
     index = f"(i32.add (local.get $index) (i32.const {offset}))"
     if form == "subtract":
         return f"(i32.sub (i32.add (local.get ${base}) {index}) (local.get $delta))"
+    if form == "hoisted":
+        return f"(i32.add (i32.sub (local.get ${base}) (local.get $delta)) {index})"
     if form == "cancel":
         return f"(i32.sub (i32.add (i32.add (local.get ${base}) {index}) (local.get $delta)) (local.get $delta))"
     return f"(i32.add (local.get ${base}) {index})"
@@ -24,6 +26,8 @@ def program(template, stride, form, carry, count, dest, other, variable_step=Fal
         base = "other" if form == "distinct" and offset else "source"
         statements.append(f"(i32.store8 {address('dest', offset, form)} (i32.load8_u {address(base, offset, form)}))")
     update = {"none": "", "wide": "(local.set $sum (i64.add (local.get $sum) (i64.const 3)))",
+              "size": "(local.set $state (memory.size))",
+              "tail_read": "(local.set $state (i32.load8_u (i32.add (local.get $source) (local.get $index))))",
               "nonlinear": "(local.set $state (i32.xor (i32.mul (local.get $state) (i32.const 33)) (local.get $index)))"}[carry]
     step = f"(i32.add (local.get $delta) (i32.const {stride}))" if variable_step else f"(i32.const {stride})"
     template = template.replace(";; COPY", "\n".join(statements)).replace(";; CARRY", update).replace("(i32.const STRIDE)", step)
@@ -32,7 +36,7 @@ def program(template, stride, form, carry, count, dest, other, variable_step=Fal
     for index in range(0, count, stride + (delta if variable_step else 0)):
         for offset in range(stride):
             source = other if form == "distinct" and offset else 8192
-            shift = delta if form == "subtract" else 0
+            shift = delta if form in ("subtract", "hoisted") else 0
             read, write = source + index + offset - shift, dest + index + offset - shift
             image[write] = image[read]
             touched.update((read, write))
@@ -40,6 +44,11 @@ def program(template, stride, form, carry, count, dest, other, variable_step=Fal
             checksum += 3
         elif carry == "nonlinear":
             state = ((state * 33) ^ index) & 0xffffffff
+        elif carry == "size":
+            state = 1
+        elif carry == "tail_read":
+            state = image[8192 + index]
+            touched.add(8192 + index)
     expected = checksum + state
     checks = [f"(if (i64.ne (call $copy (i32.const {dest}) (i32.const 8192) (i32.const {other}) "
               f"(i32.const {count}) (i32.const {delta})) (i64.const {expected})) (then unreachable))"]
@@ -57,6 +66,9 @@ def main():
              for count, dest, other in ((0, 32768, 8192), (1, 32768, 12288), (97, 32768, 12288), (97, 8193, 8192))]
     cases += [(stride, "add", carry, count, dest, 8192, True) for stride in (1, 3) for carry in ("none", "wide")
               for count, dest in ((0, 32768), (1, 32768), (97, 8193))]
+    cases += [(stride, form, carry, count, dest, 8192) for stride in (1, 2, 3)
+              for form, carry in (("hoisted", "none"), ("add", "size"), ("add", "tail_read"))
+              for count, dest in ((0, 32768), (1, 32768), (97, 32768), (97, 8193))]
     with tempfile.TemporaryDirectory(prefix="pizdos-wat-copy-addresses-") as directory:
         work = Path(directory)
         source, module, compiled, embedded = (work / name for name in ("input.wat", "input.wasm", "native.o", "embedded.o"))
