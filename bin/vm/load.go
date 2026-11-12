@@ -143,6 +143,15 @@ func newTrap(code uint32, skip int) *Trap {
 	return &Trap{code: code, stack: callers(skip + 1)}
 }
 
+// trapOf runs f and returns the code of its Wasm trap, or -1.
+func trapOf(f func()) int {
+	if trap := tryAs[*Trap](f); trap != nil {
+		return int(trap.code)
+	}
+
+	return -1
+}
+
 var trapNames = map[uint32]string{
 	trapUnreachable: "unreachable", trapMemoryOOB: "out of bounds memory access", trapIntOverflow: "integer overflow",
 	trapDivByZero: "integer divide by zero", trapConversion: "invalid conversion to integer",

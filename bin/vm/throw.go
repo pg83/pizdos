@@ -26,20 +26,26 @@ func throwFmt(format string, args ...any) {
 
 // try runs cb and returns the Exception it threw, letting any other panic
 // propagate.
-func try(cb func()) (caught *Exception) {
+func try(cb func()) *Exception {
+	return tryAs[*Exception](cb)
+}
+
+// tryAs catches panics of T and lets every other panic propagate. Exception
+// boundaries and Wasm trap boundaries use the same recovery policy.
+func tryAs[T any](cb func()) (caught T) {
 	defer func() {
 		if e := recover(); e != nil {
-			exception, ok := e.(*Exception)
+			value, ok := e.(T)
 
 			if !ok {
 				panic(e)
 			}
 
-			caught = exception
+			caught = value
 		}
 	}()
 
 	cb()
 
-	return nil
+	return
 }

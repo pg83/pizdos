@@ -276,24 +276,3 @@ func standCommand(args []string) int {
 
 	return 0
 }
-
-// trapOf runs f and returns the code of the trap it ends with, or -1.
-func trapOf(f func()) (code int) {
-	defer func() {
-		r := recover()
-
-		if trap, ok := r.(*Trap); ok {
-			code = int(trap.code)
-
-			return
-		}
-
-		if r != nil {
-			panic(r)
-		}
-	}()
-
-	f()
-
-	return -1
-}

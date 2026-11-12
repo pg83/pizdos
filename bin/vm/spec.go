@@ -280,27 +280,6 @@ func (r *specRunner) load(filename string) *Instance {
 	return i
 }
 
-// trapped runs f and returns the code of its trap, or -1.
-func trapped(f func()) (code int) {
-	defer func() {
-		v := recover()
-
-		if t, ok := v.(*Trap); ok {
-			code = int(t.code)
-
-			return
-		}
-
-		if v != nil {
-			panic(v)
-		}
-	}()
-
-	f()
-
-	return -1
-}
-
 func (r *specRunner) command(c *specCmd) {
 	switch c.Type {
 	case "module":
@@ -326,7 +305,7 @@ func (r *specRunner) command(c *specCmd) {
 
 		r.current = i
 
-		if code := trapped(i.start); code >= 0 {
+		if code := trapOf(i.start); code >= 0 {
 			r.fail(c.Line, "instantiation trapped: %d", code)
 
 			return
@@ -357,7 +336,7 @@ func (r *specRunner) command(c *specCmd) {
 			return
 		}
 
-		if trapped(i.start) < 0 {
+		if trapOf(i.start) < 0 {
 			r.fail(c.Line, "instantiation did not trap")
 
 			return
@@ -616,7 +595,7 @@ func (r *specRunner) assertReturn(c *specCmd) {
 
 	var out []reflect.Value
 
-	if code := trapped(func() { out = run() }); code >= 0 {
+	if code := trapOf(func() { out = run() }); code >= 0 {
 		r.fail(c.Line, "trap %d", code)
 
 		return
@@ -668,7 +647,7 @@ func (r *specRunner) assertTrap(c *specCmd) {
 		}
 	}
 
-	code := trapped(func() { run() })
+	code := trapOf(func() { run() })
 
 	switch {
 	case code < 0:
