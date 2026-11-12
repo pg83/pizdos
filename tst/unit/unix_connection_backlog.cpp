@@ -51,6 +51,23 @@ int main() {
     ualarm(0, 0);
     assert(interrupts > 0);
 
+    // Linux socket timeouts disable SA_RESTART for connect and receive.
+    action.sa_flags = SA_RESTART;
+    assert(sigaction(SIGALRM, &action, nullptr) == 0);
+    timeout = {1, 0};
+    assert(setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) == 0);
+    ualarm(20000, 20000);
+    assert(connect(client, reinterpret_cast<sockaddr*>(&address), length) == -1 && errno == EINTR);
+    ualarm(0, 0);
+    int pair[2];
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0);
+    assert(setsockopt(pair[0], SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == 0);
+    char received;
+    ualarm(20000, 20000);
+    assert(recv(pair[0], &received, 1, 0) == -1 && errno == EINTR);
+    ualarm(0, 0);
+    assert(close(pair[0]) == 0 && close(pair[1]) == 0);
+
     // The same socket can connect once accept frees a place in the queue.
     // SA_RESTART keeps this wait running while its handler handles signals.
     action.sa_flags = SA_RESTART;
