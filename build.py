@@ -900,7 +900,8 @@ for test in build.glob("$(S)/tst/test_*.py"):
                   [node for node in tested if node not in (vm, aot_native, vm_chaos, aot_native_chaos)])
 
 for name, runner, fixture in (("wat_updates", "run_updates.py", "update_branches.wat"),
-                              ("wat_float_selects", "run_float_selects.py", "float_selects.wat")):
+                              ("wat_float_selects", "run_float_selects.py", "float_selects.wat"),
+                              ("wat_memory_arithmetic", "run_memory_arithmetic.py", "memory_arithmetic.wat")):
     runner, fixture = "$(S)/tst/wat/" + runner, "$(S)/tst/wat/" + fixture
     stamp = f"$(B)/tst/{name}.stamp"
     case_test = command(
