@@ -9734,12 +9734,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         PositionedMoves inner;
         Bitset split;
         auto intervals = a->intervals.view();
+        // Every virtual register retains an emitted origin through
+        // coalescing, so BuildIntervals creates each of these roots.
         for (Int j = 0; j < length(intervals); ++j) {
             Int x = j;
             Interval* it = intervals[j];
-            if (isNil(it)) {
-                continue;
-            }
             if (length(it->children)) {
                 if (!split.data) {
                     split = newBitset(mf->nregs);
@@ -11674,17 +11673,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         return false;
     }
 
-    // loopDominates also answers for blocks added after the analysis: every
-    // path to one passes its preheader, so an analyzed block dominates it
-    // exactly when it dominates that preheader. Loops read no value defined
-    // in an added block, which is taken to dominate no analyzed one.
+    // a is an analyzed header or a definition read by an original loop:
+    // versioning merges cloned results at original exit parameters.
+    // b may be added: an analyzed block dominates it exactly when it
+    // dominates its preheader, through which every path to it passes.
     static bool loopDominates(CfgInfo* ci, i32 a, i32 b) {
         const Int analyzed = length(ci->rpoIndex);
         if (a == b) {
             return true;
-        }
-        if (a >= analyzed) {
-            return false;
         }
         while (b >= analyzed) {
             b = ci->added[b - analyzed];
