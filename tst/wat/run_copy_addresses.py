@@ -24,9 +24,18 @@ def program(template, stride, form, carry, count, dest, other, variable_step=Fal
     statements = []
     for offset in range(stride):
         base = "other" if form == "distinct" and offset else "source"
-        statements.append(f"(i32.store8 {address('dest', offset, form)} (i32.load8_u {address(base, offset, form)}))")
+        load = f"(i32.load8_u {address(base, offset, form)})"
+        if carry == "last":
+            statements.append(f"(local.set $state {load})")
+            load = "(local.get $state)"
+        statements.append(f"(i32.store8 {address('dest', offset, form)} {load})")
+    expression = "(local.get $index)"
+    for salt in range(1, 31):
+        expression = f"(i32.xor (i32.mul {expression} (i32.const 33)) (i32.const {salt}))"
     update = {"none": "", "wide": "(local.set $sum (i64.add (local.get $sum) (i64.const 3)))",
               "size": "(local.set $state (memory.size))",
+              "last": "", "constant": "(local.set $state (i32.const 42))",
+              "deep": f"(local.set $state {expression})",
               "tail_read": "(local.set $state (i32.load8_u (i32.add (local.get $source) (local.get $index))))",
               "nonlinear": "(local.set $state (i32.xor (i32.mul (local.get $state) (i32.const 33)) (local.get $index)))"}[carry]
     step = f"(i32.add (local.get $delta) (i32.const {stride}))" if variable_step else f"(i32.const {stride})"
@@ -38,7 +47,10 @@ def program(template, stride, form, carry, count, dest, other, variable_step=Fal
             source = other if form == "distinct" and offset else 8192
             shift = delta if form in ("subtract", "hoisted") else 0
             read, write = source + index + offset - shift, dest + index + offset - shift
-            image[write] = image[read]
+            loaded = image[read]
+            image[write] = loaded
+            if carry == "last":
+                state = loaded
             touched.update((read, write))
         if carry == "wide":
             checksum += 3
@@ -46,6 +58,12 @@ def program(template, stride, form, carry, count, dest, other, variable_step=Fal
             state = ((state * 33) ^ index) & 0xffffffff
         elif carry == "size":
             state = 1
+        elif carry == "constant":
+            state = 42
+        elif carry == "deep":
+            state = index
+            for salt in range(1, 31):
+                state = ((state * 33) ^ salt) & 0xffffffff
         elif carry == "tail_read":
             state = image[8192 + index]
             touched.add(8192 + index)
@@ -67,7 +85,8 @@ def main():
     cases += [(stride, "add", carry, count, dest, 8192, True) for stride in (1, 3) for carry in ("none", "wide")
               for count, dest in ((0, 32768), (1, 32768), (97, 8193))]
     cases += [(stride, form, carry, count, dest, 8192) for stride in (1, 2, 3)
-              for form, carry in (("hoisted", "none"), ("add", "size"), ("add", "tail_read"))
+              for form, carry in (("hoisted", "none"), ("add", "size"), ("add", "tail_read"),
+                                  ("add", "last"), ("add", "constant"), ("add", "deep"))
               for count, dest in ((0, 32768), (1, 32768), (97, 32768), (97, 8193))]
     with tempfile.TemporaryDirectory(prefix="pizdos-wat-copy-addresses-") as directory:
         work = Path(directory)
