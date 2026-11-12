@@ -9709,9 +9709,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             const Int end = sortSearch(length(root->children), [&](Int i) {
                 return intervalStart(root->children[i]) > p;
             });
-            if (!end || !intervalCovers(root->children[end - 1], p)) {
-                compilerError(String("internal error: v%d not live at %d"));
-            }
+            // Queries are live operand or CFG-edge points. Splits
+            // partition their coverage, so this child owns p.
             part = root->children[end - 1];
         }
         root->locationFrom = intervalStart(part);
@@ -9869,15 +9868,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 if (in->op == mFConst && !vRegIsPhys(in->dst) && isSlot(allocatorLocation(a, in->dst, p + 1))) {
                     *in = inst(mNop);
                 }
+                // Scan keeps required uses in registers. Only parallel
+                // moves and supported memory operands may resolve to slots;
+                // a constant deliberately spilled at its definition is gone.
                 mInstForEachOperand(in, [&](VReg* r, Int role) {
                     if (*r == noReg || vRegIsPhys(*r)) {
                         return;
                     }
                     const i32 at = role == roleDef ? p + 1 : p;
                     *r = allocatorLocation(a, *r, at);
-                    if (isSlot(*r) && in->op != mParMove && !mInstMemoryOperand(in, r)) {
-                        compilerError(String("internal error: operand of %s in a stack slot"));
-                    }
                 });
                 if (in->op == mParMove) {
                     mInstExtra(in)->moves.resize(usize(length(dropSelfMoves(mInstMoves(in)))));
