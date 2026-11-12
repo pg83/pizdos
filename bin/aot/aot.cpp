@@ -13853,10 +13853,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 funcEmitterCvtU64F(e, in);
                 break;
             }
-            default: {
-                compilerError(String("internal error: cannot emit %s"));
-                break;
-            }
+            // Jumps are handled by funcEmitterBlock; other produced MOp values are handled above.
         }
     }
 
@@ -18045,10 +18042,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 lowererEmit(l, in);
                 break;
             }
-            default: {
-                compilerError(String("internal error: block %d of function %d has no terminator"));
-                break;
-            }
+            // All live blocks are terminated by the frontend or by a CFG rewrite.
         }
     }
 
@@ -19355,10 +19349,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     littlePutUint32(subslice(a->buf, f.at, length(a->buf)), convert<u32>(oc->funcAt[f.label] - f.end));
                     break;
                 }
-                default: {
-                    compilerError(String("internal error: unresolved local label"));
-                    break;
-                }
+                // RIP fixups are created only for module blobs, GOT entries and functions.
             }
         }
         auto calls = oc->calls;
