@@ -79,7 +79,7 @@ int main(int argc, char** argv) {
             int selected = number != 0;
             if (number == 0) {
                 char path[96];
-                snprintf(path, sizeof(path), "/proc/%ld/fd/%llu", (long)thread, registers.rdi);
+                snprintf(path, sizeof(path), "/proc/%ld/fd/%llu", (long)thread, (unsigned long long)registers.rdi);
                 struct stat target;
                 selected = stat(path, &target) == 0 && target.st_dev == input.st_dev && target.st_ino == input.st_ino;
             }
