@@ -2123,9 +2123,8 @@ namespace {
 
     template <typename T, typename U>
     static T shiftRight(T value, U amount) {
-        if (u64(amount) >= sizeof(T) * 8) {
-            return value < T(0) ? T(-1) : T(0);
-        }
+        // Counts are fixed byte/bit positions, masked Wasm counts, or LEB
+        // remainders of 1..7 bits, all below this operand's width.
         return T(value >> amount);
     }
 
@@ -12728,9 +12727,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void frontendLoad(Frontend* fe, ValType t, Int width, bool signedValue) {
         auto temporary644 = frontendMemarg(fe);
         i64 offset = temporary644.v0;
-        if (fe->cur < 0) {
-            return;
-        }
+        // frontendBody sends unreachable operators to frontendSkip.
         i32 addr = frontendPop(fe);
         i32 v = frontendEmit(fe, OpLoad, t, offset, Span<const i32>({addr}));
         fe->f->values[v].aux2 = convert<i32>(makeMemKind(width, signedValue));
@@ -13276,9 +13273,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void frontendStore(Frontend* fe, Int width) {
         auto temporary683 = frontendMemarg(fe);
         i64 offset = temporary683.v0;
-        if (fe->cur < 0) {
-            return;
-        }
+        // frontendBody sends unreachable operators to frontendSkip.
         i32 val = frontendPop(fe);
         i32 addr = frontendPop(fe);
         i32 v = frontendEmit(fe, OpStore, TNone, offset, Span<const i32>({addr, val}));
@@ -20218,11 +20213,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (t->kind == TermIf || t->kind == TermSwitch) {
             setMap(own, optimizerResolve(o, t->value), own[optimizerResolve(o, t->value)] + 1);
         }
-        auto values = t->values;
-        for (Int i = 0; i < length(values); ++i) {
-            i32 v = values[i];
-            setMap(own, optimizerResolve(o, v), own[optimizerResolve(o, v)] + 1);
-        }
+        // The sole caller passes a TermIf/TermSwitch, whose values are empty.
         auto edges = t->edges;
         for (Int i = 0; i < length(edges); ++i) {
             Edge e = edges[i];
@@ -23247,11 +23238,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             case OpGeS: {
                 return boolean(sa >= sb);
             }
-            case OpGeU: {
-                return boolean(a >= b);
-            }
         }
-        return {u64(0LL), false};
+        // Both callers select binary isIntOp operations; OpGeU remains.
+        return boolean(a >= b);
     }
 
     static u64 foldUnary(Op op, ValType t, ValType from, u64 a) {
