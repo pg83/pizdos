@@ -10668,10 +10668,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     }
                 }
                 const i32 use = intervalNextUse(part, from);
+                // Block positions are even, and its first operand is at
+                // from+2 (a definition at from+3). A remaining use is inside
+                // part, so [from+1, use] contains an even split before its end.
                 const i32 at = use < maxPos ? allocatorSplitPos(a, from + 1, use) : -1;
-                if (use < maxPos && (at <= from || at >= intervalEnd(part))) {
-                    return;
-                }
                 const VReg reg = part->reg;
                 Interval* head = intervalStart(part) < from ? intervalSplit(part, from) : part;
                 if (at > intervalStart(head)) {
