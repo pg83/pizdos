@@ -48,7 +48,7 @@ def program(kind, owner, name="value", *, kernel=False, parameter=False):
     return module + section(10, b"\1" + leb(len(body)) + body)
 
 
-def wide_program(kinds, named):
+def wide_program(kinds, named, keep_all=False):
     types = {"i32": 0x7f, "i64": 0x7e, "f32": 0x7d, "f64": 0x7c}
     zero = {"i32": b"\x41\0", "i64": b"\x42\0", "f32": b"\x43" + bytes(4), "f64": b"\x44" + bytes(8)}
     results = list(reversed(kinds))
@@ -57,16 +57,20 @@ def wide_program(kinds, named):
     module = b"\0asm\1\0\0\0" + section(1, b"\2" + signature + b"\x60\0\0")
     module += section(2, b"\1" + text("kernel") + text("getpid") + b"\0\0") + section(3, b"\1\1")
     if results:
-        module += section(6, b"\1" + bytes([types[results[0]], 1]) + zero[results[0]] + b"\x0b")
+        kept = results if keep_all else results[:1]
+        module += section(6, leb(len(kept)) + b"".join(bytes([types[kind], 1]) + zero[kind] + b"\x0b" for kind in kept))
     exports = text("_start") + b"\0\1"
     if named:
         exports += text("alias") + b"\0\0"
     module += section(7, bytes([2 if named else 1]) + exports)
     code = b"".join(zero[kind] for kind in kinds) + b"\x10\0"
     if results:
-        # Keep one result observable and discard the rest. A rejected ABI
-        # still has to produce a well-formed object in either call form.
-        code += b"\x1a" * (len(results) - 1) + b"\x24\0"
+        # Rejected ABIs still produce a well-formed object, including when
+        # every returned value remains live until its own global store.
+        if keep_all:
+            code += b"".join(b"\x24" + leb(index) for index in reversed(range(len(results))))
+        else:
+            code += b"\x1a" * (len(results) - 1) + b"\x24\0"
     body = b"\0" + code + b"\x0b"
     return module + section(10, b"\1" + leb(len(body)) + body)
 
@@ -85,6 +89,7 @@ def main():
             kinds = [pattern[index % len(pattern)] for index in range(count)]
             for named in (False, True):
                 cases.append((f"wide-{pattern}-{count}-{named}", wide_program(kinds, named), False, "import kernel.getpid is"))
+                cases.append((f"live-wide-{pattern}-{count}-{named}", wide_program(kinds, named, True), False, "import kernel.getpid is"))
     env = dict(os.environ, W2X_MEMORY_TAIL="strict", W2X_TAIL_PROFILE="")
     with tempfile.TemporaryDirectory(prefix="pizdos-import-errors-") as directory:
         work = Path(directory)
