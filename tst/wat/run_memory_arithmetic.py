@@ -64,6 +64,11 @@ def program(template):
                     f"(i32.const {quotient})) (then unreachable))",
                     f"(if (i32.ne (i32.load (i32.const 4112)) (i32.const {signed(before + quotient)})) (then unreachable))"))
                 checks += 1
+    # Discarding the old page count must retain growth and its limit.
+    for delta, size in ((1, 2), (1, 2), (0, 2)):
+        statements.extend((f"(drop (memory.grow (i32.const {delta})))",
+                           f"(if (i32.ne (memory.size) (i32.const {size})) (then unreachable))"))
+        checks += 1
     return template.rstrip()[:-1] + '\n(func (export "_start")\n' + "\n".join(statements) + "\n))\n", checks
 
 

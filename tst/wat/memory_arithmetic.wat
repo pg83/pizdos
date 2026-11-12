@@ -1,5 +1,5 @@
 (module
-  (memory 1)
+  (memory 1 2)
   (global (export "__stack_pointer") (mut i32) (i32.const 32768))
 
   (func $add32 (param $address i32) (param $right f32) (result f32)
