@@ -2,7 +2,7 @@
 """Fetch a Go program's modules, or build the program.
 
     go.py download <go> <source dir> <modules.tar>
-    go.py build <go> <source dir> <output> [--wasip1] [--cover] [--tags <tags>] [--modules <modules.tar>] [--runtime <dir>] [--embed <file>]
+    go.py build <go> <source dir> <output> [--wasip1] [--cover] [--tags <tags>] [--ldflags <flags>] [--modules <modules.tar>] [--runtime <dir>] [--embed <file>]
     go.py test <go> <source dir> <stamp> [--runtime <dir>] [--embed <file>]
 
 download runs `go mod download` on the directory's go.mod and go.sum, which
@@ -137,6 +137,10 @@ def build(go, source, output, *flags, work):
     fork = take(flags, "--runtime")
     tags = take(flags, "--tags")
     options = ["-tags=" + tags] if tags else []
+    ldflags = take(flags, "--ldflags")
+
+    if ldflags:
+        options.append("-ldflags=" + ldflags)
 
     if "--cover" in flags:
         flags.remove("--cover")

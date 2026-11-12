@@ -200,7 +200,8 @@ def run(destination, suite):
             failed = False
             print(f"coverage: {name}", flush=True)
             try:
-                result = subprocess.run(command, capture_output=True, text=True, timeout=900)
+                result = subprocess.run(command, capture_output=True, text=True, timeout=900,
+                                        env=dict(os.environ, GOCOVERDIR=str(profiles)))
                 (destination / (name + ".log")).write_text(result.stdout + result.stderr)
                 if result.returncode:
                     failed = True

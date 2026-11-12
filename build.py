@@ -391,6 +391,19 @@ vm = command(
     descr="GO", color="light-blue",
 )
 
+runtime_abi_vms = []
+for mode in ("version", "layout"):
+    output = f"$(B)/tst/runtime_abi/{mode}"
+    runtime_abi_vms.append(command(
+        name=f"vm_runtime_{mode}",
+        inputs=[*WASM2O_SOURCES, *GO_RUNTIME, "$(S)/tst/runtime_abi/make.py"],
+        outputs=[output],
+        deps=[aot_aot, libstr],
+        cmd=["python3", "$(S)/tst/runtime_abi/make.py", GO, "$(S)", mode,
+             aot_aot.outputs[0], libstr.outputs[0], output],
+        descr="GO", color="light-blue",
+    ))
+
 vm_coverage = command(
     name="vm_coverage",
     inputs=[*WASM2O_SOURCES, *GO_RUNTIME, "$(S)/dev/coverage_collect.go"],
@@ -797,6 +810,7 @@ E2E_TESTED = {
     "host_io": [vm, aot_native],
     "host_resources": [vm, aot_native, host_resources_check],
     "host_syscalls": [vm, aot_native, host_syscalls_check, host_syscalls_filter, host_syscalls_interrupt],
+    "runtime_abi": [vm, aot_native, *runtime_abi_vms],
     "host_signals": [vm, aot_native, wazero],
     "libc": [vm, libc_check_o],
     "large_functions": [vm, aot_native],
