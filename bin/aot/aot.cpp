@@ -9805,10 +9805,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     }
                     if (length(blk->succs) == 1) {
                         setMap(atEnd, b, appendSlice(atEnd[b], moves));
-                    } else if (length(mf->blocks[s].preds) == 1) {
-                        setMap(atStart, s, appendSlice(atStart[s], moves));
                     } else {
-                        compilerError(String("internal error: critical edge B%d->B%d needs moves"));
+                        // lowererEdgeBlock and the tail-range rewrite split
+                        // critical edges, so this successor has one predecessor.
+                        setMap(atStart, s, appendSlice(atStart[s], moves));
                     }
                 }
             }
@@ -10359,19 +10359,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 plain = plain && (insts[i].op == mAluImm || insts[i].op == mMov || insts[i].op == mLea || insts[i].op == mNop);
             }
             const auto preds = mf->blocks[h].preds;
-            Int jumping = 0;
-            for (Int k = 0; k < length(preds); ++k) {
-                const auto& pi = mf->blocks[preds[k]].insts;
-                jumping += pi.size() && pi[pi.size() - 1].op == mJmp && pi[pi.size() - 1].target == h;
-            }
-            if (!plain || jumping < 16) {
+            if (!plain || length(preds) < 16) {
                 continue;
             }
+            // Lowering split every critical edge, so a join's predecessors
+            // end in jumps. Earlier copies changed only predecessors whose
+            // sole target was their own dispatch, not this one.
             for (Int k = 0; k < length(preds); ++k) {
                 MBlock* p = &mf->blocks[preds[k]];
-                if (!p->insts.size() || p->insts[p->insts.size() - 1].op != mJmp || p->insts[p->insts.size() - 1].target != h) {
-                    continue;
-                }
                 p->insts.popBack();
                 for (usize i = 0; i < n; ++i) {
                     p->insts.pushBack(mf->blocks[h].insts[i]);
@@ -10464,44 +10459,34 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 // lowererCompare emits a comparison, and RMW flag branches
                 // use memory ALUs. FSelect emits its own float comparison.
                 const VReg r = in->dst;
-                // Back through the block, and a block it alone enters from.
-                i32 b = order[j];
-                Span<MInst> scan = insts;
-                Int k = i - 1;
-                for (Int hops = 0; hops < 4; ++hops) {
-                    bool done = false;
-                    for (; k >= 0 && !done; --k) {
-                        MInst* prior = &scan[k];
-                        if ((prior->op == mMov || prior->op == mFMov) && prior->dst == prior->src && prior->aux == 0) {
-                            continue;
-                        }
-                        if (prior->op == mLoad && prior->dst == r) {
-                            if (prior->aux == 0 && prior->dsize == 4) {
-                                if (prior->size > width) {
-                                    prior->size = width;
-                                }
-                                *in = inst(mNop);
-                            }
-                            done = true;
-                            break;
-                        }
-                        bool touches = false;
-                        mInstForEachOperand(prior, [&](VReg* o, Int) {
-                            touches = touches || *o == r;
-                        });
-                        auto clobbers = mInstClobberSet(prior, mf->registerClasses);
-                        for (Int c = 0; c < length(clobbers); ++c) {
-                            touches = touches || clobbers[c] == r;
-                        }
-                        done = touches;
+                // Cleanup merges linear SSA blocks. Lowering adds branch
+                // entries and joins; its only new blocks with a linear
+                // predecessor contain no masks. Scan this block alone.
+                for (Int k = i - 1; k >= 0; --k) {
+                    MInst* prior = &insts[k];
+                    if ((prior->op == mMov || prior->op == mFMov) && prior->dst == prior->src && prior->aux == 0) {
+                        continue;
                     }
-                    const auto preds = mf->blocks[b].preds;
-                    if (done || length(preds) != 1 || length(mf->blocks[preds[0]].succs) != 1) {
+                    if (prior->op == mLoad && prior->dst == r) {
+                        if (prior->aux == 0 && prior->dsize == 4) {
+                            if (prior->size > width) {
+                                prior->size = width;
+                            }
+                            *in = inst(mNop);
+                        }
                         break;
                     }
-                    b = preds[0];
-                    scan = mf->blocks[b].insts.view();
-                    k = length(scan) - 1;
+                    bool touches = false;
+                    mInstForEachOperand(prior, [&](VReg* o, Int) {
+                        touches = touches || *o == r;
+                    });
+                    auto clobbers = mInstClobberSet(prior, mf->registerClasses);
+                    for (Int c = 0; c < length(clobbers); ++c) {
+                        touches = touches || clobbers[c] == r;
+                    }
+                    if (touches) {
+                        break;
+                    }
                 }
             }
         }
@@ -13836,11 +13821,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         asmHere8(a, done2);
     }
 
+    // ParMove destinations are registers or writable spill slots. Constant
+    // slots have only an FConst definition, erased by Resolve, and inserted
+    // interval moves never write them.
     static void funcEmitterMove(FuncEmitter* e, VReg dst, VReg src) {
         Asm* a = e->a;
-        if (isSlot(dst) && slotOf(dst) >= constantSlot) {
-            compilerError(String("internal error: a move into a constant slot"));
-        }
         if (isSlot(dst) && isSlot(src)) {
             asmPushMem(a, funcEmitterSlotMem(e, slotOf(src)));
             asmPopMem(a, funcEmitterSlotMem(e, slotOf(dst)));
@@ -13948,11 +13933,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         });
     }
 
+    // ParMove calls this only for a cycle: its sources permute its writable
+    // destinations, so neither operand can be a read-only constant slot.
     static void funcEmitterSwap(FuncEmitter* e, VReg x, VReg y) {
         Asm* a = e->a;
-        if ((isSlot(x) && slotOf(x) >= constantSlot) || (isSlot(y) && slotOf(y) >= constantSlot)) {
-            compilerError(String("internal error: a swap with a constant slot"));
-        }
         if (isSlot(x)) {
             auto temporary716 = y;
             auto temporary717 = x;
