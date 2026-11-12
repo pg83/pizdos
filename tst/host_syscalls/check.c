@@ -199,25 +199,32 @@ int main(int argc, char** argv) {
         assert(fcntl(fd, F_SETFL, O_APPEND) == -1 && errno == EIO);
         assert((fcntl(fd, F_GETFL) & O_APPEND) == 0);
         assert(close(fd) == 0 && unlink("/tmp/locks") == 0);
-        pid_t child = fork();
-        assert(child >= 0);
-        if (child == 0) {
-            for (;;) {
-                __asm__ volatile("" ::: "memory");
+    } else if (strcmp(argv[1], "early-kill") == 0) {
+        // A child killed before it ran a single instruction ends all the
+        // same, and so does one that spins.
+        for (int spin = 0; spin != 2; ++spin) {
+            pid_t child = fork();
+            assert(child >= 0);
+            if (child == 0) {
+                for (;;) {
+                    __asm__ volatile("" ::: "memory");
+                }
             }
-        }
-        int status;
-        assert(waitpid(child, &status, 0) == -1 && errno == EIO);
-        assert(kill(child, SIGKILL) == 0);
-        pid_t waited;
-        do {
-            waited = waitpid(child, &status, WNOHANG);
-            assert(waited >= 0);
-            if (waited == 0) {
+            if (spin) {
                 sched_yield();
             }
-        } while (waited == 0);
-        assert(waited == child && WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL);
+            assert(kill(child, SIGKILL) == 0);
+            int status;
+            pid_t waited;
+            do {
+                waited = waitpid(child, &status, WNOHANG);
+                assert(waited >= 0);
+                if (waited == 0) {
+                    sched_yield();
+                }
+            } while (waited == 0);
+            assert(waited == child && WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL);
+        }
     } else if (strcmp(argv[1], "pty-attributes") == 0) {
         struct termios attributes = {0};
         attributes.c_cflag = CS8 | CREAD;

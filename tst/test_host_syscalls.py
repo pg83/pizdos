@@ -185,7 +185,7 @@ def main():
                     assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), (operation, result)
                 if operation == "host-pathname":
                     (work / "host.socket").unlink()
-            for operation in ("long-realpath", "exec-wasi"):
+            for operation in ("long-realpath", "exec-wasi", "early-kill"):
                 result = subprocess.run([vm, "run", "--root", str(work), "--", str(obj), operation],
                                         capture_output=True, env=env, timeout=30)
                 assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), (operation, result)
