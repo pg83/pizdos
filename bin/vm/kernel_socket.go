@@ -190,6 +190,13 @@ func (p *Process) socketFile(fd uint32) (*File, error) {
 // connect connects as a blocking socket does, unless the guest asked for a
 // nonblocking one: it waits for the host's connection and its error.
 func (p *Process) connect(f *File, addr []byte) error {
+	timeout := f.timeout(pollOut)
+	var deadline time.Time
+
+	if timeout >= 0 {
+		deadline = time.Now().Add(time.Duration(timeout) * time.Millisecond)
+	}
+
 	for {
 		_, err := sockcall(syscall.SYS_CONNECT, uintptr(f.fd), bufferPointer(addr), uintptr(len(addr)))
 
@@ -201,7 +208,30 @@ func (p *Process) connect(f *File, addr []byte) error {
 			return err
 		}
 
-		ready, werr := p.waitFds([]pollFd{{fd: int32(f.fd), events: pollOut}}, f.timeout(pollOut), true)
+		if err == syscall.EAGAIN {
+			// A full UNIX listen queue leaves this socket unconnected: poll
+			// reports OUT|HUP immediately. Retry after an interruptible wait,
+			// keeping one send deadline across retries, as Linux connect does.
+			wait := 10
+
+			if timeout >= 0 {
+				remaining := time.Until(deadline)
+
+				if remaining <= 0 {
+					return syscall.EAGAIN
+				}
+
+				wait = min(wait, int((remaining+time.Millisecond-1)/time.Millisecond))
+			}
+
+			if _, werr := p.waitFds(nil, wait, true); werr != nil {
+				return werr
+			}
+
+			continue
+		}
+
+		ready, werr := p.waitFds([]pollFd{{fd: int32(f.fd), events: pollOut}}, timeout, true)
 
 		if werr != nil {
 			return werr
@@ -209,10 +239,6 @@ func (p *Process) connect(f *File, addr []byte) error {
 
 		if ready == 0 {
 			return syscall.ETIMEDOUT
-		}
-
-		if err == syscall.EAGAIN {
-			continue
 		}
 
 		code, gerr := syscall.GetsockoptInt(f.fd, syscall.SOL_SOCKET, syscall.SO_ERROR)
