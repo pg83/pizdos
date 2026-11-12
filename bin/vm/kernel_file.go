@@ -4,327 +4,118 @@ package main
 
 import (
 	"encoding/binary"
-	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
 )
 
-// File is an open file description: a host descriptor of the kernel's,
-// shared by the descriptors and processes that refer to it. A pollable file
-// can block: a pipe, a FIFO, a terminal, a socket, another character
-// device. One the kernel opened itself is nonblocking on the host and a
-// guest's call blocks by polling, unless the guest set O_NONBLOCK; one
-// inherited from the host keeps its host flags, and a call polls first.
-// Either way a blocking call polls the process's wake descriptor too, so a
-// signal interrupts it.
-type File struct {
-	fd       int
-	refs     atomic.Int32
-	pollable bool
-	owned    bool
-	// nonblock is the guest's O_NONBLOCK.
-	nonblock atomic.Bool
-	// A socket's SO_RCVTIMEO and SO_SNDTIMEO in milliseconds, 0 for none,
-	// which its blocking calls keep; the guest path an AF_UNIX socket is
-	// bound to (kernel_socket.go).
-	recvTimeout atomic.Int64
-	sendTimeout atomic.Int64
-	unixName    atomic.Pointer[string]
-}
+// The calls on a descriptor: each finds the role its object plays
+// (kernel_object.go) and leaves the rest to it.
 
-// timeout is the milliseconds a blocking transfer of events waits, or -1.
-func (f *File) timeout(events int16) int {
-	ms := f.sendTimeout.Load()
-
-	if events&pollIn != 0 {
-		ms = f.recvTimeout.Load()
-	}
-
-	if ms == 0 {
-		return -1
-	}
-
-	return int(min(ms, maxPollWaitMs))
-}
-
-type Descriptor struct {
-	file    *File
-	cloexec bool
-}
-
-const (
-	pollIn   = 0x1
-	pollOut  = 0x4
-	pollErr  = 0x8
-	pollHup  = 0x10
-	pollNval = 0x20
-)
-
-func newFile(fd int, owned bool) *File {
-	f := &File{fd: fd, owned: owned}
-	f.refs.Store(1)
-	var st syscall.Stat_t
-
-	if syscall.Fstat(fd, &st) == nil {
-		switch st.Mode & syscall.S_IFMT {
-		case syscall.S_IFIFO, syscall.S_IFSOCK, syscall.S_IFCHR:
-			f.pollable = true
-		}
-	}
-
-	fl, _ := fcntl(fd, syscall.F_GETFL, 0)
-	f.nonblock.Store(fl&syscall.O_NONBLOCK != 0)
-
-	if owned && f.pollable {
-		fcntl(fd, syscall.F_SETFL, fl|syscall.O_NONBLOCK)
-	}
-
-	return f
-}
-
-func (f *File) ref() *File {
-	f.refs.Add(1)
-
-	return f
-}
-
-func (f *File) unref() {
-	if f.refs.Add(-1) == 0 {
-		syscall.Close(f.fd)
-	}
-}
-
-// fd is the open file of a descriptor.
-func (p *Process) fd(fd uint32) (*File, error) {
-	if int(fd) >= len(p.files) || p.files[fd] == nil {
-		return nil, syscall.EBADF
-	}
-
-	return p.files[fd].file, nil
-}
-
-// install puts a file at the lowest free descriptor from min; the
-// descriptor takes the reference.
-func (p *Process) install(f *File, min int, cloexec bool) (int, error) {
-	limit := int(min64(p.limits[rlimitNofile].cur, 1<<20))
-
-	for fd := min; fd < limit; fd++ {
-		if fd >= len(p.files) {
-			p.files = append(p.files, make([]*Descriptor, fd+1-len(p.files))...)
-		}
-
-		if p.files[fd] == nil {
-			p.files[fd] = &Descriptor{file: f, cloexec: cloexec}
-
-			return fd, nil
-		}
-	}
-
-	f.unref()
-
-	return -1, syscall.EMFILE
-}
-
-func min64(a, b uint64) uint64 {
-	return min(a, b)
-}
-
-func (p *Process) closeFd(fd int) bool {
-	if fd < 0 || fd >= len(p.files) || p.files[fd] == nil {
-		return false
-	}
-
-	p.files[fd].file.unref()
-	p.files[fd] = nil
-
-	return true
-}
-
-// wakeSignal reports whether a signal interrupts a blocking call: one the
-// process would deliver now. It drains the wake descriptor first, so a
-// signal sent after the check makes the next poll return.
-func (p *Process) wakeSignal() bool {
-	var b [8]byte
-	syscall.Read(p.wake, b[:])
-
-	return p.sig.deliverable() != 0
-}
-
-// waitFds polls host descriptors and the wake descriptor until one is ready,
-// the timeout in milliseconds passes, or a signal interrupts: then the
-// error is EINTR, after the handlers ran when all of them restart calls and
-// restart is set.
-func (p *Process) waitFds(fds []pollFd, timeout int, restart bool) (int, error) {
-	all := append(fds, pollFd{fd: int32(p.wake), events: pollIn})
-
-	for {
-		if p.wakeSignal() {
-			if restart && p.interrupted() {
-				continue
-			}
-
-			return 0, syscall.EINTR
-		}
-
-		for i := range all {
-			all[i].revents = 0
-		}
-
-		n, err := poll(all, timeout)
-
-		if err == syscall.EINTR {
-			continue
-		}
-
-		if err != nil {
-			return 0, err
-		}
-
-		if all[len(all)-1].revents != 0 {
-			n--
-
-			if n == 0 {
-				continue
-			}
-		}
-
-		copy(fds, all)
-
-		return n, nil
-	}
-}
-
-// ioMode is how one transfer goes: nonblock as with MSG_DONTWAIT, quiet
-// with MSG_NOSIGNAL, an EPIPE without SIGPIPE.
-type ioMode struct {
-	nonblock bool
-	quiet    bool
-}
-
-// transfer runs a read or a write of f, blocking as described at File.
-func (p *Process) transfer(f *File, events int16, op func() (int, error)) (int, error) {
-	return p.transferMode(f, events, ioMode{}, op)
-}
-
-// transferMode is transfer of a mode; a socket's timeout ends a blocking
-// wait with EAGAIN.
-func (p *Process) transferMode(f *File, events int16, mode ioMode, op func() (int, error)) (int, error) {
-	nonblock := mode.nonblock || f.nonblock.Load()
-	timeout := f.timeout(events)
-
-	for {
-		if f.pollable && !f.owned {
-			wait := timeout
-
-			if nonblock {
-				wait = 0
-			}
-
-			n, err := p.waitFds([]pollFd{{fd: int32(f.fd), events: events}}, wait, timeout < 0)
-
-			if err != nil {
-				return 0, err
-			}
-
-			if n == 0 {
-				return 0, syscall.EAGAIN
-			}
-		}
-
-		n, err := op()
-
-		if err == syscall.EINTR {
-			continue
-		}
-
-		if err == syscall.EAGAIN && f.pollable && f.owned && !nonblock {
-			ready, err := p.waitFds([]pollFd{{fd: int32(f.fd), events: events}}, timeout, timeout < 0)
-
-			if err != nil {
-				return 0, err
-			}
-
-			if ready == 0 {
-				return 0, syscall.EAGAIN
-			}
-
-			continue
-		}
-
-		if err == syscall.EPIPE && !mode.quiet {
-			p.sendSelf(int(syscall.SIGPIPE))
-		}
-
-		return n, err
-	}
-}
-
-func (p *Process) readFile(f *File, b []byte) (int, error) {
-	if chaosFail("read") {
-		return 0, syscall.EIO
-	}
-
-	return p.transfer(f, pollIn, func() (int, error) {
-		return syscall.Read(f.fd, b)
-	})
-}
-
-func (p *Process) writeFile(f *File, b []byte) (int, error) {
-	if chaosFail("write") {
-		return 0, syscall.EIO
-	}
-
-	return p.transfer(f, pollOut, func() (int, error) {
-		return syscall.Write(f.fd, b)
-	})
-}
-
-// iovecs reads a guest iovec array as host iovecs into memory, which stays
-// where it is during the call.
-func (p *Process) iovecs(iovs uint32, count uint32) ([]syscall.Iovec, error) {
+// ioSpans reads a guest iovec array as spans of memory, which stays where
+// it is during the call.
+func (p *Process) ioSpans(iovs uint32, count uint32) ([][]byte, error) {
 	if count > 1024 {
 		return nil, syscall.EINVAL
 	}
 
 	table := p.span(iovs, 8*count)
-	out := make([]syscall.Iovec, 0, count)
+	out := make([][]byte, 0, count)
 
 	for i := range count {
 		base, n := binary.LittleEndian.Uint32(table[8*i:]), binary.LittleEndian.Uint32(table[8*i+4:])
 		b := p.span(base, n)
 
 		if n > 0 {
-			out = append(out, syscall.Iovec{Base: &b[0], Len: uint64(n)})
+			out = append(out, b)
 		}
 	}
 
 	return out, nil
 }
 
-// vectored runs readv or writev, or with an offset preadv or pwritev.
+// iovecs reads a guest iovec array as host iovecs into memory.
+func (p *Process) iovecs(iovs uint32, count uint32) ([]syscall.Iovec, error) {
+	spans, err := p.ioSpans(iovs, count)
+
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]syscall.Iovec, 0, len(spans))
+
+	for _, b := range spans {
+		out = append(out, syscall.Iovec{Base: &b[0], Len: uint64(len(b))})
+	}
+
+	return out, nil
+}
+
+// vectored runs readv or writev, or with an offset preadv or pwritev: the
+// host's on a host object, else one transfer of the gathered bytes, which
+// a read scatters.
 func (p *Process) vectored(fd, iovs, count uint32, events int16, call uintptr, off uint64) uint32 {
-	f, err := p.fd(fd)
+	t, err := p.transferAt(fd, events == pollIn)
 
 	if err != nil {
 		return p.result(0, err)
 	}
 
-	v, err := p.iovecs(iovs, count)
+	spans, err := p.ioSpans(iovs, count)
 
-	if err != nil || len(v) == 0 {
+	if err != nil || len(spans) == 0 {
 		return p.result(0, err)
 	}
 
-	n, err := p.transfer(f, events, func() (int, error) {
-		r, _, e := syscall.Syscall6(call, uintptr(f.fd), uintptr(unsafe.Pointer(&v[0])), uintptr(len(v)), uintptr(off), 0, 0)
+	if v, ok := t.(Vectored); ok {
+		iov := make([]syscall.Iovec, 0, len(spans))
 
-		if e != 0 {
-			return 0, e
+		for _, b := range spans {
+			iov = append(iov, syscall.Iovec{Base: &b[0], Len: uint64(len(b))})
 		}
 
-		return int(r), nil
-	})
+		return p.result(v.vectored(p, call, iov, off, events))
+	}
+
+	total := 0
+
+	for _, b := range spans {
+		total += len(b)
+	}
+
+	buf := make([]byte, 0, total)
+	positioned := call == syscall.SYS_PREADV || call == syscall.SYS_PWRITEV
+
+	if events == pollOut {
+		for _, b := range spans {
+			buf = append(buf, b...)
+		}
+
+		if positioned {
+			return p.result(t.pwrite(p, buf, int64(off)))
+		}
+
+		return p.result(t.write(p, buf, ioMode{}))
+	}
+
+	buf = buf[:total]
+	var n int
+
+	if positioned {
+		n, err = t.pread(p, buf, int64(off))
+	} else {
+		n, err = t.read(p, buf, ioMode{})
+	}
+
+	at := 0
+
+	for _, b := range spans {
+		if at >= n {
+			break
+		}
+
+		at += copy(b, buf[at:n])
+	}
 
 	return p.result(n, err)
 }
@@ -345,9 +136,6 @@ func (p *Process) waitLock(block bool, try func() error) error {
 	}
 }
 
-// Record locks are the host's open file description locks: a guest's lock
-// is its open file's, which fork shares, and does not end when another
-// descriptor of the process closes.
 const (
 	fGetlk    = 5
 	fSetlk    = 6
@@ -359,20 +147,12 @@ const (
 	fUnlck    = 2
 )
 
-func fcntlLock(fd int, cmd int, lk *syscall.Flock_t) error {
-	if _, _, e := syscall.Syscall(syscall.SYS_FCNTL, uintptr(fd), uintptr(cmd), uintptr(unsafe.Pointer(lk))); e != 0 {
-		return e
-	}
-
-	return nil
-}
-
 // recordLock runs F_GETLK, F_SETLK or F_SETLKW with a guest struct flock.
-func (p *Process) recordLock(f *File, cmd, at uint32) error {
+func (p *Process) recordLock(l Locker, cmd, at uint32) error {
 	lk := syscall.Flock_t{Type: int16(p.u16(at)), Whence: int16(p.u16(at + 2)), Start: int64(p.u64(at + 8)), Len: int64(p.u64(at + 16))}
 
 	if cmd == fGetlk {
-		if err := fcntlLock(f.fd, fOfdGetlk, &lk); err != nil {
+		if err := l.recordLock(fOfdGetlk, &lk); err != nil {
 			return err
 		}
 
@@ -386,7 +166,7 @@ func (p *Process) recordLock(f *File, cmd, at uint32) error {
 	}
 
 	return p.waitLock(cmd == fSetlkw, func() error {
-		return fcntlLock(f.fd, fOfdSetlk, &lk)
+		return l.recordLock(fOfdSetlk, &lk)
 	})
 }
 
@@ -406,11 +186,9 @@ func (s fdSet) set(p *Process, fd int) {
 const (
 	sysSyncfs        = 306
 	sysCopyFileRange = 326
-	pollPri          = 0x2
 	fdSetsize        = 1024
 	pollInSet        = pollIn | pollHup | pollErr
 	pollOutSet       = pollOut | pollErr
-	maxPollWaitMs    = 1 << 30
 )
 
 // selectFds waits as select does, with a timeout in milliseconds, and
@@ -420,7 +198,7 @@ func (p *Process) selectFds(n uint32, sets [3]fdSet, timeout int) (int, error) {
 		return 0, syscall.EINVAL
 	}
 
-	var host []pollFd
+	var entries []pollEntry
 	var fds []int
 
 	for fd := range int(n) {
@@ -436,17 +214,17 @@ func (p *Process) selectFds(n uint32, sets [3]fdSet, timeout int) (int, error) {
 			continue
 		}
 
-		f, err := p.fd(uint32(fd))
+		obj, err := p.fd(uint32(fd))
 
 		if err != nil {
 			return 0, err
 		}
 
-		host = append(host, pollFd{fd: int32(f.fd), events: events})
+		entries = append(entries, pollEntry{obj: obj, events: events})
 		fds = append(fds, fd)
 	}
 
-	ready, err := p.waitFds(host, timeout, false)
+	ready, err := p.waitObjects(entries, timeout, false)
 
 	if err != nil {
 		return 0, err
@@ -460,7 +238,7 @@ func (p *Process) selectFds(n uint32, sets [3]fdSet, timeout int) (int, error) {
 
 	count := 0
 
-	for i, h := range host {
+	for i, e := range entries {
 		if ready == 0 {
 			break
 		}
@@ -469,7 +247,7 @@ func (p *Process) selectFds(n uint32, sets [3]fdSet, timeout int) (int, error) {
 		// table throughout the non-restarting wait. A signal returns EINTR
 		// before a handler could close one and let the wait poll it again.
 		for k, mask := range []int16{pollInSet, pollOutSet, pollPri} {
-			if h.events&[]int16{pollIn, pollOut, pollPri}[k] != 0 && h.revents&mask != 0 {
+			if e.events&[]int16{pollIn, pollOut, pollPri}[k] != 0 && e.revents&mask != 0 {
 				sets[k].set(p, fds[i])
 				count++
 			}
@@ -477,11 +255,6 @@ func (p *Process) selectFds(n uint32, sets [3]fdSet, timeout int) (int, error) {
 	}
 
 	return count, nil
-}
-
-// waitMs is a timeout in milliseconds of poll, rounded up and bounded.
-func waitMs(d time.Duration) int {
-	return int(min((d+time.Millisecond-1)/time.Millisecond, maxPollWaitMs))
 }
 
 // withMask runs a wait with the signal mask of pselect or ppoll, when
@@ -505,59 +278,48 @@ func (p *Process) withMask(mask uint32, wait func() (int, error)) (int, error) {
 }
 
 func (p *Process) libcRead(fd, buf, n uint32) uint32 {
-	f, err := p.fd(fd)
+	t, err := p.transferAt(fd, true)
 
 	if err != nil {
 		return p.result(0, err)
 	}
 
-	r, err := p.readFile(f, p.span(buf, n))
-
-	return p.result(r, err)
+	return p.result(t.read(p, p.span(buf, n), ioMode{}))
 }
 
 func (p *Process) libcWrite(fd, buf, n uint32) uint32 {
-	f, err := p.fd(fd)
+	t, err := p.transferAt(fd, false)
 
 	if err != nil {
 		return p.result(0, err)
 	}
 
-	r, err := p.writeFile(f, p.span(buf, n))
-
-	return p.result(r, err)
+	return p.result(t.write(p, p.span(buf, n), ioMode{}))
 }
 
 func (p *Process) libcPread(fd, buf, n uint32, off uint64) uint32 {
-	f, err := p.fd(fd)
+	t, err := p.transferAt(fd, true)
 
 	if err != nil {
 		return p.result(0, err)
 	}
 
-	r, err := p.transfer(f, pollIn, func() (int, error) {
-		return syscall.Pread(f.fd, p.span(buf, n), int64(off))
-	})
-
-	return p.result(r, err)
+	return p.result(t.pread(p, p.span(buf, n), int64(off)))
 }
 
 func (p *Process) libcPwrite(fd, buf, n uint32, off uint64) uint32 {
-	f, err := p.fd(fd)
+	t, err := p.transferAt(fd, false)
 
 	if err != nil {
 		return p.result(0, err)
 	}
 
-	r, err := p.transfer(f, pollOut, func() (int, error) {
-		return syscall.Pwrite(f.fd, p.span(buf, n), int64(off))
-	})
-
-	return p.result(r, err)
+	return p.result(t.pwrite(p, p.span(buf, n), int64(off)))
 }
 
 // copy_file_range is the host's between the host descriptors; an offset
-// given is read from the guest's memory and written back.
+// given is read from the guest's memory and written back. An object of
+// the kernel is not a file of the host: EINVAL, as a pipe is to Linux.
 func (p *Process) libcCopy_file_range(in, offIn, out, offOut, n, flags uint32) uint32 {
 	src, err := p.fd(in)
 
@@ -569,6 +331,10 @@ func (p *Process) libcCopy_file_range(in, offIn, out, offOut, n, flags uint32) u
 
 	if err != nil {
 		return p.result(0, err)
+	}
+
+	if src.host() < 0 || dst.host() < 0 {
+		return p.result(0, syscall.EINVAL)
 	}
 
 	var from, to *int64
@@ -583,7 +349,7 @@ func (p *Process) libcCopy_file_range(in, offIn, out, offOut, n, flags uint32) u
 		*to = int64(p.u64(offOut))
 	}
 
-	r, _, e := syscall.Syscall6(sysCopyFileRange, uintptr(src.fd), uintptr(unsafe.Pointer(from)), uintptr(dst.fd),
+	r, _, e := syscall.Syscall6(sysCopyFileRange, uintptr(src.host()), uintptr(unsafe.Pointer(from)), uintptr(dst.host()),
 		uintptr(unsafe.Pointer(to)), uintptr(n), uintptr(flags))
 
 	if e != 0 {
@@ -602,10 +368,10 @@ func (p *Process) libcCopy_file_range(in, offIn, out, offOut, n, flags uint32) u
 }
 
 func (p *Process) libcFdatasync(fd uint32) uint32 {
-	f, err := p.fd(fd)
+	n, err := p.nodeAt(fd)
 
 	if err == nil {
-		err = syscall.Fdatasync(f.fd)
+		err = n.sync(true)
 	}
 
 	return p.result(0, err)
@@ -615,33 +381,39 @@ func (p *Process) libcSync() {
 	syscall.Sync()
 }
 
+// syncfs syncs the host file system of a host object; an object of the
+// kernel has nothing to sync.
 func (p *Process) libcSyncfs(fd uint32) uint32 {
-	f, err := p.fd(fd)
+	obj, err := p.fd(fd)
 
-	if err == nil {
-		if _, _, e := syscall.Syscall(sysSyncfs, uintptr(f.fd), 0, 0); e != 0 {
-			err = e
+	if err != nil {
+		return p.result(0, err)
+	}
+
+	if host := obj.host(); host >= 0 {
+		if _, _, e := syscall.Syscall(sysSyncfs, uintptr(host), 0, 0); e != 0 {
+			return p.result(0, e)
 		}
 	}
 
-	return p.result(0, err)
+	return p.result(0, nil)
 }
 
 func (p *Process) libcFlock(fd, op uint32) uint32 {
-	f, err := p.fd(fd)
+	l, err := p.lockerAt(fd)
 
 	if err != nil {
 		return p.result(0, err)
 	}
 
 	return p.result(0, p.waitLock(op&syscall.LOCK_NB == 0, func() error {
-		return syscall.Flock(f.fd, int(op|syscall.LOCK_NB))
+		return l.flock(int(op))
 	}))
 }
 
 // lockf locks from the file's offset, as fcntl's write locks.
 func (p *Process) libcLockf(fd, cmd uint32, n uint64) uint32 {
-	f, err := p.fd(fd)
+	l, err := p.lockerAt(fd)
 
 	if err != nil {
 		return p.result(0, err)
@@ -652,15 +424,15 @@ func (p *Process) libcLockf(fd, cmd uint32, n uint64) uint32 {
 	switch cmd {
 	case 0:
 		lk.Type = fUnlck
-		err = fcntlLock(f.fd, fOfdSetlk, &lk)
+		err = l.recordLock(fOfdSetlk, &lk)
 	case 1, 2:
 		err = p.waitLock(cmd == 1, func() error {
-			return fcntlLock(f.fd, fOfdSetlk, &lk)
+			return l.recordLock(fOfdSetlk, &lk)
 		})
 	case 3:
 		lk.Type = fRdlck
 
-		if err = fcntlLock(f.fd, fOfdGetlk, &lk); err == nil && lk.Type != fUnlck {
+		if err = l.recordLock(fOfdGetlk, &lk); err == nil && lk.Type != fUnlck {
 			err = syscall.EACCES
 		}
 	default:
@@ -672,33 +444,27 @@ func (p *Process) libcLockf(fd, cmd uint32, n uint64) uint32 {
 
 // posix_fadvise and posix_fallocate return an error number.
 func (p *Process) libcPosix_fadvise(fd uint32, off, n uint64, advice uint32) uint32 {
-	f, err := p.fd(fd)
+	node, err := p.nodeAt(fd)
 
 	if err != nil {
-		return uint32(syscall.EBADF)
+		return uint32(errnoOf(err))
 	}
 
-	_, _, e := syscall.Syscall6(syscall.SYS_FADVISE64, uintptr(f.fd), uintptr(off), uintptr(n), uintptr(advice), 0, 0)
+	if err := node.fadvise(int64(off), int64(n), int(advice)); err != nil {
+		return uint32(errnoOf(err))
+	}
 
-	return uint32(e)
+	return 0
 }
 
 func (p *Process) libcPosix_fallocate(fd uint32, off, n uint64) uint32 {
-	f, err := p.fd(fd)
+	node, err := p.nodeAt(fd)
 
 	if err != nil {
-		return uint32(syscall.EBADF)
+		return uint32(errnoOf(err))
 	}
 
-	for {
-		err = syscall.Fallocate(f.fd, 0, int64(off), int64(n))
-
-		if err != syscall.EINTR {
-			break
-		}
-	}
-
-	if err != nil {
+	if err := node.fallocate(int64(off), int64(n)); err != nil {
 		return uint32(errnoOf(err))
 	}
 
@@ -749,13 +515,13 @@ func (p *Process) libcPselect(n, r, w, e, ts, mask uint32) uint32 {
 }
 
 func (p *Process) libcLseek(fd uint32, off uint64, whence uint32) uint64 {
-	f, err := p.fd(fd)
+	s, err := p.seekerAt(fd)
 
 	if err != nil {
 		return p.result64(0, err)
 	}
 
-	return p.result64(syscall.Seek(f.fd, int64(off), int(whence)))
+	return p.result64(s.seek(int64(off), int(whence)))
 }
 
 func (p *Process) libcClose(fd uint32) uint32 {
@@ -767,13 +533,15 @@ func (p *Process) libcClose(fd uint32) uint32 {
 }
 
 func (p *Process) libcDup(fd uint32) uint32 {
-	f, err := p.fd(fd)
+	obj, err := p.fd(fd)
 
 	if err != nil {
 		return p.result(0, err)
 	}
 
-	return p.result(p.install(f.ref(), 0, false))
+	obj.ref()
+
+	return p.result(p.install(obj, 0, false))
 }
 
 func (p *Process) libcDup2(old, new uint32) uint32 {
@@ -793,11 +561,11 @@ func (p *Process) libcDup3(old, new, flags uint32) uint32 {
 }
 
 func (p *Process) libcTcflow(fd, action uint32) uint32 {
-	return p.termiosIoctl(fd, tcxonc, uintptr(action))
+	return p.termiosIoctl(fd, tcxonc, int(action))
 }
 
 func (p *Process) libcTcflush(fd, queue uint32) uint32 {
-	return p.termiosIoctl(fd, tcflsh, uintptr(queue))
+	return p.termiosIoctl(fd, tcflsh, int(queue))
 }
 
 // tcgetsid is the caller's session: the kernel keeps no session of
@@ -831,37 +599,27 @@ func (p *Process) libcCfsetispeed(at, speed uint32) uint32 {
 }
 
 func (p *Process) libcFsync(fd uint32) uint32 {
-	f, err := p.fd(fd)
+	n, err := p.nodeAt(fd)
 
 	if err == nil {
-		err = syscall.Fsync(f.fd)
+		err = n.sync(false)
 	}
 
 	return p.result(0, err)
 }
 
 func (p *Process) libcFtruncate(fd uint32, size uint64) uint32 {
-	f, err := p.fd(fd)
+	n, err := p.nodeAt(fd)
 
 	if err == nil {
-		err = syscall.Ftruncate(f.fd, int64(size))
+		err = n.truncate(int64(size))
 	}
 
 	return p.result(0, err)
 }
 
-// fileStat reads metadata for guest operations. Resource setup keeps using
-// Fstat directly, so a one-shot failure can be observed by the guest.
-func fileStat(fd int, st *syscall.Stat_t) error {
-	if chaosFail("file-stat") {
-		return syscall.EIO
-	}
-
-	return syscall.Fstat(fd, st)
-}
-
 func (p *Process) libcFstat(fd, at uint32) uint32 {
-	f, err := p.fd(fd)
+	obj, err := p.fd(fd)
 
 	if err != nil {
 		return p.result(0, err)
@@ -869,7 +627,7 @@ func (p *Process) libcFstat(fd, at uint32) uint32 {
 
 	var st syscall.Stat_t
 
-	if err := fileStat(f.fd, &st); err != nil {
+	if err := obj.stat(&st); err != nil {
 		return p.result(0, err)
 	}
 
@@ -879,104 +637,43 @@ func (p *Process) libcFstat(fd, at uint32) uint32 {
 }
 
 func (p *Process) libcFchmod(fd, mode uint32) uint32 {
-	f, err := p.fd(fd)
+	n, err := p.nodeAt(fd)
 
 	if err == nil {
-		err = syscall.Fchmod(f.fd, mode&0o7777)
+		err = n.chmod(mode & 0o7777)
 	}
 
 	return p.result(0, err)
 }
 
 func (p *Process) libcFchown(fd, uid, gid uint32) uint32 {
-	f, err := p.fd(fd)
+	n, err := p.nodeAt(fd)
 
 	if err == nil {
-		err = syscall.Fchown(f.fd, int(int32(uid)), int(int32(gid)))
+		err = n.chown(int(int32(uid)), int(int32(gid)))
 	}
 
 	return p.result(0, err)
 }
 
 func (p *Process) libcFutimes(fd, times uint32) uint32 {
-	f, err := p.fd(fd)
+	n, err := p.nodeAt(fd)
 
 	if err == nil {
-		err = utimensat(f.fd, nil, p.timevals(times), 0)
+		err = n.utimes(p.timevals(times))
 	}
 
 	return p.result(0, err)
 }
 
 func (p *Process) libcFutimens(fd, times uint32) uint32 {
-	f, err := p.fd(fd)
+	n, err := p.nodeAt(fd)
 
 	if err == nil {
-		err = utimensat(f.fd, nil, p.timespecs(times), 0)
+		err = n.utimes(p.timespecs(times))
 	}
 
 	return p.result(0, err)
-}
-
-// dupTo makes new refer to old's file, closing what new referred to.
-func (p *Process) dupTo(old, new uint32, cloexec bool) (int, error) {
-	f, err := p.fd(old)
-
-	if err != nil {
-		return 0, err
-	}
-
-	if uint64(new) >= p.limits[rlimitNofile].cur {
-		return 0, syscall.EBADF
-	}
-
-	if int(new) >= len(p.files) {
-		p.files = append(p.files, make([]*Descriptor, int(new)+1-len(p.files))...)
-	}
-
-	f.ref()
-	p.closeFd(int(new))
-	p.files[new] = &Descriptor{file: f, cloexec: cloexec}
-
-	return int(new), nil
-}
-
-func (p *Process) pipe(at, flags uint32) uint32 {
-	if flags&^(syscall.O_CLOEXEC|syscall.O_NONBLOCK) != 0 {
-		return p.result(0, syscall.EINVAL)
-	}
-
-	var ends [2]int
-
-	if err := syscall.Pipe2(ends[:], syscall.O_CLOEXEC); err != nil {
-		return p.result(0, err)
-	}
-
-	cloexec := flags&syscall.O_CLOEXEC != 0
-	var fds [2]int
-
-	for i, host := range ends {
-		f := newFile(host, true)
-		f.nonblock.Store(flags&syscall.O_NONBLOCK != 0)
-		fd, err := p.install(f, 0, cloexec)
-
-		if err != nil {
-			if i == 1 {
-				p.closeFd(fds[0])
-			} else {
-				syscall.Close(ends[1])
-			}
-
-			return p.result(0, err)
-		}
-
-		fds[i] = fd
-	}
-
-	p.put32(at, uint32(fds[0]))
-	p.put32(at+4, uint32(fds[1]))
-
-	return p.result(0, nil)
 }
 
 // varArg is the i-th int of a variadic call's argument area.
@@ -994,7 +691,7 @@ const (
 )
 
 func (p *Process) libcFcntl(fd, cmd, va uint32) uint32 {
-	f, err := p.fd(fd)
+	obj, err := p.fd(fd)
 
 	if err != nil {
 		return p.result(0, err)
@@ -1008,7 +705,9 @@ func (p *Process) libcFcntl(fd, cmd, va uint32) uint32 {
 			return p.result(0, syscall.EINVAL)
 		}
 
-		return p.result(p.install(f.ref(), int(min), cmd == fDupfdCloexec))
+		obj.ref()
+
+		return p.result(p.install(obj, int(min), cmd == fDupfdCloexec))
 	case fGetfd:
 		if p.files[fd].cloexec {
 			return p.result(1, nil)
@@ -1020,42 +719,17 @@ func (p *Process) libcFcntl(fd, cmd, va uint32) uint32 {
 
 		return p.result(0, nil)
 	case fGetfl:
-		fl, err := fcntl(f.fd, syscall.F_GETFL, 0)
-
-		if err != nil {
-			return p.result(0, err)
-		}
-
-		fl &^= syscall.O_NONBLOCK
-
-		if f.nonblock.Load() {
-			fl |= syscall.O_NONBLOCK
-		}
-
-		return p.result(fl, nil)
+		return p.result(obj.flags())
 	case fGetlk, fSetlk, fSetlkw:
-		return p.result(0, p.recordLock(f, cmd, p.varArg(va, 0)))
-	case fSetfl:
-		arg := int(p.varArg(va, 0))
-		fl, err := fcntl(f.fd, syscall.F_GETFL, 0)
+		l, err := p.lockerAt(fd)
 
 		if err != nil {
 			return p.result(0, err)
 		}
 
-		fl = fl&^(syscall.O_APPEND|syscall.O_DIRECT) | arg&(syscall.O_APPEND|syscall.O_DIRECT)
-
-		if !f.owned {
-			fl = fl&^syscall.O_NONBLOCK | arg&syscall.O_NONBLOCK
-		}
-
-		if _, err := fcntl(f.fd, syscall.F_SETFL, fl); err != nil {
-			return p.result(0, err)
-		}
-
-		f.nonblock.Store(arg&syscall.O_NONBLOCK != 0)
-
-		return p.result(0, nil)
+		return p.result(0, p.recordLock(l, cmd, p.varArg(va, 0)))
+	case fSetfl:
+		return p.result(0, obj.setFlags(int(p.varArg(va, 0))))
 	}
 
 	return p.result(0, syscall.EINVAL)
@@ -1100,19 +774,40 @@ const (
 	vmin   = 6
 )
 
-func ioctlPtr(fd int, req uintptr, arg unsafe.Pointer) error {
-	if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), req, uintptr(arg)); e != 0 {
-		return e
-	}
-
-	return nil
-}
-
+// ioctl: the descriptor's own requests, FIONBIO, FIOCLEX and FIONCLEX,
+// are the kernel's; the rest go to the object with the host's layout.
 func (p *Process) libcIoctl(fd, req, va uint32) uint32 {
-	f, err := p.fd(fd)
+	obj, err := p.fd(fd)
 
 	if err != nil {
 		return p.result(0, err)
+	}
+
+	switch req {
+	case fionbio:
+		fl, err := obj.flags()
+
+		if err != nil {
+			return p.result(0, err)
+		}
+
+		fl &^= syscall.O_NONBLOCK
+
+		if p.u32(p.varArg(va, 0)) != 0 {
+			fl |= syscall.O_NONBLOCK
+		}
+
+		return p.result(0, obj.setFlags(fl))
+	case fioclex, fionclex:
+		p.files[fd].cloexec = req == fioclex
+
+		return p.result(0, nil)
+	}
+
+	i, ok := obj.(Ioctl)
+
+	if !ok {
+		return p.result(0, syscall.ENOTTY)
 	}
 
 	switch req {
@@ -1124,7 +819,7 @@ func (p *Process) libcIoctl(fd, req, va uint32) uint32 {
 			copy(ws[:], p.span(at, 8))
 		}
 
-		if err := ioctlPtr(f.fd, uintptr(req), unsafe.Pointer(&ws)); err != nil {
+		if err := i.ioctl(uintptr(req), unsafe.Pointer(&ws)); err != nil {
 			return p.result(0, err)
 		}
 
@@ -1136,7 +831,7 @@ func (p *Process) libcIoctl(fd, req, va uint32) uint32 {
 	case fionread:
 		var n int32
 
-		if err := ioctlPtr(f.fd, fionread, unsafe.Pointer(&n)); err != nil {
+		if err := i.ioctl(fionread, unsafe.Pointer(&n)); err != nil {
 			return p.result(0, err)
 		}
 
@@ -1158,14 +853,6 @@ func (p *Process) libcIoctl(fd, req, va uint32) uint32 {
 		return r
 	case tiocspgrp:
 		return p.libcTcsetpgrp(fd, p.u32(p.varArg(va, 0)))
-	case fionbio:
-		f.nonblock.Store(p.u32(p.varArg(va, 0)) != 0)
-
-		return p.result(0, nil)
-	case fioclex, fionclex:
-		p.files[fd].cloexec = req == fioclex
-
-		return p.result(0, nil)
 	}
 
 	return p.result(0, syscall.ENOTTY)
@@ -1179,18 +866,32 @@ type hostTermios struct {
 	cc                         [19]byte
 }
 
-func (p *Process) libcIsatty(fd uint32) uint32 {
-	f, err := p.fd(fd)
+// terminal is the Ioctl of a descriptor that is a terminal: one that
+// answers TCGETS.
+func (p *Process) terminal(fd uint32) (Ioctl, *hostTermios, error) {
+	i, err := p.ioctlAt(fd)
 
 	if err != nil {
+		return nil, nil, err
+	}
+
+	var t hostTermios
+
+	if err := i.ioctl(tcgets, unsafe.Pointer(&t)); err != nil {
+		return nil, nil, err
+	}
+
+	return i, &t, nil
+}
+
+func (p *Process) libcIsatty(fd uint32) uint32 {
+	if _, err := p.fd(fd); err != nil {
 		p.setErrno(syscall.EBADF)
 
 		return 0
 	}
 
-	var t hostTermios
-
-	if err := ioctlPtr(f.fd, tcgets, unsafe.Pointer(&t)); err != nil {
+	if _, _, err := p.terminal(fd); err != nil {
 		p.setErrno(syscall.ENOTTY)
 
 		return 0
@@ -1200,15 +901,9 @@ func (p *Process) libcIsatty(fd uint32) uint32 {
 }
 
 func (p *Process) libcTcgetattr(fd, at uint32) uint32 {
-	f, err := p.fd(fd)
+	_, t, err := p.terminal(fd)
 
 	if err != nil {
-		return p.result(0, err)
-	}
-
-	var t hostTermios
-
-	if err := ioctlPtr(f.fd, tcgets, unsafe.Pointer(&t)); err != nil {
 		return p.result(0, err)
 	}
 
@@ -1229,7 +924,7 @@ func (p *Process) libcTcgetattr(fd, at uint32) uint32 {
 }
 
 func (p *Process) libcTcsetattr(fd, action, at uint32) uint32 {
-	f, err := p.fd(fd)
+	i, err := p.ioctlAt(fd)
 
 	if err != nil {
 		return p.result(0, err)
@@ -1241,22 +936,19 @@ func (p *Process) libcTcsetattr(fd, action, at uint32) uint32 {
 
 	t := p.guestTermios(at)
 
-	return p.result(0, ioctlPtr(f.fd, uintptr(tcsets+action), unsafe.Pointer(&t)))
+	return p.result(0, i.ioctl(uintptr(tcsets+action), unsafe.Pointer(&t)))
 }
 
-// termiosIoctl runs an ioctl of a terminal's with an int argument.
-func (p *Process) termiosIoctl(fd uint32, req uintptr, arg uintptr) uint32 {
-	f, err := p.fd(fd)
+// termiosIoctl runs an ioctl of a terminal's with an int argument, which
+// the object takes pointed to.
+func (p *Process) termiosIoctl(fd uint32, req uintptr, arg int) uint32 {
+	i, err := p.ioctlAt(fd)
 
 	if err != nil {
 		return p.result(0, err)
 	}
 
-	if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, uintptr(f.fd), req, arg); e != 0 {
-		return p.result(0, e)
-	}
-
-	return p.result(0, nil)
+	return p.result(0, i.ioctl(req, unsafe.Pointer(&arg)))
 }
 
 // cbaud is the speed of termios.h's c_cflag.
@@ -1294,22 +986,6 @@ func (p *Process) libcCfmakeraw(at uint32) {
 	b[17+vmin] = 1
 }
 
-type pollFd struct {
-	fd      int32
-	events  int16
-	revents int16
-}
-
-func poll(fds []pollFd, timeout int) (int, error) {
-	r, _, e := syscall.Syscall(syscall.SYS_POLL, uintptr(unsafe.Pointer(&fds[0])), uintptr(len(fds)), uintptr(timeout))
-
-	if e != 0 {
-		return 0, e
-	}
-
-	return int(r), nil
-}
-
 func (p *Process) libcPoll(at, n, timeout uint32) uint32 {
 	return p.result(p.poll(at, n, int(int32(timeout))))
 }
@@ -1339,7 +1015,7 @@ func (p *Process) poll(at, n uint32, timeout int) (int, error) {
 	}
 
 	guest := p.span(at, 8*n)
-	host := make([]pollFd, 0, n)
+	entries := make([]pollEntry, 0, n)
 	slot := make([]int, n)
 	invalid := 0
 
@@ -1353,7 +1029,7 @@ func (p *Process) poll(at, n uint32, timeout int) (int, error) {
 			continue
 		}
 
-		f, err := p.fd(uint32(fd))
+		obj, err := p.fd(uint32(fd))
 
 		if err != nil {
 			binary.LittleEndian.PutUint16(e[6:], pollNval)
@@ -1362,15 +1038,15 @@ func (p *Process) poll(at, n uint32, timeout int) (int, error) {
 			continue
 		}
 
-		slot[i] = len(host)
-		host = append(host, pollFd{fd: int32(f.fd), events: int16(binary.LittleEndian.Uint16(e[4:]))})
+		slot[i] = len(entries)
+		entries = append(entries, pollEntry{obj: obj, events: int16(binary.LittleEndian.Uint16(e[4:]))})
 	}
 
 	if invalid > 0 {
 		timeout = 0
 	}
 
-	ready, err := p.waitFds(host, timeout, false)
+	ready, err := p.waitObjects(entries, timeout, false)
 
 	if err != nil {
 		return 0, err
@@ -1381,7 +1057,7 @@ func (p *Process) poll(at, n uint32, timeout int) (int, error) {
 
 		for i := range n {
 			if slot[i] >= 0 {
-				binary.LittleEndian.PutUint16(guest[8*i+6:], uint16(host[slot[i]].revents))
+				binary.LittleEndian.PutUint16(guest[8*i+6:], uint16(entries[slot[i]].revents))
 			}
 		}
 	}
@@ -1439,36 +1115,6 @@ func utimensat(dirfd int, name *byte, ts []syscall.Timespec, flags int) error {
 	}
 
 	return nil
-}
-
-func eventfd() (int, error) {
-	if chaosFail("eventfd") {
-		return 0, syscall.EMFILE
-	}
-
-	r, _, e := syscall.RawSyscall(syscall.SYS_EVENTFD2, 0, syscall.O_CLOEXEC|syscall.O_NONBLOCK, 0)
-
-	if e != 0 {
-		return 0, e
-	}
-
-	return int(r), nil
-}
-
-// dupHigh duplicates a host descriptor for the kernel.
-func dupHigh(fd int) (int, error) {
-	return fcntl(fd, syscall.F_DUPFD_CLOEXEC, 3)
-}
-
-// raiseFileLimit lets the kernel hold as many host descriptors as it may:
-// every open file of every process is one.
-func raiseFileLimit() {
-	var l syscall.Rlimit
-
-	if syscall.Getrlimit(syscall.RLIMIT_NOFILE, &l) == nil && l.Cur < l.Max {
-		l.Cur = l.Max
-		syscall.Setrlimit(syscall.RLIMIT_NOFILE, &l)
-	}
 }
 
 func (p *Process) libcReadv(fd, iovs, count uint32) uint32 {

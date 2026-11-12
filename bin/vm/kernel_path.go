@@ -5,20 +5,19 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
-	"fmt"
 	"math/rand/v2"
-	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"unsafe"
 )
 
-// Paths are the guest's: absolute ones start at the root, relative ones at
-// the working directory, and openat2 keeps both inside the root, symbolic
-// links and ".." included. A call on what a path names opens it, O_PATH,
-// and works on that descriptor; a call on the name itself (unlink, mkdir,
-// rename) opens the parent directory and works on the name in it.
+// Paths are the guest's: absolute ones start at the process's root,
+// relative ones at the working directory, and openat2 keeps both inside
+// the root, symbolic links and ".." included. A call on what a path names
+// opens it, O_PATH, and works on that descriptor; a call on the name
+// itself (unlink, mkdir, rename) opens the parent directory and works on
+// the name in it.
 
 const (
 	oPath             = 0o10000000
@@ -90,7 +89,7 @@ func (p *Process) openat2(path string, flags int, mode uint32) (int, error) {
 	how := openHow{flags: uint64(flags | syscall.O_CLOEXEC), mode: uint64(mode), resolve: resolveInRoot}
 
 	for {
-		r, _, e := syscall.Syscall6(sysOpenat2, uintptr(p.k.root), uintptr(unsafe.Pointer(name)), uintptr(unsafe.Pointer(&how)), unsafe.Sizeof(how), 0, 0)
+		r, _, e := syscall.Syscall6(sysOpenat2, uintptr(p.root.host()), uintptr(unsafe.Pointer(name)), uintptr(unsafe.Pointer(&how)), unsafe.Sizeof(how), 0, 0)
 
 		if e == syscall.EINTR || e == syscall.EAGAIN {
 			continue
@@ -185,23 +184,24 @@ func (p *Process) atPath(dirfd int32, path string) (string, error) {
 		return path, nil
 	}
 
-	f, err := p.fd(uint32(dirfd))
+	d, err := p.dirAt(uint32(dirfd))
 
 	if err != nil {
 		return "", err
 	}
 
-	dir, err := p.k.hostPath(f.fd)
+	dir, err := d.hostPath()
 
 	if err != nil {
 		return "", err
 	}
 
-	return p.k.guestPath(dir) + "/" + path, nil
+	return p.guestPath(dir) + "/" + path, nil
 }
 
 // atFile is the host descriptor an *at call with AT_EMPTY_PATH and an
-// empty path works on: the directory descriptor's own.
+// empty path works on: the directory descriptor's own. An object of the
+// kernel is no file of the host: EBADF.
 func (p *Process) atFile(dirfd int32, path string, flags uint32) (int, bool, error) {
 	if path != "" || flags&atEmptyPath == 0 {
 		return -1, false, nil
@@ -213,13 +213,17 @@ func (p *Process) atFile(dirfd int32, path string, flags uint32) (int, bool, err
 		return fd, true, err
 	}
 
-	f, err := p.fd(uint32(dirfd))
+	obj, err := p.fd(uint32(dirfd))
 
 	if err != nil {
 		return -1, true, err
 	}
 
-	fd, err := dupHigh(f.fd)
+	if obj.host() < 0 {
+		return -1, true, syscall.EBADF
+	}
+
+	fd, err := dupHigh(obj.host())
 
 	return fd, true, err
 }
@@ -245,19 +249,6 @@ func (p *Process) onAt(dirfd int32, path string, flags uint32, call func(fd int)
 	}
 
 	return p.onPath(full, flags&atSymlinkNofollow == 0, call)
-}
-
-// hostPath is the host path of a host descriptor.
-func (k *Kernel) hostPath(fd int) (string, error) {
-	if chaosFail("readlink") {
-		return "", syscall.EIO
-	}
-
-	return os.Readlink(fmt.Sprintf("/proc/self/fd/%d", fd))
-}
-
-func procFd(fd int) string {
-	return fmt.Sprintf("/proc/self/fd/%d", fd)
 }
 
 func atCall(trap uintptr, dirfd int, path string, args ...uintptr) error {
@@ -286,7 +277,7 @@ func (p *Process) open(path string, flags, va uint32) (int, error) {
 		return 0, err
 	}
 
-	return p.install(newFile(fd, true), 0, flags&syscall.O_CLOEXEC != 0)
+	return p.install(newHostObject(fd, true), 0, flags&syscall.O_CLOEXEC != 0)
 }
 
 func (p *Process) mkdir(path string, mode uint32) error {
@@ -373,6 +364,13 @@ func (p *Process) statvfs(fd int, at uint32) error {
 		return err
 	}
 
+	p.putStatvfs(at, &st)
+
+	return nil
+}
+
+// putStatvfs writes a guest struct statvfs.
+func (p *Process) putStatvfs(at uint32, st *syscall.Statfs_t) {
 	b := p.span(at, 72)
 	clear(b)
 	le := binary.LittleEndian
@@ -388,8 +386,6 @@ func (p *Process) statvfs(fd int, at uint32) error {
 	le.PutUint32(b[56:], uint32(st.Fsid.X__val[0]))
 	le.PutUint32(b[60:], uint32(st.Flags))
 	le.PutUint32(b[64:], uint32(st.Namelen))
-
-	return nil
 }
 
 func (p *Process) libcOpen(path, flags, va uint32) uint32 {
@@ -444,37 +440,70 @@ func (p *Process) libcStatvfs(path, at uint32) uint32 {
 }
 
 func (p *Process) libcFstatvfs(fd, at uint32) uint32 {
-	f, err := p.fd(fd)
+	n, err := p.nodeAt(fd)
 
-	if err == nil {
-		err = p.statvfs(f.fd, at)
+	if err != nil {
+		return p.result(0, err)
 	}
 
-	return p.result(0, err)
+	var st syscall.Statfs_t
+
+	if err := n.statfs(&st); err != nil {
+		return p.result(0, err)
+	}
+
+	p.putStatvfs(at, &st)
+
+	return p.result(0, nil)
 }
 
 func (p *Process) libcFchdir(fd uint32) uint32 {
-	f, err := p.fd(fd)
+	d, err := p.dirAt(fd)
 
 	if err != nil {
 		return p.result(0, err)
 	}
 
-	host, err := p.k.hostPath(f.fd)
+	host, err := d.hostPath()
 
 	if err != nil {
 		return p.result(0, err)
 	}
 
-	return p.result(0, p.chdir(p.k.guestPath(host)))
+	return p.result(0, p.chdir(p.guestPath(host)))
 }
 
-// chroot needs privilege, which no process has: they all share the
-// kernel's root.
+// chroot makes a directory the process's root: its paths resolve there
+// from then on, and the working directory is named there, or is the new
+// root itself when it lies outside.
 func (p *Process) libcChroot(path uint32) uint32 {
-	return p.result(0, p.onPath(p.str(path), true, func(int) error {
-		return syscall.EPERM
-	}))
+	fd, err := p.openat2(p.str(path), oPath|syscall.O_DIRECTORY, 0)
+
+	if err != nil {
+		return p.result(0, err)
+	}
+
+	if err := atCall(sysFaccessat2, fd, "", 1, atEmptyPath); err != nil {
+		syscall.Close(fd)
+
+		return p.result(0, err)
+	}
+
+	dir := newHostDir(fd)
+	host, err := dir.hostPath()
+
+	if err != nil {
+		dir.unref()
+
+		return p.result(0, err)
+	}
+
+	cwd := filepath.Join(p.rootPath, p.cwd)
+	p.root.unref()
+	p.root, p.rootPath = dir, host
+	p.cwd = p.guestPath(cwd)
+
+	return p.result(0, nil)
 }
 
 func (p *Process) libcChdir(path uint32) uint32 {
@@ -669,7 +698,7 @@ func (p *Process) libcCreat(path, mode uint32) uint32 {
 		return p.result(0, err)
 	}
 
-	return p.result(p.install(newFile(fd, true), 0, false))
+	return p.result(p.install(newHostObject(fd, true), 0, false))
 }
 
 func (p *Process) libcEaccess(path, mode uint32) uint32 {
@@ -691,13 +720,21 @@ func (p *Process) libcStatfs(path, at uint32) uint32 {
 }
 
 func (p *Process) libcFstatfs(fd, at uint32) uint32 {
-	f, err := p.fd(fd)
+	n, err := p.nodeAt(fd)
 
-	if err == nil {
-		err = p.putStatfs(f.fd, at)
+	if err != nil {
+		return p.result(0, err)
 	}
 
-	return p.result(0, err)
+	var st syscall.Statfs_t
+
+	if err := n.statfs(&st); err != nil {
+		return p.result(0, err)
+	}
+
+	p.putStatfsOf(at, &st)
+
+	return p.result(0, nil)
 }
 
 func (p *Process) libcRealpath(path, resolved uint32) uint32 {
@@ -925,13 +962,13 @@ func (p *Process) chdir(path string) error {
 		return err
 	}
 
-	host, err := p.k.hostPath(fd)
+	host, err := hostPath(fd)
 
 	if err != nil {
 		return err
 	}
 
-	p.cwd = p.k.guestPath(host)
+	p.cwd = p.guestPath(host)
 
 	return nil
 }
@@ -992,7 +1029,7 @@ func (p *Process) mkstemp(template, suffix, flags uint32) uint32 {
 		host, err := p.openat2(path, syscall.O_RDWR|syscall.O_CREAT|syscall.O_EXCL|int(flags&^syscall.O_CLOEXEC), 0o600)
 
 		if err == nil {
-			fd, err = p.install(newFile(host, true), 0, flags&syscall.O_CLOEXEC != 0)
+			fd, err = p.install(newHostObject(host, true), 0, flags&syscall.O_CLOEXEC != 0)
 		}
 
 		return err
@@ -1005,8 +1042,8 @@ func (p *Process) mkstemp(template, suffix, flags uint32) uint32 {
 func (p *Process) realpath(path string) (string, error) {
 	var guest string
 	err := p.onPath(path, true, func(fd int) error {
-		host, err := p.k.hostPath(fd)
-		guest = p.k.guestPath(host)
+		host, err := hostPath(fd)
+		guest = p.guestPath(host)
 
 		return err
 	})
@@ -1023,6 +1060,13 @@ func (p *Process) putStatfs(fd int, at uint32) error {
 		return err
 	}
 
+	p.putStatfsOf(at, &st)
+
+	return nil
+}
+
+// putStatfsOf writes a guest struct statfs.
+func (p *Process) putStatfsOf(at uint32, st *syscall.Statfs_t) {
 	b := p.span(at, 88)
 	clear(b)
 	le := binary.LittleEndian
@@ -1038,8 +1082,6 @@ func (p *Process) putStatfs(fd int, at uint32) error {
 	le.PutUint32(b[56:], uint32(st.Namelen))
 	le.PutUint32(b[60:], uint32(st.Frsize))
 	le.PutUint32(b[64:], uint32(st.Flags))
-
-	return nil
 }
 
 // A DIR is a block of the heap: the descriptor, the position and end of
@@ -1063,7 +1105,7 @@ func (p *Process) libcOpendir(path uint32) uint32 {
 		return p.pointer(0, err)
 	}
 
-	fd, err := p.install(newFile(host, true), 0, true)
+	fd, err := p.install(newHostObject(host, true), 0, true)
 
 	if err != nil {
 		return p.pointer(0, err)
@@ -1097,7 +1139,7 @@ func (p *Process) newDir(fd int) uint32 {
 // fdopendir makes a DIR of a directory's descriptor, which becomes
 // close-on-exec, as musl's.
 func (p *Process) libcFdopendir(fd uint32) uint32 {
-	f, err := p.fd(fd)
+	obj, err := p.fd(fd)
 
 	if err != nil {
 		return p.pointer(0, err)
@@ -1105,11 +1147,11 @@ func (p *Process) libcFdopendir(fd uint32) uint32 {
 
 	var st syscall.Stat_t
 
-	if err := fileStat(f.fd, &st); err != nil {
+	if err := obj.stat(&st); err != nil {
 		return p.pointer(0, err)
 	}
 
-	if st.Mode&syscall.S_IFMT != syscall.S_IFDIR {
+	if _, ok := obj.(Dir); !ok || st.Mode&syscall.S_IFMT != syscall.S_IFDIR {
 		return p.pointer(0, syscall.ENOTDIR)
 	}
 
@@ -1125,8 +1167,8 @@ func (p *Process) libcFdopendir(fd uint32) uint32 {
 }
 
 func (p *Process) rewinddir(dir uint32) {
-	if f, err := p.fd(p.u32(dir + dirFd)); err == nil {
-		syscall.Seek(f.fd, 0, 0)
+	if s, err := p.seekerAt(p.u32(dir + dirFd)); err == nil {
+		s.seek(0, 0)
 	}
 
 	p.put32(dir+dirPos, 0)
@@ -1152,13 +1194,13 @@ func (p *Process) readdir(dir uint32) (uint32, error) {
 	pos, end := p.u32(dir+dirPos), p.u32(dir+dirEnd)
 
 	if pos >= end {
-		f, err := p.fd(p.u32(dir + dirFd))
+		d, err := p.dirAt(p.u32(dir + dirFd))
 
 		if err != nil {
 			return 0, err
 		}
 
-		n, err := syscall.Getdents(f.fd, p.span(dir+dirBuf, dirBufLen))
+		n, err := d.readdir(p.span(dir+dirBuf, dirBufLen))
 
 		if err != nil || n == 0 {
 			return 0, err

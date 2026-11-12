@@ -21,18 +21,31 @@ func ptsName(n uint32) string {
 	return fmt.Sprintf("/dev/pts/%d", n)
 }
 
+// ioctlCall takes an ioctl: an Ioctl of a descriptor, or a host
+// descriptor the kernel holds.
+type ioctlCall interface {
+	ioctl(req uintptr, arg unsafe.Pointer) error
+}
+
 // ptyNumber is the number of a master's terminal.
-func ptyNumber(fd int) (uint32, error) {
+func ptyNumber(i ioctlCall) (uint32, error) {
 	var n uint32
-	err := ioctlPtr(fd, tiocgptn, unsafe.Pointer(&n))
+	err := i.ioctl(tiocgptn, unsafe.Pointer(&n))
 
 	return n, err
 }
 
-func unlockPty(fd int) error {
+func unlockPty(i ioctlCall) error {
 	var unlock int32
 
-	return ioctlPtr(fd, tiocsptlck, unsafe.Pointer(&unlock))
+	return i.ioctl(tiocsptlck, unsafe.Pointer(&unlock))
+}
+
+// hostIoctl is the ioctlCall of a host descriptor the kernel holds.
+type hostIoctl int
+
+func (fd hostIoctl) ioctl(req uintptr, arg unsafe.Pointer) error {
+	return ioctlPtr(int(fd), req, arg)
 }
 
 // guestTermios reads a guest's struct termios as the host's.
@@ -54,10 +67,10 @@ func (p *Process) openPty(termp, winp uint32) (int, int, uint32, error) {
 		return -1, -1, 0, err
 	}
 
-	n, err := ptyNumber(master)
+	n, err := ptyNumber(hostIoctl(master))
 
 	if err == nil {
-		err = unlockPty(master)
+		err = unlockPty(hostIoctl(master))
 	}
 
 	slave := -1
@@ -105,7 +118,7 @@ func (p *Process) forkpty(amaster, name, termp, winp uint32) uint32 {
 
 	// Reserve the parent's descriptor before creating a child: EMFILE must
 	// leave no child behind. The child drops its inherited master below.
-	fd, err := p.install(newFile(master, true), 0, false)
+	fd, err := p.install(newHostObject(master, true), 0, false)
 
 	if err != nil {
 		syscall.Close(slave)
@@ -115,7 +128,7 @@ func (p *Process) forkpty(amaster, name, termp, winp uint32) uint32 {
 
 	pid, err := p.fork(func(c *Process) {
 		c.closeFd(fd)
-		f := newFile(slave, true)
+		f := newHostObject(slave, true)
 
 		for fd := range 3 {
 			// inherit preserves the initial three descriptor slots, even closed.
@@ -125,7 +138,7 @@ func (p *Process) forkpty(amaster, name, termp, winp uint32) uint32 {
 				f.ref()
 			}
 
-			c.files[fd] = &Descriptor{file: f}
+			c.files[fd] = &Descriptor{obj: f}
 		}
 
 		c.k.mu.Lock()
@@ -152,15 +165,15 @@ func (p *Process) libcPosix_openpt(flags uint32) uint32 {
 		return p.result(0, err)
 	}
 
-	return p.result(p.install(newFile(fd, true), 0, flags&syscall.O_CLOEXEC != 0))
+	return p.result(p.install(newHostObject(fd, true), 0, flags&syscall.O_CLOEXEC != 0))
 }
 
 // grantpt has nothing to do on Linux's devpts.
 func (p *Process) libcGrantpt(fd uint32) uint32 {
-	f, err := p.fd(fd)
+	i, err := p.ioctlAt(fd)
 
 	if err == nil {
-		_, err = ptyNumber(f.fd)
+		_, err = ptyNumber(i)
 	}
 
 	if err == syscall.ENOTTY {
@@ -171,17 +184,17 @@ func (p *Process) libcGrantpt(fd uint32) uint32 {
 }
 
 func (p *Process) libcUnlockpt(fd uint32) uint32 {
-	f, err := p.fd(fd)
+	i, err := p.ioctlAt(fd)
 
 	if err == nil {
-		err = unlockPty(f.fd)
+		err = unlockPty(i)
 	}
 
 	return p.result(0, err)
 }
 
 func (p *Process) libcPtsname(fd uint32) uint32 {
-	f, err := p.fd(fd)
+	i, err := p.ioctlAt(fd)
 
 	if err != nil {
 		p.setErrno(errnoOf(err))
@@ -189,7 +202,7 @@ func (p *Process) libcPtsname(fd uint32) uint32 {
 		return 0
 	}
 
-	n, err := ptyNumber(f.fd)
+	n, err := ptyNumber(i)
 
 	if err != nil {
 		p.setErrno(errnoOf(err))
@@ -202,13 +215,13 @@ func (p *Process) libcPtsname(fd uint32) uint32 {
 
 // ptsname_r returns an error number.
 func (p *Process) libcPtsname_r(fd, buf, size uint32) uint32 {
-	f, err := p.fd(fd)
+	i, err := p.ioctlAt(fd)
 
 	if err != nil {
-		return uint32(syscall.EBADF)
+		return uint32(errnoOf(err))
 	}
 
-	n, err := ptyNumber(f.fd)
+	n, err := ptyNumber(i)
 
 	if err != nil {
 		return uint32(errnoOf(err))
@@ -232,7 +245,7 @@ func (p *Process) libcOpenpty(amaster, aslave, name, termp, winp uint32) uint32 
 		return p.result(0, err)
 	}
 
-	m, err := p.install(newFile(master, true), 0, false)
+	m, err := p.install(newHostObject(master, true), 0, false)
 
 	if err != nil {
 		syscall.Close(slave)
@@ -240,7 +253,7 @@ func (p *Process) libcOpenpty(amaster, aslave, name, termp, winp uint32) uint32 
 		return p.result(0, err)
 	}
 
-	s, err := p.install(newFile(slave, true), 0, false)
+	s, err := p.install(newHostObject(slave, true), 0, false)
 
 	if err != nil {
 		p.closeFd(m)

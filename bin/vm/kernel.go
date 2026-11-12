@@ -28,9 +28,9 @@ import (
 
 type Kernel struct {
 	FunctionImports
-	// root is an O_PATH descriptor of the root directory, rootPath its host
-	// path.
-	root     int
+	// root is the root directory `vm run` is given, rootPath its host
+	// path: the first process's, which chroot changes for its own.
+	root     Dir
 	rootPath string
 	mu       sync.Mutex
 	procs    map[int32]*Process
@@ -78,9 +78,12 @@ type Process struct {
 	// image is what the instance runs: its code, arguments and environment.
 	image *execImage
 	files []*Descriptor
-	// cwd is the absolute guest path of the working directory.
-	cwd   string
-	umask uint32
+	// root is the root directory paths resolve in, rootPath its host path
+	// and cwd the absolute guest path of the working directory.
+	root     Dir
+	rootPath string
+	cwd      string
+	umask    uint32
 	// errnoAt and environAt are where the crt keeps errno and environ, tzAt
 	// tzname, timezone and daylight, herrnoAt h_errno.
 	errnoAt   uint32
@@ -155,8 +158,8 @@ type procExit struct {
 
 func newKernel(root string) *Kernel {
 	k := &Kernel{procs: map[int32]*Process{}, codes: map[fileKey]*Code{}, exit: make(chan int, 1), abstract: fmt.Sprintf("pizdos.%d.", os.Getpid())}
-	k.root = throw2(syscall.Open(root, oPath|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0))
-	k.rootPath = throw2(os.Readlink(fmt.Sprintf("/proc/self/fd/%d", k.root)))
+	k.root = newHostDir(throw2(syscall.Open(root, oPath|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0)))
+	k.rootPath = throw2(os.Readlink(procFd(k.root.host())))
 	k.functions = k.functionTable()
 	// The kernel applies the processes' umasks itself.
 	syscall.Umask(0)
@@ -199,15 +202,16 @@ func runKernel(path, root string, argv []string, asan bool) int {
 	k.asan = asan
 	fd := throw2(syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC, 0))
 	code, err := k.code(fd, path)
-	program := k.programPath(fd)
-	syscall.Close(fd)
 	throw(err)
 
 	if asan && !code.obj.meta.asan() {
 		throwFmt("%s: not compiled with --asan", path)
 	}
+
 	p := throw2(k.newProcess(nil))
-	p.cwd = k.guestPath(throw2(os.Getwd()))
+	program := p.programPath(fd)
+	syscall.Close(fd)
+	p.cwd = p.guestPath(throw2(os.Getwd()))
 	env := []string{"PWD=" + p.cwd}
 
 	for _, e := range os.Environ() {
@@ -220,7 +224,7 @@ func runKernel(path, root string, argv []string, asan bool) int {
 		host, err := dupHigh(fd)
 
 		if err == nil {
-			p.files = append(p.files, &Descriptor{file: newFile(host, false)})
+			p.files = append(p.files, &Descriptor{obj: newHostObject(host, false)})
 		} else {
 			p.files = append(p.files, nil)
 		}
@@ -252,13 +256,16 @@ func (k *Kernel) newProcess(parent *Process) (*Process, error) {
 	if parent == nil {
 		p.pgid, p.sid = p.pid, p.pid
 		p.limits = hostLimits()
+		p.root, p.rootPath = k.root, k.rootPath
 	} else {
 		p.ppid, p.pgid, p.sid = parent.pid, parent.pgid, parent.sid
 		p.nice, p.policy = parent.nice, parent.policy
 		p.comm, p.undumpable, p.noNewPrivs = parent.comm, parent.undumpable, parent.noNewPrivs
 		p.cwd, p.umask, p.limits, p.seed = parent.cwd, parent.umask, parent.limits, parent.seed
+		p.root, p.rootPath = parent.root, parent.rootPath
 	}
 
+	p.root.ref()
 	k.procs[p.pid] = p
 
 	return p, nil
@@ -266,29 +273,33 @@ func (k *Kernel) newProcess(parent *Process) (*Process, error) {
 
 // programPath is the guest's path of the program a host descriptor reads,
 // or empty when it is outside the root.
-func (k *Kernel) programPath(fd int) string {
-	host, err := k.hostPath(fd)
+func (p *Process) programPath(fd int) string {
+	host, err := hostPath(fd)
 
-	if err != nil || host != k.rootPath && k.rootPath != "/" && !strings.HasPrefix(host, k.rootPath+"/") {
+	if err != nil || host != p.rootPath && p.rootPath != "/" && !strings.HasPrefix(host, p.rootPath+"/") {
 		return ""
 	}
 
-	return k.guestPath(host)
+	return p.guestPath(host)
 }
 
 // guestPath is the guest's path of a host path, which is inside the root
 // or else the root itself.
-func (k *Kernel) guestPath(host string) string {
-	if k.rootPath == "/" {
+func (p *Process) guestPath(host string) string {
+	return guestPathIn(p.rootPath, host)
+}
+
+func guestPathIn(root, host string) string {
+	if root == "/" {
 		return host
 	}
 
-	if host == k.rootPath {
+	if host == root {
 		return "/"
 	}
 
-	if strings.HasPrefix(host, k.rootPath+"/") {
-		return host[len(k.rootPath):]
+	if strings.HasPrefix(host, root+"/") {
+		return host[len(root):]
 	}
 
 	return "/"
@@ -414,6 +425,7 @@ func (p *Process) terminate(status int) {
 		p.closeFd(fd)
 	}
 
+	p.root.unref()
 	p.sig.mu.Lock()
 	p.sig.dead = true
 	syscall.Close(p.wake)

@@ -126,7 +126,16 @@ int main() {
     free(entries);
     assert(close(directory) == 0);
 #ifdef __wasm__
-    assert(chroot(".") == -1 && errno == EPERM);
+    // chroot makes the working directory the root: its names are at "/",
+    // and ".." of the root is the root, so a path up from it stays inside.
+    char cwd[64];
+    assert(chroot("missing") == -1 && errno == ENOENT);
+    assert(chroot(file) == -1 && errno == ENOTDIR);
+    assert(chroot(".") == 0 && getcwd(cwd, sizeof(cwd)) == cwd && strcmp(cwd, "/") == 0);
+    char absolute[80];
+    snprintf(absolute, sizeof(absolute), "/../%s", file);
+    assert(stat(absolute, &metadata) == 0 && S_ISREG(metadata.st_mode));
+    assert(stat(temporary, &metadata) == -1 && errno == ENOENT);
     assert(acct(nullptr) == -1 && errno == EPERM);
     assert(canonicalize_file_name("missing") == nullptr && errno == ENOENT);
 #endif

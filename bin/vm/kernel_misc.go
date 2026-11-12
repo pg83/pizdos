@@ -172,13 +172,14 @@ func (p *Process) daemon(nochdir, noclose uint32) uint32 {
 			return p.result(0, err)
 		}
 
-		f := newFile(host, true)
+		obj := newHostObject(host, true)
 
+		// daemon uses descriptors 0..2, present from runKernel and inherit.
 		for fd := range uint32(3) {
-			p.dupTo2(f, fd)
+			p.placeAt(obj, fd, false)
 		}
 
-		f.unref()
+		obj.unref()
 	}
 
 	k := p.k
@@ -211,14 +212,6 @@ func (p *Process) daemon(nochdir, noclose uint32) uint32 {
 	}
 
 	return p.result(0, nil)
-}
-
-// dupTo2 makes a descriptor refer to a file, closing what it referred to.
-func (p *Process) dupTo2(f *File, fd uint32) {
-	// daemon uses descriptors 0..2, present from runKernel and inherit.
-	f.ref()
-	p.closeFd(int(fd))
-	p.files[fd] = &Descriptor{file: f}
 }
 
 const (
@@ -317,12 +310,17 @@ func (p *Process) getpass(prompt uint32) uint32 {
 	defer ioctlPtr(fd, tcsets+2, unsafe.Pointer(&saved))
 
 	syscall.Write(fd, []byte(p.str(prompt)))
-	f := newFile(fd, false)
+	tty, ok := newHostObject(fd, false).(Transfer)
+
+	if !ok {
+		return p.pointer(0, syscall.ENOTTY)
+	}
+
 	var line []byte
 
 	for len(line) < 127 {
 		var b [1]byte
-		n, err := p.readFile(f, b[:])
+		n, err := tty.read(p, b[:], ioMode{})
 
 		if err != nil {
 			return p.pointer(0, err)
@@ -510,8 +508,8 @@ func (p *Process) libcPsiginfo(info, s uint32) {
 func (p *Process) libc__assert_fail(expr, file, line, function uint32) {
 	msg := fmt.Sprintf("Assertion failed: %s (%s: %s: %d)\n", p.str(expr), p.str(file), p.str(function), int32(line))
 
-	if f, err := p.fd(2); err == nil {
-		p.writeFile(f, []byte(msg))
+	if t, err := p.transferAt(2, false); err == nil {
+		t.write(p, []byte(msg), ioMode{})
 	}
 
 	p.abort()
@@ -524,8 +522,8 @@ func (p *Process) complain(prefix uint32, msg string) {
 		msg = p.str(prefix) + ": " + msg
 	}
 
-	if f, err := p.fd(2); err == nil {
-		p.writeFile(f, []byte(msg+"\n"))
+	if t, err := p.transferAt(2, false); err == nil {
+		t.write(p, []byte(msg+"\n"), ioMode{})
 	}
 }
 

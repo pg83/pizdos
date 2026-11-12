@@ -186,7 +186,7 @@ func (p *Process) loadFrom(path string, first int, argv []string) (*execImage, e
 		}
 
 		code, err := p.k.code(fd, path)
-		program := p.k.programPath(fd)
+		program := p.programPath(fd)
 		syscall.Close(fd)
 
 		if err != nil {
@@ -609,19 +609,23 @@ func (p *Process) libcExecle(path, arg0, va uint32) uint32 {
 // fexecve runs the file of a descriptor; a script's interpreter gets
 // its path.
 func (p *Process) libcFexecve(fd, argv, envp uint32) uint32 {
-	f, err := p.fd(fd)
+	obj, err := p.fd(fd)
 
 	if err != nil {
 		return p.result(0, err)
 	}
 
-	host, err := p.k.hostPath(f.fd)
+	if obj.host() < 0 {
+		return p.result(0, syscall.EACCES)
+	}
+
+	host, err := hostPath(obj.host())
 
 	if err != nil {
 		return p.result(0, err)
 	}
 
-	return p.result(0, p.execFrom(p.k.guestPath(host), f.fd, p.strings(argv), p.strings(envp)))
+	return p.result(0, p.execFrom(p.guestPath(host), obj.host(), p.strings(argv), p.strings(envp)))
 }
 
 func (p *Process) libcExecl(path, arg0, va uint32) uint32 {

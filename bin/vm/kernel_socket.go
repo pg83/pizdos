@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"slices"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -14,7 +15,7 @@ import (
 
 // Sockets are the host's: a socket a process makes is a host socket of the
 // kernel's, nonblocking on the host as every pollable file it owns
-// (kernel_file.go). The address structures of lib/c are Linux's, so most
+// (kernel_host.go). The address structures of lib/c are Linux's, so most
 // addresses go to the host as they are: AF_INET and AF_INET6 are the host's
 // network. An AF_UNIX path resolves inside the root, as every path does,
 // through the /proc/self/fd path of its directory, to bind, or of the
@@ -43,6 +44,28 @@ const (
 	siocatmark     = 0x8905
 	sysAccept4     = 288
 )
+
+// hostSocket is a socket of the host; unixName is the guest path an
+// AF_UNIX socket is bound to.
+type hostSocket struct {
+	hostStream
+	unixName atomic.Pointer[string]
+}
+
+var (
+	_ Socket = (*hostSocket)(nil)
+	_ Ioctl  = (*hostSocket)(nil)
+)
+
+// newSocket makes the object of a host socket, with the guest's
+// SOCK_NONBLOCK.
+func newSocket(host int, flags uint32) *hostSocket {
+	s := &hostSocket{}
+	s.init(host, true, true)
+	s.nonblock.Store(flags&sockNonblock != 0)
+
+	return s
+}
 
 func unixAddress(path []byte) []byte {
 	return append([]byte{afUnix, 0}, path...)
@@ -165,32 +188,34 @@ func bufferPointer(b []byte) uintptr {
 // installSocket makes a host socket a descriptor, with the guest's
 // SOCK_NONBLOCK and SOCK_CLOEXEC.
 func (p *Process) installSocket(host int, flags uint32) (int, error) {
-	f := newFile(host, true)
-	f.nonblock.Store(flags&sockNonblock != 0)
-
-	return p.install(f, 0, flags&sockCloexec != 0)
+	return p.install(newSocket(host, flags), 0, flags&sockCloexec != 0)
 }
 
-func (p *Process) socketFile(fd uint32) (*File, error) {
-	f, err := p.fd(fd)
+func (s *hostSocket) bind(p *Process, at, n uint32) error {
+	err := p.withAddress(at, n, true, func(a []byte) error {
+		_, err := sockcall(syscall.SYS_BIND, uintptr(s.fd), bufferPointer(a), uintptr(len(a)))
 
-	if err != nil {
-		return nil, err
+		return err
+	})
+
+	if err == nil && n > 2 && p.u16(at) == afUnix && p.u8(at+2) != 0 {
+		name := p.str(at + 2)
+		s.unixName.Store(&name)
 	}
 
-	var st syscall.Stat_t
-
-	if syscall.Fstat(f.fd, &st) == nil && st.Mode&syscall.S_IFMT != syscall.S_IFSOCK {
-		return nil, syscall.ENOTSOCK
-	}
-
-	return f, nil
+	return err
 }
 
 // connect connects as a blocking socket does, unless the guest asked for a
 // nonblocking one: it waits for the host's connection and its error.
-func (p *Process) connect(f *File, addr []byte) error {
-	timeout := f.timeout(pollOut)
+func (s *hostSocket) connect(p *Process, at, n uint32) error {
+	return p.withAddress(at, n, false, func(addr []byte) error {
+		return s.connectTo(p, addr)
+	})
+}
+
+func (s *hostSocket) connectTo(p *Process, addr []byte) error {
+	timeout := s.timeout(pollOut)
 	var deadline time.Time
 
 	if timeout >= 0 {
@@ -198,13 +223,13 @@ func (p *Process) connect(f *File, addr []byte) error {
 	}
 
 	for {
-		_, err := sockcall(syscall.SYS_CONNECT, uintptr(f.fd), bufferPointer(addr), uintptr(len(addr)))
+		_, err := sockcall(syscall.SYS_CONNECT, uintptr(s.fd), bufferPointer(addr), uintptr(len(addr)))
 
 		if err == syscall.EINTR {
 			continue
 		}
 
-		if f.nonblock.Load() || err != syscall.EINPROGRESS && err != syscall.EAGAIN {
+		if s.nonblock.Load() || err != syscall.EINPROGRESS && err != syscall.EAGAIN {
 			return err
 		}
 
@@ -231,7 +256,7 @@ func (p *Process) connect(f *File, addr []byte) error {
 			continue
 		}
 
-		ready, werr := p.waitFds([]pollFd{{fd: int32(f.fd), events: pollOut}}, timeout, timeout < 0)
+		ready, werr := p.waitFds([]pollFd{{fd: int32(s.fd), events: pollOut}}, timeout, timeout < 0)
 
 		if werr != nil {
 			return werr
@@ -243,7 +268,7 @@ func (p *Process) connect(f *File, addr []byte) error {
 			return syscall.EINPROGRESS
 		}
 
-		code, gerr := syscall.GetsockoptInt(f.fd, syscall.SOL_SOCKET, syscall.SO_ERROR)
+		code, gerr := syscall.GetsockoptInt(s.fd, syscall.SOL_SOCKET, syscall.SO_ERROR)
 
 		if gerr != nil {
 			return gerr
@@ -257,19 +282,40 @@ func (p *Process) connect(f *File, addr []byte) error {
 	}
 }
 
+func (s *hostSocket) listen(backlog int) error {
+	return syscall.Listen(s.fd, backlog)
+}
+
+// accept returns the connection and the peer's guest address.
+func (s *hostSocket) accept(p *Process, flags uint32) (File, []byte, error) {
+	buf := make([]byte, sockaddrMax)
+	var length uint32
+	host, err := s.transfer(p, pollIn, ioMode{}, func() (int, error) {
+		length = sockaddrMax
+
+		return sockcall(sysAccept4, uintptr(s.fd), bufferPointer(buf), uintptr(unsafe.Pointer(&length)), syscall.SOCK_CLOEXEC)
+	})
+
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return newSocket(host, flags), p.guestAddress(buf[:min(length, sockaddrMax)]), nil
+}
+
 // recvfrom receives into a guest buffer, with MSG_WAITALL until it is full
-// or the stream ends.
-func (p *Process) recvfrom(f *File, buf, n, flags uint32) (int, []byte, error) {
+// or the stream ends; the sender's address is the guest's.
+func (s *hostSocket) recvfrom(p *Process, buf, n, flags uint32) (int, []byte, error) {
 	mode := ioMode{nonblock: flags&msgDontwait != 0}
 	addr := make([]byte, sockaddrMax)
 	total := 0
 
 	for {
 		var length uint32
-		got, err := p.transferMode(f, pollIn, mode, func() (int, error) {
+		got, err := s.transfer(p, pollIn, mode, func() (int, error) {
 			length = sockaddrMax
 
-			return sockcall(syscall.SYS_RECVFROM, uintptr(f.fd), bufferPointer(p.span(buf+uint32(total), n-uint32(total))),
+			return sockcall(syscall.SYS_RECVFROM, uintptr(s.fd), bufferPointer(p.span(buf+uint32(total), n-uint32(total))),
 				uintptr(n-uint32(total)), uintptr(flags&^msgWaitall), bufferPointer(addr), uintptr(unsafe.Pointer(&length)))
 		})
 
@@ -284,9 +330,33 @@ func (p *Process) recvfrom(f *File, buf, n, flags uint32) (int, []byte, error) {
 		total += got
 
 		if flags&msgWaitall == 0 || mode.nonblock || got == 0 || uint32(total) >= n {
-			return total, addr[:min(length, sockaddrMax)], nil
+			return total, p.guestAddress(addr[:min(length, sockaddrMax)]), nil
 		}
 	}
+}
+
+func (s *hostSocket) sendto(p *Process, buf, n, flags, addr, alen uint32) (int, error) {
+	mode := ioMode{nonblock: flags&msgDontwait != 0, quiet: flags&msgNosignal != 0}
+	send := func(to []byte) (int, error) {
+		return s.transfer(p, pollOut, mode, func() (int, error) {
+			return sockcall(syscall.SYS_SENDTO, uintptr(s.fd), bufferPointer(p.span(buf, n)), uintptr(n), uintptr(flags|msgNosignal),
+				bufferPointer(to), uintptr(len(to)))
+		})
+	}
+
+	if addr == 0 {
+		return send(nil)
+	}
+
+	sent := 0
+	err := p.withAddress(addr, alen, false, func(to []byte) error {
+		var e error
+		sent, e = send(to)
+
+		return e
+	})
+
+	return sent, err
 }
 
 // Messages. A guest's msghdr is seven words; its control messages are
@@ -306,7 +376,8 @@ func hostAlign(n int) int {
 }
 
 // hostControl is the host's control messages of a guest's: the descriptors
-// of SCM_RIGHTS become the host's.
+// of SCM_RIGHTS become the host's; an object of the kernel has none to
+// pass, EINVAL.
 func (p *Process) hostControl(at, n uint32) ([]byte, error) {
 	var out []byte
 
@@ -324,13 +395,17 @@ func (p *Process) hostControl(at, n uint32) ([]byte, error) {
 			fds := make([]byte, 0, len(data))
 
 			for i := 0; i+4 <= len(data); i += 4 {
-				f, err := p.fd(binary.LittleEndian.Uint32(data[i:]))
+				obj, err := p.fd(binary.LittleEndian.Uint32(data[i:]))
 
 				if err != nil {
 					return nil, err
 				}
 
-				fds = binary.LittleEndian.AppendUint32(fds, uint32(f.fd))
+				if obj.host() < 0 {
+					return nil, syscall.EINVAL
+				}
+
+				fds = binary.LittleEndian.AppendUint32(fds, uint32(obj.host()))
 			}
 
 			data = fds
@@ -376,7 +451,7 @@ func (p *Process) guestControl(host []byte, at, room uint32, cloexec bool) (uint
 					continue
 				}
 
-				guest, err := p.install(newFile(fd, true), 0, cloexec)
+				guest, err := p.install(newHostObject(fd, true), 0, cloexec)
 
 				if err != nil {
 					flags |= msgCtrunc
@@ -425,7 +500,7 @@ type hostMsghdr struct {
 	_          int32
 }
 
-func (p *Process) sendmsg(f *File, at, flags uint32) (int, error) {
+func (s *hostSocket) sendmsg(p *Process, at, flags uint32) (int, error) {
 	iov, err := p.iovecs(p.u32(at+8), p.u32(at+12))
 
 	if err != nil {
@@ -441,14 +516,14 @@ func (p *Process) sendmsg(f *File, at, flags uint32) (int, error) {
 	send := func(addr []byte) (int, error) {
 		mode := ioMode{nonblock: flags&msgDontwait != 0, quiet: flags&msgNosignal != 0}
 
-		return p.transferMode(f, pollOut, mode, func() (int, error) {
+		return s.transfer(p, pollOut, mode, func() (int, error) {
 			m := hostMsghdr{name: bufferPointer(addr), namelen: uint32(len(addr)), control: bufferPointer(control), controllen: uint64(len(control))}
 
 			if len(iov) > 0 {
 				m.iov, m.iovlen = uintptr(unsafe.Pointer(&iov[0])), uint64(len(iov))
 			}
 
-			return sockcall(syscall.SYS_SENDMSG, uintptr(f.fd), uintptr(unsafe.Pointer(&m)), uintptr(flags|msgNosignal))
+			return sockcall(syscall.SYS_SENDMSG, uintptr(s.fd), uintptr(unsafe.Pointer(&m)), uintptr(flags|msgNosignal))
 		})
 	}
 
@@ -467,7 +542,7 @@ func (p *Process) sendmsg(f *File, at, flags uint32) (int, error) {
 	return send(nil)
 }
 
-func (p *Process) recvmsg(f *File, at, flags uint32) (int, error) {
+func (s *hostSocket) recvmsg(p *Process, at, flags uint32) (int, error) {
 	iov, err := p.iovecs(p.u32(at+8), p.u32(at+12))
 
 	if err != nil {
@@ -478,14 +553,14 @@ func (p *Process) recvmsg(f *File, at, flags uint32) (int, error) {
 	control := make([]byte, 2*room+64)
 	addr := make([]byte, sockaddrMax)
 	var m hostMsghdr
-	n, err := p.transferMode(f, pollIn, ioMode{nonblock: flags&msgDontwait != 0}, func() (int, error) {
+	n, err := s.transfer(p, pollIn, ioMode{nonblock: flags&msgDontwait != 0}, func() (int, error) {
 		m = hostMsghdr{name: bufferPointer(addr), namelen: sockaddrMax, control: bufferPointer(control), controllen: uint64(len(control))}
 
 		if len(iov) > 0 {
 			m.iov, m.iovlen = uintptr(unsafe.Pointer(&iov[0])), uint64(len(iov))
 		}
 
-		return sockcall(syscall.SYS_RECVMSG, uintptr(f.fd), uintptr(unsafe.Pointer(&m)), uintptr(flags|msgCmsgCloexec))
+		return sockcall(syscall.SYS_RECVMSG, uintptr(s.fd), uintptr(unsafe.Pointer(&m)), uintptr(flags|msgCmsgCloexec))
 	})
 
 	if err != nil {
@@ -507,12 +582,12 @@ func (p *Process) recvmsg(f *File, at, flags uint32) (int, error) {
 
 // sockopt is a socket's option: the timeouts the kernel keeps, the host's
 // others.
-func (p *Process) getsockopt(f *File, level, name, at, lenAt uint32) error {
+func (s *hostSocket) getsockopt(p *Process, level, name, at, lenAt uint32) error {
 	if level == solSocket && (name == soRcvtimeo || name == soSndtimeo) {
-		ms := f.recvTimeout.Load()
+		ms := s.recvTimeout.Load()
 
 		if name == soSndtimeo {
-			ms = f.sendTimeout.Load()
+			ms = s.sendTimeout.Load()
 		}
 
 		var b [16]byte
@@ -528,7 +603,7 @@ func (p *Process) getsockopt(f *File, level, name, at, lenAt uint32) error {
 	length := min(p.u32(lenAt), 1024)
 	buf := make([]byte, length)
 
-	if _, err := sockcall(syscall.SYS_GETSOCKOPT, uintptr(f.fd), uintptr(level), uintptr(name), bufferPointer(buf), uintptr(unsafe.Pointer(&length))); err != nil {
+	if _, err := sockcall(syscall.SYS_GETSOCKOPT, uintptr(s.fd), uintptr(level), uintptr(name), bufferPointer(buf), uintptr(unsafe.Pointer(&length))); err != nil {
 		return err
 	}
 
@@ -538,7 +613,7 @@ func (p *Process) getsockopt(f *File, level, name, at, lenAt uint32) error {
 	return nil
 }
 
-func (p *Process) setsockopt(f *File, level, name, at, n uint32) error {
+func (s *hostSocket) setsockopt(p *Process, level, name, at, n uint32) error {
 	if level == solSocket && (name == soRcvtimeo || name == soSndtimeo) {
 		if n < 16 {
 			return syscall.EINVAL
@@ -553,9 +628,9 @@ func (p *Process) setsockopt(f *File, level, name, at, n uint32) error {
 		ms := int64((d + time.Millisecond - 1) / time.Millisecond)
 
 		if name == soRcvtimeo {
-			f.recvTimeout.Store(ms)
+			s.recvTimeout.Store(ms)
 		} else {
-			f.sendTimeout.Store(ms)
+			s.sendTimeout.Store(ms)
 		}
 
 		return nil
@@ -566,9 +641,41 @@ func (p *Process) setsockopt(f *File, level, name, at, n uint32) error {
 	}
 
 	value := slices.Clone(p.span(at, n))
-	_, err := sockcall(syscall.SYS_SETSOCKOPT, uintptr(f.fd), uintptr(level), uintptr(name), bufferPointer(value), uintptr(n))
+	_, err := sockcall(syscall.SYS_SETSOCKOPT, uintptr(s.fd), uintptr(level), uintptr(name), bufferPointer(value), uintptr(n))
 
 	return err
+}
+
+// sockname is the socket's guest address: the path it was bound by, when
+// a path.
+func (s *hostSocket) sockname(p *Process) ([]byte, error) {
+	buf := make([]byte, sockaddrMax)
+	length := uint32(sockaddrMax)
+
+	if _, err := sockcall(syscall.SYS_GETSOCKNAME, uintptr(s.fd), bufferPointer(buf), uintptr(unsafe.Pointer(&length))); err != nil {
+		return nil, err
+	}
+
+	if name := s.unixName.Load(); name != nil {
+		return append(unixAddress([]byte(*name)), 0), nil
+	}
+
+	return p.guestAddress(buf[:min(length, sockaddrMax)]), nil
+}
+
+func (s *hostSocket) peername(p *Process) ([]byte, error) {
+	buf := make([]byte, sockaddrMax)
+	length := uint32(sockaddrMax)
+
+	if _, err := sockcall(syscall.SYS_GETPEERNAME, uintptr(s.fd), bufferPointer(buf), uintptr(unsafe.Pointer(&length))); err != nil {
+		return nil, err
+	}
+
+	return p.guestAddress(buf[:min(length, sockaddrMax)]), nil
+}
+
+func (s *hostSocket) shutdown(how int) error {
+	return syscall.Shutdown(s.fd, how)
 }
 
 func (p *Process) libcSocket(domain, kind, protocol uint32) uint32 {
@@ -621,41 +728,30 @@ func (p *Process) libcSocketpair(domain, kind, protocol, at uint32) uint32 {
 }
 
 func (p *Process) libcBind(fd, addr, n uint32) uint32 {
-	f, err := p.socketFile(fd)
+	s, err := p.socketAt(fd)
 
-	if err != nil {
-		return p.result(0, err)
-	}
-
-	err = p.withAddress(addr, n, true, func(a []byte) error {
-		_, err := sockcall(syscall.SYS_BIND, uintptr(f.fd), bufferPointer(a), uintptr(len(a)))
-
-		return err
-	})
-
-	if err == nil && n > 2 && p.u16(addr) == afUnix && p.u8(addr+2) != 0 {
-		name := p.str(addr + 2)
-		f.unixName.Store(&name)
+	if err == nil {
+		err = s.bind(p, addr, n)
 	}
 
 	return p.result(0, err)
 }
 
 func (p *Process) libcConnect(fd, addr, n uint32) uint32 {
-	f, err := p.socketFile(fd)
+	s, err := p.socketAt(fd)
 
 	if err == nil {
-		err = p.withAddress(addr, n, false, func(a []byte) error { return p.connect(f, a) })
+		err = s.connect(p, addr, n)
 	}
 
 	return p.result(0, err)
 }
 
 func (p *Process) libcListen(fd, backlog uint32) uint32 {
-	f, err := p.socketFile(fd)
+	s, err := p.socketAt(fd)
 
 	if err == nil {
-		err = syscall.Listen(f.fd, int(int32(backlog)))
+		err = s.listen(int(int32(backlog)))
 	}
 
 	return p.result(0, err)
@@ -670,64 +766,56 @@ func (p *Process) libcAccept4(fd, addr, lenAt, flags uint32) uint32 {
 }
 
 func (p *Process) libcGetsockname(fd, addr, lenAt uint32) uint32 {
-	f, err := p.socketFile(fd)
+	s, err := p.socketAt(fd)
 
 	if err != nil {
 		return p.result(0, err)
 	}
 
-	buf := make([]byte, sockaddrMax)
-	length := uint32(sockaddrMax)
+	name, err := s.sockname(p)
 
-	if _, err := sockcall(syscall.SYS_GETSOCKNAME, uintptr(f.fd), bufferPointer(buf), uintptr(unsafe.Pointer(&length))); err != nil {
+	if err != nil {
 		return p.result(0, err)
 	}
 
-	guest := p.guestAddress(buf[:min(length, sockaddrMax)])
-
-	if name := f.unixName.Load(); name != nil {
-		guest = append(unixAddress([]byte(*name)), 0)
-	}
-
-	p.putAddress(guest, addr, lenAt)
+	p.putAddress(name, addr, lenAt)
 
 	return p.result(0, nil)
 }
 
 func (p *Process) libcGetpeername(fd, addr, lenAt uint32) uint32 {
-	f, err := p.socketFile(fd)
+	s, err := p.socketAt(fd)
 
 	if err != nil {
 		return p.result(0, err)
 	}
 
-	buf := make([]byte, sockaddrMax)
-	length := uint32(sockaddrMax)
+	name, err := s.peername(p)
 
-	if _, err := sockcall(syscall.SYS_GETPEERNAME, uintptr(f.fd), bufferPointer(buf), uintptr(unsafe.Pointer(&length))); err != nil {
+	if err != nil {
 		return p.result(0, err)
 	}
 
-	p.putAddress(p.guestAddress(buf[:min(length, sockaddrMax)]), addr, lenAt)
+	p.putAddress(name, addr, lenAt)
 
 	return p.result(0, nil)
 }
 
 func (p *Process) libcGetsockopt(fd, level, name, at, lenAt uint32) uint32 {
-	f, err := p.socketFile(fd)
+	s, err := p.socketAt(fd)
 
 	if err == nil {
-		err = p.getsockopt(f, level, name, at, lenAt)
+		err = s.getsockopt(p, level, name, at, lenAt)
 	}
 
 	return p.result(0, err)
 }
 
 func (p *Process) libcSetsockopt(fd, level, name, at, n uint32) uint32 {
-	f, err := p.socketFile(fd)
+	s, err := p.socketAt(fd)
 
 	if err == nil {
-		err = p.setsockopt(f, level, name, at, n)
+		err = s.setsockopt(p, level, name, at, n)
 	}
 
 	return p.result(0, err)
@@ -750,45 +838,51 @@ func (p *Process) libcRecvfrom(fd, buf, n, flags, addr, lenAt uint32) uint32 {
 }
 
 func (p *Process) libcSendmsg(fd, msg, flags uint32) uint32 {
-	f, err := p.socketFile(fd)
+	s, err := p.socketAt(fd)
 
 	if err != nil {
 		return p.result(0, err)
 	}
 
-	return p.result(p.sendmsg(f, msg, flags))
+	return p.result(s.sendmsg(p, msg, flags))
 }
 
 func (p *Process) libcRecvmsg(fd, msg, flags uint32) uint32 {
-	f, err := p.socketFile(fd)
+	s, err := p.socketAt(fd)
 
 	if err != nil {
 		return p.result(0, err)
 	}
 
-	return p.result(p.recvmsg(f, msg, flags))
+	return p.result(s.recvmsg(p, msg, flags))
 }
 
 func (p *Process) libcShutdown(fd, how uint32) uint32 {
-	f, err := p.socketFile(fd)
+	s, err := p.socketAt(fd)
 
 	if err == nil {
-		err = syscall.Shutdown(f.fd, int(how))
+		err = s.shutdown(int(how))
 	}
 
 	return p.result(0, err)
 }
 
 func (p *Process) libcSockatmark(fd uint32) uint32 {
-	f, err := p.socketFile(fd)
+	s, err := p.socketAt(fd)
 
 	if err != nil {
 		return p.result(0, err)
 	}
 
+	i, ok := s.(Ioctl)
+
+	if !ok {
+		return p.result(0, syscall.ENOTTY)
+	}
+
 	var mark int32
 
-	if err := ioctlPtr(f.fd, siocatmark, unsafe.Pointer(&mark)); err != nil {
+	if err := i.ioctl(siocatmark, unsafe.Pointer(&mark)); err != nil {
 		return p.result(0, err)
 	}
 
@@ -796,7 +890,7 @@ func (p *Process) libcSockatmark(fd uint32) uint32 {
 }
 
 func (p *Process) socketAccept(fd, addr, lenAt, flags uint32) uint32 {
-	f, err := p.socketFile(fd)
+	s, err := p.socketAt(fd)
 
 	if err != nil {
 		return p.result(0, err)
@@ -806,70 +900,44 @@ func (p *Process) socketAccept(fd, addr, lenAt, flags uint32) uint32 {
 		return p.result(0, syscall.EINVAL)
 	}
 
-	buf := make([]byte, sockaddrMax)
-	var length uint32
-	host, err := p.transfer(f, pollIn, func() (int, error) {
-		length = sockaddrMax
-
-		return sockcall(sysAccept4, uintptr(f.fd), bufferPointer(buf), uintptr(unsafe.Pointer(&length)), syscall.SOCK_CLOEXEC)
-	})
+	conn, peer, err := s.accept(p, flags)
 
 	if err != nil {
 		return p.result(0, err)
 	}
 
-	guest, err := p.installSocket(host, flags)
+	guest, err := p.install(conn, 0, flags&sockCloexec != 0)
 
 	if err != nil {
 		return p.result(0, err)
 	}
 
-	p.putAddress(p.guestAddress(buf[:min(length, sockaddrMax)]), addr, lenAt)
+	p.putAddress(peer, addr, lenAt)
 
 	return p.result(guest, nil)
 }
 
 func (p *Process) socketSend(fd, buf, n, flags, addr, alen uint32) uint32 {
-	f, err := p.socketFile(fd)
+	s, err := p.socketAt(fd)
 
 	if err != nil {
 		return p.result(0, err)
 	}
 
-	mode := ioMode{nonblock: flags&msgDontwait != 0, quiet: flags&msgNosignal != 0}
-	send := func(to []byte) (int, error) {
-		return p.transferMode(f, pollOut, mode, func() (int, error) {
-			return sockcall(syscall.SYS_SENDTO, uintptr(f.fd), bufferPointer(p.span(buf, n)), uintptr(n), uintptr(flags|msgNosignal),
-				bufferPointer(to), uintptr(len(to)))
-		})
-	}
-
-	if addr == 0 {
-		return p.result(send(nil))
-	}
-
-	sent := 0
-	err = p.withAddress(addr, alen, false, func(to []byte) error {
-		var e error
-		sent, e = send(to)
-
-		return e
-	})
-
-	return p.result(sent, err)
+	return p.result(s.sendto(p, buf, n, flags, addr, alen))
 }
 
 func (p *Process) socketRecv(fd, buf, n, flags, addr, lenAt uint32) uint32 {
-	f, err := p.socketFile(fd)
+	s, err := p.socketAt(fd)
 
 	if err != nil {
 		return p.result(0, err)
 	}
 
-	got, from, err := p.recvfrom(f, buf, n, flags)
+	got, from, err := s.recvfrom(p, buf, n, flags)
 
 	if err == nil && addr != 0 {
-		p.putAddress(p.guestAddress(from), addr, lenAt)
+		p.putAddress(from, addr, lenAt)
 	}
 
 	return p.result(got, err)

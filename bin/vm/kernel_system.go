@@ -10,7 +10,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	"unsafe"
 )
 
 // What the system tells of itself: memory, load and resource usage, which
@@ -50,8 +49,8 @@ func (p *Process) syslog(priority, message uint32) {
 		line += "\n"
 	}
 
-	if f, err := p.fd(2); err == nil {
-		p.writeFile(f, []byte(line))
+	if t, err := p.transferAt(2, false); err == nil {
+		t.write(p, []byte(line), ioMode{})
 	}
 }
 
@@ -144,26 +143,30 @@ func (p *Process) putRusage(at uint32, ru *syscall.Rusage) {
 // terminalName is the name of a descriptor's terminal: one of the host's
 // devices a guest's path names.
 func (p *Process) terminalName(fd uint32) (string, syscall.Errno) {
-	f, err := p.fd(fd)
+	obj, err := p.fd(fd)
 
 	if err != nil {
 		return "", syscall.EBADF
 	}
 
-	var t hostTermios
-
-	if ioctlPtr(f.fd, tcgets, unsafe.Pointer(&t)) != nil {
+	if _, _, err := p.terminal(fd); err != nil {
 		return "", syscall.ENOTTY
 	}
 
-	name, err := p.k.hostPath(f.fd)
+	pathed, ok := obj.(Pathed)
+
+	if !ok {
+		return "", syscall.ENOTTY
+	}
+
+	name, err := pathed.hostPath()
 
 	if err != nil {
 		return "", errnoOf(err)
 	}
 
 	if !hostDevice(name) {
-		name = p.k.guestPath(name)
+		name = p.guestPath(name)
 	}
 
 	return name, 0

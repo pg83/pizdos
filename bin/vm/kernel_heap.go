@@ -806,7 +806,7 @@ func alignment(align uint32, pointer bool) bool {
 // back what changed.
 type mapping struct {
 	length uint32
-	file   *File
+	file   Transfer
 	offset int64
 	read   []byte
 }
@@ -820,7 +820,7 @@ func (p *Process) writeBack(at uint32, m mapping, from, n uint32) error {
 
 	var st syscall.Stat_t
 
-	if err := fileStat(m.file.fd, &st); err != nil {
+	if err := m.file.stat(&st); err != nil {
 		return err
 	}
 
@@ -841,7 +841,7 @@ func (p *Process) writeBack(at uint32, m mapping, from, n uint32) error {
 			j++
 		}
 
-		if _, err := syscall.Pwrite(m.file.fd, now[i:j], m.offset+int64(from)+int64(i)); err != nil {
+		if _, err := m.file.pwrite(p, now[i:j], m.offset+int64(from)+int64(i)); err != nil {
 			return err
 		}
 
@@ -975,10 +975,21 @@ func (p *Process) libcMmap(addr, n, prot, flags, fd uint32, off uint64) uint32 {
 	m := mapping{length: n}
 
 	if flags&mapAnonymous == 0 {
-		f, err := p.fd(fd)
+		// A file that is mapped is read at an offset: one that cannot be
+		// is no device for it, as a pipe is none to Linux.
+		obj, err := p.fd(fd)
+		var f Transfer
 
 		if err == nil {
-			_, err = syscall.Pread(f.fd, b, int64(off))
+			t, ok := obj.(Transfer)
+			_, seeks := obj.(Seeker)
+
+			if !ok || !seeks {
+				err = syscall.ENODEV
+			} else {
+				f = t
+				_, err = f.pread(p, b, int64(off))
+			}
 		}
 
 		if err != nil {
@@ -988,7 +999,8 @@ func (p *Process) libcMmap(addr, n, prot, flags, fd uint32, off uint64) uint32 {
 			return failed
 		}
 
-		m.file, m.offset = f.ref(), int64(off)
+		f.ref()
+		m.file, m.offset = f, int64(off)
 
 		if flags&mapShared != 0 && prot&protWrite != 0 {
 			m.read = bytes.Clone(b)
@@ -1054,7 +1066,7 @@ func (p *Process) libcMadvise(addr, n, advice uint32) uint32 {
 	case m.read == nil:
 		in := b[:min(n, m.length-(addr-at))]
 		clear(in)
-		syscall.Pread(m.file.fd, in, m.offset+int64(addr-at))
+		m.file.pread(p, in, m.offset+int64(addr-at))
 	}
 
 	return p.result(0, nil)

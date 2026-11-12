@@ -169,7 +169,8 @@ func (c *Process) inherit(p *Process) {
 
 	for fd, d := range p.files {
 		if d != nil {
-			c.files[fd] = &Descriptor{file: d.file.ref(), cloexec: d.cloexec}
+			d.obj.ref()
+			c.files[fd] = &Descriptor{obj: d.obj, cloexec: d.cloexec}
 		}
 	}
 
