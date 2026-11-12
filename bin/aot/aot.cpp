@@ -9209,9 +9209,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             if (at >= 0 && at > start) {
                 start = intervalCovered(it, at);
-            } else if (intervalPrevUse(it, pos) >= start) {
-                return false;
             }
+            // A failed split precedes every use: otherwise the even boundary
+            // after the last use, or the odd-position shortcut, always fits.
         }
         i32 u = intervalNextUse(it, pos);
         if (u == maxPos) {
@@ -20892,9 +20892,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             // Only the latch leaves, to one block, and only it returns.
             Term* t = &f->blocks[latch].term;
             const Int back = t->edges[0].block == h ? 0 : 1;
-            if (t->edges[back].block != h || member[t->edges[1 - back].block]) {
-                continue;
-            }
+            // The latch came from h's predecessors. Repeated latch edges
+            // failed the unique-latch check; an edge back into the body
+            // would form an inner cycle rejected by the header walk.
             const i32 exit = t->edges[1 - back].block;
             for (Int i = 0; i < length(body) && simple; ++i) {
                 const Term& bt = f->blocks[body[i]].term;
@@ -22730,9 +22730,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 l->preheader = p;
             }
         }
-        if (l->latch < 0 || l->preheader < 0) {
-            return {};
-        }
+        // A reachable non-entry RPO header has an entry predecessor. With
+        // no dominating latch it would have multiple entry predecessors,
+        // already rejected above; with no entry it would be unreachable.
         auto edges = f->blocks[l->preheader].term.edges;
         for (Int i = 0; i < length(edges); ++i) {
             Edge e = edges[i];
