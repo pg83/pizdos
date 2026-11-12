@@ -1443,6 +1443,10 @@ func utimensat(dirfd int, name *byte, ts []syscall.Timespec, flags int) error {
 }
 
 func eventfd() (int, error) {
+	if chaosFail("eventfd") {
+		return 0, syscall.EMFILE
+	}
+
 	r, _, e := syscall.RawSyscall(syscall.SYS_EVENTFD2, 0, syscall.O_CLOEXEC|syscall.O_NONBLOCK, 0)
 
 	if e != 0 {

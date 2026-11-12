@@ -12,6 +12,43 @@
 #include <unistd.h>
 
 static int attempt(const char* operation) {
+    if (strcmp(operation, "system") == 0) {
+        int status = system("exit7");
+        if (status == -1) {
+            assert(errno == EMFILE);
+            return 1;
+        }
+        assert(WIFEXITED(status) && WEXITSTATUS(status) == 7);
+        return 0;
+    }
+    if (strcmp(operation, "daemon") == 0) {
+        int saved[3];
+        for (int fd = 0; fd < 3; ++fd) {
+            saved[fd] = dup(fd);
+            assert(saved[fd] >= 0);
+        }
+        int result = daemon(1, 0), error = errno;
+        for (int fd = 0; fd < 3; ++fd) {
+            assert(dup2(saved[fd], fd) == fd && close(saved[fd]) == 0);
+        }
+        assert(result == 0 || (result == -1 && error == EIO));
+        return result < 0;
+    }
+    if (strcmp(operation, "forkpty") == 0) {
+        int master = -1;
+        pid_t child = forkpty(&master, NULL, NULL, NULL);
+        if (child < 0) {
+            assert(errno == EAGAIN && master == -1);
+            return 1;
+        }
+        if (child == 0) {
+            _exit(7);
+        }
+        int status;
+        assert(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 7);
+        assert(close(master) == 0);
+        return 0;
+    }
     if (strcmp(operation, "chdir") == 0) {
         int result = chdir("/");
         assert(result == 0 || (result == -1 && errno == EIO));
@@ -166,6 +203,9 @@ static int attempt(const char* operation) {
 }
 
 int main(int argc, char** argv) {
+    if (argc == 3 && strcmp(argv[1], "-c") == 0 && strcmp(argv[2], "exit7") == 0) {
+        return 7;
+    }
     assert(argc == 2);
     int failures = 0;
     for (int i = 0; i < 16; ++i) {
