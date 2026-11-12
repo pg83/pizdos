@@ -24,6 +24,12 @@
           (i32.add (i32.shr_u (i32.load8_u (local.get $address)) (i32.const 8)) (i32.const 255))
           (i32.sub (i32.and (local.get $value) (i32.const 255)) (i32.const 256))))))
 
+  ;; Negating this signed immediate does not fit an x86 signed imm32.
+  (func $subtract_min32 (param $value i32) (result i32)
+    (i32.sub (local.get $value) (i32.const -2147483648)))
+  (func $subtract_min64 (param $value i64) (result i64)
+    (i64.sub (local.get $value) (i64.const -2147483648)))
+
   (func $merged_unsigned (param $address i32) (param $condition i32) (result i32)
     (local $first i64)
     (local.set $first (i64.extend_i32_u (local.get $address)))

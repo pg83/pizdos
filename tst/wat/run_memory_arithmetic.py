@@ -18,6 +18,11 @@ def program(template):
     comparisons = []
     for bits in (32, 64):
         values = (0, 1, 17, (1 << (bits - 1)) - 1, 1 << (bits - 1), (1 << bits) - 1)
+        for value in values:
+            expected = signed(value + (1 << 31), bits)
+            statements.append(f"(if (i{bits}.ne (call $subtract_min{bits} (i{bits}.const {signed(value, bits)})) "
+                              f"(i{bits}.const {expected})) (then unreachable))")
+            checks += 1
         for relation in ("eq", "ne", "lt_s", "lt_u", "gt_s", "gt_u", "le_s", "le_u", "ge_s", "ge_u"):
             for reverse in (False, True):
                 name = f"compare_{bits}_{relation}_{int(reverse)}"
