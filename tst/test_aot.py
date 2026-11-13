@@ -36,12 +36,11 @@ def main():
                 assert result.stdout == expected, f"{entry}: {source.name} differs from vm"
             print(f"aot export/command: {source.name} -> {len(expected)} bytes, identical")
 
-        # Run the C++ compiler as its own x86 output, through the same Go
-        # loader and stack/runtime ABI that ordinary compiled modules use.
-        self_object = directory / "aot-command.o"
-        self_object.write_bytes(references[Path(command)])
+        # Run the C++ compiler as its own x86 output, which vm run compiles
+        # as it starts, through the same Go loader and stack/runtime ABI that
+        # ordinary compiled modules use.
         for source in (Path(fixture), Path(command)):
-            result = run([vm, "run", "--", str(self_object)], source.read_bytes())
+            result = run([vm, "run", "--", command], source.read_bytes())
             assert result.stdout == references[source], f"self-compiled aot differs for {source.name}"
             print(f"self-compiled aot: {source.name}, identical")
 

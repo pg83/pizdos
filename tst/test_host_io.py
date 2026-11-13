@@ -38,9 +38,8 @@ def main():
         compiled.write_bytes(reference.stdout)
         result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
         assert result.returncode == 0 and embedded.read_bytes() == reference.stdout, result
-        for obj in (compiled, embedded):
-            result = subprocess.run([vm, "run", "--", str(obj)], capture_output=True, env=env, timeout=30)
-            assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), result
+        result = subprocess.run([vm, "run", "--", str(source)], capture_output=True, env=env, timeout=30)
+        assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), result
 
         with source.open("rb") as stream:
             result = subprocess.run([native, "--strict"], stdin=stream, capture_output=True, env=env,

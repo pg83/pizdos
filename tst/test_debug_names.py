@@ -72,10 +72,9 @@ def main():
             compiled.write_bytes(result.stdout)
             result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
             assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), (label, result)
-            for obj in (compiled, embedded):
-                result = subprocess.run([vm, "run", "--", str(obj)], capture_output=True, env=env, timeout=30)
-                assert result.returncode == 129 and result.stdout == b"" and result.stderr.startswith(b"wasm trap: unreachable\n"), (label, result)
-                assert name.encode() + b"+0x" in result.stderr and b"panic:" not in result.stderr, (label, result)
+            result = subprocess.run([vm, "run", "--", str(source)], capture_output=True, env=env, timeout=30)
+            assert result.returncode == 129 and result.stdout == b"" and result.stderr.startswith(b"wasm trap: unreachable\n"), (label, result)
+            assert name.encode() + b"+0x" in result.stderr and b"panic:" not in result.stderr, (label, result)
     print(f"debug names: {len(cases)} malformed, partial and Unicode sections preserve traps and expected names with both AOTs")
 
 

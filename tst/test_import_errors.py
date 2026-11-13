@@ -105,8 +105,9 @@ def main():
             compiled.write_bytes(result.stdout)
             result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
             assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), (label, result)
-            for obj in (compiled, embedded):
-                args = ["stand", "magic", str(obj), str(fixture)] if stand else ["run", "--", str(obj)]
+            # The stand links an object; vm run, a module it compiles.
+            for args in (["stand", "magic", str(compiled), str(fixture)], ["stand", "magic", str(embedded), str(fixture)]) if stand \
+                    else (["run", "--", str(source)],):
                 result = subprocess.run([vm, *args], capture_output=True, env=env, timeout=30)
                 assert result.returncode == 1 and result.stdout == b"" and diagnostic.encode() in result.stderr, (label, result)
                 assert b"panic:" not in result.stderr, (label, result)

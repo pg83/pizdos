@@ -116,13 +116,12 @@ def main():
             result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
             assert result.returncode == 0, (name, result.stderr)
             assert compiled.read_bytes() == embedded.read_bytes(), name
-            for obj in (compiled, embedded):
-                result = subprocess.run([vm, "run", "-a", "runtime-error", "--", str(obj)], capture_output=True, env=env, timeout=30)
-                assert result.returncode == 134 and result.stdout == b"", (name, result)
-                lines = result.stderr.decode().splitlines()
-                assert lines and diagnostic in lines[0], (name, result.stderr)
-                assert all(re.match(r"runtime-error\[\d+\]: ", line) for line in lines), (name, result.stderr)
-                assert len(lines) > 1, (name, "missing guest stack trace")
+            result = subprocess.run([vm, "run", "-a", "runtime-error", "--", str(source)], capture_output=True, env=env, timeout=30)
+            assert result.returncode == 134 and result.stdout == b"", (name, result)
+            lines = result.stderr.decode().splitlines()
+            assert lines and diagnostic in lines[0], (name, result.stderr)
+            assert all(re.match(r"runtime-error\[\d+\]: ", line) for line in lines), (name, result.stderr)
+            assert len(lines) > 1, (name, "missing guest stack trace")
     print(f"runtime errors: {len(cases)} controlled allocator and nonlocal-jump failures passed with both AOTs")
 
 

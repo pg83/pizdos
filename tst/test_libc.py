@@ -5,7 +5,7 @@ of results per area, which must be these. Its root has /etc/passwd,
 resolver, a /tmp to make files and sockets in, and the program as
 /bin/check, the path dladdr names.
 
-    test_libc.py <vm> <check.o>
+    test_libc.py <vm> <check.wasm>
 """
 import shutil
 import subprocess

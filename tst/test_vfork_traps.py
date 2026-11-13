@@ -57,10 +57,9 @@ def main():
                 compiled.write_bytes(result.stdout)
                 result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
                 assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), result
-                for obj in (compiled, embedded):
-                    result = subprocess.run([vm, "run", "-a", "vfork-trap", "--", str(obj)], capture_output=True, env=env, timeout=30)
-                    assert result.returncode == status and result.stdout == b"" and diagnostic in result.stderr, (children, status, result)
-                    assert result.stderr.startswith(f"vfork-trap[{children + 1}]: ".encode()) and b"panic:" not in result.stderr, result
+                result = subprocess.run([vm, "run", "-a", "vfork-trap", "--", str(source)], capture_output=True, env=env, timeout=30)
+                assert result.returncode == status and result.stdout == b"" and diagnostic in result.stderr, (children, status, result)
+                assert result.stderr.startswith(f"vfork-trap[{children + 1}]: ".encode()) and b"panic:" not in result.stderr, result
     print("vfork traps: unreachable, memory and arithmetic faults in nested borrowers unwind safely with both AOTs")
 
 

@@ -70,19 +70,18 @@ def main():
                 compiled.write_bytes(result.stdout)
                 result = subprocess.run([vm, "-o", str(embedded), str(source)], env=env, capture_output=True, timeout=60)
                 assert result.returncode == 0 and compiled.read_bytes() == embedded.read_bytes(), (mode, result)
-                for obj in (compiled, embedded):
-                    profile = obj.with_suffix(".jsonl")
-                    result = subprocess.run([vm, "run", "--", str(obj)], env=dict(env, W2O_TAIL_PROFILE=str(profile)),
-                                            capture_output=True, timeout=30)
-                    assert result.returncode == (130 if trapped else 0) and result.stdout == b"", (mode, result)
-                    assert (b"out of bounds memory access" in result.stderr) if trapped else result.stderr == b"", result
-                    if mode == "profile":
-                        rows = [json.loads(line) for line in profile.read_text().splitlines()]
-                        functions = [function for row in rows for function in row["functions"]]
-                        for counter in ("guards", "omitted_checks", *(("fallbacks",) if trapped else ())):
-                            assert sum(function[counter] for function in functions) > 0, (counter, rows)
-                    else:
-                        assert not profile.exists(), mode
+                profile = embedded.with_suffix(".jsonl")
+                result = subprocess.run([vm, "run", "--", str(source)], env=dict(env, W2O_TAIL_PROFILE=str(profile)),
+                                        capture_output=True, timeout=30)
+                assert result.returncode == (130 if trapped else 0) and result.stdout == b"", (mode, result)
+                assert (b"out of bounds memory access" in result.stderr) if trapped else result.stderr == b"", result
+                if mode == "profile":
+                    rows = [json.loads(line) for line in profile.read_text().splitlines()]
+                    functions = [function for row in rows for function in row["functions"]]
+                    for counter in ("guards", "omitted_checks", *(("fallbacks",) if trapped else ())):
+                        assert sum(function[counter] for function in functions) > 0, (counter, rows)
+                else:
+                    assert not profile.exists(), mode
     print("compiler modes: identical native/Wasm objects, wrapping loads and fast/fallback profile counters passed")
 
 

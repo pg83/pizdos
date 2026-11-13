@@ -87,8 +87,14 @@ int main(int argc, char** argv) {
         char* allocated = realpath("/jump/more/leaf", NULL);
         assert(allocated == NULL && errno == ENAMETOOLONG);
     } else if (strcmp(argv[1], "exec-wasi") == 0) {
+        // A module that is no program of the kernel, one the compiler
+        // refuses, and an object of vm's, which is no module: none runs,
+        // and the program goes on.
         char* arguments[] = {"wasi", NULL};
+        assert(execv("/wasi.wasm", arguments) == -1 && errno == ENOEXEC);
+        assert(execv("/bad.wasm", arguments) == -1 && errno == ENOEXEC);
         assert(execv("/wasi.o", arguments) == -1 && errno == ENOEXEC);
+        assert(execv("/bad.wasm", arguments) == -1 && errno == ENOEXEC);
     } else if (strcmp(argv[1], "recv-message") == 0) {
         int ends[2];
         assert(socketpair(AF_UNIX, SOCK_STREAM, 0, ends) == 0);

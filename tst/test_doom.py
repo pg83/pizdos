@@ -6,7 +6,7 @@ wad and hashes each second of frames; on a pty it draws truecolor cells,
 and Ctrl-C, which the raw terminal no longer turns into a signal, still
 ends it with the terminal restored.
 
-    test_doom.py <vm> <doom.o> <doom1.wad>
+    test_doom.py <vm> <doom.wasm> <doom1.wad>
 """
 import os
 import pty
@@ -21,9 +21,9 @@ from pathlib import Path
 IWAD = "/usr/share/games/doom/doom1.wad"
 
 
-def make_root(root, obj, wad):
+def make_root(root, module, wad):
     (root / "bin").mkdir(parents=True)
-    shutil.copy(obj, root / "bin" / "doom")
+    shutil.copy(module, root / "bin" / "doom")
     (root / "bin" / "doom").chmod(0o755)
     (root / "usr" / "share" / "games" / "doom").mkdir(parents=True)
     shutil.copy(wad, root / IWAD.lstrip("/"))
@@ -93,12 +93,12 @@ def terminal(vm, root):
 
 
 def main():
-    vm, obj, wad = sys.argv[1:4]
+    vm, module, wad = sys.argv[1:4]
     failed = []
 
     with tempfile.TemporaryDirectory(prefix="doom-") as work:
         root = Path(work) / "root"
-        make_root(root, obj, Path(wad))
+        make_root(root, module, Path(wad))
 
         frames, error = timedemo(vm, root, work)
 

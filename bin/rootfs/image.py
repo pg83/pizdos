@@ -2,8 +2,9 @@
 """The image rootfs serves: a ustar archive of the programs of the system
 and the directories it expects.
 
-    image.py <rootfs.tar> --busybox <busybox.o> <busybox.links> --init <init.o> --python <python.o> <python314.zip>
+    image.py <rootfs.tar> --busybox <busybox.wasm> <busybox.links> --init <init.wasm> --python <python.wasm> <python314.zip>
 
+The programs are modules, which the kernel compiles as they are executed:
 busybox is /bin/busybox and every path of busybox.links a link to it; init
 is /bin/init; python is /usr/bin/python3 with its standard library at
 /usr/lib/python314.zip, where it looks. No times, no owners: the same

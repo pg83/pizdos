@@ -95,11 +95,10 @@ def main():
                                                 capture_output=True, timeout=60)
                         assert result.returncode == 0, result.stderr
                         assert embedded.read_bytes() == compiled.read_bytes(), (count, start, trap, boundary)
-                        for obj in (compiled, embedded):
-                            result = subprocess.run([vm, "run", "--", str(obj)], env=env, capture_output=True, timeout=30)
-                            expected = 130 if trap else 0
-                            assert result.returncode == expected and result.stdout == b"", (count, start, trap, boundary, result)
-                            assert (b"out of bounds memory access" in result.stderr) if trap else result.stderr == b"", result
+                        result = subprocess.run([vm, "run", "--", str(source)], env=env, capture_output=True, timeout=30)
+                        expected = 130 if trap else 0
+                        assert result.returncode == expected and result.stdout == b"", (count, start, trap, boundary, result)
+                        assert (b"out of bounds memory access" in result.stderr) if trap else result.stderr == b"", result
                         checked += 1
     print(f"data segments: {checked} programs agree through native/Wasm AOT and execute as expected")
 

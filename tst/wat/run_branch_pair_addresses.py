@@ -91,9 +91,8 @@ def main():
             compiled.write_bytes(result.stdout)
             result = subprocess.run([vm, "-o", str(embedded), str(module)], capture_output=True, env=env, timeout=60)
             assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), (strict, result)
-            for obj in (compiled, embedded):
-                result = subprocess.run([vm, "run", "--", str(obj)], capture_output=True, env=env, timeout=30)
-                assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (strict, result)
+            result = subprocess.run([vm, "run", "--", str(module)], capture_output=True, env=env, timeout=30)
+            assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (strict, result)
         for label, text in trap_programs(template):
             source.write_text(text)
             result = subprocess.run([wat2wasm, str(source), "-o", str(module)], capture_output=True, timeout=30)
@@ -107,9 +106,8 @@ def main():
                 compiled.write_bytes(result.stdout)
                 result = subprocess.run([vm, "-o", str(embedded), str(module)], capture_output=True, env=env, timeout=60)
                 assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), (label, strict, result)
-                for obj in (compiled, embedded):
-                    result = subprocess.run([vm, "run", "--", str(obj)], capture_output=True, env=env, timeout=30)
-                    assert result.returncode == 130 and result.stdout == b"" and b"out of bounds memory access" in result.stderr, (label, strict, obj.name, result)
+                result = subprocess.run([vm, "run", "--", str(module)], capture_output=True, env=env, timeout=30)
+                assert result.returncode == 130 and result.stdout == b"" and b"out of bounds memory access" in result.stderr, (label, strict, module.name, result)
             traps += 1
     print(f"WAT branch addresses: {count} modeled comparisons preserve results/memory/sentinels and {traps} eager loads trap, with wazero and both AOTs")
 

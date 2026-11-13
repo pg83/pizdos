@@ -153,64 +153,67 @@ def main():
         result = subprocess.run([native, "--strict"], input=plain, capture_output=True, env=env, timeout=60)
         assert result.returncode == 0, result.stderr
         (work / "wasi.o").write_bytes(result.stdout)
-        (work / "wasi.o").chmod(0o700)
+        (work / "wasi.wasm").write_bytes(plain)
+        (work / "bad.wasm").write_bytes(b"\0asm\1\0\0\0\1\1\x80")
+        for name in ("wasi.o", "wasi.wasm", "bad.wasm"):
+            (work / name).chmod(0o700)
         compiled, embedded = work / "native.o", work / "embedded.o"
         result = subprocess.run([native, "--strict"], input=Path(fixture).read_bytes(), capture_output=True, env=env, timeout=60)
         assert result.returncode == 0, result
         compiled.write_bytes(result.stdout)
         result = subprocess.run([vm, "-o", str(embedded), fixture], capture_output=True, env=env, timeout=60)
         assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), result
-        for obj in (compiled, embedded):
-            result = subprocess.run([wrapper, f"{errno.EPERM}/stop", "--", vm, "run", "--root", str(work), "--", str(obj), "stop"],
+        result = subprocess.run([wrapper, f"{errno.EPERM}/stop", "--", vm, "run", "--root", str(work), "--", str(fixture), "stop"],
+                                capture_output=True, env=env, timeout=30)
+        assert result.returncode == 1 and result.stdout == b"", ("stop", result)
+        assert b"[1]: operation not permitted\n" in result.stderr and b"panic:" not in result.stderr, result
+        with refusing_dns() as port:
+            result = subprocess.run([interrupt, f"dns/{port}", "--", vm, "run", "--root", str(work), "--", str(fixture), "permanent-dns-error"],
+                                    capture_output=True, env=dict(env, GODEBUG="netdns=go"), timeout=30)
+            assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), ("permanent-dns-error", result)
+        for operation, number in (("retry-open", 437), ("retry-read", 0), ("retry-connect", 42), ("temp-collision", "collision")):
+            result = subprocess.run([interrupt, str(number), "--", vm, "run", "--root", str(work), "--", str(fixture), operation],
+                                    input=b"x", capture_output=True, env=env, timeout=30)
+            assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), (operation, result)
+        for operation in ("host-abstract", "host-pathname"):
+            with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as inherited:
+                if operation == "host-abstract":
+                    inherited.bind("\0pizdos-host-" + work.name)
+                else:
+                    with contextlib.chdir(work):
+                        inherited.bind("host.socket")
+                result = subprocess.run([vm, "run", "--root", str(work), "--", str(fixture), operation],
+                                        stdin=inherited, capture_output=True, env=env, timeout=30)
+                assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), (operation, result)
+            if operation == "host-pathname":
+                (work / "host.socket").unlink()
+        for operation in ("long-realpath", "exec-wasi", "early-kill"):
+            result = subprocess.run([vm, "run", "--root", str(work), "--", str(fixture), operation],
                                     capture_output=True, env=env, timeout=30)
-            assert result.returncode == 1 and result.stdout == b"", ("stop", result)
-            assert b"[1]: operation not permitted\n" in result.stderr and b"panic:" not in result.stderr, result
-            with refusing_dns() as port:
-                result = subprocess.run([interrupt, f"dns/{port}", "--", vm, "run", "--root", str(work), "--", str(obj), "permanent-dns-error"],
-                                        capture_output=True, env=dict(env, GODEBUG="netdns=go"), timeout=30)
-                assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), ("permanent-dns-error", result)
-            for operation, number in (("retry-open", 437), ("retry-read", 0), ("retry-connect", 42), ("temp-collision", "collision")):
-                result = subprocess.run([interrupt, str(number), "--", vm, "run", "--root", str(work), "--", str(obj), operation],
-                                        input=b"x", capture_output=True, env=env, timeout=30)
-                assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), (operation, result)
-            for operation in ("host-abstract", "host-pathname"):
-                with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as inherited:
-                    if operation == "host-abstract":
-                        inherited.bind("\0pizdos-host-" + work.name)
-                    else:
-                        with contextlib.chdir(work):
-                            inherited.bind("host.socket")
-                    result = subprocess.run([vm, "run", "--root", str(work), "--", str(obj), operation],
-                                            stdin=inherited, capture_output=True, env=env, timeout=30)
-                    assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), (operation, result)
-                if operation == "host-pathname":
-                    (work / "host.socket").unlink()
-            for operation in ("long-realpath", "exec-wasi", "early-kill"):
-                result = subprocess.run([vm, "run", "--root", str(work), "--", str(obj), operation],
-                                        capture_output=True, env=env, timeout=30)
-                assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), (operation, result)
-            reader, writer = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
-            try:
-                # Keep the writer open and empty: reading this inherited
-                # nonblocking input must report EAGAIN rather than EOF.
-                result = subprocess.run([vm, "run", "--root", str(work), "--", str(obj), "nonblocking-input"],
-                                        stdin=reader, capture_output=True, env=env, timeout=30)
-                assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), result
-            finally:
-                os.close(reader)
-                os.close(writer)
-            for operation, error, numbers in cases:
-                result = subprocess.run([wrapper, str(error) + "/" + ",".join(map(str, numbers)), "--", vm, "run", "--root", str(work), "--", str(obj), operation], capture_output=True,
-                                        env=env, timeout=30,
-                                        preexec_fn=(lambda: resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))) if operation == "pty-attributes" else None)
-                assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), (operation, result)
-            # Startup reads the kernel object using fstat and pread. Returning
-            # zero from a suppressed pread models EOF after its recorded size.
-            for number, error, diagnostic in ((5, errno.EIO, b"input/output error"),
-                                               (17, errno.EIO, b"input/output error"), (17, 0, b"exec format error")):
-                result = subprocess.run([wrapper, f"{error}/{number}", "--", vm, "run", "--", str(obj)],
-                                        capture_output=True, env=env, timeout=30)
-                assert result.returncode == 1 and result.stdout == b"" and diagnostic in result.stderr and b"panic:" not in result.stderr, (number, error, result)
+            assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), (operation, result)
+        reader, writer = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
+        try:
+            # Keep the writer open and empty: reading this inherited
+            # nonblocking input must report EAGAIN rather than EOF.
+            result = subprocess.run([vm, "run", "--root", str(work), "--", str(fixture), "nonblocking-input"],
+                                    stdin=reader, capture_output=True, env=env, timeout=30)
+            assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), result
+        finally:
+            os.close(reader)
+            os.close(writer)
+        for operation, error, numbers in cases:
+            result = subprocess.run([wrapper, str(error) + "/" + ",".join(map(str, numbers)), "--", vm, "run", "--root", str(work), "--", str(fixture), operation], capture_output=True,
+                                    env=env, timeout=30,
+                                    preexec_fn=(lambda: resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))) if operation == "pty-attributes" else None)
+            assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), (operation, result)
+        # Startup reads the module using fstat and pread, as exec does.
+        # Returning zero from a suppressed pread models EOF after its
+        # recorded size.
+        for number, error, diagnostic in ((5, errno.EIO, b"input/output error"),
+                                           (17, errno.EIO, b"input/output error"), (17, 0, b"exec format error")):
+            result = subprocess.run([wrapper, f"{error}/{number}", "--", vm, "run", "--", str(fixture)],
+                                    capture_output=True, env=env, timeout=30)
+            assert result.returncode == 1 and result.stdout == b"" and diagnostic in result.stderr and b"panic:" not in result.stderr, (number, error, result)
         for name, number in (("clock_time_get", 228), ("clock_res_get", 229)):
             source = work / (name + ".wasm")
             data = wasi_clock(name)
@@ -220,10 +223,9 @@ def main():
             compiled.write_bytes(result.stdout)
             result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
             assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), result
-            for obj in (compiled, embedded):
-                result = subprocess.run([wrapper, f"{errno.EIO}/{number}", "--", vm, "run", "--", str(obj)],
-                                        capture_output=True, env=env, timeout=30)
-                assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (name, result)
+            result = subprocess.run([wrapper, f"{errno.EIO}/{number}", "--", vm, "run", "--", str(source)],
+                                    capture_output=True, env=env, timeout=30)
+            assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (name, result)
         for name in ("fd_fdstat_get", "fd_filestat_get"):
             source = work / (name + ".wasm")
             data = wasi_descriptor(name, error=0, filetype=6)
@@ -233,11 +235,10 @@ def main():
             compiled.write_bytes(result.stdout)
             result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
             assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), result
-            for obj in (compiled, embedded):
-                reader, writer = socket.socketpair()
-                with reader, writer:
-                    result = subprocess.run([vm, "run", "--", str(obj)], stdin=reader, capture_output=True, env=env, timeout=30)
-                    assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (name, result)
+            reader, writer = socket.socketpair()
+            with reader, writer:
+                result = subprocess.run([vm, "run", "--", str(source)], stdin=reader, capture_output=True, env=env, timeout=30)
+                assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (name, result)
         devices = [path for path in sorted(Path("/dev").iterdir()) if stat.S_ISBLK(path.lstat().st_mode)]
         if devices:
             for name in ("fd_fdstat_get", "fd_filestat_get"):
@@ -252,9 +253,8 @@ def main():
                 # O_PATH permits fstat without opening the device for I/O.
                 fd = os.open(devices[0], os.O_PATH | os.O_CLOEXEC)
                 try:
-                    for obj in (compiled, embedded):
-                        result = subprocess.run([vm, "run", "--", str(obj)], stdin=fd, capture_output=True, env=env, timeout=30)
-                        assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (name, result)
+                    result = subprocess.run([vm, "run", "--", str(source)], stdin=fd, capture_output=True, env=env, timeout=30)
+                    assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (name, result)
                 finally:
                     os.close(fd)
         for directory, name, filetype in ((Path("/dev"), b"null", 2), (work / "directory", b"pipe", 0)):
@@ -266,9 +266,8 @@ def main():
             compiled.write_bytes(result.stdout)
             result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
             assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), result
-            for obj in (compiled, embedded):
-                result = subprocess.run([vm, "run", "--", str(obj)], capture_output=True, env=env, timeout=30)
-                assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (directory, result)
+            result = subprocess.run([vm, "run", "--", str(source)], capture_output=True, env=env, timeout=30)
+            assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (directory, result)
         # ENOTTY has no WASI preview1 equivalent and must become generic I/O error.
         for preset, error, names in (("stdin-stat", errno.EIO, ("fd_fdstat_get", "fd_filestat_get")),
                                      ("stdin-flags", errno.ENOTTY, ("fd_fdstat_get", "fd_fdstat_set_flags"))):
@@ -281,10 +280,9 @@ def main():
                 compiled.write_bytes(result.stdout)
                 result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
                 assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), result
-                for obj in (compiled, embedded):
-                    result = subprocess.run([wrapper, f"{error}/{preset}", "--", vm, "run", "--", str(obj)],
-                                            capture_output=True, env=env, timeout=30)
-                    assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (name, preset, result)
+                result = subprocess.run([wrapper, f"{error}/{preset}", "--", vm, "run", "--", str(source)],
+                                        capture_output=True, env=env, timeout=30)
+                assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (name, preset, result)
     print("host syscalls: kernel and WASI system, file, polling, DNS, socket, clock and limit errors propagate through both AOTs")
 
 

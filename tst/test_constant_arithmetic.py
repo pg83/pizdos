@@ -155,11 +155,10 @@ def main():
                 compiled.write_bytes(result.stdout)
                 result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
                 assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), (label, result)
-                for obj in (compiled, embedded):
-                    result = subprocess.run([vm, "run", "--", str(obj)], capture_output=True, env=env, timeout=30)
-                    assert result.returncode == status and result.stdout == b"" and diagnostic in result.stderr, (label, result)
-                    if not status:
-                        assert result.stderr == b"", result
+                result = subprocess.run([vm, "run", "--", str(source)], capture_output=True, env=env, timeout=30)
+                assert result.returncode == status and result.stdout == b"" and diagnostic in result.stderr, (label, result)
+                if not status:
+                    assert result.stderr == b"", result
     print(f"constant arithmetic: {checks} integer expressions and {len(cases) - 1} constant traps agree with Python, wazero and both AOTs")
 
 

@@ -6,10 +6,12 @@ import (
 	"bytes"
 	_ "embed"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 // The native bootstrap compiles aot.wasm to this object in build.py.
@@ -168,4 +170,35 @@ func compileModuleWithOptions(data []byte, options CompileOptions) []byte {
 	compileStreams(bytes.NewReader(data), &out, options)
 
 	return out.Bytes()
+}
+
+// programOptions are the options a program is compiled with: the
+// environment's, or with asan only the checks of the shadow map.
+func programOptions(asan bool) CompileOptions {
+	if asan {
+		return CompileOptions{asan: true}
+	}
+
+	return compileOptions()
+}
+
+// wasmHeader begins a WebAssembly module, of version 1.
+var wasmHeader = []byte("\x00asm\x01\x00\x00\x00")
+
+// compileModule compiles a module to its object: ENOEXEC for what is no
+// module, or one the compiler refuses, with its diagnostic, or traps on.
+func compileModule(data []byte, options CompileOptions) (obj *Object, err error) {
+	if !bytes.HasPrefix(data, wasmHeader) {
+		return nil, syscall.ENOEXEC
+	}
+
+	if t := tryAs[*Trap](func() {
+		if e := try(func() { obj = readObject(compileModuleWithOptions(data, options)) }); e != nil {
+			err = fmt.Errorf("%s: %w", e, syscall.ENOEXEC)
+		}
+	}); t != nil {
+		return nil, fmt.Errorf("the compiler: %s: %w", t.Error(), syscall.ENOEXEC)
+	}
+
+	return obj, err
 }

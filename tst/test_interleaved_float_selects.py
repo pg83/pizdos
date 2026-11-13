@@ -102,19 +102,18 @@ def main():
                         compiled.write_bytes(result.stdout)
                         result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
                         assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), result
-                        for obj in (compiled, embedded):
-                            profile = obj.with_suffix(".jsonl")
-                            profile.unlink(missing_ok=True)
-                            result = subprocess.run([vm, "run", "--", str(obj)], env=dict(env, W2O_TAIL_PROFILE=str(profile)),
-                                                    capture_output=True, timeout=30)
-                            assert result.returncode == (130 if trapped else 0) and result.stdout == b"", (compare_bits, select_bits, mode, result)
-                            assert (b"out of bounds memory access" in result.stderr) if trapped else result.stderr == b"", result
-                            if mode == "profile":
-                                functions = [function for row in profile.read_text().splitlines() for function in json.loads(row)["functions"]]
-                                for counter in ("guards", "omitted_checks", *(("fallbacks",) if trapped else ())):
-                                    assert sum(function[counter] for function in functions) > 0, (counter, functions)
-                            else:
-                                assert not profile.exists(), mode
+                        profile = embedded.with_suffix(".jsonl")
+                        profile.unlink(missing_ok=True)
+                        result = subprocess.run([vm, "run", "--", str(source)], env=dict(env, W2O_TAIL_PROFILE=str(profile)),
+                                                capture_output=True, timeout=30)
+                        assert result.returncode == (130 if trapped else 0) and result.stdout == b"", (compare_bits, select_bits, mode, result)
+                        assert (b"out of bounds memory access" in result.stderr) if trapped else result.stderr == b"", result
+                        if mode == "profile":
+                            functions = [function for row in profile.read_text().splitlines() for function in json.loads(row)["functions"]]
+                            for counter in ("guards", "omitted_checks", *(("fallbacks",) if trapped else ())):
+                                assert sum(function[counter] for function in functions) > 0, (counter, functions)
+                        else:
+                            assert not profile.exists(), mode
     print("interleaved floats: selection bits, wrapping loads and traps agree with a model, wazero and both AOTs in four modes")
 
 

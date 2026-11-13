@@ -27,17 +27,18 @@ def main():
         profiles = work / "profiles"
         profiles.mkdir()
         env["GOCOVERDIR"] = os.environ.get("GOCOVERDIR", str(profiles))
-        for obj in (obj, embedded):
-            result = subprocess.run([vm, "run", "--", str(obj)], capture_output=True, env=env, timeout=30)
-            assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), result
-            for incompatible, mode in ((version, "version"), (layout, "layout")):
-                result = subprocess.run([incompatible, "run", "--", str(obj)], capture_output=True, env=env, timeout=30)
-                assert result.returncode == 1 and result.stdout == b"" and b"panic:" not in result.stderr, (mode, result)
-                if mode == "version":
-                    assert b"the loader is written for Go 1.25, not go1.24.99" in result.stderr, result
-                else:
-                    match = re.search(rb"g.instance is at (\d+), the code reads (\d+)", result.stderr)
-                    assert match and int(match[1]) - int(match[2]) == 8, result
+        result = subprocess.run([vm, "run", "--", str(module)], capture_output=True, env=env, timeout=30)
+        assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), result
+        # An incompatible build refuses its own compiler, the first code
+        # it links, before it compiles the module.
+        for incompatible, mode in ((version, "version"), (layout, "layout")):
+            result = subprocess.run([incompatible, "run", "--", str(module)], capture_output=True, env=env, timeout=30)
+            assert result.returncode == 1 and result.stdout == b"" and b"panic:" not in result.stderr, (mode, result)
+            if mode == "version":
+                assert b"the loader is written for Go 1.25, not go1.24.99" in result.stderr, result
+            else:
+                match = re.search(rb"g.instance is at (\d+), the code reads (\d+)", result.stderr)
+                assert match and int(match[1]) - int(match[2]) == 8, result
     print("runtime ABI: incompatible version identity and a shifted runtime field are rejected before guest execution")
 
 

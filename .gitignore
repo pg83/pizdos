@@ -6,7 +6,6 @@ __pycache__/
 # convenience root symlinks the build engine publishes for built targets
 /busybox
 /busybox_abi
-/busybox_o
 /vm
 /vm_coverage
 /vm_chaos_coverage
@@ -20,8 +19,6 @@ __pycache__/
 /aot
 /aot_command
 /aot_aot
-/aot_command_aot
-/aot_relinked
 /aot_native
 /aot_native_chaos
 /aot_wasm_chaos
@@ -37,7 +34,6 @@ __pycache__/
 /musl_tarball
 /busybox_tarball
 /doom
-/doom_o
 /doom_wad
 /doomgeneric_tarball
 /test_*
@@ -47,23 +43,16 @@ __pycache__/
 /stand_*
 /python
 /python_core
-/python_o
 /python_tarball
 /libc_check
-/libc_check_o
 /asan_check
-/asan_check_o
 /libcxx
 /llvm_tarball
 /cxx_check
-/cxx_check_o
 /libc_headers
 /clang
-/clang_o
 /host_syscalls_check
 /host_syscalls_filter
 /rootfs
-/rootfs_wasm
 /rootfs_image
 /init_wasm
-/init_o

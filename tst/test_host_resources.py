@@ -31,14 +31,13 @@ def main():
         compiled.write_bytes(result.stdout)
         result = subprocess.run([vm, "-o", str(embedded), fixture], capture_output=True, env=env, timeout=60)
         assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), result
-        for obj in (compiled, embedded):
-            for soft in (8, 64):
-                def restrict():
-                    resource.setrlimit(resource.RLIMIT_NOFILE, (soft, 64))
-                for operation in ("objects", "fork", "vfork", "forkpty"):
-                    result = subprocess.run([vm, "run", "--root", str(work), "--", str(obj), operation], capture_output=True,
-                                            env=env, preexec_fn=restrict, timeout=30)
-                    assert (result.returncode, result.stdout, result.stderr) == (0, b"host resource recovery: ok\n", b""), (soft, operation, result)
+        for soft in (8, 64):
+            def restrict():
+                resource.setrlimit(resource.RLIMIT_NOFILE, (soft, 64))
+            for operation in ("objects", "fork", "vfork", "forkpty"):
+                result = subprocess.run([vm, "run", "--root", str(work), "--", str(fixture), operation], capture_output=True,
+                                        env=env, preexec_fn=restrict, timeout=30)
+                assert (result.returncode, result.stdout, result.stderr) == (0, b"host resource recovery: ok\n", b""), (soft, operation, result)
         source = work / "bootstrap.wasm"
         data = bootstrap_program()
         source.write_bytes(data)
@@ -47,13 +46,12 @@ def main():
         compiled.write_bytes(result.stdout)
         result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
         assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), result
-        for obj in (compiled, embedded):
-            for limit in (8, 9, 10, 12):
-                def restrict():
-                    resource.setrlimit(resource.RLIMIT_NOFILE, (limit, limit))
-                result = subprocess.run([vm, "run", "--", str(obj)], capture_output=True,
-                                        env=env, preexec_fn=restrict, timeout=30)
-                assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (limit, result)
+        for limit in (8, 9, 10, 12):
+            def restrict():
+                resource.setrlimit(resource.RLIMIT_NOFILE, (limit, limit))
+            result = subprocess.run([vm, "run", "--", str(source)], capture_output=True,
+                                    env=env, preexec_fn=restrict, timeout=30)
+            assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (limit, result)
     print("host resources: pipes, sockets, PTYs and process creation recover from real descriptor exhaustion with both AOTs")
 
 

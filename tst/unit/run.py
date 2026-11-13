@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Compile a C++ program with both AOT executables and check its behaviour.
+"""Compile a C++ program, check that both AOT executables compile it to the
+same object, and check its behaviour natively and as a module the kernel
+compiles and runs.
 
     run.py <case.cpp> <output-prefix> <toolchain-json>
 
@@ -121,28 +123,27 @@ def run(source, prefix, tools):
 
         native = Path(str(prefix) + ".native.o")
         embedded = Path(str(prefix) + ".embedded.o")
+        asan = ["--asan"] if aot_flags == ["--asan"] else []
         compiled = successful([tools["aot"], *aot_flags], stdin=module.read_bytes(), env=env, timeout=timeout)
         native.write_bytes(compiled.stdout)
-        successful([tools["vm"], *(["--asan"] if aot_flags == ["--asan"] else []), "-o", embedded, module],
-                   env=env, timeout=timeout)
+        successful([tools["vm"], *asan, "-o", embedded, module], env=env, timeout=timeout)
         if native.read_bytes() != embedded.read_bytes():
             raise RuntimeError("native and Wasm AOT produced different objects")
 
-        for name, program in (("native AOT", native), ("Wasm AOT", embedded)):
-            with tempfile.TemporaryDirectory(prefix="pizdos-root-") as directory:
-                root = Path(directory)
-                (root / "bin").mkdir()
-                (root / "tmp").mkdir()
-                executable = root / "bin/check"
-                shutil.copyfile(program, executable)
-                executable.chmod(0o755)
-                run_args = [argument.replace("$ROOT", str(root)) for argument in args]
-                run_env = dict(env, **{name: value.replace("$ROOT", str(root)) for name, value in case.get("env", {}).items()})
-                result = invoke([tools["vm"], "run", "--root", root, "-a", "check", *run_flags,
-                                 "--", executable, *run_args], env=run_env, timeout=timeout)
-                check(result, case, name)
+        with tempfile.TemporaryDirectory(prefix="pizdos-root-") as directory:
+            root = Path(directory)
+            (root / "bin").mkdir()
+            (root / "tmp").mkdir()
+            executable = root / "bin/check"
+            shutil.copyfile(module, executable)
+            executable.chmod(0o755)
+            run_args = [argument.replace("$ROOT", str(root)) for argument in args]
+            run_env = dict(env, **{name: value.replace("$ROOT", str(root)) for name, value in case.get("env", {}).items()})
+            result = invoke([tools["vm"], "run", "--root", root, "-a", "check", *run_flags,
+                             "--", executable, *run_args], env=run_env, timeout=timeout)
+            check(result, case, "kernel")
 
-    Path(str(prefix) + ".stamp").write_text("native reference, native AOT, Wasm AOT: passed\n")
+    Path(str(prefix) + ".stamp").write_text("native reference, native and Wasm AOT objects, kernel: passed\n")
     print(f"{source.stem}: native/Wasm AOT behaviour agrees", flush=True)
 
 

@@ -2,8 +2,9 @@
 ## into it. The kernel starts it with the objects the host gave vm as
 ## descriptors, the terminal at 0..2, and no root at all. It makes itself
 ## the root of everything else: one seqpacket pair, chroot to one end,
-## fork, and the child execs /bin/init out of the image, which the kernel
-## reads with OPEN and READ to the parent, already in its loop. It reaps
+## fork, and the child execs /bin/init out of the image, a module the
+## kernel reads with OPEN and READ to the parent, already in its loop, and
+## compiles. It reaps
 ## what ends under it, and ends with init: with its status, as a system
 ## does.
 

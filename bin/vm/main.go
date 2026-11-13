@@ -11,7 +11,7 @@ import (
 )
 
 func usage() {
-	throwFmt("usage: vm [-v] [--asan] -o output.o input.wasm\n       vm run [--root dir] [-a argv0] [--asan] -- object.o [arg...]\n       vm spec test.json\n       vm stand [--repeat N] im|pdf|djvu|svg|magic object.o file...")
+	throwFmt("usage: vm [-v] [--asan] -o output.o input.wasm\n       vm run [--root dir] [-a argv0] [--asan] -- module.wasm [arg...]\n       vm spec test.json\n       vm stand [--repeat N] im|pdf|djvu|svg|magic object.o file...")
 }
 
 func main() {
@@ -97,12 +97,7 @@ func compileCommand(args []string) {
 		defer pprof.StopCPUProfile()
 	}
 
-	options := compileOptions()
-
-	if asan {
-		options = CompileOptions{asan: true}
-	}
-
+	options := programOptions(asan)
 	start := time.Now()
 	compileStreams(source, destination, options)
 	elapsed := time.Since(start)
@@ -115,12 +110,13 @@ func compileCommand(args []string) {
 	}
 }
 
-// runCommand runs object.o, a program of the kernel, or a WASI command:
-// the options come first, then -- and the object with its arguments. The
-// program's root is the host directory of --root, or nothing without it:
-// a server of its own files, or a program that needs none, runs so. argv0
-// is by default the object's path. --asan runs an object compiled with
-// --asan under the kernel's address sanitizer (kernel_asan.go).
+// runCommand runs module.wasm, a program of the kernel, or a WASI command,
+// compiled as it starts: the options come first, then -- and the module
+// with its arguments. The program's root is the host directory of --root,
+// or nothing without it: a server of its own files, or a program that
+// needs none, runs so. argv0 is by default the module's path. --asan
+// compiles the programs with the checks of the kernel's address sanitizer
+// (kernel_asan.go).
 func runCommand(args []string) int {
 	root, argv0, asan := "", "", false
 
@@ -152,5 +148,5 @@ func runCommand(args []string) int {
 
 	argv := append([]string{argv0}, args[1:]...)
 
-	return runObject(args[0], root, argv, asan)
+	return runModule(args[0], root, argv, asan)
 }

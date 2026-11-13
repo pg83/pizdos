@@ -11,8 +11,9 @@ outputs must be identical; decode must agree on status, dimensions and
 page count, and the report counts the files whose pixels match exactly:
 native pixels may differ with libm and floating-point arithmetic. CPython's
 workloads are the benchmarks of dev/stand/pybench.py, pure Python timed
-inside the interpreter, the native CPython and python.o each in a root with
-the same standard library zip; their digests of the results must be equal.
+inside the interpreter, the native CPython and python.wasm, which the kernel
+compiles as it starts, each in a root with the same standard library zip;
+their digests of the results must be equal.
 The suite counts as one workload in the geometric mean, by its own.
 
 The original positional form is accepted for compiler workloads alone:
@@ -218,7 +219,7 @@ def python_work(build, vm, runs, minimum, work, only=None):
     """Every benchmark of the suite: its repeat calibrated on native to the
     minimum time, A and C interleaved, their digests equal."""
     native = python_root(work / "python-A", build / "stand/python/native", build)
-    aot = python_root(work / "python-C", build / "bin/python/python.o", build)
+    aot = python_root(work / "python-C", build / "bin/python/python.wasm", build)
     names = subprocess.run([str(native / "usr/bin/python3"), "-S", str(native / "pybench.py"), "--list"],
                            env={"PYTHONHASHSEED": "0"}, capture_output=True, text=True, check=True).stdout.split()
     rows = []

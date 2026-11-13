@@ -6,20 +6,39 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"syscall"
 )
 
-// runObject runs an object and returns the exit code of vm: a program
-// of the kernel as its first process, inside root, or a WASI command on
-// this goroutine, whose code is proc_exit's, or 128 and the trap code after
-// a trap.
-func runObject(path, root string, argv []string, asan bool) (code int) {
-	obj := readObject(throw2(os.ReadFile(path)))
+// runModule compiles a module and runs it, and returns the exit code of
+// vm: a program of the kernel as its first process, inside root, or a WASI
+// command on this goroutine, whose code is proc_exit's, or 128 and the
+// trap code after a trap. A module is all vm runs: no object of vm's.
+func runModule(path, root string, argv []string, asan bool) (code int) {
+	f := throw2(openHostFile(path))
+	data, err := moduleData(nil, f)
 
-	if importsKernel(obj) {
-		return runKernel(path, root, argv, asan)
+	if err != nil {
+		throwFmt("%s: %v", path, err)
 	}
 
-	if asan || obj.meta.asan() {
+	options := programOptions(asan)
+	obj, err := compileModule(data, options)
+
+	if err == syscall.ENOEXEC {
+		throwFmt("%s: not a WebAssembly module", path)
+	}
+
+	if err != nil {
+		throwFmt("%s: %v", path, err)
+	}
+
+	if importsKernel(obj) {
+		return runKernel(f, path, root, argv, options, data, obj)
+	}
+
+	f.unref()
+
+	if asan {
 		throwFmt("--asan runs programs of the kernel")
 	}
 

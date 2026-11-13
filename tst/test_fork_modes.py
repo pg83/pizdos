@@ -83,20 +83,19 @@ def main():
             asan = ["--asan"] if mode == "asan" else []
             result = subprocess.run([vm, *asan, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
             assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), (mode, result)
-            for obj in (compiled, embedded):
-                profile = obj.with_suffix(".jsonl")
-                result = subprocess.run([vm, "run", *asan, "--", str(obj)], capture_output=True, env=dict(env, W2O_TAIL_PROFILE=str(profile)), timeout=30)
-                assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (mode, result)
-                if mode == "profile":
-                    rows = [json.loads(line) for line in profile.read_text().splitlines()]
-                    assert len(rows) == 2, rows
-                    probes_by_process = [[fn for fn in row["functions"] if fn["function"] == 4] for row in rows]
-                    assert all(len(functions) == 1 for functions in probes_by_process), rows
-                    # The parent reads 20 times before fork and once after;
-                    # the child's three reads must not include that history.
-                    assert sorted(functions[0]["ordinary_checks"] for functions in probes_by_process) == [3, 21], rows
-                else:
-                    assert not profile.exists(), mode
+            profile = embedded.with_suffix(".jsonl")
+            result = subprocess.run([vm, "run", *asan, "--", str(source)], capture_output=True, env=dict(env, W2O_TAIL_PROFILE=str(profile)), timeout=30)
+            assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (mode, result)
+            if mode == "profile":
+                rows = [json.loads(line) for line in profile.read_text().splitlines()]
+                assert len(rows) == 2, rows
+                probes_by_process = [[fn for fn in row["functions"] if fn["function"] == 4] for row in rows]
+                assert all(len(functions) == 1 for functions in probes_by_process), rows
+                # The parent reads 20 times before fork and once after;
+                # the child's three reads must not include that history.
+                assert sorted(functions[0]["ordinary_checks"] for functions in probes_by_process) == [3, 21], rows
+            else:
+                assert not profile.exists(), mode
     print("fork modes: native/Wasm objects agree; no-heap fork, ASAN memory and independent parent/child profiles passed")
 
 

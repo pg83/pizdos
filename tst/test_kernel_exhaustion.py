@@ -82,10 +82,9 @@ def main():
             compiled.write_bytes(result.stdout)
             result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
             assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), (label, result)
-            for obj in (compiled, embedded):
-                result = subprocess.run([vm, "run", "-a", "A" * 70000 if reserve else label, "--", str(obj)],
-                                        capture_output=True, env=env, timeout=30)
-                assert (result.returncode, result.stdout, result.stderr) == (134 if error is None else 0, b"", b""), (label, result)
+            result = subprocess.run([vm, "run", "-a", "A" * 70000 if reserve else label, "--", str(source)],
+                                    capture_output=True, env=env, timeout=30)
+            assert (result.returncode, result.stdout, result.stderr) == (134 if error is None else 0, b"", b""), (label, result)
     print("kernel exhaustion: startup and static results abort cleanly; allocation failures preserve errno and existing data with both AOTs")
 
 

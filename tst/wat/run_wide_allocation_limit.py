@@ -27,22 +27,21 @@ def main():
             result = subprocess.run([vm, "-o", str(embedded), str(module)], capture_output=True, env=env, timeout=60)
             assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), (strict, result)
             # Each VM releases the 2 GiB input before the next one starts.
-            for obj in (compiled, embedded):
-                child = subprocess.Popen([vm, "run", "--", str(obj)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
-                try:
-                    ready, _, _ = select.select([child.stdout], [], [], 60)
-                    assert ready and os.read(child.stdout.fileno(), 1) == b"R", "guest did not finish filling the input"
-                    time.sleep(0.05)
-                    for _ in range(10):
-                        if child.poll() is None:
-                            child.send_signal(signal.SIGUSR1)
-                        time.sleep(0.02)
-                    out, err = child.communicate(timeout=180)
-                    assert (child.returncode, out, err) == (0, b"", b""), (strict, child.returncode, out, err)
-                finally:
+            child = subprocess.Popen([vm, "run", "--", str(module)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+            try:
+                ready, _, _ = select.select([child.stdout], [], [], 60)
+                assert ready and os.read(child.stdout.fileno(), 1) == b"R", "guest did not finish filling the input"
+                time.sleep(0.05)
+                for _ in range(10):
                     if child.poll() is None:
-                        child.kill()
-                    child.communicate()
+                        child.send_signal(signal.SIGUSR1)
+                    time.sleep(0.02)
+                out, err = child.communicate(timeout=180)
+                assert (child.returncode, out, err) == (0, b"", b""), (strict, child.returncode, out, err)
+            finally:
+                if child.poll() is None:
+                    child.kill()
+                child.communicate()
     print("WAT wide allocation limit: both AOTs reject a 2 GiB wide-string copy with ENOMEM and deliver signals after the kernel call in strict/optimized modes")
 
 

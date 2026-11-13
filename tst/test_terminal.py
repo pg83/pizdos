@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import pty
 import select
+import shutil
 import struct
 import subprocess
 import sys
@@ -17,7 +18,7 @@ import termios
 import time
 
 
-def private_name(vm, root, objects):
+def private_name(vm, root, programs):
     devices = Path(root) / "ttys"
     devices.mkdir()
     subprocess.run(["mount", "-t", "devpts", "-o", "newinstance,ptmxmode=666,mode=620", "devpts", str(devices)], check=True)
@@ -27,8 +28,8 @@ def private_name(vm, root, objects):
         number = struct.unpack("I", fcntl.ioctl(master, 0x80045430, bytes(4)))[0]  # TIOCGPTN.
         slave = os.open(devices / str(number), os.O_RDWR | os.O_NOCTTY)
         try:
-            for obj in objects:
-                result = subprocess.run([vm, "run", "--root", root, "--", obj, "private-name"], stdin=slave,
+            for program in programs:
+                result = subprocess.run([vm, "run", "--root", root, "--", program, "private-name"], stdin=slave,
                                         capture_output=True, timeout=30)
                 assert (result.returncode, result.stdout, result.stderr) == (0, b"private terminal name: ok\n", b""), result
         finally:
@@ -36,7 +37,7 @@ def private_name(vm, root, objects):
     finally:
         os.close(master)
         subprocess.run(["umount", str(devices)], check=True)
-    print("private terminal: both AOTs resolve and reopen the guest path")
+    print("private terminal: the program resolves and reopens the guest path")
 
 
 def heapless_password():
@@ -104,22 +105,22 @@ def main():
     with tempfile.TemporaryDirectory(prefix="pizdos-terminal-") as directory:
         root = Path(directory)
         (root / "bin").mkdir()
-        compiled, embedded = root / "bin/check", root / "bin/embedded"
+        compiled, embedded, program = root / "native.o", root / "embedded.o", root / "bin/check"
         result = subprocess.run([native], input=Path(module).read_bytes(), capture_output=True, env=env, timeout=60)
         assert result.returncode == 0, result.stderr
         compiled.write_bytes(result.stdout)
         subprocess.run([vm, "-o", str(embedded), module], capture_output=True, env=env, check=True, timeout=60)
         assert compiled.read_bytes() == embedded.read_bytes()
-        for obj in (compiled, embedded):
-            command = [vm, "run", "--root", str(root), "--", str(obj)]
-            result = subprocess.run([*command, "missing"], start_new_session=True, capture_output=True, env=env, timeout=30)
-            assert (result.returncode, result.stdout, result.stderr) == (0, b"missing terminal: ok\n", b""), result
-            terminal([*command, "password"], [(b"first: ", b"s3cr3t\n"), (b"empty: ", b"\n"),
-                                              (b"long: ", b"x" * 150 + b"\n"), (b"eof: ", b"\x04")],
-                     b"first: \r\nempty: \r\nlong: \r\neof: \r\nterminal passwords: ok\r\n", env)
-            terminal([*command, "interrupt"], [], b"interrupt: interrupted terminal: ok\r\n", env)
-            terminal([wrapper, f"{errno.ENOTTY}/16", "--", *command, "attributes"], [],
-                     b"terminal attributes: failed as expected\r\n", env)
+        shutil.copyfile(module, program)
+        command = [vm, "run", "--root", str(root), "--", str(program)]
+        result = subprocess.run([*command, "missing"], start_new_session=True, capture_output=True, env=env, timeout=30)
+        assert (result.returncode, result.stdout, result.stderr) == (0, b"missing terminal: ok\n", b""), result
+        terminal([*command, "password"], [(b"first: ", b"s3cr3t\n"), (b"empty: ", b"\n"),
+                                          (b"long: ", b"x" * 150 + b"\n"), (b"eof: ", b"\x04")],
+                 b"first: \r\nempty: \r\nlong: \r\neof: \r\nterminal passwords: ok\r\n", env)
+        terminal([*command, "interrupt"], [], b"interrupt: interrupted terminal: ok\r\n", env)
+        terminal([wrapper, f"{errno.ENOTTY}/16", "--", *command, "attributes"], [],
+                 b"terminal attributes: failed as expected\r\n", env)
         # A private mount namespace gives a real terminal a path in the
         # guest root. GitHub's runner restricts user namespace UID mappings;
         # use its passwordless sudo for this isolated mount instead.
@@ -128,9 +129,9 @@ def main():
             namespace = ["sudo", "-n", "--preserve-env=GOCOVERDIR,W2X_MEMORY_TAIL,W2X_TAIL_PROFILE",
                          "unshare", "--mount", "--propagation", "private"]
         result = subprocess.run([*namespace,
-                                 sys.executable, __file__, "--private-name", vm, str(root), str(compiled), str(embedded)],
+                                 sys.executable, __file__, "--private-name", vm, str(root), str(program)],
                                 capture_output=True, env=env, timeout=60)
-        assert (result.returncode, result.stdout, result.stderr) == (0, b"private terminal: both AOTs resolve and reopen the guest path\n", b""), result
+        assert (result.returncode, result.stdout, result.stderr) == (0, b"private terminal: the program resolves and reopens the guest path\n", b""), result
         source = root / "heapless.wasm"
         source.write_bytes(heapless_password())
         result = subprocess.run([native], input=source.read_bytes(), capture_output=True, env=env, timeout=60)
@@ -138,8 +139,7 @@ def main():
         compiled.write_bytes(result.stdout)
         result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
         assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), result
-        for obj in (compiled, embedded):
-            terminal([vm, "run", "--root", str(root), "--", str(obj)], [(b"oom: ", b"\n")], b"oom: \r\n", env)
+        terminal([vm, "run", "--root", str(root), "--", str(source)], [(b"oom: ", b"\n")], b"oom: \r\n", env)
     print("terminal: native/Wasm AOT agree, passwords remain unechoed, attributes restored and errors reported")
 
 

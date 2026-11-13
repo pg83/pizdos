@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""`vm run -- rootfs`: a system from one object and nothing of the host's
-file system. rootfs serves the image linked into it, busybox and python,
+"""`vm run -- rootfs.wasm`: a system from one module and nothing of the
+host's file system. rootfs serves the image linked into it, the modules of
+busybox, python and init, which the kernel compiles as they are executed;
 init mounts its /dev and starts busybox's shell on the terminal, and the
 shell's status is vm's.
 
-    test_rootfs.py <vm> <rootfs>
+    test_rootfs.py <vm> <rootfs.wasm>
 """
 import os
 import subprocess
@@ -22,6 +23,7 @@ head -c 4 /dev/zero | wc -c
 cd /usr/bin && pwd
 readlink /bin/sh
 test -x /bin/busybox && echo executable
+head -c 4 /bin/busybox | od -An -tx1
 (echo nothing > /etc/x) 2>/dev/null || echo read-only
 echo hi > /tmp/a && echo more >> /tmp/a && cat /tmp/a | wc -l
 chmod 600 /tmp/a && stat -c %a /tmp/a && truncate -s 2 /tmp/a && wc -c < /tmp/a
@@ -50,6 +52,7 @@ sh
 /usr/bin
 busybox
 executable
+ 00 61 73 6d
 read-only
 2
 600

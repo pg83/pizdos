@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -19,7 +20,9 @@ import (
 // "kernel" (lib/c/include declares its functions). A process is a goroutine
 // running an instance; the kernel keeps its pid, descriptors, working
 // directory, signals and children. Paths resolve inside the root directory
-// `vm run` is given, and exec runs only objects of vm and scripts.
+// `vm run` is given. A program is a WebAssembly module, which the kernel
+// compiles itself, once in its life for a content (Kernel.codeOf): exec
+// runs modules and scripts, nothing else.
 //
 // A function of the kernel finds its process through the instance. Pointers
 // are offsets in the process's memory: one out of it traps, as the guest's
@@ -35,7 +38,11 @@ type Kernel struct {
 	mu       sync.Mutex
 	procs    map[int32]*Process
 	lastPid  int32
-	codes    map[fileKey]*Code
+	// codes are the modules compiled, by the digest of their content;
+	// options are what they are compiled with, `vm run --asan` among them:
+	// then the processes run with the shadow map (kernel_asan.go).
+	codes   map[[sha256.Size]byte]*codeEntry
+	options CompileOptions
 	// fg is the foreground process group of the terminal.
 	fg        int32
 	first     *Process
@@ -46,16 +53,6 @@ type Kernel struct {
 	// sockets are bound by (kernel_socket.go).
 	abstract  string
 	unixNames sync.Map
-	// asan is `vm run --asan`: the first program is an asan object, and so
-	// may be any it execs (kernel_asan.go); without it they are refused.
-	asan bool
-}
-
-// fileKey identifies a version of a file: device, inode, size, mtime.
-type fileKey struct {
-	dev, ino uint64
-	size     int64
-	mtime    syscall.Timespec
 }
 
 type Process struct {
@@ -162,9 +159,10 @@ type procExit struct {
 
 // newKernel makes a kernel whose first process has a directory of the
 // host for its root, or with no root at all when root is empty: then it
-// is a server, or a program of none.
-func newKernel(root string) *Kernel {
-	k := &Kernel{procs: map[int32]*Process{}, codes: map[fileKey]*Code{}, exit: make(chan int, 1), abstract: fmt.Sprintf("pizdos.%d.", os.Getpid())}
+// is a server, or a program of none. Its programs compile with options.
+func newKernel(root string, options CompileOptions) *Kernel {
+	k := &Kernel{procs: map[int32]*Process{}, codes: map[[sha256.Size]byte]*codeEntry{}, options: options, exit: make(chan int, 1),
+		abstract: fmt.Sprintf("pizdos.%d.", os.Getpid())}
 
 	if root == "" {
 		k.root = newNoRoot()
@@ -207,20 +205,14 @@ func importsKernel(obj *Object) bool {
 	return false
 }
 
-// runKernel runs an object as the first process and returns the exit code
-// of vm: the process's, or 128 and the signal that ended it.
-func runKernel(path, root string, argv []string, asan bool) int {
-	k := newKernel(root)
-	k.asan = asan
+// runKernel runs a program of the kernel as the first process, from the
+// module f at path, data, which compiled to obj with options, and returns
+// the exit code of vm: the process's, or 128 and the signal that ended it.
+func runKernel(f File, path, root string, argv []string, options CompileOptions, data []byte, obj *Object) int {
+	k := newKernel(root, options)
 	p := throw2(k.newProcess(nil))
-	f := throw2(openHostFile(path))
-	code, err := k.code(p, f, path)
+	code, err := k.codeOf(data, path, obj)
 	throw(err)
-
-	if asan && !code.obj.meta.asan() {
-		throwFmt("%s: not compiled with --asan", path)
-	}
-
 	program := p.programPath(f)
 	f.unref()
 	p.cwd = p.guestPath(throw2(os.Getwd()))

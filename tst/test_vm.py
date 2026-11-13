@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""The embedded compiler, its WASI module, and relinked AOT agree with C++."""
+"""The embedded compiler, its WASI module, and the command vm run compiles
+agree with C++."""
 import os
 import shutil
 import subprocess
@@ -9,10 +10,9 @@ from pathlib import Path
 
 
 def main():
-    vm, native, reactor, command, aot, relinked, wazero, fixture = sys.argv[1:]
+    vm, native, reactor, command, wazero, fixture = sys.argv[1:]
     compilers = {
-        "self-compiled AOT": [vm, "run", "--", aot],
-        "relinked AOT": [vm, "run", "--", relinked],
+        "self-compiled AOT": [vm, "run", "--", command],
         "WASI reactor": [wazero, "-aot", reactor],
         "WASI command": [wazero, command],
     }
@@ -51,7 +51,7 @@ def main():
         for name, entry in {"native": [native], **compilers}.items():
             got = subprocess.run(entry, input=padded, capture_output=True, check=True, pipesize=4096).stdout
             assert got == want, f"{name}: page-aligned stdin changed the module"
-        print("page-aligned stdin: native/WASI/self-compiled/relinked identical")
+        print("page-aligned stdin: native/WASI/self-compiled identical")
 
         bad = Path(work) / "bad.wasm"
         bad.write_bytes(b"not wasm")

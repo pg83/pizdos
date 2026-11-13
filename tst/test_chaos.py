@@ -89,28 +89,30 @@ def main():
             expected = f"{operation}: failures={failures}\n".encode()
             assert (result.returncode, result.stdout, result.stderr) == (0, expected, b""), (operation, rule, result)
 
-        for image in (program, embedded):
-            (work / "bin").mkdir(exist_ok=True)
-            shell = work / "bin/sh"
-            shell.write_bytes(image.read_bytes())
-            shell.chmod(0o700)
-            for operation in ("read", "write", "openat", "fork", "memory-grow", "fstat", "fstatat", "stat", "lstat", "fdopendir", "msync",
-                              "chdir", "fchdir", "relative-open", "fexecve", "ttyname", "system", "daemon", "forkpty"):
-                skip = 8 if operation in ("openat", "daemon") else 2
-                point = "file-stat" if operation in ("fstat", "fstatat", "stat", "lstat", "fdopendir", "msync") else operation
-                if operation == "system":
-                    point, skip = "openat", 1
-                elif operation == "daemon":
-                    point = "openat"
-                elif operation == "forkpty":
-                    point = "fork"
-                if operation in ("chdir", "fchdir", "relative-open", "fexecve", "ttyname"):
-                    point, skip = "readlink", 1
-                rule = f"{point}@{skip}"
-                run_guest(vm, image, operation, 0, rule)
-                run_guest(vm_chaos, image, operation, 0)
-                run_guest(vm_chaos, image, operation, 1, rule)
-                run_guest(vm_chaos, image, operation, 0, f"{point}@4294967295")
+        # The guest is the module; it is also /bin/sh, for system and the
+        # rest that run a shell.
+        image = Path(guest)
+        (work / "bin").mkdir(exist_ok=True)
+        shell = work / "bin/sh"
+        shell.write_bytes(image.read_bytes())
+        shell.chmod(0o700)
+        for operation in ("read", "write", "openat", "fork", "memory-grow", "fstat", "fstatat", "stat", "lstat", "fdopendir", "msync",
+                          "chdir", "fchdir", "relative-open", "fexecve", "ttyname", "system", "daemon", "forkpty"):
+            skip = 8 if operation in ("openat", "daemon") else 2
+            point = "file-stat" if operation in ("fstat", "fstatat", "stat", "lstat", "fdopendir", "msync") else operation
+            if operation == "system":
+                point, skip = "openat", 1
+            elif operation == "daemon":
+                point = "openat"
+            elif operation == "forkpty":
+                point = "fork"
+            if operation in ("chdir", "fchdir", "relative-open", "fexecve", "ttyname"):
+                point, skip = "readlink", 1
+            rule = f"{point}@{skip}"
+            run_guest(vm, image, operation, 0, rule)
+            run_guest(vm_chaos, image, operation, 0)
+            run_guest(vm_chaos, image, operation, 1, rule)
+            run_guest(vm_chaos, image, operation, 0, f"{point}@4294967295")
 
     print("chaos: native/Wasm AOT and VM faults, guest recovery, atomic output and production no-ops passed")
 

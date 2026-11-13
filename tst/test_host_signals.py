@@ -114,29 +114,28 @@ def main():
             compiled.write_bytes(result.stdout)
             result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
             assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), (mode, result)
-            for obj in (compiled, embedded):
-                for sig in ((signal.SIGTERM, signal.SIGINT, signal.SIGUSR2) if mode == "loop" else (signal.SIGUSR1,)):
-                    child = subprocess.Popen([vm, "run", "--", str(obj)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
-                    try:
-                        wait_ready(child)
-                        if mode == "stop":
-                            wait_stopped(child)
-                            child.send_signal(signal.SIGCONT)
-                        else:
-                            child.send_signal(sig)
-                        output, errors = child.communicate(timeout=15)
-                        if mode == "missing-stack":
-                            assert child.returncode == 134 and output == b"" and b"setjmp: no __stack_pointer" in errors and b"panic:" not in errors, (child.returncode, output, errors)
-                            checked += 1
-                            continue
-                        expected = b"HC" if mode == "handler" else b"C" if mode != "loop" else b""
-                        status = 128 + sig if mode == "loop" else 0
-                        assert (child.returncode, output, errors) == (status, expected, b""), (mode, sig, child.returncode, output, errors)
+            for sig in ((signal.SIGTERM, signal.SIGINT, signal.SIGUSR2) if mode == "loop" else (signal.SIGUSR1,)):
+                child = subprocess.Popen([vm, "run", "--", str(source)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+                try:
+                    wait_ready(child)
+                    if mode == "stop":
+                        wait_stopped(child)
+                        child.send_signal(signal.SIGCONT)
+                    else:
+                        child.send_signal(sig)
+                    output, errors = child.communicate(timeout=15)
+                    if mode == "missing-stack":
+                        assert child.returncode == 134 and output == b"" and b"setjmp: no __stack_pointer" in errors and b"panic:" not in errors, (child.returncode, output, errors)
                         checked += 1
-                    finally:
-                        if child.poll() is None:
-                            child.kill()
-                        child.communicate()
+                        continue
+                    expected = b"HC" if mode == "handler" else b"C" if mode != "loop" else b""
+                    status = 128 + sig if mode == "loop" else 0
+                    assert (child.returncode, output, errors) == (status, expected, b""), (mode, sig, child.returncode, output, errors)
+                    checked += 1
+                finally:
+                    if child.poll() is None:
+                        child.kill()
+                    child.communicate()
     print(f"host signals: {checked} fatal/blocked/handled signals and guest stop/host continue exchanges passed with both AOTs")
 
 

@@ -76,7 +76,8 @@ def main():
                                  (["-o", absent / "object.o", source], b"no such file or directory"),
                                  (["-o", work, source], b"file exists"),
                                  (["run", "--", absent], b"no such file or directory"),
-                                 (["run", "--asan", "--", output], b"not an x86-64 relocatable object"),
+                                 (["run", "--", output], b"not a WebAssembly module"),
+                                 (["run", "--asan", "--", output], b"not a WebAssembly module"),
                                  (["spec", absent], b"no such file or directory")):
             result = run(args)
             assert result.returncode == 1 and result.stdout == b"" and diagnostic in result.stderr, (args, result)
@@ -97,19 +98,18 @@ def main():
             embedded = work / "embedded.o"
             result = run(["-o", embedded, source])
             assert result.returncode == 0 and embedded.read_bytes() == output.read_bytes(), result
-            for obj in (output, embedded):
-                result = run(["run", "--", obj])
-                assert result.returncode == 129 and result.stdout == b"", (depth, result)
-                lines = result.stderr.decode().splitlines()
-                assert lines[0] == "wasm trap: unreachable" and b"panic:" not in result.stderr, result
-                frames = lines[1:]
-                assert all(line.startswith("    ") for line in frames), frames
-                gaps = [line for line in frames if re.fullmatch(r"    \.\.\. \d+ frames", line)]
-                assert len(gaps) == (depth > 64), (depth, frames)
-                assert len(frames) <= 64 and any("recursive_guest+0x" in line for line in frames), (depth, frames)
-                if depth < 1024:
-                    assert frames[-1].startswith("    entry+0x"), frames
-            result = run(["run", "--asan", "--", output])
+            result = run(["run", "--", source])
+            assert result.returncode == 129 and result.stdout == b"", (depth, result)
+            lines = result.stderr.decode().splitlines()
+            assert lines[0] == "wasm trap: unreachable" and b"panic:" not in result.stderr, result
+            frames = lines[1:]
+            assert all(line.startswith("    ") for line in frames), frames
+            gaps = [line for line in frames if re.fullmatch(r"    \.\.\. \d+ frames", line)]
+            assert len(gaps) == (depth > 64), (depth, frames)
+            assert len(frames) <= 64 and any("recursive_guest+0x" in line for line in frames), (depth, frames)
+            if depth < 1024:
+                assert frames[-1].startswith("    entry+0x"), frames
+            result = run(["run", "--asan", "--", source])
             assert result.returncode == 1 and result.stderr == b"vm: --asan runs programs of the kernel\n", result
     print("CLI errors: usage, failed output transactions, ASAN restrictions and bounded recursive traces passed")
 

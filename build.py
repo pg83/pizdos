@@ -30,7 +30,6 @@ CLANGXX = tool("clang++")
 LLVM_AR = tool("llvm-ar")
 LLVM_RANLIB = tool("llvm-ranlib")
 WASM_LD = tool("wasm-ld")
-LD_LLD = tool("ld.lld")
 GO = tool("go")
 # Nim builds rootfs and init (bin/rootfs, bin/init); without it they and
 # their test are left out.
@@ -372,15 +371,6 @@ for chaos in (False, True):
     )
     wasm_coverage.append((reactor, embedded))
 
-aot_command_aot = command(
-    name="aot_command_aot",
-    inputs=["$(S)/dev/aot.py"],
-    outputs=["$(B)/bin/aot/aot-command.aot"],
-    deps=[aot_native, aot_command],
-    cmd=["python3", "$(S)/dev/aot.py", aot_native.outputs[0], aot_command.outputs[0], "$(B)/bin/aot/aot-command.aot"],
-    descr="AO", color="light-cyan",
-)
-
 WASM2O_SOURCES = [*build.glob("$(S)/bin/vm/*.go"), *build.glob("$(S)/bin/vm/*.s"), "$(S)/bin/vm/go.mod", "$(S)/dev/go.py"]
 GO_RUNTIME = [*build.glob("$(S)/lib/goruntime/*.go"), "$(S)/lib/goruntime/edits.py"]
 
@@ -439,26 +429,6 @@ vm_chaos_coverage = command(
     descr="GO", color="light-blue",
 )
 
-# busybox.wasm compiled by vm: what `vm run` runs in the kernel's
-# processes.
-busybox_o = command(
-    name="busybox_o",
-    outputs=["$(B)/bin/busybox/busybox.o"],
-    deps=[vm, busybox],
-    cmd=[vm.outputs[0], "-o", "$(B)/bin/busybox/busybox.o", busybox.outputs[0]],
-    descr="AO",
-    color="light-cyan",
-)
-
-doom_o = command(
-    name="doom_o",
-    outputs=["$(B)/bin/doom/doom.o"],
-    deps=[vm, doom],
-    cmd=[vm.outputs[0], "-o", "$(B)/bin/doom/doom.o", doom.outputs[0]],
-    descr="AO",
-    color="light-cyan",
-)
-
 # python.wasm, its modules frozen by the freezer running in the kernel, and
 # the standard library it imports from a zip.
 python = command(
@@ -481,18 +451,10 @@ python = command(
     color="yellow",
 )
 
-python_o = command(
-    name="python_o",
-    outputs=["$(B)/bin/python/python.o"],
-    deps=[vm, python],
-    cmd=[vm.outputs[0], "-o", "$(B)/bin/python/python.o", python.outputs[0]],
-    descr="AO",
-    color="light-cyan",
-)
-
-# A system from one object: rootfs, the first process, serves the image
-# linked into it, busybox with its links, python and init, to what it
-# starts (bin/rootfs, bin/init, lib/nim/fs.nim).
+# A system from one module: rootfs, the first process, serves the image
+# linked into it, the modules of busybox with its links, python and init,
+# to what it starts, and the kernel compiles each as it is executed
+# (bin/rootfs, bin/init, lib/nim/fs.nim).
 def nim_program(name, source, output, deps=(), options=()):
     return command(
         name=name,
@@ -508,35 +470,18 @@ def nim_program(name, source, output, deps=(), options=()):
 
 if NIM:
     init_wasm = nim_program("init_wasm", "$(S)/bin/init/init.nim", "$(B)/bin/init/init.wasm")
-    init_o = command(
-        name="init_o",
-        outputs=["$(B)/bin/init/init.o"],
-        deps=[vm, init_wasm],
-        cmd=[vm.outputs[0], "-o", "$(B)/bin/init/init.o", init_wasm.outputs[0]],
-        descr="AO",
-        color="light-cyan",
-    )
     rootfs_image = command(
         name="rootfs_image",
         inputs=["$(S)/bin/rootfs/image.py"],
         outputs=["$(B)/bin/rootfs/rootfs.tar"],
-        deps=[busybox_o, busybox, init_o, python_o, python],
+        deps=[busybox, init_wasm, python],
         cmd=["python3", "$(S)/bin/rootfs/image.py", "$(B)/bin/rootfs/rootfs.tar",
-             "--busybox", busybox_o.outputs[0], busybox.outputs[1], "--init", init_o.outputs[0],
-             "--python", python_o.outputs[0], python.outputs[1]],
+             "--busybox", *busybox.outputs, "--init", init_wasm.outputs[0], "--python", *python.outputs],
         descr="IM",
         color="cyan",
     )
-    rootfs_wasm = nim_program("rootfs_wasm", "$(S)/bin/rootfs/rootfs.nim", "$(B)/bin/rootfs/rootfs.wasm", deps=[rootfs_image],
-                              options=["--image", rootfs_image.outputs[0]])
-    rootfs = command(
-        name="rootfs",
-        outputs=["$(B)/bin/rootfs/rootfs"],
-        deps=[vm, rootfs_wasm],
-        cmd=[vm.outputs[0], "-o", "$(B)/bin/rootfs/rootfs", rootfs_wasm.outputs[0]],
-        descr="AO",
-        color="light-cyan",
-    )
+    rootfs = nim_program("rootfs", "$(S)/bin/rootfs/rootfs.nim", "$(B)/bin/rootfs/rootfs.wasm", deps=[rootfs_image],
+                         options=["--image", rootfs_image.outputs[0]])
 
 # clang for this system: LLVM's multicall program of the release lib/cxx
 # comes from, compiled against lib/c and lib/cxx, and the headers clang
@@ -562,15 +507,6 @@ clang = command(
     color="green",
 )
 
-clang_o = command(
-    name="clang_o",
-    outputs=["$(B)/bin/clang/llvm.o"],
-    deps=[vm, clang],
-    cmd=[vm.outputs[0], "-o", "$(B)/bin/clang/llvm.o", clang.outputs[0]],
-    descr="AO",
-    color="light-cyan",
-)
-
 # test_libc's program: lib/c's functions with deterministic results.
 libc_check = command(
     name="libc_check",
@@ -582,18 +518,9 @@ libc_check = command(
     color="green",
 )
 
-libc_check_o = command(
-    name="libc_check_o",
-    outputs=["$(B)/tst/libc/check.o"],
-    deps=[vm, libc_check],
-    cmd=[vm.outputs[0], "-o", "$(B)/tst/libc/check.o", libc_check.outputs[0]],
-    descr="AO",
-    color="light-cyan",
-)
-
 # test_asan's program: lib/c's allocator, string functions and calls misused,
 # one memory error a case, built as test_libc's is but with -g, so the
-# object's traces name the lines, and compiled with --asan.
+# traces name the lines; `vm run --asan` compiles it with the shadow map.
 asan_check = command(
     name="asan_check",
     inputs=[*LIBC_HEADERS, "$(S)/tst/asan/check.c", "$(S)/tst/libc/make.py", "$(S)/dev/wasm.py"],
@@ -602,15 +529,6 @@ asan_check = command(
     cmd=["python3", "$(S)/tst/libc/make.py", CLANG, WASM_LD, "$(S)/tst/asan/check.c", "$(S)/lib/c/include", libc.outputs[0], "$(B)/tst/asan/check.wasm", "-g"],
     descr="CC",
     color="green",
-)
-
-asan_check_o = command(
-    name="asan_check_o",
-    outputs=["$(B)/tst/asan/check.o"],
-    deps=[vm, asan_check],
-    cmd=[vm.outputs[0], "--asan", "-o", "$(B)/tst/asan/check.o", asan_check.outputs[0]],
-    descr="AO",
-    color="light-cyan",
 )
 
 # test_cxx's program: lib/cxx's library over lib/c with deterministic results.
@@ -625,23 +543,6 @@ cxx_check = command(
     color="green",
 )
 
-cxx_check_o = command(
-    name="cxx_check_o",
-    outputs=["$(B)/tst/cxx/check.o"],
-    deps=[vm, cxx_check],
-    cmd=[vm.outputs[0], "-o", "$(B)/tst/cxx/check.o", cxx_check.outputs[0]],
-    descr="AO",
-    color="light-cyan",
-)
-
-# Exercise an ordinary linker's relocations on the self-compiled command.
-aot_relinked = command(
-    name="aot_relinked",
-    outputs=["$(B)/bin/aot/aot-command.relinked.aot"],
-    deps=[aot_command_aot],
-    cmd=[LD_LLD, "-r", aot_command_aot.outputs[0], "-o", "$(B)/bin/aot/aot-command.relinked.aot"],
-    descr="LD", color="green",
-)
 
 # The WebAssembly spec testsuite through `vm spec`; wast2json comes from
 # wabt, under ix run bld/wabt.
@@ -749,7 +650,7 @@ for kind, (module, digest, source, source_digest) in DECODE.items():
     decode_stand.extend([obj, native])
 
 # CPython built natively from the tarball python.wasm comes from, with its
-# built-in modules, against python.o on dev/stand/pybench.py.
+# built-in modules, against python.wasm on dev/stand/pybench.py.
 stand_python_native = command(
     name="stand_python_native",
     inputs=["$(S)/dev/stand/python.py", "$(S)/bin/python/make.py", "$(S)/dev/wasm.py"],
@@ -829,7 +730,7 @@ host_syscalls_interrupt = command(
 
 E2E_TESTED = {
     "aot": [aot, aot_command, wazero, vm, chaos_check],
-    "asan": [vm, asan_check_o, libc_check_o],
+    "asan": [vm, asan_check],
     "asan_bounds": [vm, aot_native, wazero],
     "bounded_copy_loops": [vm, aot_native, wazero],
     "chaos": [vm, vm_chaos, aot_native, aot_native_chaos, chaos_check],
@@ -839,7 +740,7 @@ E2E_TESTED = {
     "conditional_floats": [vm, aot_native, wazero],
     "constant_arithmetic": [vm, aot_native, wazero],
     "copy_loops": [vm, aot_native],
-    "cxx": [vm, cxx_check_o],
+    "cxx": [vm, cxx_check],
     "data_segments": [vm, aot_native],
     "dead_instructions": [vm, aot_native, wazero],
     "deep_control": [vm, aot_native, wazero],
@@ -863,11 +764,10 @@ E2E_TESTED = {
     "host_syscalls": [vm, aot_native, host_syscalls_check, host_syscalls_filter, host_syscalls_interrupt],
     "runtime_abi": [vm, aot_native, *runtime_abi_vms],
     "host_signals": [vm, aot_native, wazero],
-    "libc": [vm, libc_check_o],
+    "libc": [vm, libc_check],
     "large_functions": [vm, aot_native],
     "large_switches": [vm, aot_native, wazero],
     "loop_limits": [vm, aot_native, wazero],
-    "objects": [vm, aot_native],
     "profile_artifacts": [vm, aot_native],
     "runtime_errors": [vm, aot_native],
     "runtime_safety": [vm, aot_native, wazero],
@@ -879,15 +779,15 @@ E2E_TESTED = {
     "unary_loops": [vm, aot_native, wazero],
     "vfork_traps": [vm, aot_native, wazero],
     "wide_results": [vm, aot_native, wazero],
-    "vm": [vm, aot_native, aot, aot_command, aot_command_aot, aot_relinked, wazero, chaos_check],
+    "vm": [vm, aot_native, aot, aot_command, wazero, chaos_check],
 }
 APPLICATION_TESTED = {
     **({"rootfs": [vm, rootfs]} if NIM else {}),
     "busybox_abi": [busybox],
-    "busybox": [vm, busybox_o, busybox],
-    "clang": [vm, clang_o, clang, libc, libc_headers, libcxx],
-    "doom": [vm, doom_o, doom_wad],
-    "python": [vm, python_o, python, python_tarball, busybox_o, busybox],
+    "busybox": [vm, busybox],
+    "clang": [vm, busybox, clang, libc, libc_headers, libcxx],
+    "doom": [vm, doom, doom_wad],
+    "python": [vm, python, python_tarball, busybox],
 }
 TESTED = {**E2E_TESTED, **APPLICATION_TESTED}
 tests = []
@@ -1054,9 +954,9 @@ coverage_check = command(
     descr="CV", color="cyan",
 )
 
-group("install", libcxx, libc_headers, clang, clang_o, busybox, busybox_abi, busybox_o, doom, doom_o, python, python_o, vm, aot_native, aot, aot_aot, wazero,
+group("install", libcxx, libc_headers, clang, busybox, busybox_abi, doom, python, vm, aot_native, aot, aot_aot, wazero,
       *([rootfs] if NIM else []))
 group("unit", *unit_tests)
 group("e2e", *e2e_tests, *unit_tests, vm_spec_test)
 group("test", *tests, *unit_tests, vm_spec_test)
-group("stand", vm, aot_native, aot, aot_aot, busybox, stand_corpus, *decode_stand, python, python_o, stand_python_native)
+group("stand", vm, aot_native, aot, aot_aot, busybox, stand_corpus, *decode_stand, python, stand_python_native)

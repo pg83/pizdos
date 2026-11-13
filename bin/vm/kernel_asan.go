@@ -21,8 +21,8 @@ import (
 // past the heap, was never allocated. The kernel checks its own accesses for
 // the program's calls against the map too (span), so a read into a freed
 // buffer is caught as the code's store would be. A program runs with the
-// map only under `vm run --asan`, which the kernel's processes inherit:
-// exec of an object without the map runs it as ever.
+// map only under `vm run --asan`, whose kernel compiles every program it
+// runs so.
 
 const (
 	shadowFree    = 0x00 // never allocated: the first KiB, free pages, past the memory

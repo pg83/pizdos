@@ -77,9 +77,8 @@ def main():
                 compiled.write_bytes(result.stdout)
                 result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
                 assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), (name, result)
-                for obj in (compiled, embedded):
-                    result = subprocess.run([vm, "run", "--", str(obj)], capture_output=True, env=env, timeout=30)
-                    assert result.returncode == 129 and result.stdout == b"" and b"wasm trap: unreachable" in result.stderr, (name, result)
+                result = subprocess.run([vm, "run", "--", str(source)], capture_output=True, env=env, timeout=30)
+                assert result.returncode == 129 and result.stdout == b"" and b"wasm trap: unreachable" in result.stderr, (name, result)
         for name, body, diagnostic in malformed:
             source.write_bytes(program(body))
             result = subprocess.run([wazero, "-compile", str(source)], capture_output=True, timeout=60)

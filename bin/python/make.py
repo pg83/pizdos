@@ -6,8 +6,8 @@
 
 core compiles the interpreter and its built-in modules into libpython.a,
 the objects the tarball's Makefile.pre.in names and the modules below, and
-links Programs/_freeze_module against it. python compiles that freezer
-with vm and runs it in the kernel to freeze the modules the Makefile
+links Programs/_freeze_module against it. python runs that freezer in
+the kernel, which compiles it, to freeze the modules the Makefile
 freezes, links python.wasm with them, and stores the standard library,
 without its tests, in a zip with the build's sysconfig data. Threads are
 CPython's stubs, there is no dynamic loading, every module is built in and
@@ -15,6 +15,7 @@ none needs more than lib/c: no sockets, no compression. An undefined symbol
 is a link error, as for every program of lib/c.
 """
 import calendar
+import concurrent.futures
 import os
 import pprint
 import re
@@ -357,19 +358,25 @@ def python(cc, ld, vm, tarball, pyconfig, libc_include, libc, libpython, freeze,
     include = work / "include"
     include.mkdir()
     shutil.copy(pyconfig, include / "pyconfig.h")
-    freezer = work / "freeze.o"
-    subprocess.run([vm, "-o", str(freezer), freeze], check=True)
-
     # The headers go where frozen.c and getpath.c include them from: the
     # first as frozen_modules/, the second as Python/frozen_modules/.
     frozen = work / "gen" / "frozen_modules"
     frozen.mkdir(parents=True)
     out = tree / "frozen"
     out.mkdir()
+    modules = list(frozen_modules(tree))
 
-    for name, source, header in frozen_modules(tree):
-        subprocess.run([vm, "run", "--root", str(tree), "-a", "_freeze_module", "--", str(freezer),
+    # A module freezes in a kernel of its own, which compiles the freezer
+    # as it starts: the kernels run side by side.
+    def freeze_module(module):
+        name, source, header = module
+        subprocess.run([vm, "run", "--root", str(tree), "-a", "_freeze_module", "--", freeze,
                         name, "/" + source, "/frozen/" + header], check=True, env={"PATH": "/bin"})
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, os.cpu_count() or 1)) as pool:
+        list(pool.map(freeze_module, modules))
+
+    for name, source, header in modules:
         shutil.copy(out / header, frozen / header)
 
     (work / "gen" / "Python").mkdir()

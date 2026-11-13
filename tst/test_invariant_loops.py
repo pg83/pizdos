@@ -126,10 +126,9 @@ def main():
                 compiled.write_bytes(result.stdout)
                 result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
                 assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), (case, strict, result)
-                for obj in (compiled, embedded):
-                    result = subprocess.run([vm, "run", "--", str(obj)], capture_output=True, env=env, timeout=30)
-                    assert result.returncode == (130 if trapping else 0) and result.stdout == b"", (case, strict, result)
-                    assert b"out of bounds memory access" in result.stderr if trapping else result.stderr == b"", (case, strict, result)
+                result = subprocess.run([vm, "run", "--", str(source)], capture_output=True, env=env, timeout=30)
+                assert result.returncode == (130 if trapping else 0) and result.stdout == b"", (case, strict, result)
+                assert b"out of bounds memory access" in result.stderr if trapping else result.stderr == b"", (case, strict, result)
                 checked += 1
     print(f"invariant loops: {checked} indirect/aliased reads and repeated switches agree with the sequential model, wazero and both AOTs")
 

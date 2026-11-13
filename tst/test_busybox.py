@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """busybox under `vm run`: the kernel of lib/c runs its applets inside a
-root made like the system's, /bin/busybox the object and every path of
+root made like the system's, /bin/busybox the module and every path of
 busybox.links a symbolic link to it. The shell's errors, exit and SIGINT
 are longjmps, one of them out of a signal handler; its commands, pipes,
 substitutions and jobs are forks, which a terminal stops and continues;
 xargs, find -exec and awk's pipes are vforks; a loop without system calls
 is interrupted for its signals.
 
-    test_busybox.py <vm> <busybox.o> <busybox.wasm> <busybox.links>
+    test_busybox.py <vm> <busybox.wasm> <busybox.links>
 """
 import gzip
 import hashlib
@@ -49,7 +49,7 @@ CASES = [
     (["basename", "/a/b/c.txt", ".txt"], "", "c\n", 0),
     (["dirname", "/a/b/c.txt"], "", "/a/b\n", 0),
     (["false"], "", "", 1),
-    # exec inside the root: env runs /usr/bin/env, a link to the object
+    # exec inside the root: env runs /usr/bin/env, a link to the module
     (["env", "-i", "A=1", "env"], "", "A=1\n", 0),
     # a #! script runs its interpreter
     (["env", "/tmp/script.sh", "x"], "", "from /tmp/script.sh x\n", 0),
@@ -98,9 +98,9 @@ INTERRUPTS = [
 ]
 
 
-def make_root(root, obj, links):
+def make_root(root, module, links):
     (root / "bin").mkdir(parents=True)
-    shutil.copy(obj, root / "bin" / "busybox")
+    shutil.copy(module, root / "bin" / "busybox")
     (root / "bin" / "busybox").chmod(0o755)
 
     for link in links.split():
@@ -128,10 +128,31 @@ def run(vm, root, argv, stdin, env=None):
     return subprocess.run(command, input=stdin.encode(), capture_output=True, cwd=root / "tmp", env=environment, timeout=60)
 
 
+def until(fd, marker, seconds):
+    """What fd gives until it has given marker, or seconds pass: the shell
+    reads its input once it is compiled and its first prompt is out."""
+    out, end = b"", time.monotonic() + seconds
+
+    while marker not in out and time.monotonic() < end:
+        if select.select([fd], [], [], 0.05)[0]:
+            try:
+                chunk = os.read(fd, 4096)
+            except OSError:
+                break
+
+            if not chunk:
+                break
+
+            out += chunk
+
+    return out
+
+
 def interrupt(vm, root, first):
     command = [vm, "run", "--root", str(root), "-a", "sh", "--", str(root / "bin" / "busybox"), "-i"]
     p = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=root / "tmp",
                          env={"PATH": "/bin:/usr/bin", "PS1": "$ "})
+    prompt = until(p.stdout.fileno(), b"$ ", 60)
 
     if first:
         p.stdin.write(first.encode() + b"\n")
@@ -149,7 +170,7 @@ def interrupt(vm, root, first):
         p.kill()
         out, _ = p.communicate()
 
-    return out.decode(errors="replace"), p.returncode
+    return (prompt + out).decode(errors="replace"), p.returncode
 
 
 def job_control(vm, root):
@@ -175,7 +196,8 @@ def job_control(vm, root):
                 except OSError:
                     return
 
-    pump(0.8)
+    out = until(fd, b"$ ", 60)
+    pump(0.3)
 
     for keys in [b"cat\r", b"\x1a", b"jobs\r", b"fg\r", b"\x03", b"echo after $?\r", b"exit 6\r"]:
         os.write(fd, keys)
@@ -188,12 +210,12 @@ def job_control(vm, root):
 
 
 def main():
-    vm, obj, _, links = sys.argv[1:5]
+    vm, module, links = sys.argv[1:4]
     failed = []
 
     with tempfile.TemporaryDirectory(prefix="busybox-") as work:
         root = Path(work) / "root"
-        make_root(root, obj, Path(links).read_text())
+        make_root(root, module, Path(links).read_text())
 
         for case in CASES:
             argv, stdin, want, code = case[:4]

@@ -138,9 +138,8 @@ def main():
                 run_flags = ["--asan"] if asan else []
                 result = subprocess.run([vm, *run_flags, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
                 assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), (case, mode, result)
-                for obj in (compiled, embedded):
-                    result = subprocess.run([vm, "run", *run_flags, "--", str(obj)], capture_output=True, env=env, timeout=30)
-                    assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (case, mode, result)
+                result = subprocess.run([vm, "run", *run_flags, "--", str(source)], capture_output=True, env=env, timeout=30)
+                assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (case, mode, result)
                 checked += 1
     print(f"copy loops: {checked} counted, overlapping, wrapping and ASAN programs agree with the bytewise model and both AOTs")
 

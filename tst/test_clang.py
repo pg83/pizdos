@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """clang of this system under `vm run`: LLVM's multicall program, as
 /bin/llvm with clang, clang++ and wasm-ld naming it, in a root with lib/c's
-and lib/cxx's headers and libraries, compiles and links a C and a C++
-program, its driver running cc1 and the linker as processes of their own;
-vm compiles what they link and the kernel runs it.
+and lib/cxx's headers and libraries and busybox's shell, compiles and links
+a C and a C++ program, its driver running cc1 and the linker as processes of
+their own, and the shell runs what they link: the kernel compiles each
+module once, LLVM's for all its processes.
 
-    test_clang.py <vm> <llvm.o> <llvm.wasm> <resource.tar> <libc.a> <libc-include.tar> <libc++.a> <cxx-include.tar>
+    test_clang.py <vm> <busybox.wasm> <busybox.links> <llvm.wasm> <resource.tar> <libc.a> <libc-include.tar> <libc++.a> <cxx-include.tar>
 """
+import shlex
 import shutil
 import subprocess
 import sys
@@ -61,19 +63,8 @@ LINK = ["-nostdlib", "-Wl,--stack-first", "-Wl,-z,stack-size=1049600", "-Wl,--ma
         "-Wl,--export=__heap_base", "-Wl,--export=__stack_pointer", "-Wl,--gc-sections"]
 
 
-def run(vm, root, name, program, *args):
-    r = subprocess.run([vm, "run", "--root", str(root), "-a", name, "--", str(program), *args], capture_output=True,
-                       text=True, env={"PATH": "/bin"}, timeout=600)
-
-    if r.returncode != 0:
-        print(f"FAIL {name} {' '.join(args)}: exit {r.returncode}\n{r.stdout[-2000:]}{r.stderr[-2000:]}")
-        sys.exit(1)
-
-    return r.stdout
-
-
 def main():
-    vm, llvm, _, resource, libc, libc_include, libcxx, cxx_include = sys.argv[1:9]
+    vm, busybox, links, llvm, resource, libc, libc_include, libcxx, cxx_include = sys.argv[1:10]
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -83,9 +74,18 @@ def main():
 
         shutil.copy(llvm, root / "bin" / "llvm")
         (root / "bin" / "llvm").chmod(0o755)
+        shutil.copy(busybox, root / "bin" / "busybox")
+        (root / "bin" / "busybox").chmod(0o755)
 
         for name in ("clang", "clang++", "wasm-ld"):
             (root / "bin" / name).symlink_to("llvm")
+
+        for link in Path(links).read_text().split():
+            path = root / link.lstrip("/")
+
+            if not path.exists() and not path.is_symlink():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.symlink_to("/bin/busybox")
 
         for archive, at in ((resource, root), (libc_include, root / "usr"), (cxx_include, root / "usr")):
             with tarfile.open(archive) as t:
@@ -95,33 +95,21 @@ def main():
         shutil.copy(libcxx, root / "usr/lib/libc++.a")
         (root / "src/hello.c").write_text(C)
         (root / "src/hello.cpp").write_text(CXX)
-        clang = root / "bin" / "llvm"
-        version = run(vm, root, "clang", clang, "--version").splitlines()[0]
+        c = ["clang", *wasm.CFLAGS, "-isystem", "/usr/include", "-O2", "/src/hello.c", "-o", "/bin/hello", *LINK, "/usr/lib/libc.a"]
+        cxx = ["clang++", *wasm.CFLAGS, "-nostdinc++", "-fno-exceptions", "-std=c++23", "-isystem", "/usr/include/c++/v1",
+               "-isystem", "/usr/include", "-O2", "/src/hello.cpp", "-o", "/bin/hello-cxx", *LINK, "/usr/lib/libc++.a", "/usr/lib/libc.a"]
+        script = f"set -e\nclang --version\necho ---\n{shlex.join(c)}\n{shlex.join(cxx)}\nhello\nhello-cxx\n"
+        r = subprocess.run([vm, "run", "--root", str(root), "-a", "sh", "--", str(root / "bin" / "busybox"), "-c", script],
+                           capture_output=True, text=True, env={"PATH": "/bin"}, timeout=1200)
+        version, _, ran = r.stdout.partition("---\n")
+        version = version.splitlines()[0] if version else ""
+        want = "hello: 1 3 5 7 9 3.143 15\napple 4 3\n"
 
-        if not version.startswith("clang version 23."):
-            print(f"FAIL clang --version: {version}")
+        if r.returncode != 0 or not version.startswith("clang version 23.") or ran != want:
+            print(f"FAIL clang: exit {r.returncode}, version {version!r}, ran {ran!r}, want {want!r}\n{r.stderr[-3000:]}")
             sys.exit(1)
 
-        run(vm, root, "clang", clang, *wasm.CFLAGS, "-isystem", "/usr/include", "-O2", "/src/hello.c",
-            "-o", "/tmp/hello.wasm", *LINK, "/usr/lib/libc.a")
-        run(vm, root, "clang++", clang, *wasm.CFLAGS, "-nostdinc++", "-fno-exceptions", "-std=c++23",
-            "-isystem", "/usr/include/c++/v1", "-isystem", "/usr/include", "-O2", "/src/hello.cpp",
-            "-o", "/tmp/hello-cxx.wasm", *LINK, "/usr/lib/libc++.a", "/usr/lib/libc.a")
-        results = []
-
-        for name, want in (("hello", "hello: 1 3 5 7 9 3.143 15\n"), ("hello-cxx", "apple 4 3\n")):
-            program = root / "bin" / name
-            subprocess.run([vm, "-o", str(program), str(root / "tmp" / f"{name}.wasm")], check=True)
-            program.chmod(0o755)
-            got = run(vm, root, name, program)
-
-            if got != want:
-                print(f"FAIL {name}: got {got!r}, want {want!r}")
-                sys.exit(1)
-
-            results.append(name)
-
-    print(f"clang: {version}; built {' and '.join(results)}, which ran as expected")
+    print(f"clang: {version}; built hello and hello-cxx, which ran as expected")
 
 
 if __name__ == "__main__":

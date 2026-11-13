@@ -115,9 +115,8 @@ def main():
                 compiled.write_bytes(reference)
                 result = subprocess.run([vm, "-o", str(output), str(source)], capture_output=True, env=strict_env, timeout=30)
                 assert result.returncode == 0 and output.read_bytes() == reference, (label, result)
-                for obj in (compiled, output):
-                    result = subprocess.run([vm, "run", "--", str(obj)], capture_output=True, env=strict_env, timeout=30)
-                    assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (label, result)
+                result = subprocess.run([vm, "run", "--", str(source)], capture_output=True, env=strict_env, timeout=30)
+                assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (label, result)
     print(f"compiler rejections: {len(cases)} control, segment, index and import-address errors preserve output with both AOTs")
 
 

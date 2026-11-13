@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"fmt"
 	"math"
 	"os"
@@ -43,23 +44,27 @@ func hostLimits() [rlimitCount]rlimit {
 	return out
 }
 
-// code links the object a file holds, or finds it linked: the error is
-// ENOEXEC when the file is not an object of the kernel, EACCES when it
+// code is the code of the module a file holds: the error is ENOEXEC when
+// the file is not a module of a program of the kernel, EACCES when it
 // cannot be read at an offset.
 func (k *Kernel) code(p *Process, f File, name string) (*Code, error) {
+	data, err := moduleData(p, f)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return k.codeOf(data, name, nil)
+}
+
+// moduleData is what a file holds, read at offsets to its size, as exec
+// reads a program and vm run its first, without a process: EACCES when it
+// cannot be read at an offset, ENOEXEC when it ends before its size.
+func moduleData(p *Process, f File) ([]byte, error) {
 	var st syscall.Stat_t
 
 	if err := f.stat(&st); err != nil {
 		return nil, err
-	}
-
-	key := fileKey{st.Dev, st.Ino, st.Size, st.Mtim}
-	k.mu.Lock()
-	c, ok := k.codes[key]
-	k.mu.Unlock()
-
-	if ok {
-		return c, nil
 	}
 
 	t, ok := f.(Transfer)
@@ -84,25 +89,82 @@ func (k *Kernel) code(p *Process, f File, name string) (*Code, error) {
 		at += n
 	}
 
-	if e := try(func() {
-		obj := readObject(data)
+	return data, nil
+}
 
+// A codeEntry is the code of a module, or why it has none; done closes
+// when either is known, so a process that asks for a module another is
+// compiling waits for that compilation.
+type codeEntry struct {
+	done chan struct{}
+	code *Code
+	err  error
+}
+
+// codeOf is the code of a module, data: compiled with the kernel's options
+// and linked to it once in the kernel's life for a content, which every
+// process that runs the module shares. obj is the module compiled
+// already, or nil. A failure is not kept: the next exec tries again.
+//
+// The compiler runs on a goroutine of its own, and the process waits for
+// its end: in the frames of the process's code, a compiler that ends in a
+// panic, a module it refuses, would leave the goroutine's instance its own
+// (aot.cpp's entry thunk restores it only on return).
+func (k *Kernel) codeOf(data []byte, name string, obj *Object) (*Code, error) {
+	key := sha256.Sum256(data)
+	k.mu.Lock()
+	e, found := k.codes[key]
+
+	if !found {
+		e = &codeEntry{done: make(chan struct{})}
+		k.codes[key] = e
+
+		go func() {
+			e.code, e.err = k.compile(data, name, obj)
+
+			if e.err != nil {
+				k.mu.Lock()
+
+				if k.codes[key] == e {
+					delete(k.codes, key)
+				}
+
+				k.mu.Unlock()
+			}
+
+			close(e.done)
+		}()
+	}
+
+	k.mu.Unlock()
+	<-e.done
+
+	return e.code, e.err
+}
+
+// compile compiles a module, unless obj is its object already, and links
+// it to the kernel: ENOEXEC, with why, for one that is no program of the
+// kernel.
+func (k *Kernel) compile(data []byte, name string, obj *Object) (*Code, error) {
+	if obj == nil {
+		var err error
+
+		if obj, err = compileModule(data, k.options); err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+	}
+
+	var c *Code
+
+	if e := try(func() {
 		if !importsKernel(obj) {
 			throwFmt("not a program of the kernel")
-		}
-
-		if obj.meta.asan() && !k.asan {
-			throwFmt("compiled with --asan: run with --asan")
 		}
 
 		c = link(name, obj, k)
 	}); e != nil {
 		return nil, fmt.Errorf("%s: %s: %w", name, e, syscall.ENOEXEC)
 	}
-
-	k.mu.Lock()
-	k.codes[key] = c
-	k.mu.Unlock()
 
 	return c, nil
 }

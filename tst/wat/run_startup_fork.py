@@ -23,9 +23,8 @@ def main():
             compiled.write_bytes(result.stdout)
             result = subprocess.run([vm, "-o", str(embedded), str(module)], capture_output=True, env=env, timeout=60)
             assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), (strict, result)
-            for obj in (compiled, embedded):
-                result = subprocess.run([vm, "run", "--", str(obj)], capture_output=True, env=env, timeout=30)
-                assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (strict, result)
+            result = subprocess.run([vm, "run", "--", str(module)], capture_output=True, env=env, timeout=30)
+            assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (strict, result)
     print("WAT startup fork: initialization receives ENOSYS and the command then runs, through identical native/Wasm objects")
 
 

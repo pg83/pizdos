@@ -162,11 +162,10 @@ def main():
             compiled.write_bytes(result.stdout)
             result = subprocess.run([vm, "-o", str(embedded), str(source)], env=env, capture_output=True, timeout=30)
             assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), (name, result)
-            for obj in (compiled, embedded):
-                result = subprocess.run([vm, "run", "--", str(obj)], env=env, capture_output=True, timeout=30)
-                assert result.returncode == 129 and result.stdout == b"" and b"wasm trap: unreachable" in result.stderr, (name, result)
-                if (name, lines) in valid:
-                    assert b"fixture.c:43" in result.stderr, (name, result.stderr)
+            result = subprocess.run([vm, "run", "--", str(source)], env=env, capture_output=True, timeout=30)
+            assert result.returncode == 129 and result.stdout == b"" and b"wasm trap: unreachable" in result.stderr, (name, result)
+            if (name, lines) in valid:
+                assert b"fixture.c:43" in result.stderr, (name, result.stderr)
     print(f"debug lines: {len(valid)} source locations and {len(malformed)} malformed tables agree through native/Wasm AOT")
 
 

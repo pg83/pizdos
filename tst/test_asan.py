@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """The kernel's address sanitizer under `vm run --asan`: tst/asan/check.c,
-built with `-g` and compiled with `vm --asan`, runs each of its memory
-errors as /bin/check of a root with a /tmp, and the report names the error,
-where the shadow map puts it and the source line of the fault, through the
-kernel's own frames when the kernel caught it; its clean case runs through.
-An object compiled with --asan is refused without the flag, and one
-compiled without it under the flag.
+built with `-g`, which the kernel compiles with the shadow map's checks,
+runs each of its memory errors as /bin/check of a root with a /tmp, and the
+report names the error, where the shadow map puts it and the source line of
+the fault, through the kernel's own frames when the kernel caught it; its
+clean case runs through, and runs without the flag too, compiled without
+the checks.
 
-    test_asan.py <vm> <check.o> <libc check.o>
+    test_asan.py <vm> <check.wasm>
 """
 import re
 import shutil
@@ -44,7 +44,7 @@ def run(vm, root, program, args, asan=True):
 
 
 def main():
-    vm, check, plain = sys.argv[1:4]
+    vm, check = sys.argv[1:3]
     failed = 0
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -52,7 +52,6 @@ def main():
         (root / "bin").mkdir()
         (root / "tmp").mkdir()
         shutil.copy(check, root / "bin" / "check")
-        shutil.copy(plain, root / "bin" / "plain")
 
         r = run(vm, root, "check", ["ok"])
 
@@ -70,20 +69,15 @@ def main():
 
         r = run(vm, root, "check", ["ok"], asan=False)
 
-        if r.returncode == 0 or "compiled with --asan: run with --asan" not in r.stderr:
-            print(f"FAIL an asan object without --asan: exit {r.returncode}\n{r.stderr}")
+        if r.returncode != 0 or r.stdout != "ok 14 data\n":
+            print(f"FAIL ok without --asan: exit {r.returncode}\n{r.stdout}{r.stderr}")
             failed += 1
 
-        r = run(vm, root, "plain", ["strtok"])
-
-        if r.returncode == 0 or "not compiled with --asan" not in r.stderr:
-            print(f"FAIL a plain object with --asan: exit {r.returncode}\n{r.stderr}")
-            failed += 1
 
     if failed:
         sys.exit(1)
 
-    print(f"asan: {len(CASES)} errors reported with their lines, the clean case and the refusals as expected")
+    print(f"asan: {len(CASES)} errors reported with their lines, the clean case runs with and without the checks")
 
 
 if __name__ == "__main__":

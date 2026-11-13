@@ -62,9 +62,8 @@ def main():
                 compiled.write_bytes(result.stdout)
                 result = subprocess.run([vm, "-o", str(embedded), str(module)], capture_output=True, env=env, timeout=60)
                 assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), result
-                for obj in (compiled, embedded):
-                    result = subprocess.run([vm, "run", "--", str(obj)], capture_output=True, env=env, timeout=30)
-                    assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (reference, strict, result)
+                result = subprocess.run([vm, "run", "--", str(module)], capture_output=True, env=env, timeout=30)
+                assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (reference, strict, result)
     print(f"WAT Go float results: {checks} multi-result relays and branch merges preserve result positions, NaN payloads and signed zero with a model, wazero reference and both AOTs")
 
 

@@ -289,12 +289,16 @@ func helperTrapAt(ctx uintptr, code uint32, addr uint64, info uint32) {
 	panic(t)
 }
 
+// helperMemoryGrow is memory.grow; its chaos point is a program's, not
+// the compiler's, which the kernel runs for exec.
 func helperMemoryGrow(ctx uintptr, delta uint32) uint32 {
-	if chaosFail("memory-grow") {
+	i := instanceAt(ctx)
+
+	if _, compiler := i.host.(*CompilerIO); !compiler && chaosFail("memory-grow") {
 		return math.MaxUint32
 	}
 
-	return instanceAt(ctx).memory.grow(delta)
+	return i.memory.grow(delta)
 }
 
 // interruptible is a host whose code Go interrupts (lib/goruntime).

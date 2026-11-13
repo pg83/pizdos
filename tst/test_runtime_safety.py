@@ -106,17 +106,16 @@ def main():
             compiled.write_bytes(result.stdout)
             result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
             assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), (label, result)
-            for obj in (compiled, embedded):
-                root = rooted if isinstance(rooted, str) else str(work / "root")
-                result = subprocess.run([vm, "run", *(["--root", root] if rooted else []), "-a", "runtime-safety", "--", str(obj)],
-                                        capture_output=True, env=env, timeout=30)
-                assert result.returncode == status and result.stdout == b"" and b"panic:" not in result.stderr, (label, result)
-                if status:
-                    lines = result.stderr.decode().splitlines()
-                    assert diagnostic in lines[0] and len(lines) > 1, (label, lines)
-                    assert all(re.match(r"runtime-safety\[\d+\]: ", line) for line in lines), (label, lines)
-                else:
-                    assert result.stderr == b"", (label, result)
+            root = rooted if isinstance(rooted, str) else str(work / "root")
+            result = subprocess.run([vm, "run", *(["--root", root] if rooted else []), "-a", "runtime-safety", "--", str(source)],
+                                    capture_output=True, env=env, timeout=30)
+            assert result.returncode == status and result.stdout == b"" and b"panic:" not in result.stderr, (label, result)
+            if status:
+                lines = result.stderr.decode().splitlines()
+                assert diagnostic in lines[0] and len(lines) > 1, (label, lines)
+                assert all(re.match(r"runtime-safety\[\d+\]: ", line) for line in lines), (label, lines)
+            else:
+                assert result.stderr == b"", (label, result)
     print(f"runtime safety: {len(cases)} public memory/math calls trap safely or respect empty/early-match bounds with both AOTs")
 
 

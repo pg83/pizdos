@@ -113,9 +113,8 @@ def main():
                 compiled.write_bytes(result.stdout)
                 result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
                 assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), (pattern, count, indirect, result)
-                for obj in (compiled, embedded):
-                    result = subprocess.run([vm, "run", "--", str(obj)], capture_output=True, env=env, timeout=30)
-                    assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (pattern, count, indirect, strict, result)
+                result = subprocess.run([vm, "run", "--", str(source)], capture_output=True, env=env, timeout=30)
+                assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (pattern, count, indirect, strict, result)
     print(f"wide results: {len(cases)} direct/indirect call chains preserve up to 65 mixed results with a model, wazero and both AOTs")
 
 

@@ -36,7 +36,7 @@ def main():
         obj.write_bytes(expected)
 
         def perf(directory):
-            child = subprocess.Popen([vm, "run", "--", str(obj)], env=dict(env, W2O_PERFMAP=directory),
+            child = subprocess.Popen([vm, "run", "--", str(source)], env=dict(env, W2O_PERFMAP=directory),
                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             out, err = child.communicate(timeout=30)
             assert (child.returncode, out, err) == (0, b"", b""), (child.returncode, out, err)
@@ -58,16 +58,21 @@ def main():
                 path.unlink(missing_ok=True)
         perf(str(work / "missing"))
 
+        # vm run compiles with the tail's counters when W2X_TAIL_PROFILE asks,
+        # as the native compiler does with --tail-profile.
         profiled, profile = work / "profiled.o", work / "tail.jsonl"
+        counting = dict(env, W2X_TAIL_PROFILE="1")
         result = subprocess.run([native, "--tail-profile"], input=MODULE, capture_output=True, env=env, timeout=60)
         assert result.returncode == 0, result.stderr
         profiled.write_bytes(result.stdout)
-        result = subprocess.run([vm, "run", "--", str(profiled)], env=dict(env, W2O_TAIL_PROFILE=str(profile)),
+        result = subprocess.run([vm, "-o", str(obj), str(source)], env=counting, capture_output=True, timeout=60)
+        assert result.returncode == 0 and obj.read_bytes() == profiled.read_bytes(), result
+        result = subprocess.run([vm, "run", "--", str(source)], env=dict(counting, W2O_TAIL_PROFILE=str(profile)),
                                 capture_output=True, timeout=30)
         assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), result
         rows = [json.loads(line) for line in profile.read_text().splitlines()]
-        assert len(rows) == 1 and rows[0]["module"] == str(profiled), rows
-        result = subprocess.run([vm, "run", "--", str(profiled)], env=dict(env, W2O_TAIL_PROFILE=str(work)),
+        assert len(rows) == 1 and rows[0]["module"] == str(source), rows
+        result = subprocess.run([vm, "run", "--", str(source)], env=dict(counting, W2O_TAIL_PROFILE=str(work)),
                                 capture_output=True, timeout=30)
         assert result.returncode != 0 and b"is a directory" in result.stderr, result
     print("profiles: CPU gzip data, perf symbols, tail JSON and output failures behave as expected")

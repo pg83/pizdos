@@ -3,7 +3,7 @@
 of results per area, between its static and thread_local objects' lines,
 which must be these. Its root has a /tmp for the files.
 
-    test_cxx.py <vm> <check.o>
+    test_cxx.py <vm> <check.wasm>
 """
 import os
 import subprocess

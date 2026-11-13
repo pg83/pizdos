@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CPython under `vm run`: python.o is /usr/bin/python3 of a root whose
+"""CPython under `vm run`: python.wasm is /usr/bin/python3 of a root whose
 standard library is /usr/lib/python314.zip and whose shell is busybox's.
 A script prints what the interpreter computes and what it gets from the
 kernel: processes, pipes, a pseudoterminal, signals, timers, locks,
@@ -7,7 +7,7 @@ mappings written back, the user database, locales and the tokenizer's
 positions. Then a set of CPython's own tests, from the release tarball's
 Lib/test, runs with its regrtest.
 
-    test_python.py <vm> <python.o> <python.wasm> <python314.zip> <Python.tgz> <busybox.o> <busybox.wasm> <busybox.links>
+    test_python.py <vm> <python.wasm> <python314.zip> <Python.tgz> <busybox.wasm> <busybox.links>
 """
 import os
 import shutil
@@ -178,12 +178,12 @@ def python(vm, root, args, timeout):
 
 
 def main():
-    vm, python_o, _, zipped, tarball, busybox, _, links = sys.argv[1:9]
+    vm, interpreter, zipped, tarball, busybox, links = sys.argv[1:7]
     failures = []
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / "root"
-        make_root(root, python_o, zipped, tarball, busybox, Path(links).read_text())
+        make_root(root, interpreter, zipped, tarball, busybox, Path(links).read_text())
         (root / "tmp" / "check.py").write_text(SCRIPT)
         r = python(vm, root, ["/tmp/check.py"], 300)
 
