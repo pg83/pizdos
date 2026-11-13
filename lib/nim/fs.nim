@@ -14,16 +14,23 @@
 ##   Header { op u32, arg u32, uid u32, gid u32 }
 ##
 ## uid and gid are who asks: the kernel puts its process's ids, a program
-## that speaks the protocol its own; a server makes what it creates
-## theirs. A reply's are zero.
+## that speaks the protocol its own. A server makes what it creates
+## theirs and lets them do what its modes let them: root everything but
+## executing what nobody may, the owner what the owner's bits say, the
+## group of gid the group's, everyone else the others'. A path is searched
+## through directories who asks may search, a name is made or removed in a
+## directory they may write, and in a sticky one removed only by the
+## owner of the name's node or of the directory. A reply's ids are zero.
 ##
 ##   on a directory's endpoint, the path relative to it, ".." staying in it:
 ##     OPEN      arg flags   mode u32 path OK stat; fds[0] an object: the file is it
 ##     STAT      arg flags   path          OK stat; AT_SYMLINK_NOFOLLOW
 ##     READLINK              path          OK target
 ##     MKDIR     arg mode    path
+##     MKNOD     arg mode    path          a FIFO or a regular file
 ##     UNLINK    arg flags   path          AT_REMOVEDIR
 ##     RENAME                old 0 new
+##     LINK      arg follow  old 0 new     follow: AT_SYMLINK_FOLLOW's
 ##     SYMLINK               target 0 path
 ##     MOUNT                 path          fds = [root of the server, reply]
 ##     CHMOD     arg mode    path
@@ -32,9 +39,10 @@
 ##                                         2 atime now, 4 mtime now,
 ##                                         8 atime kept, 16 mtime kept
 ##     TRUNCATE              size u64 path
+##     STATFS                path          OK statfs
 ##   on a node's endpoint:
 ##     READ      arg len     off u64       OK data
-##     WRITE                 off u64 data  OK count u32
+##     WRITE     arg append  off u64 data  OK count u32 at u64
 ##     READDIR               after u64     OK (ino u64, pos u64, type u8, name, 0)*
 ##     FSTAT                               OK stat
 ##     FCHMOD    arg mode
@@ -42,16 +50,34 @@
 ##     FUTIMES   arg when    atime u64 mtime u64
 ##     FTRUNCATE             size u64
 ##     FSYNC     arg data
+##     FSTATFS                             OK statfs
+##     FLOCK     arg op                    LOCK_SH, LOCK_EX, LOCK_UN
+##     LOCK      arg get     type u32 start u64 len u64
+##                                         OK; with get, the lock in the
+##                                         way, F_UNLCK for none: type u32
+##                                         start u64 len u64
 ##   replies: OK, ERR with arg the errno
 ##   stat { ino u64, size u64, mtime u64 nanoseconds, mode u32, nlink u32,
-##          uid u32, gid u32, atime u64, dev u64 }
+##          uid u32, gid u32, atime u64, dev u64, ctime u64 }
+##   statfs { blocks u64, bfree u64, files u64, ffree u64, dev u64,
+##            bsize u32, namemax u32, flags u32 }  flags: 1 read-only
 ##
 ## A directory's entries have positions, each after those before it: a
 ## READDIR gives the entries after one, so a reading that removes what it
-## read misses nothing. dev is the server's: the number of the pair it
-## first answers on, which no other pair in the kernel has.
+## read misses nothing. A node has the names that are links to it, a
+## directory one. dev is the server's: the number of the pair it first
+## answers on, which no other pair in the kernel has.
+##
+## A WRITE with append writes at the end the file has when the server takes
+## it, which no other write comes between. A lock is an endpoint's, an open
+## file's, as Linux's open file description locks are: flock's on the
+## whole file, fcntl's on a range of its bytes, refused with EAGAIN when
+## another endpoint holds one in the way, and gone when the endpoint
+## closes. A FIFO is a node and nothing more: the kernel makes the pipe its
+## openers share. A writable server holds what its capacity lets it, in
+## bytes and in nodes, a node a block's worth: past that, ENOSPC.
 
-import std/[tables, strutils, posix, epoll]
+import std/[tables, strutils, sequtils, posix, epoll]
 
 const
   atSymlinkNofollow* = 0x100'u32
@@ -70,16 +96,33 @@ const
   sockCloexec = 0o2000000'i32
   maxFds = 4
   maxPacket = 65536
+  blockSize = 4096'u64
+  dtFifo = 1'u8
   dtChr = 2'u8
   dtDir = 4'u8
   dtReg = 8'u8
   dtLnk = 10'u8
+  sIfmt = 0o170000'u32
+  sIfifo = 0o010000'u32
+  sIfreg = 0o100000'u32
+  sSticky = 0o1000'u32
+  lockSh = 1'u32
+  lockEx = 2'u32
+  lockNb = 4'u32
+  lockUn = 8'u32
+  fRdlck = 0'u32
+  fWrlck = 1'u32
+  fUnlck = 2'u32
+  stRdonly = 1'u32
+  noId = 0xffffffff'u32
+  past = high(uint64)  ## the stop of a lock to the end of a file and past it
 
 type
   Op* = enum
     opOpen = 1, opStat, opReadlink, opMkdir, opUnlink, opRename, opSymlink,
     opMount, opRead, opWrite, opReaddir, opFstat, opChmod, opChown, opUtimes,
-    opTruncate, opFchmod, opFchown, opFutimes, opFtruncate, opFsync, opOk, opErr
+    opTruncate, opFchmod, opFchown, opFutimes, opFtruncate, opFsync,
+    opMknod, opLink, opStatfs, opFstatfs, opFlock, opLock, opOk, opErr
 
   Header* {.packed.} = object
     op*, arg*: uint32
@@ -88,46 +131,70 @@ type
   Stat* {.packed.} = object
     ino*, size*, mtime*: uint64
     mode*, nlink*, uid*, gid*: uint32
-    atime*, dev*: uint64
+    atime*, dev*, ctime*: uint64
+
+  Statfs* {.packed.} = object
+    blocks*, bfree*, files*, ffree*, dev*: uint64
+    bsize*, namemax*, flags*: uint32
 
   NodeKind* = enum
     nkDir, nkFile, nkLink
+    nkFifo    ## a named pipe: the kernel makes the pipe
     nkObject  ## an object of the kernel the server hands out: a tty, a disk
     nkNull    ## reads nothing, takes everything
     nkZero    ## reads zeros
     nkRandom  ## reads the kernel's random bytes
 
+  Range = object
+    ## A lock of fcntl: an endpoint's, on the bytes [start, stop), to read
+    ## or to write.
+    owner: cint
+    write: bool
+    start, stop: uint64
+
   Node* = ref object
-    name*: string
-    parent*: Node
     ino*: uint64
-    pos*: uint64  ## where the node is among its directory's entries
     perm*: uint32  ## the permission bits
     uid*, gid*: uint32
-    atime*, mtime*: uint64  ## nanoseconds
+    atime*, mtime*, ctime*: uint64  ## nanoseconds
+    links*: uint32  ## the names that are links to it
+    opens: int  ## the endpoints open on it
+    shared: seq[cint]  ## the endpoints that hold flock's shared lock
+    exclusive: cint  ## the endpoint that holds flock's exclusive lock, or -1
+    ranges: seq[Range]
     case kind*: NodeKind
     of nkDir:
-      children*: OrderedTable[string, Node]  ## in the order of their positions
-      entries*: uint64  ## the last position given out
+      parent*: Node  ## where ".." goes; none for the root
+      children*: OrderedTable[string, Entry]  ## in the order of their positions
+      entries: uint64  ## the last position given out
       mount*: cint  ## the root endpoint of a server mounted here, or -1
     of nkFile: data*: string
     of nkLink: target*: string
     of nkObject: fd*: cint
-    of nkNull, nkZero, nkRandom: discard
+    of nkFifo, nkNull, nkZero, nkRandom: discard
+
+  Entry* = object
+    node*: Node
+    pos: uint64  ## where the name is among the directory's entries
 
   Endpoint = object
     fd: cint
     node: Node  ## what the endpoint is open on
+    reads, writes: bool  ## what its open lets it do
 
   Server* = object
     root*: Node
     writable*: bool
+    capacity*: uint64  ## the bytes a writable server's files may hold
     eps: Table[cint, Endpoint]  ## by descriptor
-    inodes: uint64
+    inodes: uint64  ## the inode numbers given out
+    nodes: uint64  ## the nodes there are
+    used: uint64  ## the bytes the files hold
     dev: uint64  ## the device of the server's files
 
   Walk = object
     node: Node
+    dir: Node  ## the directory node was found in
     rest: string  ## the path left for the server mounted at node
     forward: bool
     err: cint
@@ -226,66 +293,144 @@ proc now(): uint64 =
   discard clock_gettime(CLOCK_REALTIME, ts)
   uint64(ts.tv_sec) * 1_000_000_000'u64 + uint64(ts.tv_nsec)
 
-proc place(dir, n: Node) =
-  ## Puts a node in a directory, after every entry there: at the next
-  ## position.
+proc changed(n: Node) =
+  ## A change of what the node is: its ctime.
+  n.ctime = now()
+
+proc place(dir: Node, name: string, n: Node) =
+  ## Puts a name for a node in a directory, after every entry there: at the
+  ## next position.
   inc dir.entries
-  n.pos = dir.entries
-  n.parent = dir
-  dir.children[n.name] = n
+  dir.children[name] = Entry(node: n, pos: dir.entries)
+  inc n.links
+  if n.kind == nkDir:
+    n.parent = dir
   dir.mtime = now()
+  dir.ctime = dir.mtime
+  n.changed
 
 proc node*(s: var Server, parent: Node, name: string, kind: NodeKind): Node =
   ## A new node, with the permissions of its kind until they are set.
   inc s.inodes
-  result = Node(name: name, ino: s.inodes, kind: kind, atime: now(), mtime: now())
+  inc s.nodes
+  let t = now()
+  result = Node(ino: s.inodes, kind: kind, atime: t, mtime: t, ctime: t, exclusive: -1)
   result.perm = case kind
     of nkDir: 0o755'u32
-    of nkFile: 0o644'u32
+    of nkFile, nkFifo: 0o644'u32
     of nkLink: 0o777'u32
     of nkObject, nkNull, nkZero, nkRandom: 0o666'u32
   if kind == nkDir:
     result.mount = -1
   if parent != nil:
-    parent.place(result)
+    parent.place(name, result)
+
+proc unplace(dir: Node, name: string): Node =
+  ## Takes a name out of a directory: the node it named, one link fewer.
+  result = dir.children[name].node
+  dir.children.del(name)
+  dec result.links
+  dir.mtime = now()
+  dir.ctime = dir.mtime
+  result.changed
+
+proc release(s: var Server, n: Node) =
+  ## A node with no name and no endpoint is gone: what it held is the
+  ## server's again.
+  if n.links == 0 and n.opens == 0:
+    if n.kind == nkFile:
+      s.used -= uint64(n.data.len)
+      n.data = ""
+    dec s.nodes
+
+proc full(s: Server): bool =
+  ## Whether a writable server has no node left to make.
+  s.capacity > 0 and s.nodes >= s.capacity div blockSize
+
+proc resize(s: var Server, n: Node, size: int): bool =
+  ## A file's size set, its bytes counted against the capacity: false when
+  ## they do not fit, ENOSPC.
+  let old = n.data.len
+  if size > old and s.capacity > 0 and s.used + uint64(size - old) > s.capacity:
+    return false
+  n.data.setLen(size)
+  if size > old:
+    s.used += uint64(size - old)
+  else:
+    s.used -= uint64(old - size)
+  true
+
+proc fill*(s: var Server, n: Node, data: string) =
+  ## A file's data, counted as the server's: for a server that fills its
+  ## tree itself, as rootfs does from its image.
+  s.used -= uint64(n.data.len)
+  n.data = data
+  s.used += uint64(data.len)
+
+proc may(n: Node, h: Header, want: uint32): bool =
+  ## Whether who asks may read (4), write (2), and search or execute (1)
+  ## the node.
+  if h.uid == 0:
+    return (want and 1) == 0 or n.kind == nkDir or (n.perm and 0o111) != 0
+  let bits =
+    if h.uid == n.uid: n.perm shr 6
+    elif h.gid == n.gid: n.perm shr 3
+    else: n.perm
+  (bits and want) == want
+
+proc owns(n: Node, h: Header): bool =
+  h.uid == 0 or h.uid == n.uid
+
+proc keeps(dir, n: Node, h: Header): bool =
+  ## Whether a sticky directory keeps a name from who asks: neither the
+  ## node it names nor the directory is theirs.
+  (dir.perm and sSticky) != 0 and not n.owns(h) and h.uid != dir.uid
 
 proc fail(e: cint): Walk = Walk(err: e)
 
-proc walk(top, start: Node, path: string, follow = true, depth = 0): Walk =
+proc walk(top, start: Node, path: string, h: Header, follow = true, depth = 0): Walk =
   ## Resolves a path from start, under top, which ".." does not leave: the
   ## directory an endpoint is open on. A link's target starts at the
-  ## link's directory, or at top when absolute. A directory with a server
-  ## mounted on it ends the walk: the rest is that server's.
+  ## directory the link is in, or at top when absolute. A directory with a
+  ## server mounted on it ends the walk: the rest is that server's. Each
+  ## directory gone through must be one who asks may search.
   if depth > 40:
     return fail(ELOOP)
   var node = start
+  var dir = start
   let parts = path.split('/')
   for i, part in parts:
     if node.kind == nkDir and node.mount >= 0:
       return Walk(node: node, rest: parts[i .. ^1].join("/"), forward: true)
-    if part == "" or part == ".":
+    if part == "":
       continue
     if node.kind == nkLink:
-      let w = walk(top, (if node.target.startsWith("/"): top else: node.parent), node.target, true, depth + 1)
+      let w = walk(top, (if node.target.startsWith("/"): top else: dir), node.target, h, true, depth + 1)
       if w.err != 0 or w.forward:
         return w
       node = w.node
     if node.kind != nkDir:
       return fail(ENOTDIR)
+    if not node.may(h, 1):
+      return fail(EACCES)
+    if part == ".":
+      continue
     if part == "..":
       if node != top and node.parent != nil:
         node = node.parent
+      dir = node
     elif part in node.children:
-      node = node.children[part]
+      dir = node
+      node = node.children[part].node
     else:
       return fail(ENOENT)
   if node.kind == nkLink and follow:
-    return walk(top, (if node.target.startsWith("/"): top else: node.parent), node.target, true, depth + 1)
+    return walk(top, (if node.target.startsWith("/"): top else: dir), node.target, h, true, depth + 1)
   if node.kind == nkDir and node.mount >= 0:
     return Walk(node: node, rest: "", forward: true)
-  Walk(node: node)
+  Walk(node: node, dir: dir)
 
-proc parentOf(start: Node, path: string): (Walk, string) =
+proc parentOf(start: Node, path: string, h: Header): (Walk, string) =
   ## The directory a path's last name is in, and the name.
   var p = path
   while p.len > 1 and p.endsWith("/"):
@@ -294,7 +439,7 @@ proc parentOf(start: Node, path: string): (Walk, string) =
   let (dir, name) = if at < 0: (".", p) else: (p[0 .. at], p[at + 1 .. ^1])
   if name in ["", ".", ".."]:
     return (fail(EINVAL), "")
-  var w = walk(start, start, dir)
+  var w = walk(start, start, dir, h)
   if w.err == 0 and w.forward:
     w.rest = (if w.rest == "": name else: w.rest & "/" & name)
   (w, name)
@@ -302,8 +447,9 @@ proc parentOf(start: Node, path: string): (Walk, string) =
 proc mode(n: Node): uint32 =
   let kind = case n.kind
     of nkDir: 0o040000'u32
-    of nkFile: 0o100000'u32
+    of nkFile: sIfreg
     of nkLink: 0o120000'u32
+    of nkFifo: sIfifo
     of nkObject, nkNull, nkZero, nkRandom: 0o020000'u32
   kind or n.perm
 
@@ -312,14 +458,42 @@ proc dtype(n: Node): uint8 =
   of nkDir: dtDir
   of nkFile: dtReg
   of nkLink: dtLnk
+  of nkFifo: dtFifo
   of nkObject, nkNull, nkZero, nkRandom: dtChr
 
+proc nlink(n: Node): uint32 =
+  ## A directory's: its name, its ".", and the ".." of each directory in
+  ## it; another's: its names.
+  if n.kind != nkDir:
+    return n.links
+  result = 2
+  for e in n.children.values:
+    if e.node.kind == nkDir:
+      inc result
+
 proc statOf(s: Server, n: Node): Stat =
-  result = Stat(ino: n.ino, mode: n.mode, nlink: 1, uid: n.uid, gid: n.gid, atime: n.atime, mtime: n.mtime, dev: s.dev)
+  result = Stat(ino: n.ino, mode: n.mode, nlink: n.nlink, uid: n.uid, gid: n.gid, atime: n.atime, mtime: n.mtime,
+                dev: s.dev, ctime: n.ctime)
   case n.kind
   of nkFile: result.size = uint64(n.data.len)
   of nkLink: result.size = uint64(n.target.len)
   else: discard
+
+proc statfsOf(s: Server): Statfs =
+  ## A writable server's capacity, in blocks and in nodes, and what is
+  ## left of it; a read-only one's what it holds, nothing left.
+  result = Statfs(bsize: uint32(blockSize), namemax: 255, dev: s.dev)
+  let used = (s.used + blockSize - 1) div blockSize
+  if s.writable and s.capacity > 0:
+    result.blocks = s.capacity div blockSize
+    result.bfree = result.blocks - min(used, result.blocks)
+    result.files = s.capacity div blockSize
+    result.ffree = result.files - min(s.nodes, result.files)
+  else:
+    result.blocks = used
+    result.files = s.nodes
+  if not s.writable:
+    result.flags = stRdonly
 
 # ---- calls on paths ---------------------------------------------------------
 
@@ -363,85 +537,137 @@ template resolved(reply: cint, walked: Walk, h: Header, body, fds): Node =
     return
   w.node
 
-proc listen*(s: var Server, ep: cint, node: Node = nil)
+template answer(reply: cint, e: cint) =
+  ## The reply of a call that changes something: OK, or the error.
+  if e == 0:
+    ok(reply)
+  else:
+    err(reply, e)
+  discard close(reply)
+
+proc listen*(s: var Server, ep: cint, node: Node = nil, reads = true, writes = false)
 
 proc open(s: var Server, c: Node, h: Header, body: openArray[byte], fds: seq[cint]) =
+  ## A node opened: read or written as its access mode says and who asks
+  ## may, made when O_CREAT asks in a directory they may write, emptied
+  ## when O_TRUNC does.
   let reply = fds[^1]
   var at = 0
   let mode = u32(body, at)
   let path = str(body, at)
-  var w = walk(c, c, path, (h.arg and oNofollow) == 0)
+  let access = h.arg and 3
+  let reads = access != 1
+  let writes = access != 0
+  let truncates = (h.arg and oTrunc) != 0
+  var w = walk(c, c, path, h, (h.arg and oNofollow) == 0)
+  var made = false
   if w.err == 0 and not w.forward and (h.arg and (oCreat or oExcl)) == (oCreat or oExcl):
     w = fail(EEXIST)
   if w.err == ENOENT and (h.arg and oCreat) != 0:
-    let (p, name) = parentOf(c, path)
-    if p.err == 0 and not p.forward and s.writable:
+    let (p, name) = parentOf(c, path, h)
+    if p.err != 0 or p.forward:
+      w = p
+    elif not s.writable:
+      w = fail(EROFS)
+    elif not p.node.may(h, 3):
+      w = fail(EACCES)
+    elif s.full:
+      w = fail(ENOSPC)
+    else:
       w = Walk(node: s.node(p.node, name, nkFile))
       w.node.perm = mode and 0o7777
       w.node.uid = h.uid
       w.node.gid = h.gid
-    elif p.err == 0 and not p.forward:
-      w = fail(EROFS)
+      made = true
   let node = resolved(reply, w, h, body, fds)
+  let want = (if reads: 4'u32 else: 0'u32) or (if writes or truncates: 2'u32 else: 0'u32)
+  var e: cint = 0
+  if not made and not node.may(h, want):
+    e = EACCES
+  elif node.kind == nkDir and writes:
+    e = EISDIR
+  elif (writes or truncates) and node.kind == nkFile and not s.writable:
+    e = EROFS
+  if e != 0:
+    answer(reply, e)
+    return
   case node.kind
   of nkObject:
     ok(reply, fds = [node.fd])  # the object itself becomes the caller's
     discard close(reply)
   else:
-    if (h.arg and oTrunc) != 0 and node.kind == nkFile and (h.arg and 3) != 0:
-      if not s.writable:
-        err(reply, EROFS)
-        discard close(reply)
-        return
-      node.data = ""
+    if truncates and node.kind == nkFile and node.data.len > 0:
+      discard s.resize(node, 0)
       node.mtime = now()
+      node.changed
     var st = s.statOf(node)
-    s.listen(reply, node)
+    s.listen(reply, node, reads, writes)
     ok(reply, st.bytes)
 
 proc stat(s: var Server, c: Node, h: Header, body: openArray[byte], fds: seq[cint]) =
   let reply = fds[^1]
   var at = 0
-  let node = resolved(reply, walk(c, c, str(body, at), (h.arg and atSymlinkNofollow) == 0), h, body, fds)
+  let node = resolved(reply, walk(c, c, str(body, at), h, (h.arg and atSymlinkNofollow) == 0), h, body, fds)
   var st = s.statOf(node)
+  ok(reply, st.bytes)
+  discard close(reply)
+
+proc statfs(s: var Server, c: Node, h: Header, body: openArray[byte], fds: seq[cint]) =
+  ## The file system of what a path names: the server's, or the one
+  ## mounted where the path goes.
+  let reply = fds[^1]
+  var at = 0
+  discard resolved(reply, walk(c, c, str(body, at), h), h, body, fds)
+  var st = s.statfsOf
   ok(reply, st.bytes)
   discard close(reply)
 
 proc readlink(s: var Server, c: Node, h: Header, body: openArray[byte], fds: seq[cint]) =
   let reply = fds[^1]
   var at = 0
-  let node = resolved(reply, walk(c, c, str(body, at), follow = false), h, body, fds)
+  let node = resolved(reply, walk(c, c, str(body, at), h, follow = false), h, body, fds)
   if node.kind != nkLink:
     err(reply, EINVAL)
   else:
     ok(reply, node.target.toOpenArrayByte(0, node.target.high))
   discard close(reply)
 
-proc create(s: var Server, c: Node, h: Header, body: openArray[byte], fds: seq[cint], kind: NodeKind) =
-  ## mkdir and symlink: a new name in a directory of ours, the asker's,
-  ## a directory with mkdir's mode. A name that is there is EEXIST before
-  ## anything else, on a server that writes nothing too, and so is the
-  ## directory a path ends in: mkdir -p asks for "/" first.
+proc create(s: var Server, c: Node, h: Header, body: openArray[byte], fds: seq[cint], op: Op) =
+  ## mkdir, mknod and symlink: a new name in a directory of ours, who
+  ## asks may write, theirs, with the mode asked for. A name that is there
+  ## is EEXIST before anything else, on a server that writes nothing too,
+  ## and so is the directory a path ends in: mkdir -p asks for "/" first.
+  ## mknod makes FIFOs and regular files; a device is EPERM.
   let reply = fds[^1]
   var at = 0
-  let target = if kind == nkLink: str(body, at) else: ""
+  let target = if op == opSymlink: str(body, at) else: ""
   let path = str(body, at)
-  let there = walk(c, c, path, follow = false)
+  let there = walk(c, c, path, h, follow = false)
   if there.err == 0 and there.forward:
     forward(there, h, body, fds)
     return
-  if there.err == 0:
-    err(reply, EEXIST)
-    discard close(reply)
-    return
   if there.err != ENOENT:
-    err(reply, there.err)
-    discard close(reply)
+    answer(reply, if there.err == 0: EEXIST else: there.err)
     return
-  let (w, name) = parentOf(c, path)
+  let (w, name) = parentOf(c, path, h)
   let dir = resolved(reply, w, h, body, fds)
-  if not s.writable:
-    err(reply, EROFS)
+  var kind = nkDir
+  var e: cint = 0
+  if op == opSymlink:
+    kind = nkLink
+  elif op == opMknod:
+    case h.arg and sIfmt
+    of sIfifo: kind = nkFifo
+    of 0, sIfreg: kind = nkFile
+    else: e = EPERM
+  if e != 0:
+    discard
+  elif not s.writable:
+    e = EROFS
+  elif not dir.may(h, 3):
+    e = EACCES
+  elif s.full:
+    e = ENOSPC
   else:
     let n = s.node(dir, name, kind)
     n.uid = h.uid
@@ -450,32 +676,36 @@ proc create(s: var Server, c: Node, h: Header, body: openArray[byte], fds: seq[c
       n.target = target
     else:
       n.perm = h.arg and 0o7777
-    ok(reply)
-  discard close(reply)
+  answer(reply, e)
 
 proc unlink(s: var Server, c: Node, h: Header, body: openArray[byte], fds: seq[cint]) =
   let reply = fds[^1]
   var at = 0
-  let (w, name) = parentOf(c, str(body, at))
+  let (w, name) = parentOf(c, str(body, at), h)
   let dir = resolved(reply, w, h, body, fds)
   let removeDir = (h.arg and atRemovedir) != 0
+  var e: cint = 0
   if not s.writable:
-    err(reply, EROFS)
+    e = EROFS
   elif name notin dir.children:
-    err(reply, ENOENT)
-  elif removeDir and dir.children[name].kind != nkDir:
-    err(reply, ENOTDIR)
-  elif not removeDir and dir.children[name].kind == nkDir:
-    err(reply, EISDIR)
-  elif removeDir and dir.children[name].children.len > 0:
-    err(reply, ENOTEMPTY)
-  elif removeDir and dir.children[name].mount >= 0:
-    err(reply, EBUSY)
+    e = ENOENT
   else:
-    dir.children.del(name)
-    dir.mtime = now()
-    ok(reply)
-  discard close(reply)
+    let n = dir.children[name].node
+    if removeDir and n.kind != nkDir:
+      e = ENOTDIR
+    elif not removeDir and n.kind == nkDir:
+      e = EISDIR
+    elif not dir.may(h, 3):
+      e = EACCES
+    elif dir.keeps(n, h):
+      e = EPERM
+    elif removeDir and n.mount >= 0:
+      e = EBUSY
+    elif removeDir and n.children.len > 0:
+      e = ENOTEMPTY
+    else:
+      s.release(dir.unplace(name))
+  answer(reply, e)
 
 proc within(n, dir: Node): bool =
   ## Whether dir is n or under it.
@@ -490,13 +720,15 @@ proc rename(s: var Server, c: Node, h: Header, body: openArray[byte], fds: seq[c
   ## Both names are ours, or the move crosses a server: EXDEV. What the
   ## new name names goes, when it is of the old one's kind, and empty if a
   ## directory; a directory does not go under itself, nor a mount point
-  ## anywhere.
+  ## anywhere, and one that goes to another directory must be one who
+  ## asks may write, for its "..".
   let reply = fds[^1]
   var at = 0
-  let (src, oldName) = parentOf(c, str(body, at))
-  let (dst, newName) = parentOf(c, str(body, at))
+  let (src, oldName) = parentOf(c, str(body, at), h)
+  let (dst, newName) = parentOf(c, str(body, at), h)
+  var e: cint = 0
   if src.err != 0 or dst.err != 0:
-    err(reply, if src.err != 0: src.err else: dst.err)
+    e = if src.err != 0: src.err else: dst.err
   elif src.forward and src.node == dst.node:
     # Both names in one mounted server: its rename, of its paths.
     var old = newSeq[byte]()
@@ -505,37 +737,72 @@ proc rename(s: var Server, c: Node, h: Header, body: openArray[byte], fds: seq[c
     forwardAfter(dst, h, old, fds)
     return
   elif src.forward or dst.forward:
-    err(reply, EXDEV)
+    e = EXDEV
   elif not s.writable:
-    err(reply, EROFS)
+    e = EROFS
   elif oldName notin src.node.children:
-    err(reply, ENOENT)
+    e = ENOENT
   else:
-    let n = src.node.children[oldName]
-    let old = dst.node.children.getOrDefault(newName)
+    let n = src.node.children[oldName].node
+    let old = if newName in dst.node.children: dst.node.children[newName].node else: nil
     if old == n:
-      ok(reply)
+      discard
     elif n.kind == nkDir and within(n, dst.node):
-      err(reply, EINVAL)
+      e = EINVAL
+    elif not src.node.may(h, 3) or not dst.node.may(h, 3):
+      e = EACCES
+    elif src.node.keeps(n, h) or old != nil and dst.node.keeps(old, h):
+      e = EPERM
+    elif n.kind == nkDir and src.node != dst.node and not n.may(h, 2):
+      e = EACCES
     elif n.kind == nkDir and n.mount >= 0 or old != nil and old.kind == nkDir and old.mount >= 0:
-      err(reply, EBUSY)
+      e = EBUSY
     elif old != nil and n.kind == nkDir and old.kind != nkDir:
-      err(reply, ENOTDIR)
+      e = ENOTDIR
     elif old != nil and n.kind != nkDir and old.kind == nkDir:
-      err(reply, EISDIR)
+      e = EISDIR
     elif old != nil and old.kind == nkDir and old.children.len > 0:
-      err(reply, ENOTEMPTY)
+      e = ENOTEMPTY
     else:
-      src.node.children.del(oldName)
-      src.node.mtime = now()
+      discard src.node.unplace(oldName)
       if old != nil:
-        dst.node.children.del(newName)
-      n.name = newName
-      dst.node.place(n)
-      ok(reply)
-  discard close(reply)
+        s.release(dst.node.unplace(newName))
+      dst.node.place(newName, n)
+  answer(reply, e)
 
-# The attributes of a node: set when the server is writable.
+proc link(s: var Server, c: Node, h: Header, body: openArray[byte], fds: seq[cint]) =
+  ## A new name for a node that is no directory, in a directory of ours
+  ## who asks may write: across servers EXDEV.
+  let reply = fds[^1]
+  var at = 0
+  let src = walk(c, c, str(body, at), h, follow = (h.arg and 1) != 0)
+  let (dst, newName) = parentOf(c, str(body, at), h)
+  var e: cint = 0
+  if src.err != 0 or dst.err != 0:
+    e = if src.err != 0: src.err else: dst.err
+  elif src.forward and src.node == dst.node:
+    var old = newSeq[byte]()
+    old.add src.rest.toOpenArrayByte(0, src.rest.high)
+    old.add 0
+    forwardAfter(dst, h, old, fds)
+    return
+  elif src.forward or dst.forward:
+    e = EXDEV
+  elif not s.writable:
+    e = EROFS
+  elif newName in dst.node.children:
+    e = EEXIST
+  elif src.node.kind == nkDir:
+    e = EPERM
+  elif not dst.node.may(h, 3):
+    e = EACCES
+  else:
+    dst.node.place(newName, src.node)
+  answer(reply, e)
+
+# The attributes of a node: set when the server is writable, by its owner
+# or root, a group given away by the owner only to its own, the times set
+# to now by who may write it too, a size by who may write it.
 
 proc setTimes(node: Node, mask: uint32, atime, mtime: uint64) =
   if (mask and whenAtimeKept) == 0:
@@ -543,72 +810,73 @@ proc setTimes(node: Node, mask: uint32, atime, mtime: uint64) =
   if (mask and whenMtimeKept) == 0:
     node.mtime = (if (mask and whenMtimeNow) != 0: now() else: mtime)
 
+proc change(s: var Server, node: Node, op: Op, h: Header, body: openArray[byte]): cint =
+  ## chmod, chown, utimes or truncate of a node, by path or by endpoint,
+  ## their arguments in body: 0, or the error.
+  var at = 0
+  case op
+  of opChmod, opFchmod:
+    if not node.owns(h):
+      return EPERM
+    node.perm = h.arg and 0o7777
+  of opChown, opFchown:
+    let uid = u32(body, at)
+    let gid = u32(body, at)
+    let toUid = if uid == noId: node.uid else: uid
+    let toGid = if gid == noId: node.gid else: gid
+    if h.uid != 0 and (h.uid != node.uid or toUid != node.uid or toGid != node.gid and toGid != h.gid):
+      return EPERM
+    if (toUid != node.uid or toGid != node.gid) and node.kind != nkDir:
+      node.perm = node.perm and not 0o6000'u32
+    node.uid = toUid
+    node.gid = toGid
+  of opUtimes, opFutimes:
+    let atime = u64(body, at)
+    let mtime = u64(body, at)
+    let touch = (h.arg and whenAtimeNow) != 0 and (h.arg and whenMtimeNow) != 0
+    if touch and not node.owns(h) and not node.may(h, 2):
+      return EACCES
+    if not touch and not node.owns(h):
+      return EPERM
+    node.setTimes(h.arg, atime, mtime)
+  of opTruncate, opFtruncate:
+    let size = u64(body, at)
+    if node.kind == nkDir:
+      return (if op == opTruncate: EISDIR else: EINVAL)
+    if node.kind != nkFile or size > uint64(high(int32)) * 1024:
+      return EINVAL
+    if op == opTruncate and not node.may(h, 2):
+      return EACCES
+    if not s.resize(node, int(size)):
+      return ENOSPC
+    node.mtime = now()
+  else: discard
+  node.changed
+  0
+
 proc attr(s: var Server, c: Node, h: Header, body: openArray[byte], fds: seq[cint]) =
   ## chmod, chown, utimes and truncate of a path.
   let reply = fds[^1]
-  var at = 0
-  var uid, gid: uint32
-  var atime, mtime, size: uint64
-  case Op(h.op)
-  of opChown:
-    uid = u32(body, at)
-    gid = u32(body, at)
-  of opUtimes:
-    atime = u64(body, at)
-    mtime = u64(body, at)
-  of opTruncate:
-    size = u64(body, at)
-  else: discard
-  let follow = Op(h.op) == opChmod or Op(h.op) == opTruncate or (h.arg and whenFollow) != 0
-  let node = resolved(reply, walk(c, c, str(body, at), follow), h, body, fds)
-  if not s.writable:
-    err(reply, EROFS)
-  else:
-    case Op(h.op)
-    of opChmod: node.perm = h.arg and 0o7777
-    of opChown:
-      if uid != 0xffffffff'u32: node.uid = uid
-      if gid != 0xffffffff'u32: node.gid = gid
-    of opUtimes: node.setTimes(h.arg, atime, mtime)
-    of opTruncate:
-      if node.kind != nkFile:
-        err(reply, EISDIR)
-        discard close(reply)
-        return
-      node.data.setLen(int(size))
-      node.mtime = now()
-    else: discard
-    ok(reply)
-  discard close(reply)
+  let op = Op(h.op)
+  let ahead = pathAt(op, body)
+  var at = ahead
+  let follow = op == opChmod or op == opTruncate or (h.arg and whenFollow) != 0
+  let node = resolved(reply, walk(c, c, str(body, at), h, follow), h, body, fds)
+  answer(reply, if not s.writable: EROFS else: s.change(node, op, h, body.toOpenArray(0, ahead - 1)))
 
-proc fattr(s: var Server, reply: cint, node: Node, h: Header, body: openArray[byte]) =
-  ## fchmod, fchown, futimes, ftruncate and fsync of an open node.
-  var at = 0
-  if Op(h.op) == opFsync:
+proc fattr(s: var Server, reply: cint, ep: Endpoint, h: Header, body: openArray[byte]) =
+  ## fchmod, fchown, futimes, ftruncate and fsync of an open node; only an
+  ## endpoint open to write truncates.
+  let op = Op(h.op)
+  if op == opFsync:
     ok(reply)
-    return
-  if not s.writable:
+  elif not s.writable:
     err(reply, EROFS)
-    return
-  case Op(h.op)
-  of opFchmod: node.perm = h.arg and 0o7777
-  of opFchown:
-    let uid = u32(body, at)
-    let gid = u32(body, at)
-    if uid != 0xffffffff'u32: node.uid = uid
-    if gid != 0xffffffff'u32: node.gid = gid
-  of opFutimes:
-    let atime = u64(body, at)
-    let mtime = u64(body, at)
-    node.setTimes(h.arg, atime, mtime)
-  of opFtruncate:
-    if node.kind != nkFile:
-      err(reply, EINVAL)
-      return
-    node.data.setLen(int(u64(body, at)))
-    node.mtime = now()
-  else: discard
-  ok(reply)
+  elif op == opFtruncate and not ep.writes:
+    err(reply, EINVAL)
+  else:
+    let e = s.change(ep.node, op, h, body)
+    if e == 0: ok(reply) else: err(reply, e)
 
 proc mount(s: var Server, c: Node, h: Header, body: openArray[byte], fds: seq[cint]) =
   ## A server's root endpoint goes on a directory of ours: names under it
@@ -618,7 +886,7 @@ proc mount(s: var Server, c: Node, h: Header, body: openArray[byte], fds: seq[ci
     fatal("mount without a root")
   let reply = fds[^1]
   var at = 0
-  let node = resolved(reply, walk(c, c, str(body, at)), h, body, fds)
+  let node = resolved(reply, walk(c, c, str(body, at), h), h, body, fds)
   if node.kind != nkDir:
     err(reply, ENOTDIR)
     discard close(fds[0])
@@ -639,11 +907,15 @@ proc offset(reply: cint, body: openArray[byte], off: var int): bool =
   off = int(raw)
   true
 
-proc read(s: var Server, reply: cint, node: Node, h: Header, body: openArray[byte]) =
+proc read(s: var Server, reply: cint, ep: Endpoint, h: Header, body: openArray[byte]) =
   var off: int
   if not offset(reply, body, off):
     return
+  let node = ep.node
   let n = int(h.arg)
+  if node.kind != nkDir and not ep.reads:
+    err(reply, EBADF)
+    return
   case node.kind
   of nkFile:
     let count = min(n, max(node.data.len - off, 0))
@@ -668,25 +940,44 @@ proc read(s: var Server, reply: cint, node: Node, h: Header, body: openArray[byt
   else:
     err(reply, EISDIR)
 
-proc write(s: var Server, reply: cint, node: Node, h: Header, body: openArray[byte]) =
+proc write(s: var Server, reply: cint, ep: Endpoint, h: Header, body: openArray[byte]) =
+  ## The data at the offset, or at the end with append, as much as the
+  ## capacity takes: the count and where it went.
   var off: int
   if not offset(reply, body, off):
     return
+  let node = ep.node
   let data = body[8 .. ^1]
-  var count = uint32(data.len)
+  if node.kind != nkDir and not ep.writes:
+    err(reply, EBADF)
+    return
   case node.kind
   of nkNull, nkZero, nkRandom:
-    ok(reply, count.bytes)
+    var reply32 = uint32(data.len)
+    var where = uint64(off)
+    ok(reply, reply32.bytes & where.bytes)
   of nkFile:
     if not s.writable:
       err(reply, EROFS)
       return
-    if node.data.len < off + data.len:
-      node.data.setLen(off + data.len)
-    for i, b in data:
-      node.data[off + i] = char(b)
+    if (h.arg and 1) != 0:
+      off = node.data.len
+    var count = data.len
+    let grows = max(off + count - node.data.len, 0)
+    if s.capacity > 0 and uint64(grows) > s.capacity - s.used:
+      count = max(count - (grows - int(s.capacity - s.used)), 0)
+    if count == 0 and data.len > 0:
+      err(reply, ENOSPC)
+      return
+    if node.data.len < off + count:
+      discard s.resize(node, off + count)
+    for i in 0 ..< count:
+      node.data[off + i] = char(data[i])
     node.mtime = now()
-    ok(reply, count.bytes)
+    node.changed
+    var written = uint32(count)
+    var where = uint64(off)
+    ok(reply, written.bytes & where.bytes)
   else:
     err(reply, EISDIR)
 
@@ -698,19 +989,101 @@ proc readdir(s: var Server, reply: cint, node: Node, h: Header, body: openArray[
   var at = 0
   let after = u64(body, at)
   var entries: seq[byte]
-  for name, child in node.children:
-    if child.pos <= after:
+  for name, entry in node.children:
+    if entry.pos <= after:
       continue
     if entries.len + 17 + name.len + 1 > maxPacket - sizeof(Header):
       break
-    var ino = child.ino
-    var pos = child.pos
+    var ino = entry.node.ino
+    var pos = entry.pos
     entries.add ino.bytes
     entries.add pos.bytes
-    entries.add child.dtype
+    entries.add entry.node.dtype
     entries.add name.toOpenArrayByte(0, name.high)
     entries.add 0
   ok(reply, entries)
+
+proc flock(s: var Server, reply: cint, ep: Endpoint, h: Header) =
+  ## flock's lock of the endpoint's node: shared, which no other
+  ## endpoint's exclusive one is in the way of, exclusive, which no other
+  ## endpoint's lock is, or none.
+  let n = ep.node
+  let others = n.shared.filterIt(it != ep.fd)
+  let other = n.exclusive >= 0 and n.exclusive != ep.fd
+  case h.arg and not lockNb
+  of lockUn:
+    n.shared = others
+    if n.exclusive == ep.fd:
+      n.exclusive = -1
+  of lockSh:
+    if other:
+      err(reply, EAGAIN)
+      return
+    n.exclusive = -1
+    n.shared = others & @[ep.fd]
+  of lockEx:
+    if other or others.len > 0:
+      err(reply, EAGAIN)
+      return
+    n.shared = others
+    n.exclusive = ep.fd
+  else:
+    err(reply, EINVAL)
+    return
+  ok(reply)
+
+proc lock(s: var Server, reply: cint, ep: Endpoint, h: Header, body: openArray[byte]) =
+  ## fcntl's locks of the endpoint's node, on a range, to the end and past
+  ## with a length of 0. With get, the first lock of another endpoint in
+  ## the way of the one described, else F_UNLCK. Else that lock is set in
+  ## place of what the endpoint held of the range, unless another
+  ## endpoint's lock is in the way: EAGAIN; F_UNLCK lets the range go.
+  var at = 0
+  let kind = u32(body, at)
+  let start = u64(body, at)
+  let length = u64(body, at)
+  let stop = if length == 0 or start > past - length: past else: start + length
+  if kind > fUnlck:
+    err(reply, EINVAL)
+    return
+  let n = ep.node
+  var way = -1
+  for i, l in n.ranges:
+    if l.owner != ep.fd and l.start < stop and start < l.stop and (l.write or kind == fWrlck):
+      way = i
+      break
+  if h.arg == 1:
+    var found = Range(write: false, start: start, stop: stop)
+    var t = fUnlck
+    if way >= 0:
+      found = n.ranges[way]
+      t = if found.write: fWrlck else: fRdlck
+    var b = t.bytes
+    var from64 = found.start
+    var len64 = if found.stop == past: 0'u64 else: found.stop - found.start
+    if way < 0:
+      from64 = start
+      len64 = length
+    b.add from64.bytes
+    b.add len64.bytes
+    ok(reply, b)
+    return
+  if kind != fUnlck and way >= 0:
+    err(reply, EAGAIN)
+    return
+  var kept: seq[Range]
+  for l in n.ranges:
+    if l.owner != ep.fd or l.stop <= start or l.start >= stop:
+      kept.add l
+      continue
+    if l.start < start:
+      kept.add Range(owner: l.owner, write: l.write, start: l.start, stop: start)
+    if l.stop > stop:
+      kept.add Range(owner: l.owner, write: l.write, start: stop, stop: l.stop)
+  if kind != fUnlck:
+    kept.add Range(owner: ep.fd, write: kind == fWrlck, start: start, stop: stop)
+  n.ranges = kept
+  ok(reply)
 
 # ---- the loop ---------------------------------------------------------------
 #
@@ -733,17 +1106,30 @@ proc unwatch(fd: cint) =
   if watcher >= 0:
     discard epoll_ctl(watcher, EPOLL_CTL_DEL, fd, nil)
 
-proc listen*(s: var Server, ep: cint, node: Node = nil) =
-  ## An endpoint the server answers on, open on node, or on the root. The
-  ## first one's pair gives the server its device: its number, which is
-  ## the pair's alone in the kernel.
+proc listen*(s: var Server, ep: cint, node: Node = nil, reads = true, writes = false) =
+  ## An endpoint the server answers on, open on node, or on the root, to
+  ## read, to write or both. The first one's pair gives the server its
+  ## device: its number, which is the pair's alone in the kernel.
   discard fcntl(ep, F_SETFD, FD_CLOEXEC)
   if s.dev == 0:
     var st: posix.Stat
     if fstat(ep, st) == 0:
       s.dev = uint64(st.st_ino)
-  s.eps[ep] = Endpoint(fd: ep, node: if node == nil: s.root else: node)
+  let n = if node == nil: s.root else: node
+  inc n.opens
+  s.eps[ep] = Endpoint(fd: ep, node: n, reads: reads, writes: writes)
   watch(ep)
+
+proc forget(s: var Server, ep: Endpoint) =
+  ## An endpoint that closes: its locks go with it, and its node when no
+  ## name is left of it.
+  let n = ep.node
+  n.shared = n.shared.filterIt(it != ep.fd)
+  if n.exclusive == ep.fd:
+    n.exclusive = -1
+  n.ranges = n.ranges.filterIt(it.owner != ep.fd)
+  dec n.opens
+  s.release(n)
 
 proc handle(s: var Server, fd: cint) =
   let ep = s.eps[fd]
@@ -752,6 +1138,7 @@ proc handle(s: var Server, fd: cint) =
   var fds: seq[cint]
   if not recv(ep.fd, h, body, fds):
     unwatch(ep.fd)
+    s.forget(ep)
     discard close(ep.fd)  # the other end closed: the file is closed
     s.eps.del(fd)
     return
@@ -759,32 +1146,48 @@ proc handle(s: var Server, fd: cint) =
     stderr.writeLine("fs: op " & $h.op & " arg " & $h.arg & " body " & $body.len & " fds " & $fds.len)
   if fds.len == 0:
     return  # a request without its reply endpoint: nobody to answer
+  let reply = fds[^1]
+  if h.op < uint32(opOpen) or h.op > uint32(opErr):
+    err(reply, ENOSYS)
+    discard close(reply)
+    return
   case Op(h.op)
   of opOpen: s.open(ep.node, h, body, fds)
   of opStat: s.stat(ep.node, h, body, fds)
+  of opStatfs: s.statfs(ep.node, h, body, fds)
   of opReadlink: s.readlink(ep.node, h, body, fds)
-  of opMkdir: s.create(ep.node, h, body, fds, nkDir)
-  of opSymlink: s.create(ep.node, h, body, fds, nkLink)
+  of opMkdir, opMknod, opSymlink: s.create(ep.node, h, body, fds, Op(h.op))
   of opUnlink: s.unlink(ep.node, h, body, fds)
   of opRename: s.rename(ep.node, h, body, fds)
+  of opLink: s.link(ep.node, h, body, fds)
   of opMount: s.mount(ep.node, h, body, fds)
   of opChmod, opChown, opUtimes, opTruncate: s.attr(ep.node, h, body, fds)
   of opFchmod, opFchown, opFutimes, opFtruncate, opFsync:
-    s.fattr(fds[^1], ep.node, h, body)
-    discard close(fds[^1])
+    s.fattr(reply, ep, h, body)
+    discard close(reply)
   of opRead:
-    s.read(fds[^1], ep.node, h, body)
-    discard close(fds[^1])
+    s.read(reply, ep, h, body)
+    discard close(reply)
   of opWrite:
-    s.write(fds[^1], ep.node, h, body)
-    discard close(fds[^1])
+    s.write(reply, ep, h, body)
+    discard close(reply)
   of opReaddir:
-    s.readdir(fds[^1], ep.node, h, body)
-    discard close(fds[^1])
+    s.readdir(reply, ep.node, h, body)
+    discard close(reply)
   of opFstat:
     var st = s.statOf(ep.node)
-    ok(fds[^1], st.bytes)
-    discard close(fds[^1])
+    ok(reply, st.bytes)
+    discard close(reply)
+  of opFstatfs:
+    var st = s.statfsOf
+    ok(reply, st.bytes)
+    discard close(reply)
+  of opFlock:
+    s.flock(reply, ep, h)
+    discard close(reply)
+  of opLock:
+    s.lock(reply, ep, h, body)
+    discard close(reply)
   of opOk, opErr:
     for fd in fds:
       discard close(fd)

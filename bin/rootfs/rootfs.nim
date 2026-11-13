@@ -44,7 +44,7 @@ proc dirOf(s: var Server, path: string): Node =
       continue
     if part notin result.children:
       discard s.node(result, part, nkDir)
-    result = result.children[part]
+    result = result.children[part].node
 
 proc load(s: var Server) =
   ## The entries of the archive, a header block of 512 bytes each, the
@@ -66,12 +66,12 @@ proc load(s: var Server) =
       if base != "" and base notin dir.children:
         discard s.node(dir, base, nkDir)
       if base != "":
-        dir.children[base].perm = perm
+        dir.children[base].node.perm = perm
     of '2':
       s.node(dir, base, nkLink).target = target
     else:
       let file = s.node(dir, base, nkFile)
-      file.data = bytesAt(at + 512, size)
+      s.fill(file, bytesAt(at + 512, size))
       file.perm = perm
     at += 512 + (size + 511) div 512 * 512
 

@@ -100,8 +100,9 @@ type Pathed interface {
 	hostPath() (string, error)
 }
 
-// An Attrs has the attributes a descriptor's calls set: a file of the
-// host and an open file of a server (kernel_remote.go) both.
+// An Attrs has the attributes a descriptor's calls set, and knows the file
+// system it is on: a file of the host and an open file of a server
+// (kernel_remote.go) both.
 type Attrs interface {
 	File
 	truncate(size int64) error
@@ -109,6 +110,7 @@ type Attrs interface {
 	chmod(mode uint32) error
 	chown(uid, gid int) error
 	utimes(ts []syscall.Timespec) error
+	statfs(st *syscall.Statfs_t) error
 }
 
 // A Node is a file of a host file system: what the calls the host makes
@@ -119,7 +121,6 @@ type Node interface {
 	syncfs() error
 	access(mode, flags uint32) error
 	readlink(out []byte) (int, error)
-	statfs(st *syscall.Statfs_t) error
 	fadvise(off, n int64, advice int) error
 	fallocate(off, n int64) error
 	// copyRange is copy_file_range to another node, with the offsets of
@@ -557,6 +558,37 @@ func pollEntries(entries []pollEntry) int {
 	}
 
 	return ready
+}
+
+// waitFor waits until ready says so, as waitObjects waits for files: it
+// asks, takes the change it waits on, asks again, then selects on the
+// change and the process's wake. A signal interrupts it, restart as
+// there.
+func (p *Process) waitFor(ready func() bool, change func() <-chan struct{}, restart bool) error {
+	for {
+		if p.wakeSignal() {
+			if restart && p.interrupted() {
+				continue
+			}
+
+			return syscall.EINTR
+		}
+
+		if ready() {
+			return nil
+		}
+
+		ch := change()
+
+		if ready() {
+			return nil
+		}
+
+		select {
+		case <-p.wake:
+		case <-ch:
+		}
+	}
 }
 
 // recvCase is a receive from any channel, for a select over a list.

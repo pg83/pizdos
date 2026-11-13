@@ -25,7 +25,8 @@ import (
 //	header { op u32, arg u32, uid u32, gid u32 }
 //
 //	uid and gid are who asks: the process the kernel calls for, whose ids
-//	are vm's; a server makes what it creates theirs. A reply's are zero.
+//	are vm's; a server makes what it creates theirs and lets them do what
+//	its modes say, gid their group (permits). A reply's are zero.
 //
 //	Every request brings a fresh endpoint, last among its files: the reply
 //	comes on it, and an OPEN's stays the open file's. The server answers
@@ -37,8 +38,10 @@ import (
 //	  STAT      arg flags   path          OK stat; AT_SYMLINK_NOFOLLOW
 //	  READLINK              path          OK target
 //	  MKDIR     arg mode    path
+//	  MKNOD     arg mode    path          a FIFO or a regular file
 //	  UNLINK    arg flags   path          AT_REMOVEDIR
 //	  RENAME                old 0 new
+//	  LINK      arg follow  old 0 new     follow: AT_SYMLINK_FOLLOW's
 //	  SYMLINK               target 0 path
 //	  MOUNT                 path          files: a server's root, then the reply
 //	  CHMOD     arg mode    path
@@ -47,8 +50,9 @@ import (
 //	                                      2 atime now, 4 mtime now,
 //	                                      8 atime kept, 16 mtime kept
 //	  TRUNCATE              size u64 path
+//	  STATFS                path          OK statfs
 //	  READ      arg len     off u64       OK data
-//	  WRITE                 off u64 data  OK count u32
+//	  WRITE     arg append  off u64 data  OK count u32 at u64
 //	  READDIR               after u64     OK (ino u64, pos u64, type u8, name, 0)*
 //	  FSTAT                               OK stat
 //	  FCHMOD    arg mode
@@ -56,14 +60,25 @@ import (
 //	  FUTIMES   arg when    atime u64 mtime u64
 //	  FTRUNCATE             size u64
 //	  FSYNC     arg data
+//	  FSTATFS                             OK statfs
+//	  FLOCK     arg op                    LOCK_SH, LOCK_EX, LOCK_UN
+//	  LOCK      arg get     type u32 start u64 len u64   OK; with get the
+//	                                      lock in the way, F_UNLCK for none:
+//	                                      type u32 start u64 len u64
 //	replies: OK, ERR with arg the errno
 //	stat { ino u64, size u64, mtime u64 nanoseconds, mode u32, nlink u32,
-//	       uid u32, gid u32, atime u64, dev u64 }
+//	       uid u32, gid u32, atime u64, dev u64, ctime u64 }
+//	statfs { blocks u64, bfree u64, files u64, ffree u64, dev u64,
+//	         bsize u32, namemax u32, flags u32 }   flags: 1 read-only
 //
 // A directory's entries have positions, each after those before it, and
 // a READDIR gives those after one: removing what was read moves nothing a
 // reading has to come to. dev is the server's own, the files of two
-// servers never share one.
+// servers never share one. A WRITE with append goes at the end the file
+// has when the server takes it: O_APPEND is the server's, so no write of
+// another comes between. A lock is the endpoint's, an open file's, as the
+// host's open file description locks are, and goes when it closes; a
+// FIFO's pipe is the kernel's (kernel_fifo.go).
 const (
 	rOpen uint32 = iota + 1
 	rStat
@@ -86,10 +101,17 @@ const (
 	rFutimes
 	rFtruncate
 	rFsync
+	rMknod
+	rLink
+	rStatfs
+	rFstatfs
+	rFlock
+	rLock
 	rOk
 	rErr
 	remoteHeader = 16
-	remoteStat   = 56
+	remoteStat   = 64
+	remoteStatfs = 52
 	// The whens of UTIMES and FUTIMES.
 	whenFollow    = 1
 	whenAtimeNow  = 2
@@ -131,10 +153,12 @@ var (
 	_ Seeker   = (*remoteFile)(nil)
 	_ Socket   = (*remoteFile)(nil)
 	_ Attrs    = (*remoteFile)(nil)
+	_ Locker   = (*remoteFile)(nil)
 	_ Dir      = (*remoteDir)(nil)
 	_ Seeker   = (*remoteDir)(nil)
 	_ Socket   = (*remoteDir)(nil)
 	_ Attrs    = (*remoteDir)(nil)
+	_ Locker   = (*remoteDir)(nil)
 	_ Dir      = (*noRoot)(nil)
 )
 
@@ -349,10 +373,51 @@ func decodeStat(b []byte, st *syscall.Stat_t) error {
 	st.Blocks = (st.Size + 511) / 512
 	st.Mtim = syscall.NsecToTimespec(int64(le.Uint64(b[16:])))
 	st.Atim = syscall.NsecToTimespec(int64(le.Uint64(b[40:])))
-	st.Ctim = st.Mtim
 	st.Dev = le.Uint64(b[48:])
+	st.Ctim = syscall.NsecToTimespec(int64(le.Uint64(b[56:])))
 
 	return nil
+}
+
+// decodeStatfs is a Statfs_t of the protocol's statfs: the server's
+// device is the fsid.
+func decodeStatfs(b []byte, st *syscall.Statfs_t) error {
+	if len(b) < remoteStatfs {
+		return syscall.EIO
+	}
+
+	le := binary.LittleEndian
+	bsize := int64(le.Uint32(b[40:]))
+	dev := le.Uint64(b[32:])
+	*st = syscall.Statfs_t{Type: 0x70697a64, Bsize: bsize, Frsize: bsize, Blocks: le.Uint64(b), Bfree: le.Uint64(b[8:]),
+		Bavail: le.Uint64(b[8:]), Files: le.Uint64(b[16:]), Ffree: le.Uint64(b[24:]), Namelen: int64(le.Uint32(b[44:])),
+		Flags: int64(le.Uint32(b[48:]))}
+	st.Fsid.X__val[0], st.Fsid.X__val[1] = int32(uint32(dev)), int32(uint32(dev>>32))
+
+	return nil
+}
+
+// permits tells whether the process may read (4), write (2) or execute
+// (1) what a stat describes, as a server decides it: root everything but
+// executing what nobody may, the owner by the owner's bits, the process's
+// group, its effective gid, by the group's, everyone else by the others'.
+func permits(st *syscall.Stat_t, want uint32) bool {
+	uid, gid := uint32(syscall.Geteuid()), uint32(syscall.Getegid())
+
+	if uid == 0 {
+		return want&1 == 0 || st.Mode&syscall.S_IFMT == syscall.S_IFDIR || st.Mode&0o111 != 0
+	}
+
+	bits := st.Mode
+
+	switch {
+	case uid == st.Uid:
+		bits >>= 6
+	case gid == st.Gid:
+		bits >>= 3
+	}
+
+	return bits&want == want
 }
 
 // whens is the when of UTIMES for the times of a call: nil is now for
@@ -450,6 +515,82 @@ func (n *remoteNode) stat(st *syscall.Stat_t) error {
 	return decodeStat(pk.data, st)
 }
 
+func (n *remoteNode) statfs(st *syscall.Statfs_t) error {
+	pk, err := n.on(rFstatfs, 0, nil)
+
+	if err != nil {
+		return err
+	}
+
+	dropFiles(pk.files)
+
+	return decodeStatfs(pk.data, st)
+}
+
+// The Locker role: the locks are the endpoint's, the open file's.
+
+func (n *remoteNode) flock(op int) error {
+	return n.simple(rFlock, uint32(op), nil)
+}
+
+// recordLock is fcntl's lock on the bytes a struct flock says, from the
+// start, the position or the end, before the start for a negative length;
+// F_OFD_GETLK tells the lock in the way, from the start.
+func (n *remoteNode) recordLock(cmd int, lk *syscall.Flock_t) error {
+	start, length := lk.Start, lk.Len
+
+	switch lk.Whence {
+	case 0:
+	case 1:
+		start += atomic.LoadInt64(&n.pos)
+	case 2:
+		var st syscall.Stat_t
+
+		if err := n.stat(&st); err != nil {
+			return err
+		}
+
+		start += st.Size
+	default:
+		return syscall.EINVAL
+	}
+
+	if length < 0 {
+		start, length = start+length, -length
+	}
+
+	if start < 0 {
+		return syscall.EINVAL
+	}
+
+	body := make([]byte, 20)
+	binary.LittleEndian.PutUint32(body, uint32(lk.Type))
+	binary.LittleEndian.PutUint64(body[4:], uint64(start))
+	binary.LittleEndian.PutUint64(body[12:], uint64(length))
+
+	if cmd != fOfdGetlk {
+		return n.simple(rLock, 0, body)
+	}
+
+	pk, err := n.on(rLock, 1, body)
+
+	if err != nil {
+		return err
+	}
+
+	dropFiles(pk.files)
+
+	if len(pk.data) < 20 {
+		return syscall.EIO
+	}
+
+	le := binary.LittleEndian
+	lk.Type, lk.Whence = int16(le.Uint32(pk.data)), 0
+	lk.Start, lk.Len, lk.Pid = int64(le.Uint64(pk.data[4:])), int64(le.Uint64(pk.data[12:])), -1
+
+	return nil
+}
+
 // The Dir role.
 
 func (d *remoteDir) name(p *Process) (string, error) {
@@ -496,6 +637,13 @@ func (d *remoteDir) open(p *Process, path string, flags int, mode uint32) (File,
 		mine.unref()
 
 		return nil, syscall.ENOTDIR
+	}
+
+	if st.Mode&syscall.S_IFMT == syscall.S_IFIFO {
+		// The server said who may open it; its pipe is the kernel's.
+		mine.unref()
+
+		return p.openFifo(&st, flags)
 	}
 
 	return &remoteFile{node}, nil
@@ -571,21 +719,34 @@ func (d *remoteDir) rename(p *Process, old, new string) error {
 	return d.simplePath(rRename, 0, pathBody(old, new))
 }
 
-// Hard links and device nodes are not in the protocol.
+// link makes a name for what old names, the link itself unless follow.
 func (d *remoteDir) link(p *Process, old, new string, follow bool) error {
-	return syscall.EPERM
+	arg := uint32(0)
+
+	if follow {
+		arg = 1
+	}
+
+	return d.simplePath(rLink, arg, pathBody(old, new))
 }
 
 func (d *remoteDir) symlink(p *Process, target, path string) error {
 	return d.simplePath(rSymlink, 0, append(append([]byte(target), 0), relative(path)...))
 }
 
+// mknod makes a FIFO or a regular file; a server makes no device.
 func (d *remoteDir) mknod(p *Process, path string, mode uint32, dev uint64) error {
+	switch mode & syscall.S_IFMT {
+	case 0, syscall.S_IFREG, syscall.S_IFIFO:
+		return d.simplePath(rMknod, mode, pathBody(path))
+	}
+
 	return syscall.EPERM
 }
 
-// accessPath reads the file's mode: a bit asked for in any class is
-// enough, as the process is the owner of all it reaches.
+// accessPath is the server's walk to the file, which a directory the
+// process may not search ends, and the file's mode for the process: the
+// ids are vm's, real and effective alike.
 func (d *remoteDir) accessPath(p *Process, path string, mode, flags uint32) error {
 	var st syscall.Stat_t
 
@@ -593,10 +754,8 @@ func (d *remoteDir) accessPath(p *Process, path string, mode, flags uint32) erro
 		return err
 	}
 
-	for _, bit := range []uint32{4, 2, 1} {
-		if mode&bit != 0 && st.Mode&(bit<<6|bit<<3|bit) == 0 {
-			return syscall.EACCES
-		}
+	if !permits(&st, mode&7) {
+		return syscall.EACCES
 	}
 
 	return nil
@@ -632,18 +791,17 @@ func (d *remoteDir) truncatePath(p *Process, path string, size int64) error {
 	return d.simplePath(rTruncate, 0, append(body, pathBody(path)...))
 }
 
-// statfsPath tells a file system of nothing: no sizes, no limits but
-// the name's.
+// statfsPath is the file system of the server a path goes to.
 func (d *remoteDir) statfsPath(p *Process, path string, st *syscall.Statfs_t) error {
-	var dummy syscall.Stat_t
+	pk, err := d.on(rStatfs, 0, pathBody(path))
 
-	if err := d.statPath(p, path, true, &dummy); err != nil {
+	if err != nil {
 		return err
 	}
 
-	*st = syscall.Statfs_t{Type: 0x70697a64, Bsize: 4096, Frsize: 4096, Namelen: 255}
+	dropFiles(pk.files)
 
-	return nil
+	return decodeStatfs(pk.data, st)
 }
 
 // realpath is the path cleaned, when it names something: the server's
@@ -741,30 +899,44 @@ func (f *remoteFile) readAt(p *Process, b []byte, off int64) (int, error) {
 }
 
 func (f *remoteFile) writeAt(p *Process, b []byte, off int64) (int, error) {
+	n, _, err := f.put(b, off, false)
+
+	return n, err
+}
+
+// put writes b at off, or atEnd at the end the file has when the server
+// takes the write: the count and where it went.
+func (f *remoteFile) put(b []byte, off int64, atEnd bool) (int, int64, error) {
 	if off < 0 {
-		return 0, syscall.EINVAL
+		return 0, 0, syscall.EINVAL
 	}
 
 	if len(b) == 0 {
-		return 0, nil
+		return 0, off, nil
+	}
+
+	arg := uint32(0)
+
+	if atEnd {
+		arg = 1
 	}
 
 	body := make([]byte, 8, 8+min(len(b), remoteData))
 	binary.LittleEndian.PutUint64(body, uint64(off))
 	body = append(body, b[:min(len(b), remoteData)]...)
-	pk, err := f.on(rWrite, 0, body)
+	pk, err := f.on(rWrite, arg, body)
 
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	dropFiles(pk.files)
 
-	if len(pk.data) < 4 {
-		return 0, syscall.EIO
+	if len(pk.data) < 12 {
+		return 0, 0, syscall.EIO
 	}
 
-	return int(binary.LittleEndian.Uint32(pk.data)), nil
+	return int(binary.LittleEndian.Uint32(pk.data)), int64(binary.LittleEndian.Uint64(pk.data[4:])), nil
 }
 
 func (f *remoteFile) read(p *Process, b []byte, mode ioMode) (int, error) {
@@ -778,25 +950,18 @@ func (f *remoteFile) read(p *Process, b []byte, mode ioMode) (int, error) {
 	return n, err
 }
 
-// write writes at the position, or at the end with O_APPEND, which the
-// server's size says.
+// write writes at the position, or with O_APPEND at the end, which the
+// server finds as it writes; the position is after what was written.
 func (f *remoteFile) write(p *Process, b []byte, mode ioMode) (int, error) {
 	if chaosFail("write") {
 		return 0, syscall.EIO
 	}
 
-	if f.append {
-		var st syscall.Stat_t
+	n, at, err := f.put(b, atomic.LoadInt64(&f.pos), f.append)
 
-		if err := f.stat(&st); err != nil {
-			return 0, err
-		}
-
-		atomic.StoreInt64(&f.pos, st.Size)
+	if err == nil {
+		atomic.StoreInt64(&f.pos, at+int64(n))
 	}
-
-	n, err := f.writeAt(p, b, atomic.LoadInt64(&f.pos))
-	atomic.AddInt64(&f.pos, int64(n))
 
 	return n, err
 }

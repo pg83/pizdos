@@ -43,6 +43,9 @@ type Kernel struct {
 	// then the processes run with the shadow map (kernel_asan.go).
 	codes   map[[sha256.Size]byte]*codeEntry
 	options CompileOptions
+	// fifos are the pipes of the FIFOs of servers with an end open
+	// (kernel_fifo.go).
+	fifos map[fifoKey]*pipe
 	// fg is the foreground process group of the terminal.
 	fg        int32
 	first     *Process
@@ -161,8 +164,8 @@ type procExit struct {
 // host for its root, or with no root at all when root is empty: then it
 // is a server, or a program of none. Its programs compile with options.
 func newKernel(root string, options CompileOptions) *Kernel {
-	k := &Kernel{procs: map[int32]*Process{}, codes: map[[sha256.Size]byte]*codeEntry{}, options: options, exit: make(chan int, 1),
-		abstract: fmt.Sprintf("pizdos.%d.", os.Getpid())}
+	k := &Kernel{procs: map[int32]*Process{}, codes: map[[sha256.Size]byte]*codeEntry{}, options: options, fifos: map[fifoKey]*pipe{},
+		exit: make(chan int, 1), abstract: fmt.Sprintf("pizdos.%d.", os.Getpid())}
 
 	if root == "" {
 		k.root = newNoRoot()

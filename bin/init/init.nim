@@ -1,11 +1,14 @@
 ## init: pid 2, from the image. Its root is the rootfs server. It serves
 ## /dev itself: the terminal the kernel gave vm, null, zero and urandom;
-## and /tmp, a tree in its memory; mounts both; starts the shell on the
+## and /tmp, a tree in its memory of at most tmpCapacity bytes, a quarter
+## of what a memory of wasm32 holds; mounts both; starts the shell on the
 ## terminal with a clean environment; reaps what ends under it, and ends
 ## with the shell's status.
 
 import std/posix
 import fs
+
+const tmpCapacity = 1'u64 shl 30
 
 var
   dev, tmp: Server
@@ -48,7 +51,7 @@ proc main() =
   let (ours, theirs) = pair()
   dev.listen(ours)
   mountAt("/dev", theirs)
-  tmp = Server(writable: true)
+  tmp = Server(writable: true, capacity: tmpCapacity)
   tmp.root = tmp.node(nil, "", nkDir)
   tmp.root.perm = 0o1777
   let (tmpOurs, tmpTheirs) = pair()

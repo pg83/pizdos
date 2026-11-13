@@ -222,14 +222,14 @@ func (p *Process) loadFrom(path string, first File, argv []string) (*execImage, 
 		}
 
 		// Execute permission: a node of the host says, a file of a server
-		// shows its mode.
+		// shows its mode, which says it for the process's class.
 		if node, ok := f.(Node); ok {
 			if err := node.access(1, 0); err != nil {
 				f.unref()
 
 				return nil, err
 			}
-		} else if st.Mode&0o111 == 0 {
+		} else if !permits(&st, 1) {
 			f.unref()
 
 			return nil, syscall.EACCES

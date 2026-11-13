@@ -329,7 +329,7 @@ func (p *Process) libcStatvfs(path, at uint32) uint32 {
 }
 
 func (p *Process) libcFstatvfs(fd, at uint32) uint32 {
-	n, err := p.nodeAt(fd)
+	n, err := p.attrsAt(fd)
 
 	if err != nil {
 		return p.result(0, err)
@@ -703,7 +703,7 @@ func (p *Process) libcStatfs(path, at uint32) uint32 {
 }
 
 func (p *Process) libcFstatfs(fd, at uint32) uint32 {
-	n, err := p.nodeAt(fd)
+	n, err := p.attrsAt(fd)
 
 	if err != nil {
 		return p.result(0, err)
