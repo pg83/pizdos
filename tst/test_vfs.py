@@ -8,7 +8,7 @@ as directories through renames and removals, the length of names and
 paths, the names a call refuses, open's flags, and calls on a link
 itself. Every case starts in a directory of its own under /tmp.
 
-    test_vfs.py <vm> <rootfs.wasm> <python.wasm>
+    test_vfs.py <vm> <rootfs> <python3>
     test_vfs.py --linux
 
 LINUX is what Linux answers: `test_vfs.py --linux` runs the probe in a

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Propagate real Linux syscall failures through guest libc calls.
 
-    test_host_syscalls.py <vm> <native-aot> <fixture.wasm> <filter> <interrupt>
+    test_host_syscalls.py <vm> <native-aot> <fixture.wasm> <fixture> <filter> <interrupt>
 
 A seccomp filter restricts only each child VM process. It returns selected error numbers for
 selected syscalls, leaving the parent and later commands unaffected.
@@ -119,7 +119,7 @@ def wasi_directory(path, name, filetype):
 
 
 def main():
-    vm, native, fixture, wrapper, interrupt = sys.argv[1:]
+    vm, native, fixture, program, wrapper, interrupt = sys.argv[1:]
     # Linux amd64 syscall numbers: uname, sysinfo, getrusage, getgroups;
     # fstatfs, utimensat, syncfs, sync, pwrite64; prlimit64, getrlimit.
     cases = [("system", errno.EIO, (63, 99, 98, 115, 100)), ("filesystem", errno.EIO, (138, 280, 306, 162, 18)),
@@ -163,16 +163,16 @@ def main():
         compiled.write_bytes(result.stdout)
         result = subprocess.run([vm, "-o", str(embedded), fixture], capture_output=True, env=env, timeout=60)
         assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), result
-        result = subprocess.run([wrapper, f"{errno.EPERM}/stop", "--", vm, "run", "--root", str(work), "--", str(fixture), "stop"],
+        result = subprocess.run([wrapper, f"{errno.EPERM}/stop", "--", vm, "run", "--root", str(work), "--", str(program), "stop"],
                                 capture_output=True, env=env, timeout=30)
         assert result.returncode == 1 and result.stdout == b"", ("stop", result)
         assert b"[1]: operation not permitted\n" in result.stderr and b"panic:" not in result.stderr, result
         with refusing_dns() as port:
-            result = subprocess.run([interrupt, f"dns/{port}", "--", vm, "run", "--root", str(work), "--", str(fixture), "permanent-dns-error"],
+            result = subprocess.run([interrupt, f"dns/{port}", "--", vm, "run", "--root", str(work), "--", str(program), "permanent-dns-error"],
                                     capture_output=True, env=dict(env, GODEBUG="netdns=go"), timeout=30)
             assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), ("permanent-dns-error", result)
         for operation, number in (("retry-open", 437), ("retry-read", 0), ("retry-connect", 42), ("temp-collision", "collision")):
-            result = subprocess.run([interrupt, str(number), "--", vm, "run", "--root", str(work), "--", str(fixture), operation],
+            result = subprocess.run([interrupt, str(number), "--", vm, "run", "--root", str(work), "--", str(program), operation],
                                     input=b"x", capture_output=True, env=env, timeout=30)
             assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), (operation, result)
         for operation in ("host-abstract", "host-pathname"):
@@ -182,27 +182,27 @@ def main():
                 else:
                     with contextlib.chdir(work):
                         inherited.bind("host.socket")
-                result = subprocess.run([vm, "run", "--root", str(work), "--", str(fixture), operation],
+                result = subprocess.run([vm, "run", "--root", str(work), "--", str(program), operation],
                                         stdin=inherited, capture_output=True, env=env, timeout=30)
                 assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), (operation, result)
             if operation == "host-pathname":
                 (work / "host.socket").unlink()
         for operation in ("long-realpath", "exec-wasi", "early-kill"):
-            result = subprocess.run([vm, "run", "--root", str(work), "--", str(fixture), operation],
+            result = subprocess.run([vm, "run", "--root", str(work), "--", str(program), operation],
                                     capture_output=True, env=env, timeout=30)
             assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), (operation, result)
         reader, writer = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
         try:
             # Keep the writer open and empty: reading this inherited
             # nonblocking input must report EAGAIN rather than EOF.
-            result = subprocess.run([vm, "run", "--root", str(work), "--", str(fixture), "nonblocking-input"],
+            result = subprocess.run([vm, "run", "--root", str(work), "--", str(program), "nonblocking-input"],
                                     stdin=reader, capture_output=True, env=env, timeout=30)
             assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), result
         finally:
             os.close(reader)
             os.close(writer)
         for operation, error, numbers in cases:
-            result = subprocess.run([wrapper, str(error) + "/" + ",".join(map(str, numbers)), "--", vm, "run", "--root", str(work), "--", str(fixture), operation], capture_output=True,
+            result = subprocess.run([wrapper, str(error) + "/" + ",".join(map(str, numbers)), "--", vm, "run", "--root", str(work), "--", str(program), operation], capture_output=True,
                                     env=env, timeout=30,
                                     preexec_fn=(lambda: resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))) if operation == "pty-attributes" else None)
             assert (result.returncode, result.stdout, result.stderr) == (0, b"host syscall errors: ok\n", b""), (operation, result)
@@ -211,7 +211,7 @@ def main():
         # recorded size.
         for number, error, diagnostic in ((5, errno.EIO, b"input/output error"),
                                            (17, errno.EIO, b"input/output error"), (17, 0, b"exec format error")):
-            result = subprocess.run([wrapper, f"{error}/{number}", "--", vm, "run", "--", str(fixture)],
+            result = subprocess.run([wrapper, f"{error}/{number}", "--", vm, "run", "--", str(program)],
                                     capture_output=True, env=env, timeout=30)
             assert result.returncode == 1 and result.stdout == b"" and diagnostic in result.stderr and b"panic:" not in result.stderr, (number, error, result)
         for name, number in (("clock_time_get", 228), ("clock_res_get", 229)):

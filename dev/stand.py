@@ -11,9 +11,10 @@ outputs must be identical; decode must agree on status, dimensions and
 page count, and the report counts the files whose pixels match exactly:
 native pixels may differ with libm and floating-point arithmetic. CPython's
 workloads are the benchmarks of dev/stand/pybench.py, pure Python timed
-inside the interpreter, the native CPython and python.wasm, which the kernel
-compiles as it starts, each in a root with the same standard library, the
-zip in python.wasm; their digests of the results must be equal.
+inside the interpreter, the native CPython and python3, the executable whose
+module the kernel compiles as it starts, each in a root with the same
+standard library, the zip python3 ends with; their digests of the results
+must be equal.
 The suite counts as one workload in the geometric mean, by its own.
 
 The original positional form is accepted for compiler workloads alone:
@@ -190,13 +191,13 @@ def python_root(root, interpreter, build, native=False):
     """A root of the Python workload and the benchmark: ours is /bin/python3,
     its standard library in its own file; the native CPython is
     /usr/bin/python3 with the same library as its lib/python314.zip, which
-    is python.wasm itself, a zip to zipimport from its end."""
+    is python3 itself, a zip to zipimport from its end."""
     if native:
         (root / "usr/bin").mkdir(parents=True)
         (root / "usr/lib/python3.14/lib-dynload").mkdir(parents=True)
         shutil.copy(interpreter, root / "usr/bin/python3")
         (root / "usr/bin/python3").chmod(0o755)
-        shutil.copy(build / "bin/python/python.wasm", root / "usr/lib/python314.zip")
+        shutil.copy(build / "bin/python/python3", root / "usr/lib/python314.zip")
     else:
         (root / "bin").mkdir(parents=True)
         shutil.copy(interpreter, root / "bin/python3")
@@ -227,7 +228,7 @@ def python_work(build, vm, runs, minimum, work, only=None):
     """Every benchmark of the suite: its repeat calibrated on native to the
     minimum time, A and C interleaved, their digests equal."""
     native = python_root(work / "python-A", build / "stand/python/native", build, native=True)
-    aot = python_root(work / "python-C", build / "bin/python/python.wasm", build)
+    aot = python_root(work / "python-C", build / "bin/python/python3", build)
     names = subprocess.run([str(native / "usr/bin/python3"), "-S", str(native / "pybench.py"), "--list"],
                            env={"PYTHONHASHSEED": "0"}, capture_output=True, text=True, check=True).stdout.split()
     rows = []

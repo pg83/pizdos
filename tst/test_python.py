@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CPython under `vm run`: python.wasm is /bin/python3 of a root whose shell
+"""CPython under `vm run`: python3, its executable, is /bin/python3 of a root whose shell
 is busybox's, laid out as the system's, every program in /bin; its standard
 library is its own file's.
 A script prints what the interpreter computes and what it gets from the
@@ -8,7 +8,7 @@ mappings written back, the user database, locales and the tokenizer's
 positions. Then a set of CPython's own tests, from the release tarball's
 Lib/test, runs with its regrtest.
 
-    test_python.py <vm> <python.wasm> <Python.tgz> <busybox.wasm> <busybox.links>
+    test_python.py <vm> <python3> <Python.tgz> <busybox> <busybox.wasm> <busybox.links>
 """
 import os
 import shutil
@@ -180,7 +180,7 @@ def python(vm, root, args, timeout):
 
 
 def main():
-    vm, interpreter, tarball, busybox, links = sys.argv[1:6]
+    vm, interpreter, tarball, busybox, _, links = sys.argv[1:7]
     failures = []
 
     with tempfile.TemporaryDirectory() as tmp:

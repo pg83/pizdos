@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Faults exercise real AOT/VM commands; production executables ignore them.
 
-    test_chaos.py <vm> <vm-chaos> <native-aot> <native-aot-chaos> <guest.wasm>
+    test_chaos.py <vm> <vm-chaos> <native-aot> <native-aot-chaos> <guest.wasm> <guest>
 """
 import os
 from pathlib import Path
@@ -21,7 +21,7 @@ def call(command, *, data=None, **variables):
 
 
 def main():
-    vm, vm_chaos, native, native_chaos, guest = sys.argv[1:]
+    vm, vm_chaos, native, native_chaos, guest, executable = sys.argv[1:]
     reference = call([native], data=EMPTY)
     assert reference.returncode == 0, reference.stderr
     assert call([native_chaos], data=EMPTY).stdout == reference.stdout
@@ -89,9 +89,9 @@ def main():
             expected = f"{operation}: failures={failures}\n".encode()
             assert (result.returncode, result.stdout, result.stderr) == (0, expected, b""), (operation, rule, result)
 
-        # The guest is the module; it is also /bin/sh, for system and the
-        # rest that run a shell.
-        image = Path(guest)
+        # The guest is the executable; it is also /bin/sh, for system and
+        # the rest that run a shell.
+        image = Path(executable)
         (work / "bin").mkdir(exist_ok=True)
         shell = work / "bin/sh"
         shell.write_bytes(image.read_bytes())

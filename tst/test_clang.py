@@ -3,10 +3,11 @@
 /bin/llvm with clang, clang++ and wasm-ld naming it, in a root with lib/c's
 and lib/cxx's headers and libraries and busybox's shell, compiles and links
 a C and a C++ program, its driver running cc1 and the linker as processes of
-their own, and the shell runs what they link: the kernel compiles each
-module once, LLVM's for all its processes.
+their own, and the shell runs what they link, packed by pzd into
+executables: the kernel compiles each module once, LLVM's for all its
+processes.
 
-    test_clang.py <vm> <busybox.wasm> <busybox.links> <llvm.wasm> <resource.tar> <libc.a> <libc-include.tar> <libc++.a> <cxx-include.tar>
+    test_clang.py <vm> <busybox> <busybox.wasm> <busybox.links> <llvm> <llvm.wasm> <resource.tar> <libc.a> <libc-include.tar> <libc++.a> <cxx-include.tar> <pzd>
 """
 import shlex
 import shutil
@@ -64,7 +65,7 @@ LINK = ["-nostdlib", "-Wl,--stack-first", "-Wl,-z,stack-size=1049600", "-Wl,--ma
 
 
 def main():
-    vm, busybox, links, llvm, resource, libc, libc_include, libcxx, cxx_include = sys.argv[1:10]
+    vm, busybox, _, links, llvm, _, resource, libc, libc_include, libcxx, cxx_include, pzd = sys.argv[1:13]
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -76,6 +77,8 @@ def main():
         (root / "bin" / "llvm").chmod(0o755)
         shutil.copy(busybox, root / "bin" / "busybox")
         (root / "bin" / "busybox").chmod(0o755)
+        shutil.copy(pzd, root / "bin" / "pzd")
+        (root / "bin" / "pzd").chmod(0o755)
 
         for name in ("clang", "clang++", "wasm-ld"):
             (root / "bin" / name).symlink_to("llvm")
@@ -94,10 +97,11 @@ def main():
         shutil.copy(libcxx, root / "usr/lib/libc++.a")
         (root / "src/hello.c").write_text(C)
         (root / "src/hello.cpp").write_text(CXX)
-        c = ["clang", *wasm.CFLAGS, "-isystem", "/usr/include", "-O2", "/src/hello.c", "-o", "/bin/hello", *LINK, "/usr/lib/libc.a"]
+        c = ["clang", *wasm.CFLAGS, "-isystem", "/usr/include", "-O2", "/src/hello.c", "-o", "/src/hello.wasm", *LINK, "/usr/lib/libc.a"]
         cxx = ["clang++", *wasm.CFLAGS, "-nostdinc++", "-fno-exceptions", "-std=c++23", "-isystem", "/usr/include/c++/v1",
-               "-isystem", "/usr/include", "-O2", "/src/hello.cpp", "-o", "/bin/hello-cxx", *LINK, "/usr/lib/libc++.a", "/usr/lib/libc.a"]
-        script = f"set -e\nclang --version\necho ---\n{shlex.join(c)}\n{shlex.join(cxx)}\nhello\nhello-cxx\n"
+               "-isystem", "/usr/include", "-O2", "/src/hello.cpp", "-o", "/src/hello-cxx.wasm", *LINK, "/usr/lib/libc++.a", "/usr/lib/libc.a"]
+        script = (f"set -e\nclang --version\necho ---\n{shlex.join(c)}\n{shlex.join(cxx)}\n"
+                  "pzd /src/hello.wasm /bin/hello\npzd /src/hello-cxx.wasm /bin/hello-cxx\nhello\nhello-cxx\n")
         r = subprocess.run([vm, "run", "--root", str(root), "-a", "sh", "--", str(root / "bin" / "busybox"), "-c", script],
                            capture_output=True, text=True, env={"PATH": "/bin"}, timeout=1200)
         version, _, ran = r.stdout.partition("---\n")

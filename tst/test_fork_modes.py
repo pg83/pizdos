@@ -10,6 +10,10 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "dev"))
+
+from exe import pack  # noqa: E402
+
 
 def leb(value):
     result = bytearray()
@@ -70,8 +74,9 @@ def main():
     data = program()
     with tempfile.TemporaryDirectory(prefix="pizdos-fork-modes-") as directory:
         work = Path(directory)
-        source = work / "input.wasm"
+        source, executable = work / "input.wasm", work / "input"
         source.write_bytes(data)
+        executable.write_bytes(pack(data))
         result = subprocess.run([wazero, "-compile", str(source)], capture_output=True, timeout=60)
         assert result.returncode == 0, result.stderr
         for mode, flag in (("optimized", None), ("strict", "--strict"), ("asan", "--asan"), ("profile", "--tail-profile")):
@@ -84,7 +89,7 @@ def main():
             result = subprocess.run([vm, *asan, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
             assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), (mode, result)
             profile = embedded.with_suffix(".jsonl")
-            result = subprocess.run([vm, "run", *asan, "--", str(source)], capture_output=True, env=dict(env, W2O_TAIL_PROFILE=str(profile)), timeout=30)
+            result = subprocess.run([vm, "run", *asan, "--", str(executable)], capture_output=True, env=dict(env, W2O_TAIL_PROFILE=str(profile)), timeout=30)
             assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (mode, result)
             if mode == "profile":
                 rows = [json.loads(line) for line in profile.read_text().splitlines()]

@@ -1,7 +1,8 @@
 /* The python of pizdos: CPython's main, whose standard library is the
- * program's own file. make.py puts the library's zip in the module's last
- * custom section, where zipimport finds it from the end of the file, and
- * the kernel tells a program its file's path: dladdr's. sys.path is then
+ * program's own file. The library's zip is the tail of python's executable
+ * (dev/exe.py), past what the kernel reads, where zipimport finds it from
+ * the end of the file, and the kernel tells a program its file's path:
+ * dladdr's. sys.path is then
  * PYTHONPATH's directories, when the environment counts, this file and
  * STDLIB_DIR, the standard library's directory of a root that has one,
  * with no search for a prefix and none of its warnings: nothing of the

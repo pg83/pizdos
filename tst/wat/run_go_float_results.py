@@ -7,6 +7,10 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "dev"))
+
+from exe import pack  # noqa: E402
+
 
 def signed(value):
     return value if value < 1 << 63 else value - (1 << 64)
@@ -62,7 +66,9 @@ def main():
                 compiled.write_bytes(result.stdout)
                 result = subprocess.run([vm, "-o", str(embedded), str(module)], capture_output=True, env=env, timeout=60)
                 assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), result
-                result = subprocess.run([vm, "run", "--", str(module)], capture_output=True, env=env, timeout=30)
+                executable = work / "input"
+                executable.write_bytes(pack(module.read_bytes()))
+                result = subprocess.run([vm, "run", "--", str(executable)], capture_output=True, env=env, timeout=30)
                 assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (reference, strict, result)
     print(f"WAT Go float results: {checks} multi-result relays and branch merges preserve result positions, NaN payloads and signed zero with a model, wazero reference and both AOTs")
 

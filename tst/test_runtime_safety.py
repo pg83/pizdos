@@ -10,6 +10,10 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "dev"))
+
+from exe import pack  # noqa: E402
+
 
 def leb(value, signed=False):
     result = bytearray()
@@ -93,12 +97,13 @@ def main():
     with tempfile.TemporaryDirectory(prefix="pizdos-runtime-safety-") as directory:
         work = Path(directory)
         (work / "root").mkdir()
-        source, compiled, embedded = [work / name for name in ("input.wasm", "native.o", "embedded.o")]
+        source, executable, compiled, embedded = [work / name for name in ("input.wasm", "input", "native.o", "embedded.o")]
         for label, name, args, options, status, diagnostic in cases:
             options = dict(options)
             rooted = options.pop("rooted", False)
             data = program(name, args, **options)
             source.write_bytes(data)
+            executable.write_bytes(pack(data))
             result = subprocess.run([wazero, "-compile", str(source)], capture_output=True, timeout=30)
             assert result.returncode == 0, (label, result)
             result = subprocess.run([native, "--strict"], input=data, capture_output=True, env=env, timeout=60)
@@ -107,7 +112,7 @@ def main():
             result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
             assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), (label, result)
             root = rooted if isinstance(rooted, str) else str(work / "root")
-            result = subprocess.run([vm, "run", *(["--root", root] if rooted else []), "-a", "runtime-safety", "--", str(source)],
+            result = subprocess.run([vm, "run", *(["--root", root] if rooted else []), "-a", "runtime-safety", "--", str(executable)],
                                     capture_output=True, env=env, timeout=30)
             assert result.returncode == status and result.stdout == b"" and b"panic:" not in result.stderr, (label, result)
             if status:

@@ -44,52 +44,87 @@ func hostLimits() [rlimitCount]rlimit {
 	return out
 }
 
-// code is the code of the module a file holds: the error is ENOEXEC when
-// the file is not a module of a program of the kernel, EACCES when it
+// code is the code of the executable a file holds: the error is ENOEXEC
+// when the file is no executable of a program of the kernel, EACCES when it
 // cannot be read at an offset.
 func (k *Kernel) code(p *Process, f File, name string) (*Code, error) {
-	data, err := moduleData(p, f)
+	exe, ok, err := programData(p, f, false)
 
 	if err != nil {
 		return nil, err
 	}
 
-	return k.codeOf(data, name, nil)
+	if !ok {
+		return nil, fmt.Errorf("%s: no executable of PZD1: %w", name, syscall.ENOEXEC)
+	}
+
+	return k.codeOf(exe, name, nil)
 }
 
-// moduleData is what a file holds, read at offsets to its size, as exec
-// reads a program and vm run its first, without a process: EACCES when it
-// cannot be read at an offset, ENOEXEC when it ends before its size.
-func moduleData(p *Process, f File) ([]byte, error) {
+// programData is the executable a file begins with, read at offsets to
+// its length and no further, as exec reads a program and vm run its
+// first, without a process. A file that begins with none is not read on;
+// for vm run, module, it is read whole, a module of a WASI command, and ok
+// is false. EACCES when it cannot be read at an offset, ENOEXEC when it
+// ends before its size.
+func programData(p *Process, f File, module bool) (data []byte, ok bool, err error) {
 	var st syscall.Stat_t
 
 	if err := f.stat(&st); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
-	t, ok := f.(Transfer)
+	t, isTransfer := f.(Transfer)
 
-	if !ok {
-		return nil, syscall.EACCES
+	if !isTransfer {
+		return nil, false, syscall.EACCES
 	}
 
-	data := make([]byte, st.Size)
+	header := make([]byte, min(exeHeader, max(st.Size, 0)))
 
-	for at := 0; at < len(data); {
-		n, err := t.pread(p, data[at:], int64(at))
+	if err := readAt(p, t, header, 0); err != nil {
+		return nil, false, err
+	}
+
+	length, err := exeLength(header, st.Size)
+
+	if err != nil || length == 0 && !module {
+		return nil, false, err
+	}
+
+	size := st.Size
+
+	if length > 0 {
+		size = int64(length)
+	}
+
+	data = make([]byte, size)
+	copy(data, header)
+
+	if err := readAt(p, t, data[len(header):], int64(len(header))); err != nil {
+		return nil, false, err
+	}
+
+	return data, length > 0, nil
+}
+
+// readAt fills b from a file at off: ENOEXEC when the file ends first.
+func readAt(p *Process, t Transfer, b []byte, off int64) error {
+	for at := 0; at < len(b); {
+		n, err := t.pread(p, b[at:], off+int64(at))
 
 		if err != nil {
-			return nil, err
+			return err
 		}
 
 		if n == 0 {
-			return nil, syscall.ENOEXEC
+			return syscall.ENOEXEC
 		}
 
 		at += n
 	}
 
-	return data, nil
+	return nil
 }
 
 // A codeEntry is the code of a module, or why it has none; done closes
@@ -101,11 +136,12 @@ type codeEntry struct {
 	err  error
 }
 
-// codeOf is the code of a module, data, a file's content, the module or
-// its zstd frames: unpacked, compiled with the kernel's options and
-// linked to it once in the kernel's life for a content, which every
-// process that runs the module shares. obj is the module compiled
-// already, or nil. A failure is not kept: the next exec tries again.
+// codeOf is the code of an executable, data, the part of a file to its
+// length: its module unpacked, compiled with the kernel's options and
+// linked to it once in the kernel's life for those bytes, which every
+// process that runs the module shares; what a file has past the length
+// is no part of them. obj is the module compiled already, or nil. A
+// failure is not kept: the next exec tries again.
 //
 // The compiler runs on a goroutine of its own, and the process waits for
 // its end: in the frames of the process's code, a compiler that ends in a
@@ -150,7 +186,7 @@ func (k *Kernel) compile(data []byte, name string, obj *Object) (*Code, error) {
 	if obj == nil {
 		var err error
 
-		if obj, err = compileModule(data, k.options); err != nil {
+		if obj, err = compileExecutable(data, k.options); err != nil {
 			return nil, fmt.Errorf("%s: %w", name, err)
 		}
 	}

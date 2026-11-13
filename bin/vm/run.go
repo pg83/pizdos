@@ -10,19 +10,26 @@ import (
 )
 
 // runModule compiles a module and runs it, and returns the exit code of
-// vm: a program of the kernel as its first process, inside root, or a WASI
-// command on this goroutine, whose code is proc_exit's, or 128 and the
-// trap code after a trap. A module is all vm runs: no object of vm's.
+// vm: a program of the kernel, from its executable (PZD1), as its first
+// process, inside root, or a WASI command, an executable or a module, on
+// this goroutine, whose code is proc_exit's, or 128 and the trap code
+// after a trap. A module is all vm runs: no object of vm's.
 func runModule(path, root string, argv []string, asan bool) (code int) {
 	f := throw2(openHostFile(path))
-	data, err := moduleData(nil, f)
+	data, exe, err := programData(nil, f, true)
 
 	if err != nil {
 		throwFmt("%s: %v", path, err)
 	}
 
 	options := programOptions(asan)
-	obj, err := compileModule(data, options)
+	var obj *Object
+
+	if exe {
+		obj, err = compileExecutable(data, options)
+	} else {
+		obj, err = compileModule(data, options)
+	}
 
 	if err == syscall.ENOEXEC {
 		throwFmt("%s: not a WebAssembly module", path)
@@ -33,6 +40,10 @@ func runModule(path, root string, argv []string, asan bool) (code int) {
 	}
 
 	if importsKernel(obj) {
+		if !exe {
+			throwFmt("%s: a program of the kernel, not in an executable of PZD1", path)
+		}
+
 		return runKernel(f, path, root, argv, options, data, obj)
 	}
 

@@ -9,6 +9,10 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "dev"))
+
+from exe import pack  # noqa: E402
+
 MASK = (1 << 32) - 1
 LOAD_OFFSET, STORE_OFFSET = 17, 23
 IMAGE = bytes((i * 37 + 11) % 251 if i >= 4096 else 0 for i in range(65536))
@@ -119,7 +123,7 @@ def main():
     checked = 0
     with tempfile.TemporaryDirectory(prefix="pizdos-copy-loops-") as directory:
         work = Path(directory)
-        source, compiled, embedded = [work / name for name in ("input.wasm", "native.o", "embedded.o")]
+        source, executable, compiled, embedded = [work / name for name in ("input.wasm", "input", "native.o", "embedded.o")]
         for case in cases:
             modes = ["optimized"]
             if case[2] == 17 or case[3] != 32768 or case[5] or case[6]:
@@ -130,6 +134,7 @@ def main():
                 strict, asan = mode == "strict", mode == "asan"
                 data = program(*case, kernel=asan)
                 source.write_bytes(data)
+                executable.write_bytes(pack(data))
                 env = dict(os.environ, W2X_MEMORY_TAIL="strict" if strict else "optimized", W2X_TAIL_PROFILE="")
                 flag = ["--strict"] if strict else ["--asan"] if asan else []
                 result = subprocess.run([native, *flag], input=data, capture_output=True, env=env, timeout=60)
@@ -138,7 +143,7 @@ def main():
                 run_flags = ["--asan"] if asan else []
                 result = subprocess.run([vm, *run_flags, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
                 assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), (case, mode, result)
-                result = subprocess.run([vm, "run", *run_flags, "--", str(source)], capture_output=True, env=env, timeout=30)
+                result = subprocess.run([vm, "run", *run_flags, "--", str(executable)], capture_output=True, env=env, timeout=30)
                 assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (case, mode, result)
                 checked += 1
     print(f"copy loops: {checked} counted, overlapping, wrapping and ASAN programs agree with the bytewise model and both AOTs")

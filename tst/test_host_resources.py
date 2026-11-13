@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Guest calls under a real host descriptor limit must fail and recover.
 
-    test_host_resources.py <vm> <native-aot> <fixture.wasm>
+    test_host_resources.py <vm> <native-aot> <fixture.wasm> <fixture>
 """
 import os
 from pathlib import Path
@@ -9,6 +9,10 @@ import resource
 import subprocess
 import sys
 import tempfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "dev"))
+
+from exe import pack  # noqa: E402
 
 
 def bootstrap_program():
@@ -21,7 +25,7 @@ def bootstrap_program():
 
 
 def main():
-    vm, native, fixture = sys.argv[1:]
+    vm, native, fixture, program = sys.argv[1:]
     env = dict(os.environ, W2X_MEMORY_TAIL="strict", W2X_TAIL_PROFILE="")
     with tempfile.TemporaryDirectory(prefix="pizdos-host-resources-") as directory:
         work = Path(directory)
@@ -35,12 +39,13 @@ def main():
             def restrict():
                 resource.setrlimit(resource.RLIMIT_NOFILE, (soft, 64))
             for operation in ("objects", "fork", "vfork", "forkpty"):
-                result = subprocess.run([vm, "run", "--root", str(work), "--", str(fixture), operation], capture_output=True,
+                result = subprocess.run([vm, "run", "--root", str(work), "--", str(program), operation], capture_output=True,
                                         env=env, preexec_fn=restrict, timeout=30)
                 assert (result.returncode, result.stdout, result.stderr) == (0, b"host resource recovery: ok\n", b""), (soft, operation, result)
-        source = work / "bootstrap.wasm"
+        source, bootstrap = work / "bootstrap.wasm", work / "bootstrap"
         data = bootstrap_program()
         source.write_bytes(data)
+        bootstrap.write_bytes(pack(data))
         result = subprocess.run([native, "--strict"], input=data, capture_output=True, env=env, timeout=60)
         assert result.returncode == 0, result
         compiled.write_bytes(result.stdout)
@@ -49,7 +54,7 @@ def main():
         for limit in (8, 9, 10, 12):
             def restrict():
                 resource.setrlimit(resource.RLIMIT_NOFILE, (limit, limit))
-            result = subprocess.run([vm, "run", "--", str(source)], capture_output=True,
+            result = subprocess.run([vm, "run", "--", str(bootstrap)], capture_output=True,
                                     env=env, preexec_fn=restrict, timeout=30)
             assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (limit, result)
     print("host resources: pipes, sockets, PTYs and process creation recover from real descriptor exhaustion with both AOTs")

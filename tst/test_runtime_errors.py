@@ -14,6 +14,10 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "dev"))
+
+from exe import pack  # noqa: E402
+
 
 def leb(value, signed=False):
     result = bytearray()
@@ -108,15 +112,16 @@ def main():
     with tempfile.TemporaryDirectory(prefix="pizdos-runtime-errors-") as directory:
         work = Path(directory)
         for name, module, diagnostic in cases:
-            source, compiled, embedded = [work / (name + suffix) for suffix in (".wasm", ".native.o", ".embedded.o")]
+            source, executable, compiled, embedded = [work / (name + suffix) for suffix in (".wasm", "", ".native.o", ".embedded.o")]
             source.write_bytes(module)
+            executable.write_bytes(pack(module))
             result = subprocess.run([native, "--strict"], input=module, capture_output=True, env=env, timeout=60)
             assert result.returncode == 0, (name, result.stderr)
             compiled.write_bytes(result.stdout)
             result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
             assert result.returncode == 0, (name, result.stderr)
             assert compiled.read_bytes() == embedded.read_bytes(), name
-            result = subprocess.run([vm, "run", "-a", "runtime-error", "--", str(source)], capture_output=True, env=env, timeout=30)
+            result = subprocess.run([vm, "run", "-a", "runtime-error", "--", str(executable)], capture_output=True, env=env, timeout=30)
             assert result.returncode == 134 and result.stdout == b"", (name, result)
             lines = result.stderr.decode().splitlines()
             assert lines and diagnostic in lines[0], (name, result.stderr)

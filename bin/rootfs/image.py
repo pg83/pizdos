@@ -2,22 +2,20 @@
 """The image rootfs serves: a ustar archive of the programs of the system
 and the directories it expects.
 
-    image.py <rootfs.tar> --busybox <busybox.wasm> <busybox.links> --python <python.wasm>
+    image.py <rootfs.tar> --busybox <busybox> <busybox.links> --python <python3>
 
-The programs are modules, which the kernel compiles as they are executed,
-and every one is in /bin: busybox is /bin/busybox, and each name of
-busybox.links, wherever busybox would install it, a link to it in /bin;
-python is /bin/python3, its standard library in its own file. busybox is
-kept compressed by zstd, which the kernel unpacks before it compiles;
-python is not, as its standard library is read from its file. /usr is a
-link to the root, for what names /usr/bin and the like: /usr/bin is /bin.
-No times, no owners: the same inputs are the same archive.
+The programs are executables (dev/exe.py), whose modules the kernel
+unpacks and compiles as they are executed, and every one is in /bin:
+busybox is /bin/busybox, and each name of busybox.links, wherever busybox
+would install it, a link to it in /bin; python is /bin/python3, its
+standard library the tail of its executable. /usr is a link to the root,
+for what names /usr/bin and the like: /usr/bin is /bin. No times, no
+owners: the same inputs are the same archive.
 """
 import io
 import os
 import sys
 import tarfile
-from compression import zstd
 from pathlib import Path
 
 DIRS = {"bin", "dev", "etc", "tmp", "var"}
@@ -31,14 +29,6 @@ def entry(name, kind, size=0, mode=0o755, target=""):
     return info
 
 
-def compressed(module):
-    """A module as one zstd frame, of level 19, with its size and a
-    checksum: the same module is the same frame."""
-    options = {zstd.CompressionParameter.compression_level: 19, zstd.CompressionParameter.checksum_flag: 1}
-
-    return zstd.compress(module, options=options)
-
-
 def main():
     output = sys.argv[1]
     args = sys.argv[2:]
@@ -49,7 +39,7 @@ def main():
     while args:
         match args:
             case ["--busybox", busybox, links, *rest]:
-                files["bin/busybox"] = (compressed(Path(busybox).read_bytes()), 0o755)
+                files["bin/busybox"] = (Path(busybox).read_bytes(), 0o755)
 
                 for link in Path(links).read_text().split():
                     symlinks["bin/" + os.path.basename(link)] = "busybox"

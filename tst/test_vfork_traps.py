@@ -9,6 +9,10 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "dev"))
+
+from exe import pack  # noqa: E402
+
 
 def leb(value):
     result = bytearray()
@@ -45,11 +49,12 @@ def main():
     env = dict(os.environ, W2X_MEMORY_TAIL="strict", W2X_TAIL_PROFILE="")
     with tempfile.TemporaryDirectory(prefix="pizdos-vfork-traps-") as directory:
         work = Path(directory)
-        source, compiled, embedded = [work / name for name in ("input.wasm", "native.o", "embedded.o")]
+        source, executable, compiled, embedded = [work / name for name in ("input.wasm", "input", "native.o", "embedded.o")]
         for children in (1, 2, 4):
             for fault, status, diagnostic in faults:
                 data = program(children, fault)
                 source.write_bytes(data)
+                executable.write_bytes(pack(data))
                 result = subprocess.run([wazero, "-compile", str(source)], capture_output=True, timeout=30)
                 assert result.returncode == 0, result
                 result = subprocess.run([native, "--strict"], input=data, capture_output=True, env=env, timeout=60)
@@ -57,7 +62,7 @@ def main():
                 compiled.write_bytes(result.stdout)
                 result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
                 assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), result
-                result = subprocess.run([vm, "run", "-a", "vfork-trap", "--", str(source)], capture_output=True, env=env, timeout=30)
+                result = subprocess.run([vm, "run", "-a", "vfork-trap", "--", str(executable)], capture_output=True, env=env, timeout=30)
                 assert result.returncode == status and result.stdout == b"" and diagnostic in result.stderr, (children, status, result)
                 assert result.stderr.startswith(f"vfork-trap[{children + 1}]: ".encode()) and b"panic:" not in result.stderr, result
     print("vfork traps: unreachable, memory and arithmetic faults in nested borrowers unwind safely with both AOTs")

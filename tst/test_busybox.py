@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """busybox under `vm run`: the kernel of lib/c runs its applets inside a
-root made like the system's, /bin/busybox the module, each name of
+root made like the system's, /bin/busybox the executable, each name of
 busybox.links a symbolic link to it in /bin and /usr a link to /.
 The shell's errors, exit and SIGINT are longjmps, one of them out of a
 signal handler; its commands, pipes, substitutions and jobs are forks,
 which a terminal stops and continues; xargs, find -exec and awk's pipes
 are vforks; a loop without system calls is interrupted for its signals.
 
-    test_busybox.py <vm> <busybox.wasm> <busybox.links>
+    test_busybox.py <vm> <busybox> <busybox.wasm> <busybox.links>
 """
 import gzip
 import hashlib
@@ -49,7 +49,7 @@ CASES = [
     (["basename", "/a/b/c.txt", ".txt"], "", "c\n", 0),
     (["dirname", "/a/b/c.txt"], "", "/a/b\n", 0),
     (["false"], "", "", 1),
-    # exec inside the root: env runs /bin/env, a link to the module
+    # exec inside the root: env runs /bin/env, a link to the executable
     (["env", "-i", "A=1", "env"], "", "A=1\n", 0),
     # a #! script runs its interpreter
     (["env", "/tmp/script.sh", "x"], "", "from /tmp/script.sh x\n", 0),
@@ -98,9 +98,9 @@ INTERRUPTS = [
 ]
 
 
-def make_root(root, module, links):
+def make_root(root, program, links):
     (root / "bin").mkdir(parents=True)
-    shutil.copy(module, root / "bin" / "busybox")
+    shutil.copy(program, root / "bin" / "busybox")
     (root / "bin" / "busybox").chmod(0o755)
 
     for link in links.split():
@@ -211,12 +211,12 @@ def job_control(vm, root):
 
 
 def main():
-    vm, module, links = sys.argv[1:4]
+    vm, program, _, links = sys.argv[1:5]
     failed = []
 
     with tempfile.TemporaryDirectory(prefix="busybox-") as work:
         root = Path(work) / "root"
-        make_root(root, module, Path(links).read_text())
+        make_root(root, program, Path(links).read_text())
 
         for case in CASES:
             argv, stdin, want, code = case[:4]

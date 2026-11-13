@@ -6,12 +6,16 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "dev"))
+
+from exe import pack  # noqa: E402
+
 
 def main():
     vm, native, wazero, wat2wasm, fixture = sys.argv[1:]
     with tempfile.TemporaryDirectory(prefix="pizdos-wat-startup-fork-") as directory:
         work = Path(directory)
-        module, compiled, embedded = (work / name for name in ("input.wasm", "native.o", "embedded.o"))
+        module, executable, compiled, embedded = (work / name for name in ("input.wasm", "input", "native.o", "embedded.o"))
         result = subprocess.run([wat2wasm, fixture, "-o", str(module)], capture_output=True, timeout=30)
         assert result.returncode == 0, result.stderr.decode()
         result = subprocess.run([wazero, "-compile", str(module)], capture_output=True, timeout=30)
@@ -23,7 +27,8 @@ def main():
             compiled.write_bytes(result.stdout)
             result = subprocess.run([vm, "-o", str(embedded), str(module)], capture_output=True, env=env, timeout=60)
             assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), (strict, result)
-            result = subprocess.run([vm, "run", "--", str(module)], capture_output=True, env=env, timeout=30)
+            executable.write_bytes(pack(module.read_bytes()))
+            result = subprocess.run([vm, "run", "--", str(executable)], capture_output=True, env=env, timeout=30)
             assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (strict, result)
     print("WAT startup fork: initialization receives ENOSYS and the command then runs, through identical native/Wasm objects")
 

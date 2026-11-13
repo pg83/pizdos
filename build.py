@@ -158,6 +158,23 @@ libstr = command(
     color="green",
 )
 
+# The executable of a program of the kernel (dev/exe.py): the PZD1 header,
+# its module compressed by zstd, and the tail of the program's own; the
+# kernel runs nothing else. The module, the .wasm, stays what the compilers
+# and the ABI checks read.
+def executable(name, program, output, tail=None, level=None):
+    return command(
+        name=name,
+        inputs=["$(S)/dev/exe.py"],
+        outputs=[output],
+        deps=[program],
+        cmd=["python3", "$(S)/dev/exe.py", program.outputs[0], output, *(["--tail", tail] if tail else []),
+             *(["--level", str(level)] if level else [])],
+        descr="PK",
+        color="cyan",
+    )
+
+
 busybox = command(
     name="busybox",
     inputs=[
@@ -182,6 +199,7 @@ busybox = command(
     descr="BB",
     color="cyan",
 )
+busybox_exe = executable("busybox_exe", busybox, "$(B)/bin/busybox/busybox")
 
 # The kernel ABI busybox needs: every import and export of the module.
 busybox_abi = command(
@@ -218,6 +236,7 @@ doom = command(
     descr="DM",
     color="light-magenta",
 )
+doom_exe = executable("doom_exe", doom, "$(B)/bin/doom/doom")
 
 # CPython's interpreter and built-in modules, and its freezer: nothing of
 # vm, so a change of the compiler rebuilds none of it.
@@ -440,11 +459,13 @@ vm_chaos_coverage = command(
 )
 
 # python.wasm, its modules frozen by the freezer running in the kernel, and
-# the standard library it imports from a zip of its own module.
+# the standard library as a zip; python3, the executable, ends with that
+# zip, which python imports from its own file.
 python = command(
     name="python",
-    inputs=[*LIBC_HEADERS, "$(S)/bin/python/pyconfig.h", "$(S)/bin/python/make.py", "$(S)/bin/python/main.c", "$(S)/dev/wasm.py"],
-    outputs=["$(B)/bin/python/python.wasm"],
+    inputs=[*LIBC_HEADERS, "$(S)/bin/python/pyconfig.h", "$(S)/bin/python/make.py", "$(S)/bin/python/main.c", "$(S)/dev/wasm.py",
+            "$(S)/dev/exe.py"],
+    outputs=["$(B)/bin/python/python.wasm", "$(B)/bin/python/stdlib.zip"],
     deps=[python_tarball, libc, python_core, vm],
     cmd=[
         "python3", "$(S)/bin/python/make.py", "python",
@@ -455,27 +476,29 @@ python = command(
         libc.outputs[0],
         *python_core.outputs,
         "$(B)/bin/python/python.wasm",
+        "$(B)/bin/python/stdlib.zip",
     ],
     descr="PY",
     color="yellow",
 )
+python_exe = executable("python_exe", python, "$(B)/bin/python/python3", tail=python.outputs[1])
 
-# A system from one module: rootfs, the first process, serves the image
-# linked into it, the modules of busybox with its links and python, with
-# /dev and /tmp of its own, to the shell it starts, and the kernel compiles
-# each module as it is executed (bin/rootfs).
+# A system from one executable: rootfs, the first process, serves the image
+# linked into it, the executables of busybox with its links and python,
+# with /dev and /tmp of its own, to the shell it starts, and the kernel
+# compiles each module as it is executed (bin/rootfs).
 rootfs_image = command(
     name="rootfs_image",
     inputs=["$(S)/bin/rootfs/image.py"],
     outputs=["$(B)/bin/rootfs/rootfs.tar"],
-    deps=[busybox, python],
+    deps=[busybox, busybox_exe, python_exe],
     cmd=["python3", "$(S)/bin/rootfs/image.py", "$(B)/bin/rootfs/rootfs.tar",
-         "--busybox", *busybox.outputs, "--python", *python.outputs],
+         "--busybox", busybox_exe.outputs[0], busybox.outputs[1], "--python", python_exe.outputs[0]],
     descr="IM",
     color="cyan",
 )
-rootfs = command(
-    name="rootfs",
+rootfs_module = command(
+    name="rootfs_module",
     inputs=["$(S)/bin/rootfs/rootfs.cpp", "$(S)/bin/rootfs/make.py", "$(S)/dev/wasm.py", *LIBC_HEADERS],
     outputs=["$(B)/bin/rootfs/rootfs.wasm"],
     deps=[libc, rootfs_image],
@@ -484,6 +507,7 @@ rootfs = command(
     descr="CC",
     color="cyan",
 )
+rootfs = executable("rootfs", rootfs_module, "$(B)/bin/rootfs/rootfs")
 
 # clang for this system: LLVM's multicall program of the release lib/cxx
 # comes from, compiled against lib/c and lib/cxx, and the headers clang
@@ -508,6 +532,21 @@ clang = command(
     descr="CL",
     color="green",
 )
+# llvm's module is 230 MB: zstd's level 3 packs it in a second.
+llvm_exe = executable("llvm_exe", clang, "$(B)/bin/clang/llvm", level=3)
+
+# pzd packs a module into an executable inside the system, as dev/exe.py
+# does outside: test_clang runs what clang links there.
+pzd_module = command(
+    name="pzd_module",
+    inputs=[*LIBC_HEADERS, "$(S)/bin/pzd/pzd.c", "$(S)/tst/libc/make.py", "$(S)/dev/wasm.py"],
+    outputs=["$(B)/bin/pzd/pzd.wasm"],
+    deps=[libc],
+    cmd=["python3", "$(S)/tst/libc/make.py", CLANG, WASM_LD, "$(S)/bin/pzd/pzd.c", "$(S)/lib/c/include", libc.outputs[0], "$(B)/bin/pzd/pzd.wasm"],
+    descr="CC",
+    color="green",
+)
+pzd = executable("pzd", pzd_module, "$(B)/bin/pzd/pzd")
 
 # test_libc's program: lib/c's functions with deterministic results.
 libc_check = command(
@@ -519,6 +558,7 @@ libc_check = command(
     descr="CC",
     color="green",
 )
+libc_check_exe = executable("libc_check_exe", libc_check, "$(B)/tst/libc/check")
 
 # test_asan's program: lib/c's allocator, string functions and calls misused,
 # one memory error a case, built as test_libc's is but with -g, so the
@@ -532,6 +572,7 @@ asan_check = command(
     descr="CC",
     color="green",
 )
+asan_check_exe = executable("asan_check_exe", asan_check, "$(B)/tst/asan/check")
 
 # test_cxx's program: lib/cxx's library over lib/c with deterministic results.
 cxx_check = command(
@@ -544,6 +585,7 @@ cxx_check = command(
     descr="CC",
     color="green",
 )
+cxx_check_exe = executable("cxx_check_exe", cxx_check, "$(B)/tst/cxx/check")
 
 
 # The WebAssembly spec testsuite through `vm spec`; wast2json comes from
@@ -686,6 +728,7 @@ chaos_check = command(
     cmd=["python3", "$(S)/tst/libc/make.py", CLANG, WASM_LD, "$(S)/tst/chaos/check.c", "$(S)/lib/c/include", libc.outputs[0], "$(B)/tst/chaos/check.wasm", "-g"],
     descr="CC", color="green",
 )
+chaos_check_exe = executable("chaos_check_exe", chaos_check, "$(B)/tst/chaos/check")
 
 terminal_check = command(
     name="terminal_check",
@@ -695,6 +738,7 @@ terminal_check = command(
     cmd=["python3", "$(S)/tst/libc/make.py", CLANG, WASM_LD, "$(S)/tst/terminal/check.c", "$(S)/lib/c/include", libc.outputs[0], "$(B)/tst/terminal/check.wasm", "-g"],
     descr="CC", color="green",
 )
+terminal_check_exe = executable("terminal_check_exe", terminal_check, "$(B)/tst/terminal/check")
 
 host_resources_check = command(
     name="host_resources_check",
@@ -704,6 +748,7 @@ host_resources_check = command(
     cmd=["python3", "$(S)/tst/libc/make.py", CLANG, WASM_LD, "$(S)/tst/host_resources/check.c", "$(S)/lib/c/include", libc.outputs[0], "$(B)/tst/host_resources/check.wasm", "-g", "-D_GNU_SOURCE"],
     descr="CC", color="green",
 )
+host_resources_check_exe = executable("host_resources_check_exe", host_resources_check, "$(B)/tst/host_resources/check")
 
 host_syscalls_check = command(
     name="host_syscalls_check",
@@ -713,6 +758,7 @@ host_syscalls_check = command(
     cmd=["python3", "$(S)/tst/libc/make.py", CLANG, WASM_LD, "$(S)/tst/host_syscalls/check.c", "$(S)/lib/c/include", libc.outputs[0], "$(B)/tst/host_syscalls/check.wasm", "-g", "-D_GNU_SOURCE"],
     descr="CC", color="green",
 )
+host_syscalls_check_exe = executable("host_syscalls_check_exe", host_syscalls_check, "$(B)/tst/host_syscalls/check")
 
 host_syscalls_filter = command(
     name="host_syscalls_filter",
@@ -732,17 +778,17 @@ host_syscalls_interrupt = command(
 
 E2E_TESTED = {
     "aot": [aot, aot_command, wazero, vm, chaos_check],
-    "asan": [vm, asan_check],
+    "asan": [vm, asan_check_exe],
     "asan_bounds": [vm, aot_native, wazero],
     "bounded_copy_loops": [vm, aot_native, wazero],
-    "chaos": [vm, vm_chaos, aot_native, aot_native_chaos, chaos_check],
+    "chaos": [vm, vm_chaos, aot_native, aot_native_chaos, chaos_check, chaos_check_exe],
     "cli_errors": [vm, aot_native],
     "compiler_modes": [vm, aot_native],
     "compiler_rejections": [vm, aot_native, wazero],
     "conditional_floats": [vm, aot_native, wazero],
     "constant_arithmetic": [vm, aot_native, wazero],
     "copy_loops": [vm, aot_native],
-    "cxx": [vm, cxx_check],
+    "cxx": [vm, cxx_check_exe],
     "data_segments": [vm, aot_native],
     "dead_instructions": [vm, aot_native, wazero],
     "deep_control": [vm, aot_native, wazero],
@@ -762,11 +808,11 @@ E2E_TESTED = {
     "invariant_loops": [vm, aot_native, wazero],
     "invariant_results": [vm, aot_native, wazero],
     "host_io": [vm, aot_native],
-    "host_resources": [vm, aot_native, host_resources_check],
-    "host_syscalls": [vm, aot_native, host_syscalls_check, host_syscalls_filter, host_syscalls_interrupt],
+    "host_resources": [vm, aot_native, host_resources_check, host_resources_check_exe],
+    "host_syscalls": [vm, aot_native, host_syscalls_check, host_syscalls_check_exe, host_syscalls_filter, host_syscalls_interrupt],
     "runtime_abi": [vm, aot_native, *runtime_abi_vms],
     "host_signals": [vm, aot_native, wazero],
-    "libc": [vm, libc_check],
+    "libc": [vm, libc_check_exe],
     "large_functions": [vm, aot_native],
     "large_switches": [vm, aot_native, wazero],
     "loop_limits": [vm, aot_native, wazero],
@@ -776,7 +822,7 @@ E2E_TESTED = {
     "spec_cli": [vm, aot_native],
     "sparse_values": [vm, aot_native, wazero],
     "stand": [vm, aot_native, stand_fixture],
-    "terminal": [vm, aot_native, terminal_check, host_syscalls_filter],
+    "terminal": [vm, aot_native, terminal_check, terminal_check_exe, host_syscalls_filter],
     "table_defaults": [vm, aot_native, wazero],
     "unary_loops": [vm, aot_native, wazero],
     "vfork_traps": [vm, aot_native, wazero],
@@ -785,12 +831,12 @@ E2E_TESTED = {
 }
 APPLICATION_TESTED = {
     "rootfs": [vm, rootfs],
-    "vfs": [vm, rootfs, python],
+    "vfs": [vm, rootfs, python_exe],
     "busybox_abi": [busybox],
-    "busybox": [vm, busybox],
-    "clang": [vm, busybox, clang, libc, libc_headers, libcxx],
-    "doom": [vm, doom, doom_wad],
-    "python": [vm, python, python_tarball, busybox],
+    "busybox": [vm, busybox_exe, busybox],
+    "clang": [vm, busybox_exe, busybox, llvm_exe, clang, libc, libc_headers, libcxx, pzd],
+    "doom": [vm, doom_exe, doom_wad],
+    "python": [vm, python_exe, python_tarball, busybox_exe, busybox],
 }
 TESTED = {**E2E_TESTED, **APPLICATION_TESTED}
 tests = []
@@ -827,7 +873,7 @@ for source in build.glob("$(S)/tst/unit/**/*.cpp"):
     prefix = f"$(B)/tst/unit/{name}"
     unit_tests.append(command(
         name="unit_" + name.replace("/", "_"),
-        inputs=[source, "$(S)/tst/unit/run.py", "$(S)/dev/wasm.py", *LIBC_HEADERS],
+        inputs=[source, "$(S)/tst/unit/run.py", "$(S)/dev/wasm.py", "$(S)/dev/exe.py", *LIBC_HEADERS],
         outputs=[prefix + suffix for suffix in (".stamp", ".wasm", ".native.o", ".embedded.o")],
         deps=[aot_native, vm, libc, libcxx],
         cmd=["python3", "$(S)/tst/unit/run.py", source, prefix, UNIT_TOOLS],
@@ -850,7 +896,7 @@ for test in build.glob("$(S)/tst/test_*.py"):
     tested = TESTED[name]
     case_test = command(
         name=f"test_{name}",
-        inputs=[test, "$(S)/dev/wasm_info.py"],
+        inputs=[test, "$(S)/dev/wasm_info.py", "$(S)/dev/exe.py"],
         outputs=[stamp],
         deps=tested,
         cmd=[
@@ -910,7 +956,7 @@ for name, runner, fixture in (("wat_updates", "run_updates.py", "update_branches
     stamp = f"$(B)/tst/{name}.stamp"
     case_test = command(
         name="test_" + name,
-        inputs=[runner, fixture],
+        inputs=[runner, fixture, "$(S)/dev/exe.py"],
         outputs=[stamp],
         deps=[vm, aot_native, wazero],
         cmd=[["python3", runner, vm.outputs[0], aot_native.outputs[0], wazero.outputs[0], WAT2WASM, fixture], touch(stamp)],
@@ -957,9 +1003,9 @@ coverage_check = command(
     descr="CV", color="cyan",
 )
 
-group("install", libcxx, libc_headers, clang, busybox, busybox_abi, doom, python, vm, aot_native, aot, aot_aot, wazero,
-      rootfs)
+group("install", libcxx, libc_headers, clang, llvm_exe, busybox, busybox_exe, busybox_abi, doom, doom_exe, python, python_exe, pzd,
+      vm, aot_native, aot, aot_aot, wazero, rootfs)
 group("unit", *unit_tests)
 group("e2e", *e2e_tests, *unit_tests, vm_spec_test)
 group("test", *tests, *unit_tests, vm_spec_test)
-group("stand", vm, aot_native, aot, aot_aot, busybox, stand_corpus, *decode_stand, python, stand_python_native)
+group("stand", vm, aot_native, aot, aot_aot, busybox, stand_corpus, *decode_stand, python_exe, stand_python_native)

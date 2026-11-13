@@ -12,6 +12,10 @@ import sys
 import tempfile
 import time
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "dev"))
+
+from exe import pack  # noqa: E402
+
 
 def leb(value, signed=False):
     result = bytearray()
@@ -103,10 +107,11 @@ def main():
     checked = 0
     with tempfile.TemporaryDirectory(prefix="pizdos-host-signals-") as directory:
         work = Path(directory)
-        source, compiled, embedded = [work / name for name in ("input.wasm", "native.o", "embedded.o")]
+        source, executable, compiled, embedded = [work / name for name in ("input.wasm", "input", "native.o", "embedded.o")]
         for mode in ("loop", "stop", "wait", "handler", "missing-stack"):
             data = program(mode)
             source.write_bytes(data)
+            executable.write_bytes(pack(data))
             result = subprocess.run([wazero, "-compile", str(source)], capture_output=True, timeout=30)
             assert result.returncode == 0, (mode, result)
             result = subprocess.run([native, "--strict"], input=data, capture_output=True, env=env, timeout=60)
@@ -115,7 +120,7 @@ def main():
             result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
             assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), (mode, result)
             for sig in ((signal.SIGTERM, signal.SIGINT, signal.SIGUSR2) if mode == "loop" else (signal.SIGUSR1,)):
-                child = subprocess.Popen([vm, "run", "--", str(source)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+                child = subprocess.Popen([vm, "run", "--", str(executable)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
                 try:
                     wait_ready(child)
                     if mode == "stop":

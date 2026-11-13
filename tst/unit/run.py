@@ -24,6 +24,7 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "dev"))
 import wasm
+import exe
 
 LINK = ["--stack-first", "-z", "stack-size=1049600", "--max-memory=4294967296",
         "--export=__heap_base", "--export=__stack_pointer", "--gc-sections"]
@@ -135,7 +136,7 @@ def run(source, prefix, tools):
             (root / "bin").mkdir()
             (root / "tmp").mkdir()
             executable = root / "bin/check"
-            shutil.copyfile(module, executable)
+            executable.write_bytes(exe.pack(module.read_bytes()))
             executable.chmod(0o755)
             run_args = [argument.replace("$ROOT", str(root)) for argument in args]
             run_env = dict(env, **{name: value.replace("$ROOT", str(root)) for name, value in case.get("env", {}).items()})

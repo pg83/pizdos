@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Command usage, failed output transactions, bounded guest crash traces and
-modules compressed by zstd.
+executables: the PZD1 header, the module compressed by zstd, a tail.
 
     test_cli_errors.py <vm> <native-aot>
 """
@@ -12,6 +12,10 @@ import struct
 import subprocess
 import sys
 import tempfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "dev"))
+
+from exe import pack  # noqa: E402
 
 
 def leb(value):
@@ -53,9 +57,16 @@ def recursive_module(depth):
     return module + section(0, text("name") + b"\1" + leb(len(names)) + names)
 
 
-def compressed(data):
-    options = {zstd.CompressionParameter.compression_level: 19, zstd.CompressionParameter.checksum_flag: 1}
-    return zstd.compress(data, options=options)
+def kernel_module():
+    """A module whose _start calls a function of the kernel: a program of the
+    kernel."""
+    body = b"\0\x10\0\x1a\x0b"
+    return (b"\0asm\1\0\0\0" + section(1, b"\2\x60\0\1\x7f\x60\0\0") + section(2, b"\1" + text("kernel") + text("getpid") + b"\0\0")
+            + section(3, b"\1\1") + section(7, b"\1" + text("_start") + b"\0\1") + section(10, b"\1" + leb(len(body)) + body))
+
+
+def header(length):
+    return b"PZD1" + struct.pack("<I", length)
 
 
 def main():
@@ -120,28 +131,39 @@ def main():
             result = run(["run", "--asan", "--", source])
             assert result.returncode == 1 and result.stderr == b"vm: --asan runs programs of the kernel\n", result
 
-        # A module compressed by zstd runs as the module does; frames that
-        # do not unpack to one are refused, with why.
+        # An executable runs as its module does, whatever follows its
+        # length; one whose length or frames are wrong is refused, with why,
+        # and a bare frame is no executable.
         data = recursive_module(80)
         source.write_bytes(data)
         plain = run(["run", "--", source])
-        packed = work / "packed.wasm"
-        frame = compressed(data)
-        packed.write_bytes(frame)
-        result = run(["run", "--", packed])
-        assert (result.returncode, result.stdout, result.stderr) == (plain.returncode, plain.stdout, plain.stderr), result
-        assert result.returncode == 129, result
+        executable = work / "input"
+        packed = pack(data)
+        for tail in (b"", b"PK\5\6 what the program has after its executable"):
+            executable.write_bytes(packed + tail)
+            result = run(["run", "--", executable])
+            assert (result.returncode, result.stdout, result.stderr) == (plain.returncode, plain.stdout, plain.stderr), result
+            assert result.returncode == 129, result
+        frame = packed[8:]
         # A frame that declares more than vm unpacks, 1 GiB.
         huge = b"\x28\xb5\x2f\xfd\xc0\x50" + struct.pack("<Q", 1 << 31) + b"\1\0\0"
-        for name, data, diagnostic in (("truncated", frame[:-9], b"zstd: "),
-                                       ("checksum", frame[:-1] + bytes([frame[-1] ^ 1]), b"zstd: "),
-                                       ("huge", huge, b"zstd: decompressed size exceeds configured limit"),
-                                       ("no module", compressed(b"previous successful output"), b"not a WebAssembly module")):
-            packed.write_bytes(data)
-            result = run(["run", "--", packed])
+        text_frame = zstd.compress(b"previous successful output")
+        for name, data, diagnostic in (("past the file", header(len(packed) + 1) + frame, b"PZD1: a length of"),
+                                       ("no frames", header(8) + frame, b"PZD1: a length of 8"),
+                                       ("truncated", header(len(packed) - 9) + frame[:-9], b"zstd: "),
+                                       ("checksum", packed[:-1] + bytes([packed[-1] ^ 1]), b"zstd: "),
+                                       ("huge", header(8 + len(huge)) + huge, b"zstd: decompressed size exceeds configured limit"),
+                                       ("no module", header(8 + len(text_frame)) + text_frame, b"not a WebAssembly module"),
+                                       ("bare frame", frame, b"not a WebAssembly module")):
+            executable.write_bytes(data)
+            result = run(["run", "--", executable])
             assert result.returncode == 1 and result.stdout == b"" and diagnostic in result.stderr, (name, result)
             assert b"panic:" not in result.stderr, (name, result)
-    print("CLI errors: usage, failed output transactions, ASAN restrictions, bounded recursive traces and compressed modules passed")
+        # A program of the kernel runs from an executable only.
+        source.write_bytes(kernel_module())
+        result = run(["run", "--", source])
+        assert result.returncode == 1 and b"a program of the kernel, not in an executable of PZD1" in result.stderr, result
+    print("CLI errors: usage, failed output transactions, ASAN restrictions, bounded recursive traces and executables passed")
 
 
 if __name__ == "__main__":

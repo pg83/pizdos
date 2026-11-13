@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""`vm run -- rootfs.wasm`: a system from one module and nothing of the
-host's file system. rootfs serves the image linked into it, the modules of
-busybox and python, which the kernel compiles as they are executed, and a
+"""`vm run -- rootfs`: a system from one executable and nothing of the
+host's file system. rootfs serves the image linked into it, the executables
+of busybox and python, whose modules the kernel compiles as they are executed, and a
 /dev and a /tmp in its memory, and starts busybox's shell on the terminal;
 the shell's status is vm's. Each server's files are on a
 device of their own and belong to who made them, a directory keeps its
@@ -13,7 +13,7 @@ a file has hard links, ctime is its own, statvfs tells the capacity of
 /tmp and a root that is read-only, and who is not root gets no more than
 the modes give.
 
-    test_rootfs.py <vm> <rootfs.wasm>
+    test_rootfs.py <vm> <rootfs>
 """
 import os
 import subprocess
@@ -146,7 +146,7 @@ ls: /lib: No such file or directory
 through env
 busybox
 executable
- 28 b5 2f fd
+ 50 5a 44 31
 read-only
 2
 600

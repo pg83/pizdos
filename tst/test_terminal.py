@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Drive the public VM through a controlling pseudoterminal, checking echo.
 
-    test_terminal.py <vm> <native-aot> <check.wasm> <filter>
+    test_terminal.py <vm> <native-aot> <check.wasm> <check> <filter>
 """
 import errno
 import fcntl
@@ -16,6 +16,10 @@ import sys
 import tempfile
 import termios
 import time
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "dev"))
+
+from exe import pack  # noqa: E402
 
 
 def private_name(vm, root, programs):
@@ -100,7 +104,7 @@ def main():
     if sys.argv[1] == "--private-name":
         private_name(sys.argv[2], sys.argv[3], sys.argv[4:])
         return
-    vm, native, module, wrapper = sys.argv[1:]
+    vm, native, module, executable, wrapper = sys.argv[1:]
     env = dict(os.environ, W2X_MEMORY_TAIL="optimized", W2X_TAIL_PROFILE="")
     with tempfile.TemporaryDirectory(prefix="pizdos-terminal-") as directory:
         root = Path(directory)
@@ -111,7 +115,7 @@ def main():
         compiled.write_bytes(result.stdout)
         subprocess.run([vm, "-o", str(embedded), module], capture_output=True, env=env, check=True, timeout=60)
         assert compiled.read_bytes() == embedded.read_bytes()
-        shutil.copyfile(module, program)
+        shutil.copyfile(executable, program)
         command = [vm, "run", "--root", str(root), "--", str(program)]
         result = subprocess.run([*command, "missing"], start_new_session=True, capture_output=True, env=env, timeout=30)
         assert (result.returncode, result.stdout, result.stderr) == (0, b"missing terminal: ok\n", b""), result
@@ -132,14 +136,15 @@ def main():
                                  sys.executable, __file__, "--private-name", vm, str(root), str(program)],
                                 capture_output=True, env=env, timeout=60)
         assert (result.returncode, result.stdout, result.stderr) == (0, b"private terminal: the program resolves and reopens the guest path\n", b""), result
-        source = root / "heapless.wasm"
+        source, heapless = root / "heapless.wasm", root / "heapless"
         source.write_bytes(heapless_password())
+        heapless.write_bytes(pack(source.read_bytes()))
         result = subprocess.run([native], input=source.read_bytes(), capture_output=True, env=env, timeout=60)
         assert result.returncode == 0, result.stderr
         compiled.write_bytes(result.stdout)
         result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
         assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), result
-        terminal([vm, "run", "--root", str(root), "--", str(source)], [(b"oom: ", b"\n")], b"oom: \r\n", env)
+        terminal([vm, "run", "--root", str(root), "--", str(heapless)], [(b"oom: ", b"\n")], b"oom: \r\n", env)
     print("terminal: native/Wasm AOT agree, passwords remain unechoed, attributes restored and errors reported")
 
 

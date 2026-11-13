@@ -9,6 +9,10 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "dev"))
+
+from exe import pack  # noqa: E402
+
 
 def leb(value):
     result = bytearray()
@@ -115,7 +119,9 @@ def main():
                 compiled.write_bytes(reference)
                 result = subprocess.run([vm, "-o", str(output), str(source)], capture_output=True, env=strict_env, timeout=30)
                 assert result.returncode == 0 and output.read_bytes() == reference, (label, result)
-                result = subprocess.run([vm, "run", "--", str(source)], capture_output=True, env=strict_env, timeout=30)
+                executable = work / "input"
+                executable.write_bytes(pack(data))
+                result = subprocess.run([vm, "run", "--", str(executable)], capture_output=True, env=strict_env, timeout=30)
                 assert (result.returncode, result.stdout, result.stderr) == (0, b"", b""), (label, result)
     print(f"compiler rejections: {len(cases)} control, segment, index and import-address errors preserve output with both AOTs")
 

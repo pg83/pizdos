@@ -233,9 +233,14 @@ func programOptions(asan bool) CompileOptions {
 // wasmHeader begins a WebAssembly module, of version 1.
 var wasmHeader = []byte("\x00asm\x01\x00\x00\x00")
 
-// zstdMagic begins a Zstandard frame (RFC 8878): a file of a module may be
-// the module compressed, as the image keeps its programs.
-var zstdMagic = []byte{0x28, 0xb5, 0x2f, 0xfd}
+// An executable of a program of the kernel (dev/exe.py) begins with
+// exeMagic and its length, header included, a 32-bit little-endian number;
+// the module compressed by zstd fills the rest of that length. What
+// follows is the program's own, which the kernel never reads: python's
+// standard library, a zip at the end of its file.
+var exeMagic = []byte("PZD1")
+
+const exeHeader = 8
 
 // unpackLimit bounds what a compressed module unpacks to, 1 GiB, four
 // times llvm's module: a small file does not take the host's memory.
@@ -246,15 +251,27 @@ var unpacker = sync.OnceValue(func() *zstd.Decoder {
 	return throw2(zstd.NewReader(nil, zstd.WithDecoderMaxMemory(unpackLimit)))
 })
 
-// unpack is the module a file's data is: the data, or what its zstd
-// frames unpack to, skippable frames skipped; ENOEXEC, with why, when they
-// do not.
-func unpack(data []byte) ([]byte, error) {
-	if !bytes.HasPrefix(data, zstdMagic) {
-		return data, nil
+// exeLength is the length of the executable a file of size bytes begins
+// with, header its first bytes: 0 for a file that begins with none,
+// ENOEXEC, with why, for a length past the file or none past the header.
+func exeLength(header []byte, size int64) (int, error) {
+	if len(header) < exeHeader || !bytes.HasPrefix(header, exeMagic) {
+		return 0, nil
 	}
 
-	module, err := unpacker().DecodeAll(data, nil)
+	length := int64(binary.LittleEndian.Uint32(header[len(exeMagic):]))
+
+	if length <= exeHeader || length > size {
+		return 0, fmt.Errorf("PZD1: a length of %d in a file of %d bytes: %w", length, size, syscall.ENOEXEC)
+	}
+
+	return int(length), nil
+}
+
+// unpack is the module of an executable: its zstd frames unpacked, which
+// end where it does; ENOEXEC, with why, when they do not unpack.
+func unpack(exe []byte) ([]byte, error) {
+	module, err := unpacker().DecodeAll(exe[exeHeader:], nil)
 
 	if err != nil {
 		return nil, fmt.Errorf("zstd: %v: %w", err, syscall.ENOEXEC)
@@ -263,15 +280,22 @@ func unpack(data []byte) ([]byte, error) {
 	return module, nil
 }
 
-// compileModule compiles a module, or a file of one compressed by zstd, to
-// its object: ENOEXEC for what is no module, with why for frames that do
-// not unpack, or a module the compiler refuses, with its diagnostic, or
-// traps on.
-func compileModule(data []byte, options CompileOptions) (obj *Object, err error) {
-	if data, err = unpack(data); err != nil {
+// compileExecutable compiles the module of an executable to its object, as
+// compileModule does, ENOEXEC with why for frames that do not unpack.
+func compileExecutable(exe []byte, options CompileOptions) (*Object, error) {
+	module, err := unpack(exe)
+
+	if err != nil {
 		return nil, err
 	}
 
+	return compileModule(module, options)
+}
+
+// compileModule compiles a module to its object: ENOEXEC for what is no
+// module, or a module the compiler refuses, with its diagnostic, or traps
+// on.
+func compileModule(data []byte, options CompileOptions) (obj *Object, err error) {
 	if !bytes.HasPrefix(data, wasmHeader) {
 		return nil, syscall.ENOEXEC
 	}

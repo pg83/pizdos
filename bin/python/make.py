@@ -2,16 +2,17 @@
 """Build CPython for pizdos from a release tarball, our pyconfig.h and lib/c.
 
     make.py core <cc> <ar> <wasm-ld> <tarball> <pyconfig.h> <libc-include> <libc.a> <libpython.a> <freeze.wasm>
-    make.py python <cc> <wasm-ld> <vm> <tarball> <pyconfig.h> <libc-include> <libc.a> <libpython.a> <freeze.wasm> <python.wasm>
+    make.py python <cc> <wasm-ld> <vm> <tarball> <pyconfig.h> <libc-include> <libc.a> <libpython.a> <freeze.wasm> <python.wasm> <stdlib.zip>
 
 core compiles the interpreter and its built-in modules into libpython.a,
 the objects the tarball's Makefile.pre.in names and the modules below, and
-links Programs/_freeze_module against it. python runs that freezer in
-the kernel, which compiles it, to freeze the modules the Makefile
-freezes, and links python.wasm with them and main.c, its own main, which
-finds the standard library in the program's own file: the library,
-without its tests, with the build's sysconfig data, is a zip in the
-module's last custom section. The prefix is /, programs in /bin. Threads are
+links Programs/_freeze_module against it. python runs that freezer, packed
+into an executable (dev/exe.py), in the kernel, which compiles it, to
+freeze the modules the Makefile freezes, and links python.wasm with them
+and main.c, its own main, which finds the standard library in the
+program's own file: the library, without its tests, with the build's
+sysconfig data, is stdlib.zip, the tail of python's executable, where
+zipimport finds it. The prefix is /, programs in /bin. Threads are
 CPython's stubs, there is no dynamic loading, every module is built in and
 none needs more than lib/c: no sockets, no compression. An undefined symbol
 is a link error, as for every program of lib/c.
@@ -34,6 +35,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent.parent / "dev"))
 
+import exe  # noqa: E402
 import wasm  # noqa: E402
 
 VERSION = "3.14"
@@ -357,27 +359,7 @@ def stdlib_zip(tree, pyconfig):
     return out.getvalue()
 
 
-def leb(n):
-    out = bytearray()
-
-    while True:
-        byte, n = n & 127, n >> 7
-        out.append(byte | (128 if n else 0))
-
-        if not n:
-            return bytes(out)
-
-
-def embed(module, data):
-    """data as the module's last custom section, named stdlib: a zip there
-    ends where the file ends, where zipimport looks, and its offsets count
-    from the archive's start, which zipimport finds by the bytes before it."""
-    name = b"stdlib"
-    payload = leb(len(name)) + name + data
-    module.write_bytes(module.read_bytes() + b"\0" + leb(len(payload)) + payload)
-
-
-def python(cc, ld, vm, tarball, pyconfig, libc_include, libc, libpython, freeze, output):
+def python(cc, ld, vm, tarball, pyconfig, libc_include, libc, libpython, freeze, output, stdlib):
     work = Path(os.environ.get("TMPDIR") or "/tmp") / "python"
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
@@ -392,12 +374,14 @@ def python(cc, ld, vm, tarball, pyconfig, libc_include, libc, libpython, freeze,
     out = tree / "frozen"
     out.mkdir()
     modules = list(frozen_modules(tree))
+    freezer = work / "freeze"
+    freezer.write_bytes(exe.pack(Path(freeze).read_bytes()))
 
     # A module freezes in a kernel of its own, which compiles the freezer
     # as it starts: the kernels run side by side.
     def freeze_module(module):
         name, source, header = module
-        subprocess.run([vm, "run", "--root", str(tree), "-a", "_freeze_module", "--", freeze,
+        subprocess.run([vm, "run", "--root", str(tree), "-a", "_freeze_module", "--", str(freezer),
                         name, "/" + source, "/frozen/" + header], check=True, env={"PATH": "/bin"})
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, os.cpu_count() or 1)) as pool:
@@ -419,7 +403,7 @@ def python(cc, ld, vm, tarball, pyconfig, libc_include, libc, libpython, freeze,
     wasm.compile_all(cc, units, cwd=tree)
     Path(output).parent.mkdir(parents=True, exist_ok=True)
     subprocess.run([ld, *LINK, "-o", output, *(str(obj) for _, obj, _ in units), libpython, libc], check=True)
-    embed(Path(output), stdlib_zip(tree, pyconfig))
+    Path(stdlib).write_bytes(stdlib_zip(tree, pyconfig))
 
 
 def main():

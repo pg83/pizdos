@@ -57,3 +57,17 @@ __pycache__/
 /host_syscalls_filter
 /rootfs
 /rootfs_image
+/busybox_exe
+/doom_exe
+/python_exe
+/rootfs_module
+/llvm_exe
+/pzd
+/pzd_module
+/libc_check_exe
+/asan_check_exe
+/cxx_check_exe
+/chaos_check_exe
+/terminal_check_exe
+/host_resources_check_exe
+/host_syscalls_check_exe
