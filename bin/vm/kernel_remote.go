@@ -14,7 +14,7 @@ import (
 // pair (kernel_endpoint.go), the server holds the other and answers on
 // it. The kernel speaks the protocol here for the POSIX calls of a
 // process, as the libc of the process would; rootfs speaks it as the
-// servers (bin/rootfs/rootfs.nim). The kernel walks a path as Linux does
+// servers (bin/rootfs/rootfs.cpp). The kernel walks a path as Linux does
 // (kernel_path.go): RESOLVE walks it from a directory to the directory of
 // its last name, and the call is then one on that name, which no server
 // follows: the kernel follows a symbolic link itself. A directory the

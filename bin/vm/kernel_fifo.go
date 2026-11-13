@@ -4,7 +4,7 @@ package main
 
 import "syscall"
 
-// A FIFO of a server is a node and nothing more (bin/rootfs/rootfs.nim):
+// A FIFO of a server is a node and nothing more (bin/rootfs/rootfs.cpp):
 // its pipe is the kernel's, kept by the FIFO's device and inode while an
 // end of it is open, and an open of the FIFO joins it as a reader, a
 // writer or, with O_RDWR, both (kernel_pipe.go join). An open to read

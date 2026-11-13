@@ -31,9 +31,6 @@ LLVM_AR = tool("llvm-ar")
 LLVM_RANLIB = tool("llvm-ranlib")
 WASM_LD = tool("wasm-ld")
 GO = tool("go")
-# Nim builds rootfs (bin/rootfs); without it, it and
-# their test are left out.
-NIM = shutil.which("nim") or ""
 
 MUSL = "1.2.5"
 BUSYBOX = "1.36.1"
@@ -467,32 +464,26 @@ python = command(
 # linked into it, the modules of busybox with its links and python, with
 # /dev and /tmp of its own, to the shell it starts, and the kernel compiles
 # each module as it is executed (bin/rootfs).
-def nim_program(name, source, output, deps=(), options=()):
-    return command(
-        name=name,
-        inputs=[source, "$(S)/dev/nim.py", "$(S)/dev/wasm.py", *LIBC_HEADERS],
-        outputs=[output],
-        deps=[libc, *deps],
-        cmd=["python3", "$(S)/dev/nim.py", NIM, CLANG, WASM_LD, "$(S)/lib/c/include", libc.outputs[0], source, output,
-             *options],
-        descr="NI",
-        color="cyan",
-    )
-
-
-if NIM:
-    rootfs_image = command(
-        name="rootfs_image",
-        inputs=["$(S)/bin/rootfs/image.py"],
-        outputs=["$(B)/bin/rootfs/rootfs.tar"],
-        deps=[busybox, python],
-        cmd=["python3", "$(S)/bin/rootfs/image.py", "$(B)/bin/rootfs/rootfs.tar",
-             "--busybox", *busybox.outputs, "--python", *python.outputs],
-        descr="IM",
-        color="cyan",
-    )
-    rootfs = nim_program("rootfs", "$(S)/bin/rootfs/rootfs.nim", "$(B)/bin/rootfs/rootfs.wasm", deps=[rootfs_image],
-                         options=["--image", rootfs_image.outputs[0]])
+rootfs_image = command(
+    name="rootfs_image",
+    inputs=["$(S)/bin/rootfs/image.py"],
+    outputs=["$(B)/bin/rootfs/rootfs.tar"],
+    deps=[busybox, python],
+    cmd=["python3", "$(S)/bin/rootfs/image.py", "$(B)/bin/rootfs/rootfs.tar",
+         "--busybox", *busybox.outputs, "--python", *python.outputs],
+    descr="IM",
+    color="cyan",
+)
+rootfs = command(
+    name="rootfs",
+    inputs=["$(S)/bin/rootfs/rootfs.cpp", "$(S)/bin/rootfs/make.py", "$(S)/dev/wasm.py", *LIBC_HEADERS],
+    outputs=["$(B)/bin/rootfs/rootfs.wasm"],
+    deps=[libc, rootfs_image],
+    cmd=["python3", "$(S)/bin/rootfs/make.py", CLANG, WASM_LD, "$(S)/bin/rootfs/rootfs.cpp", "$(S)/lib/c/include",
+         libc.outputs[0], rootfs_image.outputs[0], "$(B)/bin/rootfs/rootfs.wasm"],
+    descr="CC",
+    color="cyan",
+)
 
 # clang for this system: LLVM's multicall program of the release lib/cxx
 # comes from, compiled against lib/c and lib/cxx, and the headers clang
@@ -793,7 +784,8 @@ E2E_TESTED = {
     "vm": [vm, aot_native, aot, aot_command, wazero, chaos_check],
 }
 APPLICATION_TESTED = {
-    **({"rootfs": [vm, rootfs], "vfs": [vm, rootfs, python]} if NIM else {}),
+    "rootfs": [vm, rootfs],
+    "vfs": [vm, rootfs, python],
     "busybox_abi": [busybox],
     "busybox": [vm, busybox],
     "clang": [vm, busybox, clang, libc, libc_headers, libcxx],
@@ -966,7 +958,7 @@ coverage_check = command(
 )
 
 group("install", libcxx, libc_headers, clang, busybox, busybox_abi, doom, python, vm, aot_native, aot, aot_aot, wazero,
-      *([rootfs] if NIM else []))
+      rootfs)
 group("unit", *unit_tests)
 group("e2e", *e2e_tests, *unit_tests, vm_spec_test)
 group("test", *tests, *unit_tests, vm_spec_test)
