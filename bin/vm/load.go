@@ -617,7 +617,7 @@ func (i *Instance) clone(imports *Kernel, stack uint64, from, to uint64) *Instan
 	copy(c.block[headerSize:], i.block[headerSize:])
 
 	if meta := i.obj.meta.memory; meta != nil && meta.profile != 0 {
-		clear(c.block[meta.profile : uint64(meta.profile)+uint64(meta.profileFuncs)*tailCounterBytes])
+		clear(c.block[meta.profile : uint64(meta.profile)+uint64(len(meta.sites))*profileCounterBytes])
 	}
 
 	if meta := i.obj.meta.memory; meta != nil && meta.shadow != 0 {

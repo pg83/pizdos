@@ -824,6 +824,7 @@ E2E_TESTED = {
     "stand": [vm, aot_native, stand_fixture],
     "terminal": [vm, aot_native, terminal_check, terminal_check_exe, host_syscalls_filter],
     "table_defaults": [vm, aot_native, wazero],
+    "tail_profile": [vm, aot_native],
     "unary_loops": [vm, aot_native, wazero],
     "vfork_traps": [vm, aot_native, wazero],
     "wide_results": [vm, aot_native, wazero],

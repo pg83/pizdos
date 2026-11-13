@@ -796,6 +796,15 @@ namespace {
             count = size;
         }
 
+        // truncate ends the vector at size, freeing the pages past it.
+        void truncate(usize size) {
+            count = size;
+            const usize used = (size + itemsPerPage - 1) / itemsPerPage;
+            while (pages.size() > used) {
+                freePage(pages.popBack());
+            }
+        }
+
         void clear() {
             count = 0;
         }
@@ -3264,7 +3273,6 @@ namespace {
         Slice<TableFixup> tables{};
         Slice<Fn<void()>> late{};
         i32 incoming{};
-        i32 profile{};
         // Emission positions of blocks, the last position control falls into
         // from the end of each position, and the final target of each block
         // that only forwards (-1 for others): see objCodeEmitFunction.
@@ -3680,14 +3688,24 @@ namespace {
         bool small{};
     };
 
+    // A counter of the tail profile: of function's code, counting what kind
+    // says at the wasm instruction at offset in the module (0 for none).
+    struct ProfileSite {
+        u32 function{};
+        u32 offset{};
+        u8 kind{};
+    };
+
     struct MemoryMeta {
         u64 min{};
         u64 max{};
         bool imported{};
         u64 tail{};
         u32 tailEnd{};
+        // profile is the instance slot of the tail profile's first counter,
+        // sites what each one counts.
         u32 profile{};
-        u32 profileFuncs{};
+        Slice<ProfileSite> sites{};
         // shadow is the instance slot of the shadow map's base: an asan
         // object, which has no tail.
         u32 shadow{};
@@ -4129,6 +4147,9 @@ namespace {
         Slice<String> importSyms{};
         Slice<Int> importIntrinsics{};
         Slice<bool> importCode{};
+        // sites are the tail profile's counters the functions made, in the
+        // order of their slots.
+        Slice<ProfileSite> sites{};
     };
 
     struct Table {
@@ -4216,6 +4237,11 @@ namespace {
         Term term{};
         Slice<i32> preds{};
         bool dead{};
+        // pos is, for a loop's header, the loop instruction (Function
+        // positions); 0 for other blocks. fast marks the header of a copy
+        // of a loop with the accesses its guard proved (memoryLoopClone).
+        u32 pos{};
+        bool fast{};
     };
 
     // Loop versioning only appends instructions to bodies. Existing body
@@ -4334,7 +4360,20 @@ namespace {
 
     static constexpr Int boundSlack = 1024;
 
-    static constexpr Int tailCounterBytes = 32;
+    // The tail profile counts in a counter of 8 bytes for each site, past
+    // the instance's other slots (newLayout): the executions of a bounds
+    // check, of a checked span's guard and of the fallbacks from it, the
+    // checks the guard stood for, and a loop's iterations and entries, of
+    // the loop as compiled or of a copy its guard proved the accesses of.
+    // The object tells each counter's function, kind and wasm instruction.
+    static constexpr u8 siteCheck = 0;
+    static constexpr u8 siteGuard = 1;
+    static constexpr u8 siteFallback = 2;
+    static constexpr u8 siteOmitted = 3;
+    static constexpr u8 siteLoop = 4;
+    static constexpr u8 siteEntry = 5;
+    static constexpr u8 siteFastLoop = 6;
+    static constexpr u8 siteFastEntry = 7;
 
     static constexpr Int tableEntries = 0;
 
@@ -5585,6 +5624,8 @@ namespace {
 
     static Mem lowererAddress(Lowerer* l, i32 addr, i64 offset, Int width, bool proven, bool store);
 
+    static Mem lowererAccessAddress(Lowerer* l, i32 access, i32 addr, i64 offset, Int width, bool proven, bool store);
+
     static Mem lowererAsanAddress(Lowerer* l, i32 addr, i64 offset, Int width, bool store);
 
     static void lowererAsanRange(Lowerer* l, VReg a, VReg n);
@@ -5725,7 +5766,15 @@ namespace {
 
     static void lowererTableSet(Lowerer* l, Int table, i32 index, i32 value);
 
-    static MInst lowererTailCounter(Lowerer* l, i32 offset, i64 amount);
+    static MInst lowererTailCounter(Lowerer* l, u8 kind, i64 amount, u32 pos);
+
+    static Mem lowererProfileCounter(Lowerer* l, u8 kind, u32 pos);
+
+    static void lowererCheck(Lowerer* l, VReg src, i64 end, i32 address);
+
+    static void lowererCountEntry(Lowerer* l, i32 b, i32 h);
+
+    static u32 lowererLoopPos(Lowerer* l, i32 h);
 
     static void lowererTakeResults(Lowerer* l, i32 v, Slice<ValType> results, Slice<VReg> regs, Int stackArgs);
 
@@ -5761,7 +5810,7 @@ namespace {
 
     static void objCodeEmitFunction(ObjCode* oc, Int index, MFunc* mf, Allocator* al);
 
-    static FuncEmitter* objCodeEmitBody(ObjCode* oc, Int index, MFunc* mf, Allocator* al, Slice<u8> shorts, Slice<u8> trapShorts, Slice<i32> plan);
+    static FuncEmitter* objCodeEmitBody(ObjCode* oc, MFunc* mf, Allocator* al, Slice<u8> shorts, Slice<u8> trapShorts, Slice<i32> plan);
 
     static void objCodeEndRegion(ObjCode* oc, i32 start);
 
@@ -7187,7 +7236,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         for (Int i = 0; i < length(l->order); ++i) {
             blocks[usize(l->order[i])] = functionNewBlock(f);
+            f->blocks[blocks[usize(l->order[i])]].pos = f->blocks[l->order[i]].pos;
         }
+        f->blocks[blocks[usize(l->header)]].fast = true;
 
         struct ClonedValue {
             i32 original;
@@ -7229,6 +7280,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
                 const bool checked = proven[v];
                 const i32 n = functionNewValue(f, val.op, val.typ, blocks[usize(val.block)], val.aux, {});
+                f->positions[usize(n)] = f->positions[usize(v)];
                 f->values[n].aux2 = val.aux2 | (checked ? 32 : 0);
                 values[usize(v)] = n;
                 cloned.pushBack({v, checked});
@@ -7294,9 +7346,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             Term term = src.term;
             const auto selected = lookupMap(cases, b);
             if (selected.v1) {
-                term = Term{TermJump, {}, subslice(term.edges, selected.v0, selected.v0 + 1), {}, {}};
+                term = Term{TermJump, {}, subslice(term.edges, selected.v0, selected.v0 + 1), {}, {}, term.pos};
             }
-            dst.term = Term{term.kind, term.value, {}, remapArgs(term.values), term.aux};
+            dst.term = Term{term.kind, term.value, {}, remapArgs(term.values), term.aux, term.pos};
             if (term.kind == TermIf || term.kind == TermSwitch) {
                 dst.term.value = remap(term.value);
             }
@@ -11888,6 +11940,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         c.kind = ctrlLoop;
                         fe->f->hasLoops = true;
                         i32 header = frontendNewBlock(fe);
+                        fe->f->blocks[header].pos = fe->pos;
                         c.target = header;
                         Slice<i32> vals = makeSlice<i32>(length(params));
                         for (Int i = 0; i < length(params); ++i) {
@@ -11925,6 +11978,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     Block* blk = &fe->f->blocks[fe->cur];
                     blk->term.kind = TermIf;
                     blk->term.value = cond;
+                    blk->term.pos = fe->pos;
                     frontendAddEdge(fe, fe->cur, then, {});
                     frontendAddEdge(fe, fe->cur, c.elseBlock, {});
                     frontendSeal(fe, then);
@@ -11956,6 +12010,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     Block* blk = &fe->f->blocks[fe->cur];
                     blk->term.kind = TermIf;
                     blk->term.value = cond;
+                    blk->term.pos = fe->pos;
                     frontendAddEdge(fe, fe->cur, c->target, args);
                     frontendAddEdge(fe, fe->cur, next, {});
                     frontendSeal(fe, next);
@@ -11977,6 +12032,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     Block* blk = &fe->f->blocks[fe->cur];
                     blk->term.kind = TermSwitch;
                     blk->term.value = index;
+                    blk->term.pos = fe->pos;
                     for (Int i = 0; i < length(labels); ++i) {
                         u32 l = labels[i];
                         Control* c = frontendLabel(fe, l);
@@ -11989,7 +12045,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     break;
                 }
                 case 15: {
-                    fe->f->blocks[fe->cur].term = Term{TermReturn, {}, {}, frontendTop(fe, length(fe->f->typ->results)), {}};
+                    fe->f->blocks[fe->cur].term = Term{TermReturn, {}, {}, frontendTop(fe, length(fe->f->typ->results)), {}, fe->pos};
                     frontendMarkDead(fe);
                     break;
                 }
@@ -12574,7 +12630,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             fe->f->blocks[frame.target].dead = true;
             frontendSeal(fe, frame.target);
             if (frame.kind == ctrlFunc) {
-                fe->f->blocks[fe->cur].term = Term{TermReturn, {}, {}, results, {}};
+                fe->f->blocks[fe->cur].term = Term{TermReturn, {}, {}, results, {}, fe->pos};
                 fe->cur = -1;
                 return;
             }
@@ -12593,7 +12649,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         fe->cur = frame.target;
         Slice<i32> params = appendSlice(Slice<i32>{}, subslice(fe->f->blocks[frame.target].params, 0, length(frame.results)));
         if (frame.kind == ctrlFunc) {
-            fe->f->blocks[fe->cur].term = Term{TermReturn, {}, {}, params, {}};
+            fe->f->blocks[fe->cur].term = Term{TermReturn, {}, {}, params, {}, fe->pos};
             fe->cur = -1;
             return;
         }
@@ -12610,6 +12666,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void frontendJump(Frontend* fe, i32 to, Slice<i32> args) {
         fe->f->blocks[fe->cur].term.kind = TermJump;
+        fe->f->blocks[fe->cur].term.pos = fe->pos;
         frontendAddEdge(fe, fe->cur, to, args);
     }
 
@@ -12899,6 +12956,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             if (entry < 0) {
                 aliases[v] = ~entry;
                 f->values[usize(~entry)] = f->values[v];
+                f->positions[usize(~entry)] = f->positions[v];
             }
         }
         // Edge argument slices may share storage. Tag new IDs until every
@@ -12943,11 +13001,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         };
         rewriteIds.template operator()<false>();
         rewriteIds.template operator()<true>();
-        f->values.resize(usize(count));
-        const usize pages = (usize(count) + PageVec<Value>::itemsPerPage - 1) / PageVec<Value>::itemsPerPage;
-        while (f->values.pages.size() > pages) {
-            freePage(f->values.pages.popBack());
-        }
+        f->values.truncate(usize(count));
+        // Positions end where the values do: a value made later takes the
+        // next one, which it sets.
+        f->positions.truncate(usize(count));
     }
 
     // resolveAliases rewrites every use of a removed phi to its replacement,
@@ -13325,11 +13382,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // check emits the bounds check of an access ending at most imm bytes past
     // the address: the common case compares with size - boundSlack, the slow
-    // path the exact limit.
+    // path the exact limit. A check the tail profile counts has the counter
+    // in mem.
     static void funcEmitterCheck(FuncEmitter* e, MInst* in) {
         Asm* a = e->a;
-        if (e->profile != 0) {
-            asmAluMI(a, aluAdd, 8, baseAt(ctxReg, e->profile + 24), 1);
+        if (in->mem.base != noReg) {
+            asmAluMI(a, aluAdd, 8, funcEmitterMem(e, in->mem), 1);
         }
         VReg src = in->src;
         i64 end = in->imm;
@@ -14414,11 +14472,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         if (!baseChecked && !boundedBase) {
                             l->checkUndo = appendValues(l->checkUndo, CheckUndo{base, temporary741.v0, temporary741.v1});
                             setMap(l->checked, base, i64(boundSlack));
-                            MInst in = inst(mCheck);
-                            in.src = rb;
-                            in.imm = maximum(top, convert<i64>(width));
-                            in.addressValue = base;
-                            lowererEmit(l, in);
+                            lowererCheck(l, rb, maximum(top, convert<i64>(width)), base);
                             reach = boundSlack;
                         }
                         if (c >= 0 && reach - c > 0 && (!had || prior < reach - c)) {
@@ -14449,11 +14503,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         if (!known.v1 || known.v0 < top) {
                             l->checkUndo = appendValues(l->checkUndo, CheckUndo{base2, known.v0, known.v1});
                             setMap(l->checked, base2, i64(boundSlack));
-                            MInst in = inst(mCheck);
-                            in.src = lowererUse(l, base2);
-                            in.imm = maximum(top, convert<i64>(width));
-                            in.addressValue = base2;
-                            lowererEmit(l, in);
+                            lowererCheck(l, lowererUse(l, base2), maximum(top, convert<i64>(width)), base2);
                             reach = boundSlack;
                         }
                         if (!had || prior < reach - range.hi) {
@@ -14502,11 +14552,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             setMap(l->checked, addr, admitted);
         }
         if (end <= boundSlack) {
-            MInst in = inst(mCheck);
-            in.src = ra;
-            in.imm = end;
-            in.addressValue = addr;
-            lowererEmit(l, in);
+            lowererCheck(l, ra, end, addr);
             return memIndexed(memReg, ra, convert<i32>(offset));
         }
         VReg t = mFuncNewReg(l->mf, classGPR);
@@ -15491,6 +15537,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         l->mf->blocks.pushBack(MBlock{{}, {}, {}, l->mf->blocks[l->cur].depth, -1, {}});
         i32 saved = l->cur;
         l->cur = s;
+        lowererCountEntry(l, b, e->block);
         lowererEdgeMoves(l, e);
         MInst j = inst(mJmp);
         j.target = target;
@@ -15874,7 +15921,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         // the shift, so the scan necessarily reaches v.
         const i32 addr = functionArgs(f, a)[0];
         MInst in = inst(mLoad);
-        in.mem = lowererAddress(l, addr, lv->aux + shift / 8, narrow, MemKind(kind & memProven) != MemKind(0LL), false);
+        in.mem = lowererAccessAddress(l, a, addr, lv->aux + shift / 8, narrow, MemKind(kind & memProven) != MemKind(0LL), false);
         in.dst = lowererDef(l, v);
         in.size = convert<u8>(narrow);
         in.dsize = 4;
@@ -16676,7 +16723,20 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         l->deferred[v] = false;
         Value* val = &l->f->values[v];
         MemKind kind = convert<MemKind>(val->aux2);
-        return {lowererAddress(l, functionArgs(l->f, v)[0], val->aux, memKindWidth(kind), MemKind(kind & memProven) != MemKind(0LL), false), true};
+        return {lowererAccessAddress(l, v, functionArgs(l->f, v)[0], val->aux, memKindWidth(kind), MemKind(kind & memProven) != MemKind(0LL), false), true};
+    }
+
+    // accessAddress is address for an access lowered as part of another
+    // instruction: the check is of the access's position, so that a load
+    // folded into its user's instruction traps as the load.
+    static Mem lowererAccessAddress(Lowerer* l, i32 access, i32 addr, i64 offset, Int width, bool proven, bool store) {
+        const u32 pos = l->pos;
+        if (const u32 own = l->f->positions[usize(access)]) {
+            l->pos = own;
+        }
+        const Mem mem = lowererAddress(l, addr, offset, width, proven, store);
+        l->pos = pos;
+        return mem;
     }
 
     static void lowererMemAddr(Lowerer* l, VReg dst, VReg a) {
@@ -17700,11 +17760,60 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         lowererEmit(l, st);
     }
 
-    static MInst lowererTailCounter(Lowerer* l, i32 offset, i64 amount) {
+    // tailCounter adds amount to a new counter of the tail profile.
+    static MInst lowererTailCounter(Lowerer* l, u8 kind, i64 amount, u32 pos) {
         MInst in = inst(mCounter);
-        in.mem = memAt(ctxReg, l->lay->tailProfile + convert<i32>(l->f->index) * tailCounterBytes + offset);
+        in.mem = lowererProfileCounter(l, kind, pos);
         in.imm = amount;
         return in;
+    }
+
+    // profileCounter makes a counter of the tail profile, of kind, at the
+    // wasm instruction pos of the function being lowered: its slot.
+    static Mem lowererProfileCounter(Lowerer* l, u8 kind, u32 pos) {
+        ObjCode* oc = l->oc;
+        const i32 slot = l->lay->tailProfile + convert<i32>(length(oc->sites)) * 8;
+        const u32 offset = pos ? convert<u32>(l->m->codeOffset) + pos : 0;
+        oc->sites = appendValues(oc->sites, ProfileSite{convert<u32>(l->f->index), offset, kind});
+        return memAt(ctxReg, slot);
+    }
+
+    // check emits the bounds check of the address in src for an access ending
+    // at most end bytes past it, address being the address's value; the tail
+    // profile counts it at the instruction being lowered.
+    static void lowererCheck(Lowerer* l, VReg src, i64 end, i32 address) {
+        MInst in = inst(mCheck);
+        in.src = src;
+        in.imm = end;
+        in.addressValue = address;
+        if (l->m->tailProfile) {
+            in.mem = lowererProfileCounter(l, siteCheck, l->pos);
+        }
+        lowererEmit(l, in);
+    }
+
+    // loopPos is the wasm instruction the tail profile knows the loop headed
+    // by h by: its loop instruction, else, for a header the optimizer made
+    // (a loop whose back edge it threaded past a branch, say), the first of
+    // the header's instructions with a position, or its terminator.
+    static u32 lowererLoopPos(Lowerer* l, i32 h) {
+        Block& header = l->f->blocks[h];
+        u32 pos = header.pos;
+        auto instrs = header.instrs.view();
+        for (Int i = 0; !pos && i < length(instrs); ++i) {
+            pos = l->f->positions[usize(instrs[i])];
+        }
+        return pos ? pos : header.term.pos;
+    }
+
+    // countEntry counts an entry into the loop headed by h along the edge
+    // from block b whose code is being lowered, unless the edge goes back.
+    static void lowererCountEntry(Lowerer* l, i32 b, i32 h) {
+        if (!l->m->tailProfile || !l->ci->header[h] || l->ci->rpoIndex[b] >= l->ci->rpoIndex[h]) {
+            return;
+        }
+        const u8 kind = l->f->blocks[h].fast ? siteFastEntry : siteEntry;
+        l->mf->blocks[l->cur].insts.pushBack(lowererTailCounter(l, kind, 1, lowererLoopPos(l, h)));
     }
 
     // takeResults defines a call's results: from their registers, or from the
@@ -17765,6 +17874,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Term* t = &l->f->blocks[b].term;
         switch (t->kind) {
             case TermJump: {
+                lowererCountEntry(l, b, t->edges[0].block);
                 lowererEdgeMoves(l, &t->edges[0]);
                 MInst j = inst(mJmp);
                 j.target = l->mblk[t->edges[0].block];
@@ -18165,13 +18275,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         branch.target = temporary954;
                         mf->blocks[guards[j]].insts.assign(Span<const MInst>({cmp, branch, jump(fast[j])}));
                         mf->blocks[guards[j]].succs = sliceOf<i32>({fast[j], cold[j]});
+                        // The tail profile knows a guard by the first check
+                        // it stands for.
+                        const u32 at = original.insts[group->start].pos;
                         if (l->m->tailProfile) {
-                            MInst counter = lowererTailCounter(l, 0, 1);
+                            MInst counter = lowererTailCounter(l, siteGuard, 1, at);
                             Vec<MInst> counted({counter});
                             counted.append(mf->blocks[guards[j]].insts.view());
                             mf->blocks[guards[j]].insts = move(counted);
                             i32 miss = convert<i32>(length(mf->blocks));
-                            mf->blocks.pushBack(MBlock{Vec<MInst>({lowererTailCounter(l, 8, 1), jump(cold[j])}), sliceOf<i32>({cold[j]}), {}, original.depth, -1, true});
+                            mf->blocks.pushBack(MBlock{Vec<MInst>({lowererTailCounter(l, siteFallback, 1, at), jump(cold[j])}), sliceOf<i32>({cold[j]}), {}, original.depth, -1, true});
                             mf->blocks[guards[j]].insts[2].target = miss;
                             mf->blocks[guards[j]].succs[1] = miss;
                         }
@@ -18189,7 +18302,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             }
                         }
                         if (l->m->tailProfile) {
-                            Vec<MInst> counted({lowererTailCounter(l, 16, omitted)});
+                            Vec<MInst> counted({lowererTailCounter(l, siteOmitted, omitted, at)});
                             counted.append(fastBody.view());
                             fastBody = move(counted);
                         }
@@ -18356,7 +18469,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             if (m->tailProfile) {
                 meta->memory->profile = convert<u32>(lay->tailProfile);
-                meta->memory->profileFuncs = convert<u32>(length(m->funcs));
+                meta->memory->sites = oc->sites;
             }
             if (m->asan) {
                 meta->memory->shadow = convert<u32>(lay->shadow);
@@ -18513,7 +18626,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         const Int calls = length(oc->calls);
         const Int jumpCalls = length(oc->jumpCalls);
         const Int addresses = length(oc->addresses);
-        FuncEmitter* e = objCodeEmitBody(oc, index, mf, al, {}, {}, {});
+        FuncEmitter* e = objCodeEmitBody(oc, mf, al, {}, {}, {});
         Slice<u8> shorts = makeSlice<u8>(length(e->jumps));
         Slice<u8> trapShorts = makeSlice<u8>(length(e->traps));
         Slice<i32> plan = makeSlice<i32>(i64(e->spans.size()));
@@ -18535,20 +18648,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             oc->calls = subslice(oc->calls, 0, calls);
             oc->jumpCalls = subslice(oc->jumpCalls, 0, jumpCalls);
             oc->addresses = subslice(oc->addresses, 0, addresses);
-            objCodeEmitBody(oc, index, mf, al, shorts, trapShorts, plan);
+            objCodeEmitBody(oc, mf, al, shorts, trapShorts, plan);
         }
         objCodeEndRegion(oc, start);
     }
 
-    static FuncEmitter* objCodeEmitBody(ObjCode* oc, Int index, MFunc* mf, Allocator* al, Slice<u8> shorts, Slice<u8> trapShorts, Slice<i32> plan) {
+    static FuncEmitter* objCodeEmitBody(ObjCode* oc, MFunc* mf, Allocator* al, Slice<u8> shorts, Slice<u8> trapShorts, Slice<i32> plan) {
         Asm* a = &oc->a;
-        FuncEmitter* e = activePool->make<FuncEmitter>(FuncEmitter{oc, a, mf, al, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}});
+        FuncEmitter* e = activePool->make<FuncEmitter>(FuncEmitter{oc, a, mf, al, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}});
         e->shorts = shorts;
         e->trapShorts = trapShorts;
         e->plan = plan;
-        if (oc->m->tailProfile) {
-            e->profile = oc->lay->tailProfile + convert<i32>(index) * tailCounterBytes;
-        }
         e->pushes = allocatorCalleeSavedUsed(al);
         e->frame = convert<i32>(mf->stackArgs) + 8 * al->nslots;
         // The stack check follows the pushes: the arguments fill the
@@ -21036,6 +21146,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             args[a] = remap(args[a]);
                         }
                         const i32 n = functionNewValue(f, val.op, val.typ, nb, val.aux, args);
+                        f->positions[usize(n)] = f->positions[usize(v)];
                         f->values[n].aux2 = val.aux2;
                         map[v] = n;
                         f->blocks[nb].instrs.pushBack(n);
@@ -21044,7 +21155,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 for (Int i = 0; i < length(body); ++i) {
                     const i32 b = body[i];
                     const Term src = terms[i];
-                    Term dst = Term{src.kind, src.value, {}, {}, src.aux};
+                    Term dst = Term{src.kind, src.value, {}, {}, src.aux, src.pos};
                     if (src.kind == TermIf || src.kind == TermSwitch) {
                         dst.value = remap(src.value);
                     }
@@ -22675,7 +22786,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         if (profile) {
             metaWriterU(w, convert<u64>(m->memory->profile));
-            metaWriterU(w, convert<u64>(m->memory->profileFuncs));
+            metaWriterU(w, convert<u64>(length(m->memory->sites)));
+            for (Int i = 0; i < length(m->memory->sites); ++i) {
+                const ProfileSite site = m->memory->sites[i];
+                metaWriterU(w, site.function);
+                metaWriterU(w, site.kind);
+                metaWriterU(w, site.offset);
+            }
         }
         if (asan) {
             metaWriterU(w, convert<u64>(m->memory->shadow));
@@ -23400,6 +23517,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             i32 b = visit.block;
             Int undo = length(l->checkUndo);
             l->cur = l->mblk[b];
+            l->pos = 0;
             if (!isNil(proofs)) {
                 auto range1562 = proofs[b];
                 for (Int index1563 = 0, rangeEnd1564 = length(range1562); index1563 < rangeEnd1564; ++index1563) {
@@ -23415,6 +23533,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             if (b == l->ci->order[0]) {
                 lowererEntry(l);
+            }
+            if (l->m->tailProfile && l->ci->header[b]) {
+                lowererEmit(l, lowererTailCounter(l, f->blocks[b].fast ? siteFastLoop : siteLoop, 1, lowererLoopPos(l, b)));
             }
             auto range1566 = l->floatHomes[b];
             for (Int index1567 = 0, rangeEnd1568 = length(range1566); index1567 < rangeEnd1568; ++index1567) {
@@ -23631,10 +23752,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         off += convert<i32>(length(m->funcs)) * descBytes;
         l->dropped = off;
         off += convert<i32>(length(m->datas) + length(m->elems));
+        // The tail profile's counters close the instance: the functions make
+        // them as they are lowered, and compileWithOptions sizes it after.
         if (m->tailProfile) {
             off = (off + 7) & ~7;
             l->tailProfile = off;
-            off += convert<i32>(length(m->funcs)) * tailCounterBytes;
         }
         l->size = (off + 15) & ~15;
         return l;
@@ -25322,6 +25444,7 @@ namespace {
         code->addresses = makeSlice<TextAddress>(0);
         code->regions = makeSlice<Region>(0);
         code->globals = makeMap<String, bool>();
+        code->sites = makeSlice<ProfileSite>(0);
         code->initFn = moduleAddInitFunction(module);
         code->lay = newLayout(module);
         code->funcAt = makeSlice<i32>(length(module->funcs));
@@ -25343,6 +25466,9 @@ namespace {
             Allocator* allocation = allocate(machine);
             objCodeEmitFunction(code, i, machine, allocation);
             machinePool.clear();
+        }
+        if (module->tailProfile) {
+            code->lay->size = (code->lay->tailProfile + convert<i32>(length(code->sites)) * 8 + 15) & ~15;
         }
         objCodeExportThunks(code);
         objCodeInitThunk(code);

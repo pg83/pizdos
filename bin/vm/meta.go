@@ -13,16 +13,35 @@ import "encoding/binary"
 
 type MemoryMeta struct {
 	// min and max are in pages of 64 KiB.
-	min, max     uint64
-	imported     bool
-	tail         uint64 // accessible bytes beyond memory.size; zero for strict objects
-	tailEnd      uint32 // instance slot holding the accessible end
-	profile      uint32 // optional diagnostic counters in the instance
-	profileFuncs uint32
+	min, max uint64
+	imported bool
+	tail     uint64 // accessible bytes beyond memory.size; zero for strict objects
+	tailEnd  uint32 // instance slot holding the accessible end
+	// profile is the instance slot of the tail profile's first counter and
+	// sites what each one counts: a profiled object's only.
+	profile uint32
+	sites   []ProfileSite
 	// shadow is the instance slot holding the shadow map's base: an asan
 	// object (kernel_asan.go), which has no tail.
 	shadow uint32
 }
+
+// ProfileSite is a counter of the tail profile: of function's code, of kind
+// (siteKinds), at the wasm instruction at offset in the module, 0 for none.
+type ProfileSite struct {
+	function, kind, offset uint32
+}
+
+// siteKinds names the kinds of sites by the compiler's numbers (aot.cpp
+// siteCheck...): what each counts (tail_profile.go).
+var siteKinds = [...]string{"check", "guard", "fallback", "omitted", "loop", "entry", "fast_loop", "fast_entry"}
+
+const (
+	siteCheck = iota
+	siteGuard
+	siteFallback
+	siteOmitted
+)
 
 // asan tells an object compiled with --asan.
 func (m *Meta) asan() bool {
@@ -200,9 +219,18 @@ func decodeNote(data []byte) *Meta {
 	}
 
 	if flags&2 != 0 {
-		m.memory.profile, m.memory.profileFuncs = r.u32(), r.u32()
+		m.memory.profile = r.u32()
+		m.memory.sites = make([]ProfileSite, r.count())
 
-		if m.memory.tail == 0 || m.memory.profile < headerSize || m.memory.profile&7 != 0 || uint64(m.memory.profile)+uint64(m.memory.profileFuncs)*tailCounterBytes > uint64(m.instanceSize) {
+		for k := range m.memory.sites {
+			m.memory.sites[k] = ProfileSite{function: r.u32(), kind: r.u32(), offset: r.u32()}
+
+			if m.memory.sites[k].kind >= uint32(len(siteKinds)) {
+				throwFmt("invalid memory tail profile")
+			}
+		}
+
+		if m.memory.tail == 0 || m.memory.profile < headerSize || m.memory.profile&7 != 0 || uint64(m.memory.profile)+uint64(len(m.memory.sites))*profileCounterBytes > uint64(m.instanceSize) {
 			throwFmt("invalid memory tail profile")
 		}
 	}

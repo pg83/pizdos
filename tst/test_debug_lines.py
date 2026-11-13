@@ -108,6 +108,67 @@ def module(lines):
     return wasm + custom(".debug_line_str", STRINGS) + custom(".debug_str", STRINGS) + custom(".debug_line", lines)
 
 
+def located_table(rows, end):
+    # DWARF 4: each row's code offset and those after it, up to the next row,
+    # name the row's line of fixture.c; the sequence ends at end.
+    lengths = bytes([0, 1, 1, 1, 1, 0, 0, 0, 1, 0, 0, 1, 2])
+    header = b"\1\1\1\xfb\x0e\x0e" + lengths + b"/sources\0\0fixture.c\0\1\0\0\0"
+    program, line = b"", 1
+    for address, row in rows:
+        program += b"\0\5\2" + struct.pack("<I", address) + b"\3" + leb(row - line, True) + b"\1"
+        line = row
+    program += b"\0\5\2" + struct.pack("<I", end) + b"\0\1\1"
+    body = struct.pack("<H", 4) + struct.pack("<I", len(header)) + header + program
+    return struct.pack("<I", len(body)) + body
+
+
+def located(parts):
+    """A module whose _start runs parts, (code, line) pairs, with a memory of
+    a page and a global holding an address far past it, and the lines of the
+    parts in its line table."""
+    body = b"\1\2\x7f"
+    rows = []
+    for code, line in parts:
+        # Code offsets count from the code section's contents: its function
+        # count and body size, one byte each here, come first.
+        rows.append((2 + len(body), line))
+        body += code
+    body += b"\x0b"
+    assert len(body) < 128
+    wasm = b"\0asm\1\0\0\0" + section(1, b"\1\x60\0\0") + section(3, b"\1\0") + section(5, b"\1\0\1")
+    wasm += section(6, b"\1\x7f\1\x41" + leb(0x7ffffff0, True) + b"\x0b") + section(7, b"\1\6_start\0\0")
+    wasm += section(10, b"\1" + leb(len(body)) + body)
+    return wasm + custom(".debug_line", located_table(rows, 2 + len(body)))
+
+
+# Traps at an access report its line: one past a loop, whose unchanged
+# local's phi the frontend drops and renumbers the values after, and one of
+# a load folded into a branch, after a store of an earlier line. The code's
+# lines, in perf's jitdump, have the access's and the branch's.
+LOCATED = (
+    ("after-loop", located([(b"\x41\3\x21\0", 10), (b"\x23\0\x21\1", 11), (b"\x03\x40\x20\1\x1a", 12),
+                            (b"\x20\0\x41\1\x6b\x22\0", 20), (b"\x0d\0\x0b", 21), (b"\x20\1", 29),
+                            (b"\x28\2\0", 30), (b"\x1a", 31)]), 30, 21),
+    ("folded-load", located([(b"\x41\x10\x41\1\x3a\0\0", 40), (b"\x02\x40\x23\0", 49), (b"\x28\2\0", 50),
+                             (b"\x41\7\x47\x0d\0", 51), (b"\x41\x14\x41\2\x3a\0\0\x0b", 52)]), 50, 51),
+)
+
+
+def jitdump_lines(path):
+    """The source lines a jitdump gives code addresses (its debug info)."""
+    data = path.read_bytes()
+    lines, at = set(), struct.unpack_from("<I", data, 8)[0]
+    while at < len(data):
+        kind, total = struct.unpack_from("<2I", data, at)
+        if kind == 2:
+            entry, count = at + 32, struct.unpack_from("<Q", data, at + 24)[0]
+            for _ in range(count):
+                lines.add(struct.unpack_from("<I", data, entry + 8)[0])
+                entry = data.index(b"\0", entry + 16) + 1
+        at += total
+    return lines
+
+
 def main():
     vm, native = sys.argv[1:]
     env = dict(os.environ, W2X_MEMORY_TAIL="optimized", W2X_TAIL_PROFILE="")
@@ -166,7 +227,24 @@ def main():
             assert result.returncode == 129 and result.stdout == b"" and b"wasm trap: unreachable" in result.stderr, (name, result)
             if (name, lines) in valid:
                 assert b"fixture.c:43" in result.stderr, (name, result.stderr)
-    print(f"debug lines: {len(valid)} source locations and {len(malformed)} malformed tables agree through native/Wasm AOT")
+        for name, wasm, line, branch in LOCATED:
+            source.write_bytes(wasm)
+            result = subprocess.run([native], input=wasm, env=env, capture_output=True, timeout=30)
+            assert result.returncode == 0, (name, result.stderr)
+            compiled.write_bytes(result.stdout)
+            result = subprocess.run([vm, "-o", str(embedded), str(source)], env=env, capture_output=True, timeout=30)
+            assert result.returncode == 0 and embedded.read_bytes() == compiled.read_bytes(), (name, result)
+            child = subprocess.Popen([vm, "run", "--", str(source)], env=dict(env, W2O_PERFMAP=str(work)),
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            out, err = child.communicate(timeout=30)
+            assert child.returncode == 130 and out == b"" and b"out of bounds memory access" in err, (name, child.returncode, err)
+            assert f"fixture.c:{line}\n".encode() in err, (name, err)
+            dump = work / f"jit-{child.pid}.dump"
+            lines = jitdump_lines(dump)
+            assert {line, branch} <= lines, (name, lines)
+            dump.unlink()
+            (work / f"perf-{child.pid}.map").unlink()
+    print(f"debug lines: {len(valid)} source locations, {len(malformed)} malformed tables and {len(LOCATED)} trapping accesses agree through native/Wasm AOT")
 
 
 if __name__ == "__main__":

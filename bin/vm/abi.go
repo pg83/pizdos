@@ -50,9 +50,9 @@ const jumpSaved = 5
 // with -boundSlack <= o < 0 addressed from a in 64 bits.
 const boundSlack = 1024
 
-// Diagnostic counters per function: guards, fallbacks, omitted checks,
-// and ordinary checks that actually execute. Only profiled objects have them.
-const tailCounterBytes = 32
+// A profiled object's instance ends in the tail profile's counters, one of
+// 8 bytes for each site the object lists (tail_profile.go).
+const profileCounterBytes = 8
 
 // Each table is {entries, size, max}: entries is an array of descriptor
 // pointers, null for a null reference.
