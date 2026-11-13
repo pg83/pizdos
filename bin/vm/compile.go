@@ -167,11 +167,57 @@ func compileStreams(input io.Reader, output io.Writer, options CompileOptions) {
 	}
 }
 
+// objectWriter takes the object the compiler writes into one slice of
+// its size. The compiler writes the ELF header first, and it says where
+// the section headers are, which come last: the size is known before the
+// sections, and the slice is never grown nor copied. readObject keeps
+// parts of it, the code cache the object: a slice grown by doubling kept
+// up to as much again of nothing with it.
+type objectWriter struct {
+	b []byte
+}
+
+// maxObjectHint bounds the size a header may ask for at once.
+const maxObjectHint = 16 << 30
+
+func (w *objectWriter) Write(p []byte) (int, error) {
+	if w.b == nil {
+		w.b = make([]byte, 0, objectSize(p))
+	}
+
+	w.b = append(w.b, p...)
+
+	return len(p), nil
+}
+
+// objectSize is the size an object's ELF header says: the end of its
+// section headers; 0 for what is no such header.
+func objectSize(header []byte) int {
+	if len(header) < 64 || !bytes.HasPrefix(header, []byte("\x7fELF\x02\x01")) {
+		return 0
+	}
+
+	le := binary.LittleEndian
+	size := le.Uint64(header[40:]) + uint64(le.Uint16(header[58:]))*uint64(le.Uint16(header[60:]))
+
+	if size > maxObjectHint {
+		return 0
+	}
+
+	return int(size)
+}
+
+// compileModuleWithOptions is the object of a module, in a slice of its
+// own size: a header that said another costs a copy.
 func compileModuleWithOptions(data []byte, options CompileOptions) []byte {
-	var out bytes.Buffer
+	var out objectWriter
 	compileStreams(bytes.NewReader(data), &out, options)
 
-	return out.Bytes()
+	if len(out.b) != cap(out.b) {
+		return bytes.Clone(out.b)
+	}
+
+	return out.b
 }
 
 // programOptions are the options a program is compiled with: the
