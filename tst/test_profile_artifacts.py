@@ -8,12 +8,32 @@ import json
 import os
 from pathlib import Path
 import re
+import struct
 import subprocess
 import sys
 import tempfile
 
 MODULE = (b"\0asm\1\0\0\0\1\4\1\x60\0\0\3\2\1\0"
           b"\5\3\1\0\1\7\x0a\1\6_start\0\0\x0a\4\1\2\0\x0b")
+
+
+def jitdump(path, pid):
+    """The code loads of a jitdump, perf's format: their names and sizes."""
+    data = path.read_bytes()
+    magic, version, size, machine, _, owner = struct.unpack_from("<6I", data)
+    assert (magic, version, size, machine, owner) == (0x4A695444, 1, 40, 62, pid), (magic, version, size, machine, owner)
+    loads, at = [], size
+    while at < len(data):
+        kind, total = struct.unpack_from("<2I", data, at)
+        assert total >= 16 and at + total <= len(data), (at, kind, total)
+        if kind == 0:
+            vma, code, length = struct.unpack_from("<3Q", data, at + 24)
+            end = data.index(b"\0", at + 56)
+            name = data[at + 56:end].decode()
+            assert vma == code > 0 and end + 1 + length == at + total, (name, vma, code, length)
+            loads.append((name, length))
+        at += total
+    return loads
 
 
 def main():
@@ -42,20 +62,26 @@ def main():
             assert (child.returncode, out, err) == (0, b"", b""), (child.returncode, out, err)
             return child.pid
 
-        for setting, destination in ((str(work), work), ("1", Path("/tmp"))):
+        # The names go to the directory W2O_PERFMAP names, or to TMPDIR's:
+        # the perf map and the jitdump, a module's code as module:region.
+        for setting, destination in ((str(work), work), ("1", Path(os.environ.get("TMPDIR") or "/tmp"))):
             pid = perf(setting)
-            path = destination / f"perf-{pid}.map"
+            path, dump = destination / f"perf-{pid}.map", destination / f"jit-{pid}.dump"
             if not destination.is_dir():
-                # perf output is best effort, including hosts without /tmp.
-                assert not path.exists()
+                # perf output is best effort, including hosts without the directory.
+                assert not path.exists() and not dump.exists()
                 continue
             try:
                 rows = path.read_text().splitlines()
                 assert rows and all(re.fullmatch(r"[0-9a-f]+ [0-9a-f]+ .+", row) for row in rows), rows
-                assert any(row.split(maxsplit=2)[2] == "f0" for row in rows), rows
+                assert any(row.split(maxsplit=2)[2] == "input:f0" for row in rows), rows
                 assert all(int(row.split()[0], 16) > 0 and int(row.split()[1], 16) > 0 for row in rows), rows
+                loads = jitdump(dump, pid)
+                assert sorted(name for name, _ in loads) == sorted(row.split(maxsplit=2)[2] for row in rows), loads
+                assert any(name == "input:f0" and length > 0 for name, length in loads), loads
             finally:
                 path.unlink(missing_ok=True)
+                dump.unlink(missing_ok=True)
         perf(str(work / "missing"))
 
         # vm run compiles with the tail's counters when W2X_TAIL_PROFILE asks,

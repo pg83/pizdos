@@ -250,7 +250,7 @@ AOT_FLAGS = ["-x", "c++", "-std=c++20", "-O2", "-fno-exceptions", "-fno-rtti", "
 # runtime metadata when vm embeds the compiled reactor. The multivalue
 # ABI passes and returns small structs, the compiler's slices and views
 # among them, as values instead of through the shadow stack.
-AOT_WASM_FLAGS = [*AOT_FLAGS, "--target=wasm32-unknown-unknown", "-ffreestanding", "-nostdlib", "-nostdinc", "-nostdinc++", "-mbulk-memory", "-Xclang", "-target-abi", "-Xclang", "experimental-mv", "-Wl,--strip-all", "-Wl,--no-entry", "-Wl,--export-memory", "-Wl,--stack-first", "-Wl,-z,stack-size=4195328"]
+AOT_WASM_FLAGS = [*AOT_FLAGS, "--target=wasm32-unknown-unknown", "-ffreestanding", "-nostdlib", "-nostdinc", "-nostdinc++", "-mbulk-memory", "-Xclang", "-target-abi", "-Xclang", "experimental-mv", "-Wl,--no-entry", "-Wl,--export-memory", "-Wl,--stack-first", "-Wl,-z,stack-size=4195328"]
 
 aot = command(
     name="aot",
