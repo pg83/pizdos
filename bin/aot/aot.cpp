@@ -8979,6 +8979,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         // slots, and scalar results release their physical source first.
         Array<i32, 32> nextUse = {};
         Array<i32, 32> blockPos = {};
+        // defined marks a register a value takes again at start + 1 with a
+        // use there, as the instruction at start defines it: that value can
+        // be neither evicted nor split around, nor cur split before it.
+        Array<bool, 32> defined = {};
         auto candidates = allocatorCandidates(a, cur->classValue);
         for (Int i = 0; i < length(candidates); ++i) {
             VReg r = candidates[i];
@@ -9022,6 +9026,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             if (u < nextUse[it->reg]) {
                 nextUse[it->reg] = u;
             }
+            if (x == start + 1 && u == x) {
+                defined[it->reg] = true;
+            }
         }
         VReg reg = noReg;
         auto range393 = allocatorCandidates(a, cur->classValue);
@@ -9034,10 +9041,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         i32 firstUse = intervalNextUse(cur, start);
         // A part of a value split at a dispatch header takes back the
         // register it has there whenever that register's next use comes
-        // after the part's first.
+        // after the part's first and no value is defined in it at start + 1.
         if (a->home.size()) {
             Interval* h = a->home[usize(allocatorVindex(a, cur->vreg))];
-            if (h && h != cur && h->reg != noReg && intervalStart(h) < start && nextUse[h->reg] > firstUse && blockPos[h->reg] > start + 1) {
+            if (h && h != cur && h->reg != noReg && intervalStart(h) < start && nextUse[h->reg] > firstUse && blockPos[h->reg] > start + 1 && !defined[h->reg]) {
                 reg = h->reg;
             }
         }
