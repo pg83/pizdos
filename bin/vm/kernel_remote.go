@@ -4,8 +4,6 @@ package main
 
 import (
 	"encoding/binary"
-	"path/filepath"
-	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -16,9 +14,12 @@ import (
 // pair (kernel_endpoint.go), the server holds the other and answers on
 // it. The kernel speaks the protocol here for the POSIX calls of a
 // process, as the libc of the process would; rootfs speaks it as the
-// servers (bin/rootfs/rootfs.nim). The kernel keeps nothing of a server's
-// tree: a path goes to the server whole, the name of an open directory is
-// the path it was opened by, and the working directory is a name.
+// servers (bin/rootfs/rootfs.nim). The kernel walks a path as Linux does
+// (kernel_path.go): RESOLVE walks it from a directory to the directory of
+// its last name, and the call is then one on that name, which no server
+// follows: the kernel follows a symbolic link itself. A directory the
+// process holds, its root, its working directory, one a descriptor is,
+// is an endpoint of the server's, not a name.
 //
 // A packet is a header and a body; files ride with it.
 //
@@ -29,56 +30,68 @@ import (
 //	its modes say, gid their group (permits). A reply's are zero.
 //
 //	Every request brings a fresh endpoint, last among its files: the reply
-//	comes on it, and an OPEN's stays the open file's. The server answers
-//	where the request came: on the endpoint of a directory a path op is
-//	relative to it, ".." stays in it; on the endpoint of a node a node op
-//	is the node's.
-//	  OPEN      arg flags   mode u32 path OK stat; a file among the
-//	                                      reply's files is the file itself
-//	  STAT      arg flags   path          OK stat; AT_SYMLINK_NOFOLLOW
-//	  READLINK              path          OK target
-//	  MKDIR     arg mode    path
-//	  MKNOD     arg mode    path          a FIFO or a regular file
-//	  UNLINK    arg flags   path          AT_REMOVEDIR
-//	  RENAME                old 0 new
-//	  LINK      arg follow  old 0 new     follow: AT_SYMLINK_FOLLOW's
-//	  SYMLINK               target 0 path
-//	  MOUNT                 path          files: a server's root, then the reply
-//	  CHMOD     arg mode    path
-//	  CHOWN     arg follow  uid u32 gid u32 path
-//	  UTIMES    arg when    atime u64 mtime u64 path   when: 1 follow,
-//	                                      2 atime now, 4 mtime now,
-//	                                      8 atime kept, 16 mtime kept
-//	  TRUNCATE              size u64 path
-//	  STATFS                path          OK statfs
-//	  READ      arg len     off u64       OK data
-//	  WRITE     arg append  off u64 data  OK count u32 at u64
-//	  READDIR               after u64     OK (ino u64, pos u64, type u8, name, 0)*
-//	  FSTAT                               OK stat
+//	comes on it, and an OPEN's stays the open file's. On the endpoint of a
+//	directory a call is about the directory or about one name in it, ""
+//	being the directory itself; a name is no "." or "..", has no "/" and
+//	is never followed: a symbolic link is itself, and to the calls that
+//	look at a name the root of a server mounted on it is what it is. On
+//	the endpoint of a node a node call is the node's.
+//	  RESOLVE             root dev u64, root ino u64, links u32, path
+//	                      OK step u32, links u32, last u32, flags u32, name
+//	  OPEN      arg flags mode u32 name   OK stat; a file among the
+//	                      reply's files is the file itself
+//	  STAT                name             OK stat
+//	  READLINK            name             OK target
+//	  MKDIR     arg mode  name
+//	  MKNOD     arg mode  name             a FIFO or a regular file
+//	  UNLINK    arg flags name             AT_REMOVEDIR
+//	  RENAME              dev u64 ino u64 old 0 new   new a name of the
+//	                      directory of device dev and inode ino
+//	  LINK                dev u64 ino u64 old 0 new
+//	  SYMLINK             target 0 name
+//	  CHMOD     arg mode  name
+//	  CHOWN               uid u32 gid u32 name
+//	  UTIMES    arg when  atime u64 mtime u64 name   when: 2 atime now,
+//	                      4 mtime now, 8 atime kept, 16 mtime kept
+//	  TRUNCATE            size u64 name
+//	  STATFS              name             OK statfs
+//	  READ      arg len   off u64          OK data
+//	  WRITE     arg append off u64 data    OK count u32 at u64
+//	  READDIR             after u64        OK (ino u64, pos u64, type u8, name, 0)*
+//	  FSTAT                                OK stat
 //	  FCHMOD    arg mode
-//	  FCHOWN                uid u32 gid u32
-//	  FUTIMES   arg when    atime u64 mtime u64
-//	  FTRUNCATE             size u64
+//	  FCHOWN              uid u32 gid u32
+//	  FUTIMES   arg when  atime u64 mtime u64
+//	  FTRUNCATE           size u64
 //	  FSYNC     arg data
-//	  FSTATFS                             OK statfs
-//	  FLOCK     arg op                    LOCK_SH, LOCK_EX, LOCK_UN
-//	  LOCK      arg get     type u32 start u64 len u64   OK; with get the
-//	                                      lock in the way, F_UNLCK for none:
-//	                                      type u32 start u64 len u64
+//	  FSTATFS                              OK statfs
+//	  FLOCK     arg op                     LOCK_SH, LOCK_EX, LOCK_UN
+//	  LOCK      arg get   type u32 start u64 len u64   OK; with get the
+//	                      lock in the way, F_UNLCK for none:
+//	                      type u32 start u64 len u64
+//	  PATH                root dev u64, root ino u64   OK the path from the
+//	                      root of the process: a directory's, a file's by
+//	                      the name it was opened by in its directory
 //	replies: OK, ERR with arg the errno
 //	stat { ino u64, size u64, mtime u64 nanoseconds, mode u32, nlink u32,
 //	       uid u32, gid u32, atime u64, dev u64, ctime u64 }
 //	statfs { blocks u64, bfree u64, files u64, ffree u64, dev u64,
 //	         bsize u32, namemax u32, flags u32 }   flags: 1 read-only
 //
-// A directory's entries have positions, each after those before it, and
-// a READDIR gives those after one: removing what was read moves nothing a
-// reading has to come to. dev is the server's own, the files of two
-// servers never share one. A WRITE with append goes at the end the file
-// has when the server takes it: O_APPEND is the server's, so no write of
-// another comes between. A lock is the endpoint's, an open file's, as the
-// host's open file description locks are, and goes when it closes; a
-// FIFO's pipe is the kernel's (kernel_fifo.go).
+// The root of the process is its device and inode: ".." stays there, an
+// absolute link starts there. RESOLVE's step is 0 at the directory of the
+// last name, which is the reply's endpoint from then on when flags has 2,
+// else the directory asked; last is the kind of the last name (a name,
+// ".", "..", or none: the root alone), flags 1 a slash after it. A walk to
+// a root the server has no node of is step 1, with the path left to walk
+// from the root. A directory's entries have positions, each after those
+// before it, and a READDIR gives those after one: removing what was read
+// moves nothing a reading has to come to. dev is the server's own, the
+// files of two servers never share one. A WRITE with append goes at the
+// end the file has when the server takes it: O_APPEND is the server's,
+// so no write of another comes between. A lock is the endpoint's, an open
+// file's, as the host's open file description locks are, and goes when
+// it closes; a FIFO's pipe is the kernel's (kernel_fifo.go).
 const (
 	rOpen uint32 = iota + 1
 	rStat
@@ -87,7 +100,7 @@ const (
 	rUnlink
 	rRename
 	rSymlink
-	rMount
+	rResolve
 	rRead
 	rWrite
 	rReaddir
@@ -107,13 +120,13 @@ const (
 	rFstatfs
 	rFlock
 	rLock
+	rPath
 	rOk
 	rErr
 	remoteHeader = 16
 	remoteStat   = 64
 	remoteStatfs = 52
 	// The whens of UTIMES and FUTIMES.
-	whenFollow    = 1
 	whenAtimeNow  = 2
 	whenMtimeNow  = 4
 	whenAtimeKept = 8
@@ -122,13 +135,17 @@ const (
 	utimeOmit     = 1<<30 - 2
 	// remoteData is the most a read asks or a write sends in one packet.
 	remoteData = packetMax - remoteHeader - 8
+	// RESOLVE's steps and flags.
+	stepDone  = 0
+	stepRoot  = 1
+	stepSlash = 1
+	stepKept  = 2
 )
 
 // remoteNode is an open file of a server: the end of its pair, and what
 // the kernel keeps of it.
 type remoteNode struct {
 	end  *pairEnd
-	path string
 	refs atomic.Int32
 	// accmode is the O_ACCMODE it was opened with, append its O_APPEND.
 	accmode  int
@@ -144,8 +161,11 @@ type remoteFile struct {
 	remoteNode
 }
 
+// remoteDir is a directory of a server; dev and ino are its, once known.
 type remoteDir struct {
 	remoteNode
+	known    atomic.Bool
+	dev, ino atomic.Uint64
 }
 
 var (
@@ -162,31 +182,32 @@ var (
 	_ Dir      = (*noRoot)(nil)
 )
 
-// remoteRoot is the Dir of a connection to a server, for a root: the
+// remoteDirOn is the Dir of an endpoint of a server's directory: the
 // endpoint is its own, with the reference the Dir holds.
-func remoteRoot(end *pairEnd) *remoteDir {
-	d := &remoteDir{remoteNode{end: end, path: "/"}}
+func remoteDirOn(end *pairEnd) *remoteDir {
+	d := &remoteDir{remoteNode: remoteNode{end: end}}
 	d.refs.Store(1)
 
 	return d
 }
 
-// asRoot is the Dir a descriptor's file is for fchdir and chroot: a
-// directory, named; or a connection to a server, the root of what it
-// serves, named "/" and nothing else. The reference is the caller's for
-// a connection, the file's own for a directory.
-func asRoot(f File) (Dir, bool) {
+// asRoot is the Dir a descriptor's file is for fchdir, with a reference
+// of the caller's: a directory, or a connection to a server, the root of
+// what it serves; nil for anything else.
+func asRoot(f File) Dir {
 	if d, ok := f.(Dir); ok {
-		return d, true
+		d.ref()
+
+		return d
 	}
 
 	if c, ok := f.(interface{ endpoint() *pairEnd }); ok {
 		c.endpoint().ref()
 
-		return remoteRoot(c.endpoint()), false
+		return remoteDirOn(c.endpoint())
 	}
 
-	return nil, false
+	return nil
 }
 
 func (n *remoteNode) ref() {
@@ -261,12 +282,6 @@ func (n *remoteNode) getsockopt(p *Process, level, name, at, lenAt uint32) error
 }
 func (n *remoteNode) setsockopt(p *Process, level, name, at, size uint32) error {
 	return n.end.setsockopt(p, level, name, at, size)
-}
-
-// relative is a path as a server takes it: from the directory, without
-// the leading slash of the absolute path the process gave.
-func relative(path string) string {
-	return strings.TrimLeft(path, "/")
 }
 
 // request sends a request on an endpoint; the files go with it. The
@@ -347,20 +362,6 @@ func (n *remoteNode) on(op, arg uint32, body []byte) (packet, error) {
 	return pk, nil
 }
 
-func pathBody(paths ...string) []byte {
-	var b []byte
-
-	for i, path := range paths {
-		if i > 0 {
-			b = append(b, 0)
-		}
-
-		b = append(b, relative(path)...)
-	}
-
-	return b
-}
-
 // decodeStat is a Stat_t of the protocol's stat.
 func decodeStat(b []byte, st *syscall.Stat_t) error {
 	if len(b) < remoteStat {
@@ -422,13 +423,9 @@ func permits(st *syscall.Stat_t, want uint32) bool {
 
 // whens is the when of UTIMES for the times of a call: nil is now for
 // both, UTIME_NOW and UTIME_OMIT in a nanoseconds field are what they say.
-func whens(ts []syscall.Timespec, follow bool) (uint32, []byte) {
+func whens(ts []syscall.Timespec) (uint32, []byte) {
 	when := uint32(0)
 	body := make([]byte, 16)
-
-	if follow {
-		when |= whenFollow
-	}
 
 	if ts == nil {
 		return when | whenAtimeNow | whenMtimeNow, body
@@ -498,7 +495,7 @@ func (n *remoteNode) chown(uid, gid int) error {
 }
 
 func (n *remoteNode) utimes(ts []syscall.Timespec) error {
-	when, body := whens(ts, false)
+	when, body := whens(ts)
 
 	return n.simple(rFutimes, when, body)
 }
@@ -593,19 +590,164 @@ func (n *remoteNode) recordLock(cmd int, lk *syscall.Flock_t) error {
 
 // The Dir role.
 
-// name is the path the node was opened by, from the root.
+// name is a file's path from the root of the process: its directory's,
+// and the name it was opened by.
 func (n *remoteNode) name(p *Process) (string, error) {
-	return n.path, nil
+	return n.pathFrom(p.root)
 }
 
-func (d *remoteDir) open(p *Process, path string, flags int, mode uint32) (File, error) {
+// pathFrom is the path the server gives the node from root.
+func (n *remoteNode) pathFrom(root Dir) (string, error) {
+	dev, ino := identity(root)
+	var body [16]byte
+	binary.LittleEndian.PutUint64(body[:], dev)
+	binary.LittleEndian.PutUint64(body[8:], ino)
+	pk, err := n.on(rPath, 0, body[:])
+
+	if err != nil {
+		return "", err
+	}
+
+	dropFiles(pk.files)
+
+	return string(pk.data), nil
+}
+
+// identity is a directory's device and inode, which a server finds the
+// root of a process by.
+func identity(d Dir) (uint64, uint64) {
+	switch d := d.(type) {
+	case *remoteDir:
+		return d.ident()
+	case *hostDir:
+		var st syscall.Stat_t
+
+		if syscall.Fstat(d.fd, &st) == nil {
+			return st.Dev, st.Ino
+		}
+	}
+
+	return 0, 0
+}
+
+// ident is the directory's device and inode, asked once.
+func (d *remoteDir) ident() (uint64, uint64) {
+	if !d.known.Load() {
+		var st syscall.Stat_t
+
+		if d.stat(&st) != nil {
+			return 0, 0
+		}
+
+		d.dev.Store(st.Dev)
+		d.ino.Store(st.Ino)
+		d.known.Store(true)
+	}
+
+	return d.dev.Load(), d.ino.Load()
+}
+
+// resolve asks the server to walk a path from the directory: a step at
+// the directory of the last name, this one or one the reply's endpoint
+// is, or a walk to go on from the root of the process.
+func (d *remoteDir) resolve(p *Process, path string, w *walk) (step, error) {
+	dev, ino := identity(w.root)
+	body := make([]byte, 20, 20+len(path))
+	le := binary.LittleEndian
+	le.PutUint64(body, dev)
+	le.PutUint64(body[8:], ino)
+	le.PutUint32(body[16:], uint32(w.links))
+	pk, mine, err := d.call(rResolve, 0, append(body, path...), nil)
+
+	if err != nil {
+		return step{}, err
+	}
+
+	dropFiles(pk.files)
+
+	if len(pk.data) < 16 {
+		mine.unref()
+
+		return step{}, syscall.EIO
+	}
+
+	w.links = int(le.Uint32(pk.data[4:]))
+	flags := le.Uint32(pk.data[12:])
+	s := step{last: string(pk.data[16:]), kind: int(le.Uint32(pk.data[8:])), slash: flags&stepSlash != 0}
+
+	switch {
+	case le.Uint32(pk.data) == stepRoot:
+		mine.unref()
+		w.root.ref()
+
+		return step{dir: w.root, more: true, rest: s.last}, nil
+	case flags&stepKept != 0:
+		s.dir = remoteDirOn(mine)
+	default:
+		mine.unref()
+		d.ref()
+		s.dir = d
+	}
+
+	return s, nil
+}
+
+func (d *remoteDir) path(p *Process) (string, error) {
+	return d.pathFrom(p.root)
+}
+
+// done drops the reply's endpoint and files of a call that opened
+// nothing.
+func done(pk packet, mine *pairEnd) {
+	dropFiles(pk.files)
+	mine.unref()
+}
+
+// simpleName is a call on a name that answers OK or an error.
+func (d *remoteDir) simpleName(op, arg uint32, body []byte) error {
+	pk, mine, err := d.call(op, arg, body, nil)
+
+	if err != nil {
+		return err
+	}
+
+	done(pk, mine)
+
+	return nil
+}
+
+func (d *remoteDir) statName(p *Process, name string, st *syscall.Stat_t) error {
+	pk, mine, err := d.call(rStat, 0, []byte(name), nil)
+
+	if err != nil {
+		return err
+	}
+
+	defer done(pk, mine)
+
+	return decodeStat(pk.data, st)
+}
+
+func (d *remoteDir) readlinkName(p *Process, name string) (string, error) {
+	pk, mine, err := d.call(rReadlink, 0, []byte(name), nil)
+
+	if err != nil {
+		return "", err
+	}
+
+	defer done(pk, mine)
+
+	return string(pk.data), nil
+}
+
+func (d *remoteDir) openName(p *Process, name string, flags int, mode uint32) (File, error) {
 	if chaosFail("openat") {
 		return nil, syscall.EIO
 	}
 
-	body := make([]byte, 4)
+	body := make([]byte, 4, 4+len(name))
 	binary.LittleEndian.PutUint32(body, mode)
-	pk, mine, err := d.call(rOpen, uint32(flags), append(body, pathBody(path)...), nil)
+	pk, mine, err := d.call(rOpen, uint32(flags), append(body, name...), nil)
 
 	if err != nil {
 		return nil, err
@@ -627,20 +769,22 @@ func (d *remoteDir) open(p *Process, path string, flags int, mode uint32) (File,
 		return nil, err
 	}
 
-	node := remoteNode{end: mine, path: filepath.Clean("/" + path), accmode: flags & 3, append: flags&syscall.O_APPEND != 0}
+	node := remoteNode{end: mine, accmode: flags & 3, append: flags&syscall.O_APPEND != 0}
 	node.refs.Store(1)
 
-	if st.Mode&syscall.S_IFMT == syscall.S_IFDIR {
-		return &remoteDir{node}, nil
-	}
+	switch {
+	case st.Mode&syscall.S_IFMT == syscall.S_IFDIR:
+		dir := &remoteDir{remoteNode: node}
+		dir.dev.Store(st.Dev)
+		dir.ino.Store(st.Ino)
+		dir.known.Store(true)
 
-	if flags&oDirectory != 0 {
+		return dir, nil
+	case flags&syscall.O_DIRECTORY != 0:
 		mine.unref()
 
 		return nil, syscall.ENOTDIR
-	}
-
-	if st.Mode&syscall.S_IFMT == syscall.S_IFIFO {
+	case st.Mode&syscall.S_IFMT == syscall.S_IFIFO && flags&oPath == 0:
 		// The server said who may open it; its pipe is the kernel's.
 		mine.unref()
 
@@ -650,108 +794,102 @@ func (d *remoteDir) open(p *Process, path string, flags int, mode uint32) (File,
 	return &remoteFile{node}, nil
 }
 
-const oDirectory = 0o200000
-
-// done drops the reply's endpoint and files of a call that opened
-// nothing.
-func done(pk packet, mine *pairEnd) {
-	dropFiles(pk.files)
-	mine.unref()
+func (d *remoteDir) mkdir(p *Process, name string, mode uint32) error {
+	return d.simpleName(rMkdir, mode, []byte(name))
 }
 
-func (d *remoteDir) statPath(p *Process, path string, follow bool, st *syscall.Stat_t) error {
-	flags := uint32(0)
-
-	if !follow {
-		flags = atSymlinkNofollow
+// mknod makes a FIFO or a regular file; a server makes no device.
+func (d *remoteDir) mknod(p *Process, name string, mode uint32, dev uint64) error {
+	switch mode & syscall.S_IFMT {
+	case 0, syscall.S_IFREG, syscall.S_IFIFO:
+		return d.simpleName(rMknod, mode, []byte(name))
 	}
 
-	pk, mine, err := d.call(rStat, flags, pathBody(path), nil)
-
-	if err != nil {
-		return err
-	}
-
-	defer done(pk, mine)
-
-	return decodeStat(pk.data, st)
+	return syscall.EPERM
 }
 
-func (d *remoteDir) readlinkPath(p *Process, path string) (string, error) {
-	pk, mine, err := d.call(rReadlink, 0, pathBody(path), nil)
-
-	if err != nil {
-		return "", err
-	}
-
-	defer done(pk, mine)
-
-	return string(pk.data), nil
+func (d *remoteDir) symlink(p *Process, target, name string) error {
+	return d.simpleName(rSymlink, 0, append(append([]byte(target), 0), name...))
 }
 
-// simplePath is a call on a path that answers OK or an error.
-func (d *remoteDir) simplePath(op, arg uint32, body []byte) error {
-	pk, mine, err := d.call(op, arg, body, nil)
-
-	if err != nil {
-		return err
-	}
-
-	done(pk, mine)
-
-	return nil
-}
-
-func (d *remoteDir) mkdir(p *Process, path string, mode uint32) error {
-	return d.simplePath(rMkdir, mode, pathBody(path))
-}
-
-func (d *remoteDir) unlink(p *Process, path string, dir bool) error {
+func (d *remoteDir) unlink(p *Process, name string, dir bool) error {
 	flags := uint32(0)
 
 	if dir {
 		flags = atRemovedir
 	}
 
-	return d.simplePath(rUnlink, flags, pathBody(path))
+	return d.simpleName(rUnlink, flags, []byte(name))
 }
 
-func (d *remoteDir) rename(p *Process, old, new string) error {
-	return d.simplePath(rRename, 0, pathBody(old, new))
-}
+// across is the body of a call on a name of the directory and a name of
+// another of the same server's, which the server knows by its device and
+// inode: none for one of another server, which is EXDEV.
+func (d *remoteDir) across(name string, to Dir, toName string) ([]byte, error) {
+	other, ok := to.(*remoteDir)
 
-// link makes a name for what old names, the link itself unless follow.
-func (d *remoteDir) link(p *Process, old, new string, follow bool) error {
-	arg := uint32(0)
-
-	if follow {
-		arg = 1
+	if !ok {
+		return nil, syscall.EXDEV
 	}
 
-	return d.simplePath(rLink, arg, pathBody(old, new))
+	dev, ino := other.ident()
+	body := make([]byte, 16, 16+len(name)+1+len(toName))
+	binary.LittleEndian.PutUint64(body, dev)
+	binary.LittleEndian.PutUint64(body[8:], ino)
+
+	return append(append(append(body, name...), 0), toName...), nil
 }
 
-func (d *remoteDir) symlink(p *Process, target, path string) error {
-	return d.simplePath(rSymlink, 0, append(append([]byte(target), 0), relative(path)...))
-}
+func (d *remoteDir) rename(p *Process, name string, to Dir, toName string) error {
+	body, err := d.across(name, to, toName)
 
-// mknod makes a FIFO or a regular file; a server makes no device.
-func (d *remoteDir) mknod(p *Process, path string, mode uint32, dev uint64) error {
-	switch mode & syscall.S_IFMT {
-	case 0, syscall.S_IFREG, syscall.S_IFIFO:
-		return d.simplePath(rMknod, mode, pathBody(path))
+	if err != nil {
+		return err
 	}
 
-	return syscall.EPERM
+	return d.simpleName(rRename, 0, body)
 }
 
-// accessPath is the server's walk to the file, which a directory the
-// process may not search ends, and the file's mode for the process: the
+// link makes a name of another directory for what a name of this one is:
+// to a directory of another file system EXDEV, but EROFS when that one is
+// read-only, which Linux finds first.
+func (d *remoteDir) link(p *Process, name string, to Dir, toName string) error {
+	body, err := d.across(name, to, toName)
+
+	if err == nil {
+		dev, _ := d.ident()
+
+		if other, _ := to.(*remoteDir); other != nil {
+			if theirs, _ := other.ident(); theirs != dev {
+				err = syscall.EXDEV
+			}
+		}
+	}
+
+	if err == syscall.EXDEV {
+		var st syscall.Statfs_t
+
+		if to.statfsName(p, "", &st) == nil && st.Flags&1 != 0 {
+			return syscall.EROFS
+		}
+
+		return err
+	}
+
+	if err != nil {
+		return err
+	}
+
+	return d.simpleName(rLink, 0, body)
+}
+
+// accessName is the server's walk to the name, which a directory the
+// process may not search ends, and the name's mode for the process: the
 // ids are vm's, real and effective alike.
-func (d *remoteDir) accessPath(p *Process, path string, mode, flags uint32) error {
+func (d *remoteDir) accessName(p *Process, name string, mode, flags uint32) error {
 	var st syscall.Stat_t
 
-	if err := d.statPath(p, path, true, &st); err != nil {
+	if err := d.statName(p, name, &st); err != nil {
 		return err
 	}
 
@@ -762,39 +900,34 @@ func (d *remoteDir) accessPath(p *Process, path string, mode, flags uint32) erro
 	return nil
 }
 
-func (d *remoteDir) chmodPath(p *Process, path string, mode uint32) error {
-	return d.simplePath(rChmod, mode, pathBody(path))
+func (d *remoteDir) chmodName(p *Process, name string, mode uint32) error {
+	return d.simpleName(rChmod, mode, []byte(name))
 }
 
-func (d *remoteDir) chownPath(p *Process, path string, uid, gid int, follow bool) error {
-	body := make([]byte, 8)
+func (d *remoteDir) chownName(p *Process, name string, uid, gid int) error {
+	body := make([]byte, 8, 8+len(name))
 	binary.LittleEndian.PutUint32(body, uint32(uid))
 	binary.LittleEndian.PutUint32(body[4:], uint32(gid))
-	arg := uint32(0)
 
-	if follow {
-		arg = whenFollow
-	}
-
-	return d.simplePath(rChown, arg, append(body, pathBody(path)...))
+	return d.simpleName(rChown, 0, append(body, name...))
 }
 
-func (d *remoteDir) utimesPath(p *Process, path string, ts []syscall.Timespec, follow bool) error {
-	when, body := whens(ts, follow)
+func (d *remoteDir) utimesName(p *Process, name string, ts []syscall.Timespec) error {
+	when, body := whens(ts)
 
-	return d.simplePath(rUtimes, when, append(body, pathBody(path)...))
+	return d.simpleName(rUtimes, when, append(body, name...))
 }
 
-func (d *remoteDir) truncatePath(p *Process, path string, size int64) error {
-	body := make([]byte, 8)
+func (d *remoteDir) truncateName(p *Process, name string, size int64) error {
+	body := make([]byte, 8, 8+len(name))
 	binary.LittleEndian.PutUint64(body, uint64(size))
 
-	return d.simplePath(rTruncate, 0, append(body, pathBody(path)...))
+	return d.simpleName(rTruncate, 0, append(body, name...))
 }
 
-// statfsPath is the file system of the server a path goes to.
-func (d *remoteDir) statfsPath(p *Process, path string, st *syscall.Statfs_t) error {
-	pk, err := d.on(rStatfs, 0, pathBody(path))
+// statfsName is the file system of the server a name is on.
+func (d *remoteDir) statfsName(p *Process, name string, st *syscall.Statfs_t) error {
+	pk, err := d.on(rStatfs, 0, []byte(name))
 
 	if err != nil {
 		return err
@@ -804,73 +937,6 @@ func (d *remoteDir) statfsPath(p *Process, path string, st *syscall.Statfs_t) er
 
 	return decodeStatfs(pk.data, st)
 }
-
-// realpath is the path a path names with no ".", ".." or link in it:
-// each name is asked for in turn, a link's target takes the link's place,
-// from the root when it is absolute, and ".." is the parent of what is
-// resolved so far, a directory with no link in its path.
-func (d *remoteDir) realpath(p *Process, path string) (string, error) {
-	var st syscall.Stat_t
-	resolved := ""
-	rest := strings.Split(path, "/")
-	links := 0
-
-	for len(rest) > 0 {
-		name := rest[0]
-		rest = rest[1:]
-
-		switch name {
-		case "", ".":
-			continue
-		case "..":
-			resolved = resolved[:max(strings.LastIndexByte(resolved, '/'), 0)]
-
-			continue
-		}
-
-		next := name
-
-		if resolved != "" {
-			next = resolved + "/" + name
-		}
-
-		if err := d.statPath(p, next, false, &st); err != nil {
-			return "", err
-		}
-
-		switch st.Mode & syscall.S_IFMT {
-		case syscall.S_IFLNK:
-			if links++; links > maxLinks {
-				return "", syscall.ELOOP
-			}
-
-			target, err := d.readlinkPath(p, next)
-
-			if err != nil {
-				return "", err
-			}
-
-			if strings.HasPrefix(target, "/") {
-				resolved = ""
-			}
-
-			rest = append(strings.Split(target, "/"), rest...)
-		case syscall.S_IFDIR:
-			resolved = next
-		default:
-			if len(rest) > 0 {
-				return "", syscall.ENOTDIR
-			}
-
-			resolved = next
-		}
-	}
-
-	return "/" + resolved, nil
-}
-
-// maxLinks is how many links a path may go through, Linux's.
-const maxLinks = 40
 
 // readdir fills the entries after the last it gave, as many as fit, in
 // the guest's struct dirent layout: ino, off, reclen, type, name; an
@@ -1090,25 +1156,55 @@ func (r *noRoot) poll(events int16) int16 {
 func (r *noRoot) changes(events int16) []<-chan struct{} { return nil }
 func (r *noRoot) flags() (int, error)                    { return syscall.O_RDONLY, nil }
 func (r *noRoot) setFlags(fl int) error                  { return nil }
-func (r *noRoot) name(p *Process) (string, error)        { return "/", nil }
 func (r *noRoot) readdir(b []byte) (int, error)          { return 0, nil }
+func (r *noRoot) path(p *Process) (string, error)        { return "/", nil }
 
-// itself tells whether a path names the root itself, the one thing there
-// is.
-func itself(path string) bool {
-	return filepath.Clean("/"+path) == "/"
-}
+// resolve walks a path in the one directory there is: a name in it is
+// none, but ".", ".." and the last name, which the calls find missing.
+func (r *noRoot) resolve(p *Process, path string, w *walk) (step, error) {
+	names, slash := splitPath(path)
 
-func (r *noRoot) open(p *Process, path string, flags int, mode uint32) (File, error) {
-	if !itself(path) {
-		if flags&syscall.O_CREAT != 0 {
-			return nil, syscall.EROFS
+	for len(names) > 1 {
+		if names[0] != "." && names[0] != ".." {
+			return step{}, syscall.ENOENT
 		}
 
-		return nil, syscall.ENOENT
+		names = names[1:]
 	}
 
-	if flags&3 != syscall.O_RDONLY {
+	r.ref()
+	s := step{dir: r, kind: lastNone}
+
+	if len(names) == 1 {
+		s.last, s.kind, s.slash = lastOf(names[0], slash)
+	}
+
+	return s, nil
+}
+
+func (r *noRoot) statName(p *Process, name string, st *syscall.Stat_t) error {
+	if name != "" {
+		return syscall.ENOENT
+	}
+
+	return r.stat(st)
+}
+
+func (r *noRoot) readlinkName(p *Process, name string) (string, error) {
+	if name != "" {
+		return "", syscall.ENOENT
+	}
+
+	return "", syscall.EINVAL
+}
+
+func (r *noRoot) openName(p *Process, name string, flags int, mode uint32) (File, error) {
+	switch {
+	case name != "" && flags&syscall.O_CREAT != 0:
+		return nil, syscall.EROFS
+	case name != "":
+		return nil, syscall.ENOENT
+	case flags&3 != syscall.O_RDONLY:
 		return nil, syscall.EISDIR
 	}
 
@@ -1117,31 +1213,15 @@ func (r *noRoot) open(p *Process, path string, flags int, mode uint32) (File, er
 	return r, nil
 }
 
-func (r *noRoot) statPath(p *Process, path string, follow bool, st *syscall.Stat_t) error {
-	if !itself(path) {
-		return syscall.ENOENT
-	}
+func (r *noRoot) mkdir(p *Process, name string, mode uint32) error             { return syscall.EROFS }
+func (r *noRoot) mknod(p *Process, name string, mode uint32, dev uint64) error { return syscall.EROFS }
+func (r *noRoot) symlink(p *Process, target, name string) error                { return syscall.EROFS }
+func (r *noRoot) unlink(p *Process, name string, dir bool) error               { return syscall.ENOENT }
+func (r *noRoot) rename(p *Process, name string, to Dir, toName string) error  { return syscall.ENOENT }
+func (r *noRoot) link(p *Process, name string, to Dir, toName string) error    { return syscall.ENOENT }
 
-	return r.stat(st)
-}
-
-func (r *noRoot) readlinkPath(p *Process, path string) (string, error) {
-	if !itself(path) {
-		return "", syscall.ENOENT
-	}
-
-	return "", syscall.EINVAL
-}
-
-func (r *noRoot) mkdir(p *Process, path string, mode uint32) error             { return syscall.EROFS }
-func (r *noRoot) unlink(p *Process, path string, dir bool) error               { return syscall.ENOENT }
-func (r *noRoot) rename(p *Process, old, new string) error                     { return syscall.ENOENT }
-func (r *noRoot) link(p *Process, old, new string, follow bool) error          { return syscall.ENOENT }
-func (r *noRoot) symlink(p *Process, target, path string) error                { return syscall.EROFS }
-func (r *noRoot) mknod(p *Process, path string, mode uint32, dev uint64) error { return syscall.EROFS }
-
-func (r *noRoot) accessPath(p *Process, path string, mode, flags uint32) error {
-	if !itself(path) {
+func (r *noRoot) accessName(p *Process, name string, mode, flags uint32) error {
+	if name != "" {
 		return syscall.ENOENT
 	}
 
@@ -1152,29 +1232,21 @@ func (r *noRoot) accessPath(p *Process, path string, mode, flags uint32) error {
 	return nil
 }
 
-func (r *noRoot) chmodPath(p *Process, path string, mode uint32) error { return syscall.EROFS }
-func (r *noRoot) chownPath(p *Process, path string, uid, gid int, follow bool) error {
+func (r *noRoot) chmodName(p *Process, name string, mode uint32) error { return syscall.EROFS }
+func (r *noRoot) chownName(p *Process, name string, uid, gid int) error {
 	return syscall.EROFS
 }
-func (r *noRoot) utimesPath(p *Process, path string, ts []syscall.Timespec, follow bool) error {
+func (r *noRoot) utimesName(p *Process, name string, ts []syscall.Timespec) error {
 	return syscall.EROFS
 }
-func (r *noRoot) truncatePath(p *Process, path string, size int64) error { return syscall.EISDIR }
+func (r *noRoot) truncateName(p *Process, name string, size int64) error { return syscall.EISDIR }
 
-func (r *noRoot) statfsPath(p *Process, path string, st *syscall.Statfs_t) error {
-	if !itself(path) {
+func (r *noRoot) statfsName(p *Process, name string, st *syscall.Statfs_t) error {
+	if name != "" {
 		return syscall.ENOENT
 	}
 
 	*st = syscall.Statfs_t{Bsize: 4096, Frsize: 4096, Namelen: 255}
 
 	return nil
-}
-
-func (r *noRoot) realpath(p *Process, path string) (string, error) {
-	if !itself(path) {
-		return "", syscall.ENOENT
-	}
-
-	return "/", nil
 }

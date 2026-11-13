@@ -26,8 +26,9 @@ struct Program {
     struct Filter* instructions;
 };
 
-// Occupy the first name selected by mktemp before its real existence check.
-// The guest must leave this file intact and return a different unused name.
+// Occupy the first name selected by mktemp before its real existence check,
+// the kernel's fstatat of the name in the directory it walked to. The guest
+// must leave this file intact and return a different unused name.
 static int occupy_candidate(pid_t thread, const struct user_regs_struct* registers) {
     char path[32] = {0};
     for (unsigned offset = 0; offset < sizeof(path); offset += sizeof(long)) {
@@ -39,14 +40,14 @@ static int occupy_candidate(pid_t thread, const struct user_regs_struct* registe
             break;
         }
     }
-    if (strncmp(path, "/tmp/collision-", 15) != 0 || strnlen(path, sizeof(path)) != 21) {
+    if (strncmp(path, "collision-", 10) != 0 || strnlen(path, sizeof(path)) != 16) {
         return 0;
     }
     char descriptor[96];
     snprintf(descriptor, sizeof(descriptor), "/proc/%ld/fd/%llu", (long)thread, (unsigned long long)registers->rdi);
     int root = open(descriptor, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     assert(root >= 0);
-    int file = openat(root, path + 1, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    int file = openat(root, path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
     assert(file >= 0 && write(file, "occupied", 8) == 8);
     assert(close(file) == 0 && close(root) == 0);
     return 1;
@@ -98,7 +99,7 @@ int main(int argc, char** argv) {
     unsigned dns_port = strncmp(argv[1], "dns/", 4) == 0 ? atoi(argv[1] + 4) : 0;
     assert(dns_port <= 65535);
     int collision = strcmp(argv[1], "collision") == 0;
-    int number = dns_port ? 42 : collision ? 437 : atoi(argv[1]);
+    int number = dns_port ? 42 : collision ? 262 : atoi(argv[1]);
     struct stat input;
     assert(fstat(0, &input) == 0);
     pid_t child = fork();

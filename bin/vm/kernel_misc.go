@@ -163,7 +163,8 @@ func (p *Process) getsubopt(opt, keys, val uint32) uint32 {
 // vm when it ends, so it stays as it is.
 func (p *Process) daemon(nochdir, noclose uint32) uint32 {
 	if nochdir == 0 {
-		p.cwd = "/"
+		p.root.ref()
+		p.setCwd(p.root)
 	}
 
 	if noclose == 0 {

@@ -78,14 +78,13 @@ type Process struct {
 	// image is what the instance runs: its code, arguments and environment.
 	image *execImage
 	files []*Descriptor
-	// root is the root directory paths resolve in, rootPath its host path
-	// and cwd the absolute guest path of the working directory. cwdDir is
-	// the directory fchdir made the working directory, for chroot("."):
-	// a connection to a server has no name but itself.
+	// root is the directory absolute paths start at and ".." stops at,
+	// rootPath its host path for a root of the host; cwd is the working
+	// directory, which relative paths start at. Both are directories the
+	// process holds, not names (kernel_path.go).
 	root     Dir
 	rootPath string
-	cwd      string
-	cwdDir   Dir
+	cwd      Dir
 	umask    uint32
 	// errnoAt and environAt are where the crt keeps errno and environ, tzAt
 	// tzname, timezone and daylight, herrnoAt h_errno.
@@ -218,8 +217,9 @@ func runKernel(f File, path, root string, argv []string, options CompileOptions,
 	throw(err)
 	program := p.programPath(f)
 	f.unref()
-	p.cwd = p.guestPath(throw2(os.Getwd()))
-	env := []string{"PWD=" + p.cwd}
+	cwd, pwd := p.firstCwd()
+	p.setCwd(cwd)
+	env := []string{"PWD=" + pwd}
 
 	for _, e := range os.Environ() {
 		if !strings.HasPrefix(e, "PWD=") {
@@ -255,28 +255,45 @@ func (k *Kernel) newProcess(parent *Process) (*Process, error) {
 	if parent == nil {
 		p.pgid, p.sid = p.pid, p.pid
 		p.limits = hostLimits()
-		p.root, p.rootPath = k.root, k.rootPath
+		p.root, p.rootPath, p.cwd = k.root, k.rootPath, k.root
 	} else {
 		p.ppid, p.pgid, p.sid = parent.pid, parent.pgid, parent.sid
 		p.nice, p.policy = parent.nice, parent.policy
 		p.comm, p.undumpable, p.noNewPrivs = parent.comm, parent.undumpable, parent.noNewPrivs
 		p.cwd, p.umask, p.limits, p.seed = parent.cwd, parent.umask, parent.limits, parent.seed
-		p.root, p.rootPath, p.cwdDir = parent.root, parent.rootPath, parent.cwdDir
-
-		if p.cwdDir != nil {
-			p.cwdDir.ref()
-		}
+		p.root, p.rootPath = parent.root, parent.rootPath
 	}
 
 	p.root.ref()
+	p.cwd.ref()
 	k.procs[p.pid] = p
 
 	return p, nil
 }
 
+// firstCwd is the first process's working directory, held, and its path:
+// vm's own in a root of the host that has it, else the root. It is the
+// kernel's own doing, no call of the guest's.
+func (p *Process) firstCwd() (Dir, string) {
+	if _, ok := p.root.(*hostDir); ok && p.rootPath != "" {
+		host, err := os.Getwd()
+
+		if err == nil && (p.rootPath == "/" || host == p.rootPath || strings.HasPrefix(host, p.rootPath+"/")) {
+			if fd, err := syscall.Open(host, oPath|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0); err == nil {
+				return newHostDir(fd), p.guestPath(host)
+			}
+		}
+	}
+
+	p.root.ref()
+
+	return p.root, "/"
+}
+
 // programPath is the guest's path of a program's file, or empty when it
-// is outside the root or has no path: a file of a server says the path it
-// was opened by, a file of the host is found under the root.
+// is outside the root or has no path: a file of a server says its path,
+// its directory's and the name it was opened by, a file of the host is
+// found under the root.
 func (p *Process) programPath(f File) string {
 	if named, ok := f.(Named); ok {
 		if name, err := named.name(p); err == nil {
@@ -450,7 +467,7 @@ func (p *Process) terminate(status int) {
 	}
 
 	p.root.unref()
-	p.setCwdDir(nil)
+	p.cwd.unref()
 	p.sig.mu.Lock()
 	p.sig.dead = true
 	p.sig.mu.Unlock()

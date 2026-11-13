@@ -793,7 +793,7 @@ E2E_TESTED = {
     "vm": [vm, aot_native, aot, aot_command, wazero, chaos_check],
 }
 APPLICATION_TESTED = {
-    **({"rootfs": [vm, rootfs]} if NIM else {}),
+    **({"rootfs": [vm, rootfs], "vfs": [vm, rootfs, python]} if NIM else {}),
     "busybox_abi": [busybox],
     "busybox": [vm, busybox],
     "clang": [vm, busybox, clang, libc, libc_headers, libcxx],

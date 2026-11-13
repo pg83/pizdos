@@ -54,7 +54,7 @@ static int attempt(const char* operation) {
         assert(result == 0 || (result == -1 && errno == EIO));
         return result < 0;
     }
-    if (strcmp(operation, "fchdir") == 0 || strcmp(operation, "relative-open") == 0 || strcmp(operation, "fexecve") == 0) {
+    if (strcmp(operation, "relative-open") == 0 || strcmp(operation, "fexecve") == 0) {
         int execute = strcmp(operation, "fexecve") == 0;
         int fd = open(execute ? "/dev/null" : "/", O_RDONLY);
         assert(fd >= 0);
@@ -62,14 +62,12 @@ static int attempt(const char* operation) {
         if (execute) {
             char* args[] = {"null", NULL};
             result = fexecve(fd, args, NULL);
-        } else if (strcmp(operation, "fchdir") == 0) {
-            result = fchdir(fd);
         } else {
             result = openat(fd, "dev/null", O_RDONLY);
         }
         int failed = result < 0 && errno == EIO;
         assert(failed || (execute ? result == -1 && errno == EACCES : result >= 0));
-        if (!execute && strcmp(operation, "relative-open") == 0 && result >= 0) {
+        if (!execute && result >= 0) {
             assert(close(result) == 0);
         }
         assert(close(fd) == 0);

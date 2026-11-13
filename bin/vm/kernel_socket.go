@@ -5,7 +5,6 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
-	"fmt"
 	"slices"
 	"sync/atomic"
 	"syscall"
@@ -118,40 +117,21 @@ func (p *Process) withAddress(at, n uint32, bind bool, call func(addr []byte) er
 		path = path[:i]
 	}
 
+	// A path names a socket of the host, in a directory of the host.
 	guest := string(path)
-	full, err := p.full(guest)
 
-	if err != nil {
+	return p.unixPath(guest, bind, func(host string) error {
+		if len(host) >= sunPathMax {
+			return syscall.ENAMETOOLONG
+		}
+
+		err := call(unixAddress([]byte(host)))
+
+		if err == nil && bind {
+			p.k.unixNames.Store(host, guest)
+		}
+
 		return err
-	}
-
-	// A path names a socket of the host: in a root of the host.
-	root, ok := p.root.(*hostDir)
-
-	if !ok {
-		return syscall.EOPNOTSUPP
-	}
-
-	if bind {
-		return root.onName(full, syscall.EADDRINUSE, func(dirfd int, name string) error {
-			host := fmt.Sprintf("/proc/self/fd/%d/%s", dirfd, name)
-
-			if len(host) >= sunPathMax {
-				return syscall.ENAMETOOLONG
-			}
-
-			err := call(unixAddress([]byte(host)))
-
-			if err == nil {
-				p.k.unixNames.Store(host, guest)
-			}
-
-			return err
-		})
-	}
-
-	return root.onPath(full, true, func(fd int) error {
-		return call(unixAddress([]byte(procFd(fd))))
 	})
 }
 

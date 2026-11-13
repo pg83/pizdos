@@ -199,16 +199,15 @@ func (p *Process) loadProgram(path string, argv []string) (*execImage, error) {
 // program is a regular file the process may execute.
 func (p *Process) loadFrom(path string, first File, argv []string) (*execImage, error) {
 	for range 4 {
-		f := first
+		f, program := first, ""
 
 		if first != nil {
 			first.ref()
 			first = nil
 		} else {
 			var err error
-			f, err = p.openPath(path, syscall.O_RDONLY, 0)
 
-			if err != nil {
+			if f, program, err = p.openProgram(path); err != nil {
 				return nil, err
 			}
 		}
@@ -266,7 +265,11 @@ func (p *Process) loadFrom(path string, first File, argv []string) (*execImage, 
 		}
 
 		code, err := p.k.code(p, f, path)
-		program := p.programPath(f)
+
+		if program == "" {
+			program = p.programPath(f)
+		}
+
 		f.unref()
 
 		if err != nil {
@@ -277,6 +280,33 @@ func (p *Process) loadFrom(path string, first File, argv []string) (*execImage, 
 	}
 
 	return nil, syscall.ELOOP
+}
+
+// openProgram opens the file a path names for exec, a last link followed,
+// and says its path from the root: its directory's and its name, as
+// Linux's /proc/self/exe does. A directory is EACCES.
+func (p *Process) openProgram(path string) (File, string, error) {
+	var f File
+	var program string
+	err := p.onName(atFdcwd, path, true, func(d Dir, name string, st *syscall.Stat_t) error {
+		if name == "" {
+			return syscall.EACCES
+		}
+
+		var err error
+
+		if f, err = d.openName(p, name, syscall.O_RDONLY, 0); err != nil {
+			return err
+		}
+
+		if base, err := d.path(p); err == nil {
+			program = strings.TrimSuffix(base, "/") + "/" + name
+		}
+
+		return nil
+	})
+
+	return f, program, err
 }
 
 // execPath is exec with a search of PATH when file has no slash.

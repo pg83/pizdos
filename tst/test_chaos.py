@@ -97,16 +97,16 @@ def main():
         shell.write_bytes(image.read_bytes())
         shell.chmod(0o700)
         for operation in ("read", "write", "openat", "fork", "memory-grow", "fstat", "fstatat", "stat", "lstat", "fdopendir", "msync",
-                          "chdir", "fchdir", "relative-open", "fexecve", "ttyname", "system", "daemon", "forkpty"):
+                          "chdir", "relative-open", "fexecve", "ttyname", "system", "daemon", "forkpty"):
             skip = 8 if operation in ("openat", "daemon") else 2
-            point = "file-stat" if operation in ("fstat", "fstatat", "stat", "lstat", "fdopendir", "msync") else operation
+            point = "file-stat" if operation in ("fstat", "fstatat", "stat", "lstat", "fdopendir", "msync", "chdir") else operation
             if operation == "system":
                 point, skip = "openat", 1
             elif operation == "daemon":
                 point = "openat"
             elif operation == "forkpty":
                 point = "fork"
-            if operation in ("chdir", "fchdir", "relative-open", "fexecve", "ttyname"):
+            if operation in ("relative-open", "fexecve", "ttyname"):
                 point, skip = "readlink", 1
             rule = f"{point}@{skip}"
             run_guest(vm, image, operation, 0, rule)

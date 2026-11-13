@@ -65,33 +65,38 @@ type Seeker interface {
 	seek(off int64, whence int) (int64, error)
 }
 
-// A Dir resolves paths. A process's start at its root, a Dir, and go to
-// it whole, absolute; what the root is decides who resolves them: a
-// directory of the host with openat2 (kernel_hostdir.go), a server with
-// the file protocol (kernel_remote.go). An open directory is a Dir too:
-// it lists its entries as getdents64 does, into a buffer of the guest's
-// struct dirent layout, and knows its name, which the calls relative to
-// its descriptor start from.
+// A Dir is a directory: where a path is walked from, and what holds the
+// names the calls make their last step on, as Linux's namei has it
+// (kernel_path.go). resolve walks a path from the directory to the
+// directory of its last name, or to where the walk goes on, which only it
+// knows: the host's directories walk with the host's calls one name at a
+// time (kernel_hostdir.go), a server's with RESOLVE (kernel_remote.go).
+// The calls on a name never follow it: a symbolic link is itself, and the
+// caller follows it when it means to; "" names the directory itself for
+// the calls that look at a name. path is the directory's path from the
+// process's root, for getcwd and realpath. An open directory lists its
+// entries as getdents64 does, into a buffer of the guest's struct dirent
+// layout.
 type Dir interface {
 	File
-	name(p *Process) (string, error)
+	resolve(p *Process, path string, w *walk) (step, error)
+	path(p *Process) (string, error)
 	readdir(b []byte) (int, error)
-	open(p *Process, path string, flags int, mode uint32) (File, error)
-	statPath(p *Process, path string, follow bool, st *syscall.Stat_t) error
-	readlinkPath(p *Process, path string) (string, error)
-	mkdir(p *Process, path string, mode uint32) error
-	unlink(p *Process, path string, dir bool) error
-	rename(p *Process, old, new string) error
-	link(p *Process, old, new string, follow bool) error
-	symlink(p *Process, target, path string) error
-	mknod(p *Process, path string, mode uint32, dev uint64) error
-	accessPath(p *Process, path string, mode, flags uint32) error
-	chmodPath(p *Process, path string, mode uint32) error
-	chownPath(p *Process, path string, uid, gid int, follow bool) error
-	utimesPath(p *Process, path string, ts []syscall.Timespec, follow bool) error
-	truncatePath(p *Process, path string, size int64) error
-	statfsPath(p *Process, path string, st *syscall.Statfs_t) error
-	realpath(p *Process, path string) (string, error)
+	statName(p *Process, name string, st *syscall.Stat_t) error
+	readlinkName(p *Process, name string) (string, error)
+	openName(p *Process, name string, flags int, mode uint32) (File, error)
+	mkdir(p *Process, name string, mode uint32) error
+	mknod(p *Process, name string, mode uint32, dev uint64) error
+	symlink(p *Process, target, name string) error
+	unlink(p *Process, name string, dir bool) error
+	rename(p *Process, name string, to Dir, toName string) error
+	link(p *Process, name string, to Dir, toName string) error
+	accessName(p *Process, name string, mode, flags uint32) error
+	chmodName(p *Process, name string, mode uint32) error
+	chownName(p *Process, name string, uid, gid int) error
+	utimesName(p *Process, name string, ts []syscall.Timespec) error
+	truncateName(p *Process, name string, size int64) error
+	statfsName(p *Process, name string, st *syscall.Statfs_t) error
 }
 
 // A Pathed object has a path on the host: a file of a host file system.
@@ -100,8 +105,8 @@ type Pathed interface {
 	hostPath() (string, error)
 }
 
-// A Named file knows the guest's path it was opened by: a file of a
-// server, whose tree the kernel does not keep; a Dir too.
+// A Named file knows its guest path: a file of a server, which says it
+// from the root of the process.
 type Named interface {
 	File
 	name(p *Process) (string, error)

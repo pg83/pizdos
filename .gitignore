@@ -11,6 +11,7 @@ __pycache__/
 /vm_chaos_coverage
 /vm_chaos
 /vm_modules
+/chaos_check
 /coverage
 /coverage_check
 /wazero
