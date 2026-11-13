@@ -18,7 +18,8 @@ import (
 // in writes, where POSIX asks only that an empty pipe take PIPE_BUF. The
 // last writer's close ends the data, the last reader's makes a write EPIPE
 // and SIGPIPE. A blocking end waits as every file of the kernel does: on
-// the pipe's change.
+// the channel's change of its side, the reader on what fills it, the
+// writer on what drains it.
 
 const pipeChunk = 4096
 
@@ -26,13 +27,14 @@ type pipe struct {
 	ch *channel
 	// front is what a read left of the packet it took, the next read's;
 	// bytes counts it and the packets queued, for FIONREAD; readers and
-	// writers count the open ends.
+	// writers count the open ends. mu guards them, and the channel's
+	// sends and takes, so a take knows whether it made room in a full
+	// pipe.
 	mu      sync.Mutex
 	front   []byte
 	bytes   atomic.Int64
 	readers int
 	writers int
-	changed changed
 	ino     uint64
 	made    time.Time
 }
@@ -101,12 +103,14 @@ func (e *pipeEnd) unref() {
 
 	pp := e.pipe
 	pp.mu.Lock()
+	last := false
 
 	if e.writer {
 		pp.writers--
 
 		if pp.writers == 0 {
 			close(pp.ch.ch)
+			last = true
 		}
 	} else {
 		pp.readers--
@@ -115,15 +119,26 @@ func (e *pipeEnd) unref() {
 			close(pp.ch.done)
 			pp.ch.drain()
 			pp.front = nil
+			last = true
 		}
 	}
 
 	pp.mu.Unlock()
-	pp.changed.bump()
+
+	if last && e.writer {
+		pp.ch.filled.bump()
+	} else if last {
+		pp.ch.drained.bump()
+	}
 }
 
+// changes are the channel's of the end's side.
 func (e *pipeEnd) changes(events int16) []<-chan struct{} {
-	return []<-chan struct{}{e.pipe.changed.wait()}
+	if e.writer {
+		return []<-chan struct{}{e.pipe.ch.drained.wait()}
+	}
+
+	return []<-chan struct{}{e.pipe.ch.filled.wait()}
 }
 
 // stat is a FIFO's: the ends share an inode of the kernel's.
@@ -198,26 +213,30 @@ func (e *pipeEnd) ioctl(req uintptr, arg unsafe.Pointer) error {
 // take is what the pipe has for a read now, into b, as far as it fits:
 // what a read left first, then the packets queued, of which what does not
 // fit is left. ok is false with nothing queued, eof with the writers gone
-// and nothing left.
-func (pp *pipe) take(b []byte) (n int, eof, ok bool) {
+// and nothing left; freed says a full pipe has room now, a change to its
+// writers.
+func (pp *pipe) take(b []byte) (n int, eof, ok, freed bool) {
 	pp.mu.Lock()
 	defer pp.mu.Unlock()
 
 	for n < len(b) {
 		if len(pp.front) == 0 {
+			full := len(pp.ch.ch) == cap(pp.ch.ch)
+
 			select {
 			case pk, live := <-pp.ch.ch:
 				if !live {
 					pp.bytes.Add(-int64(n))
 
-					return n, n == 0, true
+					return n, n == 0, true, freed
 				}
 
 				pp.front = pk.data
+				freed = freed || full
 			default:
 				pp.bytes.Add(-int64(n))
 
-				return n, false, n > 0
+				return n, false, n > 0, freed
 			}
 		}
 
@@ -228,7 +247,7 @@ func (pp *pipe) take(b []byte) (n int, eof, ok bool) {
 
 	pp.bytes.Add(-int64(n))
 
-	return n, false, true
+	return n, false, true, freed
 }
 
 func (e *pipeEnd) read(p *Process, b []byte, mode ioMode) (int, error) {
@@ -247,11 +266,11 @@ func (e *pipeEnd) read(p *Process, b []byte, mode ioMode) (int, error) {
 	pp := e.pipe
 
 	for {
-		n, eof, ok := pp.take(b)
+		n, _, ok, freed := pp.take(b)
 
 		if ok {
-			if !eof {
-				pp.changed.bump()
+			if freed {
+				pp.ch.drained.bump()
 			}
 
 			return n, nil
@@ -298,14 +317,25 @@ func (e *pipeEnd) write(p *Process, b []byte, mode ioMode) (int, error) {
 		chunk := b[total:min(len(b), total+pipeChunk)]
 		pk := packet{data: append([]byte(nil), chunk...)}
 
+		// Under the pipe's lock, as take is: so take knows whether the
+		// pipe was full when it made room.
+		pp.mu.Lock()
+		sent := false
+
 		select {
 		case pp.ch.ch <- pk:
 			pp.bytes.Add(int64(len(chunk)))
-			pp.changed.bump()
+			sent = true
+		default:
+		}
+
+		pp.mu.Unlock()
+
+		if sent {
+			pp.ch.filled.bump()
 			total += len(chunk)
 
 			continue
-		default:
 		}
 
 		if mode.nonblock || e.nonblock.Load() {

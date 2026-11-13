@@ -481,11 +481,12 @@ type pollEntry struct {
 }
 
 // waitObjects waits until an object is ready for its events: it asks them
-// all, and when none is, selects on their changes, the process's wake and
-// the deadline of timeout milliseconds, then asks again. A signal
-// interrupts it: then the error is EINTR, after the handlers ran when all
-// of them restart calls and restart is set. It returns how many are
-// ready.
+// all, and when none is, takes their changes, asks once more, as a change
+// before the wait was armed is not waited for, then selects on the
+// changes, the process's wake and the deadline of timeout milliseconds,
+// and asks again. A signal interrupts it: then the error is EINTR, after
+// the handlers ran when all of them restart calls and restart is set. It
+// returns how many are ready.
 func (p *Process) waitObjects(entries []pollEntry, timeout int, restart bool) (int, error) {
 	end := deadline(timeout)
 
@@ -498,17 +499,7 @@ func (p *Process) waitObjects(entries []pollEntry, timeout int, restart bool) (i
 			return 0, syscall.EINTR
 		}
 
-		ready := 0
-
-		for i := range entries {
-			entries[i].revents = entries[i].obj.poll(entries[i].events)
-
-			if entries[i].revents != 0 {
-				ready++
-			}
-		}
-
-		if ready > 0 {
+		if ready := pollEntries(entries); ready > 0 {
 			return ready, nil
 		}
 
@@ -532,6 +523,14 @@ func (p *Process) waitObjects(entries []pollEntry, timeout int, restart bool) (i
 			}
 		}
 
+		if ready := pollEntries(entries); ready > 0 {
+			if timer != nil {
+				timer.Stop()
+			}
+
+			return ready, nil
+		}
+
 		chosen, _, _ := reflect.Select(cases)
 
 		if timer != nil {
@@ -542,6 +541,22 @@ func (p *Process) waitObjects(entries []pollEntry, timeout int, restart bool) (i
 			}
 		}
 	}
+}
+
+// pollEntries asks every entry's object for its events and counts the
+// ready ones.
+func pollEntries(entries []pollEntry) int {
+	ready := 0
+
+	for i := range entries {
+		entries[i].revents = entries[i].obj.poll(entries[i].events)
+
+		if entries[i].revents != 0 {
+			ready++
+		}
+	}
+
+	return ready
 }
 
 // recvCase is a receive from any channel, for a select over a list.

@@ -154,7 +154,13 @@ func startInbox(fd int, own bool, kind inboxKind) (*inbox, error) {
 func (b *inbox) run() {
 	defer func() {
 		close(b.ch)
-		b.changed.bump()
+
+		// Stopped, the goroutine leaves no packet behind to wake a wait:
+		// the change does; ended by its last packet, that packet did.
+		if closed(b.stop) {
+			b.changed.bump()
+		}
+
 		close(b.done)
 	}()
 

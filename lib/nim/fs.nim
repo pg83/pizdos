@@ -664,8 +664,6 @@ proc handle(s: var Server, fd: cint) =
   when defined(fsDebug):
     stderr.writeLine("fs: op " & $h.op & " arg " & $h.arg & " body " & $body.len & " fds " & $fds.len)
   if fds.len == 0:
-    for fd in fds:
-      discard close(fd)
     return  # a request without its reply endpoint: nobody to answer
   case Op(h.op)
   of opOpen: s.open(ep.node, h, body, fds)

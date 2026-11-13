@@ -52,10 +52,16 @@ type packet struct {
 }
 
 // A channel carries packets one way. done is closed with its reader, so
-// a writer learns of it; ch is closed by its writer.
+// a writer learns of it; ch is closed by its writer. Its two changes are
+// what a wait selects on: filled changes with what the reader sees, a
+// packet sent, the writer gone; drained with what the writer sees, a
+// packet taken, the reader gone. Each side waits on its own, so a change
+// of the other's is no edge to it.
 type channel struct {
-	ch   chan packet
-	done chan struct{}
+	ch      chan packet
+	done    chan struct{}
+	filled  changed
+	drained changed
 }
 
 func newChannel() *channel {
@@ -95,11 +101,10 @@ func dropFiles(files []File) {
 	}
 }
 
-// pairState is what both ends share: the change both wait on, the inode.
+// pairState is what both ends share: the inode.
 type pairState struct {
-	changed changed
-	ino     uint64
-	made    time.Time
+	ino  uint64
+	made time.Time
 }
 
 type pairEnd struct {
@@ -173,11 +178,30 @@ func (e *pairEnd) unref() {
 
 	close(e.to.ch)
 	e.dead.Store(true)
-	e.shared.changed.bump()
+	e.from.drained.bump()
+	e.to.filled.bump()
 }
 
+// changes are what the end reads from, for input, and what it writes to,
+// for output; both when neither is asked.
 func (e *pairEnd) changes(events int16) []<-chan struct{} {
-	return []<-chan struct{}{e.shared.changed.wait()}
+	in, out := events&(pollIn|pollRdnorm|pollPri) != 0, events&(pollOut|pollWrnorm) != 0
+
+	if !in && !out {
+		in, out = true, true
+	}
+
+	var chans []<-chan struct{}
+
+	if in {
+		chans = append(chans, e.from.filled.wait())
+	}
+
+	if out {
+		chans = append(chans, e.to.drained.wait())
+	}
+
+	return chans
 }
 
 func (e *pairEnd) stat(st *syscall.Stat_t) error {
@@ -243,7 +267,7 @@ func (e *pairEnd) send(p *Process, data []byte, files []File, mode ioMode) error
 
 		select {
 		case e.to.ch <- pk:
-			e.shared.changed.bump()
+			e.to.filled.bump()
 
 			return nil
 		default:
@@ -256,7 +280,7 @@ func (e *pairEnd) send(p *Process, data []byte, files []File, mode ioMode) error
 		if p == nil {
 			select {
 			case e.to.ch <- pk:
-				e.shared.changed.bump()
+				e.to.filled.bump()
 
 				return nil
 			case <-e.to.done:
@@ -324,7 +348,7 @@ func (e *pairEnd) recv(p *Process, mode ioMode, peek bool) (packet, bool, error)
 
 		if ok {
 			if !eof && !peek {
-				e.shared.changed.bump()
+				e.from.drained.bump()
 			}
 
 			return pk, eof, nil
@@ -341,7 +365,7 @@ func (e *pairEnd) recv(p *Process, mode ioMode, peek bool) (packet, bool, error)
 				return packet{}, true, nil
 			}
 
-			e.shared.changed.bump()
+			e.from.drained.bump()
 
 			return pk, false, nil
 		}
@@ -447,15 +471,20 @@ func (e *pairEnd) shutdown(how int) error {
 		return syscall.EINVAL
 	}
 
+	// No more reading ends the data for this end and the other end's
+	// writes; no more writing ends the data for the other end and this
+	// end's writes.
 	if how != shutWr {
 		e.noRead.Store(true)
+		e.from.filled.bump()
+		e.from.drained.bump()
 	}
 
 	if how != shutRd {
 		e.noWrite.Store(true)
+		e.to.filled.bump()
+		e.to.drained.bump()
 	}
-
-	e.shared.changed.bump()
 
 	return nil
 }

@@ -256,10 +256,14 @@ func (o *hostObject) changes(events int16) []<-chan struct{} {
 }
 
 // tell has a goroutine sleep in the host's poll for events and bump the
-// change once: one goroutine at a time, as a change wakes every wait. One
-// that outlives the waits wakes nobody.
+// change once, when the object is not ready for them now: one goroutine
+// at a time, as a change wakes every wait. A wait asks again after it
+// told (waitObjects), so readiness that came in between is seen; an
+// edge-triggered set asking for the change of a ready object gets no
+// edge, as there is none. A goroutine that outlives the waits wakes
+// nobody.
 func (o *hostObject) tell(events int16) {
-	if !o.telling.CompareAndSwap(false, true) {
+	if pollNow(o.fd, events) != 0 || !o.telling.CompareAndSwap(false, true) {
 		return
 	}
 
@@ -274,11 +278,24 @@ func (o *hostObject) stat(st *syscall.Stat_t) error {
 	return syscall.Fstat(o.fd, st)
 }
 
-// poll is what the host says now, and input when the inbox has a packet.
+// poll is what the host says now, but input is the inbox's: what the
+// host has is read into the inbox first (help), so that a wait's edge
+// and its readiness are one. Without an inbox the host says it all.
 func (o *hostObject) poll(events int16) int16 {
 	mask := pollNow(o.fd, events)
+	b := o.current()
 
-	if b := o.current(); b != nil && b.ready() {
+	if b == nil {
+		return mask
+	}
+
+	if mask&(pollIn|pollRdnorm|pollHup|pollErr) != 0 && !b.ready() {
+		b.help()
+	}
+
+	mask &^= pollIn | pollRdnorm
+
+	if b.ready() {
 		mask |= events & (pollIn | pollRdnorm)
 	}
 
