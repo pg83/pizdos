@@ -82,7 +82,7 @@ def main():
              ("computed-element-offset", program(b"", global_import=True, elements=b"\1\0\x23\0\x0b\1\0"), "unsupported: element segment"),
              ("low-data", program(b"", data=b"\1\0\x41\0\x0b\1x"), "unsupported: data or the stack in the first KiB"),
              ("low-stack", program(b"", globals=b"\1\x7f\1\x41\x10\x0b"), "unsupported: data or the stack in the first KiB"),
-             ("imported-memory-mode", program(b"", memory_import=True), "unsupported: data or the stack in the first KiB"),
+             ("imported-memory", program(b"", memory_import=True), "unsupported: an imported memory"),
              ("unknown-start", program(b"", start=33), "unknown function"),
              ("nonvoid-start", program(b"", import_name="getpid", start=0), "type mismatch"),
              ("bad-export-kind", program(b"", exports=text("_start") + b"\4\0"), "malformed export kind"),
@@ -96,11 +96,11 @@ def main():
         source, output = work / "input.wasm", work / "output.o"
         for label, data, diagnostic in cases:
             low_memory = label in ("low-data", "low-stack")
-            padded = low_memory or label in ("imported-memory-mode", "computed-element-offset")
+            padded = low_memory or label == "computed-element-offset"
             env = dict(env, W2X_MEMORY_TAIL="optimized" if padded else "strict")
             source.write_bytes(data)
             reference = subprocess.run([wazero, "-compile", str(source)], capture_output=True, timeout=30)
-            if label not in ("intrinsic-import-address", "computed-element-offset", "low-data", "low-stack", "imported-memory-mode"):
+            if label not in ("intrinsic-import-address", "computed-element-offset", "low-data", "low-stack", "imported-memory"):
                 assert reference.returncode != 0, (label, reference)
             else:
                 assert reference.returncode == 0, (label, reference)

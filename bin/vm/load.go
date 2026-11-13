@@ -33,7 +33,6 @@ type Imports interface {
 	function(imp *ImportMeta) any
 	// global returns the address of an imported global's value.
 	global(imp *ImportMeta) uintptr
-	memory(imp *ImportMeta) *LinearMemory
 	// table returns the address of a table's {entries, size, max}.
 	table(imp *ImportMeta) uintptr
 }
@@ -43,10 +42,6 @@ type FunctionImports struct{}
 
 func (FunctionImports) global(*ImportMeta) uintptr {
 	return 0
-}
-
-func (FunctionImports) memory(*ImportMeta) *LinearMemory {
-	return nil
 }
 
 func (FunctionImports) table(*ImportMeta) uintptr {
@@ -119,8 +114,8 @@ type LinearMemory struct {
 	// it without a check of its own (aot.cpp lowererAsanAddress); nil for
 	// other objects. The kernel keeps it (kernel_asan.go).
 	shadow []byte
-	// users are the instances whose headers describe it.
-	users []*Instance
+	// owner is the instance whose header describes it, the only one.
+	owner *Instance
 }
 
 // shadowSize is the size of a shadow map.
@@ -205,15 +200,13 @@ func newMemory(least, most uint64, shadow bool) *LinearMemory {
 	// code calls before it checks where a string ended (lowererStrLength),
 	// stops there at the latest.
 	mapping := mmap(int(boundSlack+most*pageSize+boundSlack+1), syscall.PROT_READ|syscall.PROT_WRITE)
-	m := &LinearMemory{mapping: mapping, data: mapping[boundSlack:], max: most}
+	m := &LinearMemory{mapping: mapping, data: mapping[boundSlack:], pages: least, max: most}
 
 	if shadow {
 		// Zero, inaccessible everywhere, until the kernel marks what the
 		// program may access.
 		m.shadow = mmap(shadowSize, syscall.PROT_READ|syscall.PROT_WRITE)
 	}
-
-	m.grow(uint32(least))
 
 	return m
 }
@@ -233,10 +226,7 @@ func (m *LinearMemory) grow(delta uint32) uint32 {
 	}
 
 	m.pages += uint64(delta)
-
-	for _, u := range m.users {
-		u.setMemory()
-	}
+	m.owner.setMemory()
 
 	return uint32(old)
 }
@@ -532,12 +522,6 @@ func newInstance(c *Code, imports Imports, stack uint64) *Instance {
 		imp := &meta.imports[k]
 
 		switch imp.kind {
-		case externMemory:
-			i.memory = imports.memory(imp)
-
-			if i.memory == nil {
-				throwFmt("unresolved import %s.%s", imp.module, imp.name)
-			}
 		case externGlobal:
 			at := imports.global(imp)
 
@@ -557,16 +541,14 @@ func newInstance(c *Code, imports Imports, stack uint64) *Instance {
 		}
 	}
 
-	if meta.memory != nil && i.memory == nil {
+	if meta.memory != nil {
 		i.memory = newMemory(meta.memory.min, meta.memory.max, meta.memory.shadow != 0)
-	}
 
-	if i.memory != nil {
 		if meta.memory.tail != 0 {
 			i.memory.tailUsed = true
 		}
 
-		i.memory.users = append(i.memory.users, i)
+		i.memory.owner = i
 		i.setMemory()
 	}
 
@@ -643,13 +625,13 @@ func (i *Instance) clone(imports *Kernel, stack uint64, from, to uint64) *Instan
 	return c
 }
 
-// release unmaps the instance block and the memory the instance made; the
-// instance is not used again.
+// release unmaps the instance block and its memory; the instance is not
+// used again.
 func (i *Instance) release() {
 	compilerCoverage(i)
 	i.writeTailProfile()
 
-	if i.memory != nil && !i.obj.meta.memory.imported && len(i.memory.users) == 1 {
+	if i.memory != nil {
 		throw(syscall.Munmap(i.memory.mapping))
 
 		if i.memory.shadow != nil {

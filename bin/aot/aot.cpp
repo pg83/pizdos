@@ -3243,7 +3243,6 @@ namespace {
         i64 dataCount{};
         Int importedFuncs{};
         Int importedTables{};
-        Int importedMems{};
         Int importedGlobals{};
         bool batchData{};
     };
@@ -3536,7 +3535,6 @@ namespace {
 
     struct Memory {
         Limits limits{};
-        bool imported{};
     };
 
     struct TrapFixup {
@@ -3701,7 +3699,6 @@ namespace {
     struct MemoryMeta {
         u64 min{};
         u64 max{};
-        bool imported{};
         u64 tail{};
         u32 tailEnd{};
         // profile is the instance slot of the tail profile's first counter,
@@ -8078,7 +8075,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     eraseMap(l->induction, p);
                 }
             }
-            l->allowLoads = attempt == 0 && l->f->module->importedFuncs == 0 && !l->f->module->mems[0].imported;
+            l->allowLoads = attempt == 0 && l->f->module->importedFuncs == 0;
             auto order = l->order;
             for (Int i = 0; i < length(order); ++i) {
                 i32 b = order[i];
@@ -8209,7 +8206,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     }
                 }
                 const ValueRange range = valueRangesOf(l->valueRanges, addr, 0);
-                if (range.lo >= 0 && range.hi + i64(end) <= i64(f->module->mems[0].limits.min * 65536) && !f->module->mems[0].imported) {
+                if (range.lo >= 0 && range.hi + i64(end) <= i64(f->module->mems[0].limits.min * 65536)) {
                     continue;
                 }
                 if (!bound.valid) {
@@ -8500,7 +8497,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // pipeline per copy. Only omit their bounds checks when fresh, private
     // memory is guaranteed to contain every destination, including empty ones.
     static bool moduleCanBatchData(Module* m) {
-        if (length(m->mems) != 1 || m->mems[0].imported) {
+        if (length(m->mems) != 1) {
             return false;
         }
         const u64 minimum = m->mems[0].limits.min * u64(pageBytes);
@@ -8726,9 +8723,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     break;
                 }
                 case externMemory: {
-                    imp.index = convert<u32>(length(m->mems));
-                    m->mems = appendValues(m->mems, Memory{readerLimits(r, true), true});
-                    m->importedMems++;
+                    // An instance owns its memory: no other shares it.
+                    compilerError(String("unsupported: an imported memory"));
                     break;
                 }
                 case externGlobal: {
@@ -14428,7 +14424,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         i64 end = offset + convert<i64>(width);
         bool checked = proven;
-        if (length(l->m->mems) > 0 && !l->m->mems[0].imported) {
+        if (length(l->m->mems) > 0) {
             if (isNil(l->addresses)) {
                 l->addresses = activePool->make<ValueRanges>(ValueRanges{l->f, makeSlice<ValueRange>(length(l->f->values)), makeSlice<bool>(length(l->f->values))});
             }
@@ -18475,7 +18471,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             if (l.hasMax) {
                 max = l.max;
             }
-            meta->memory = activePool->make<MemoryMeta>(MemoryMeta{l.min, max, m->mems[0].imported, m->memoryTail, {}, {}, {}});
+            meta->memory = activePool->make<MemoryMeta>(MemoryMeta{l.min, max, m->memoryTail, {}, {}, {}});
             if (m->memoryTail != 0) {
                 meta->memory->tailEnd = convert<u32>(lay->memoryEnd);
             }
@@ -22458,7 +22454,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     // program's budget. An address that wrapped around 2^32 is then out of
     // bounds, and a sum's base may be checked for it (lowererAddress).
     static bool moduleLowFree(Module* m) {
-        if (length(m->mems) == 0 || m->mems[0].imported) {
+        if (length(m->mems) == 0) {
             return false;
         }
         for (Int i = 0; i < length(m->datas); ++i) {
@@ -22579,7 +22575,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     u32 n = readerU32(body);
                     u32 i = 0;
                     for (; i < n; i++) {
-                        m->mems = appendValues(m->mems, Memory{readerLimits(body, true), {}});
+                        m->mems = appendValues(m->mems, Memory{readerLimits(body, true)});
                     }
                     break;
                 }
@@ -22746,7 +22742,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         if (!isNil(m->memory)) {
             metaWriterU(w, m->memory->min);
             metaWriterU(w, m->memory->max);
-            metaWriterFlag(w, m->memory->imported);
         }
         metaWriterU(w, convert<u64>(length(m->tables)));
         auto tables = m->tables;

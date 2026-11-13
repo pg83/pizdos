@@ -78,12 +78,19 @@ def main():
             modules[f"missing-field-{kind}"] = importing(kind, "shared", "missing")
             modules[f"missing-spectest-{kind}"] = importing(kind, "spectest", "missing")
         modules["wrong-signature"] = importing(0, "shared", "id", True)
+        # No module imports a memory: both compilers reject one.
+        imported_memory = b"unsupported: an imported memory"
+        memory_importers = {"memory-alias", *(f"missing-{owner}-2" for owner in ("module", "field", "spectest"))}
         for name, data in modules.items():
             source, embedded = work / f"{name}.wasm", work / "embedded.o"
             source.write_bytes(data)
             compiled = subprocess.run([native, "--strict"], input=data, capture_output=True, env=env, timeout=60)
-            assert compiled.returncode == 0, (name, compiled.stderr)
             result = subprocess.run([vm, "-o", str(embedded), str(source)], capture_output=True, env=env, timeout=60)
+            if name in memory_importers:
+                assert compiled.returncode != 0 and imported_memory in compiled.stderr, (name, compiled)
+                assert result.returncode == 1 and imported_memory in result.stderr, (name, result)
+                continue
+            assert compiled.returncode == 0, (name, compiled.stderr)
             assert result.returncode == 0 and embedded.read_bytes() == compiled.stdout, (name, result)
 
         base = [{"type": "module", "name": "main", "filename": "base.wasm"},
@@ -127,8 +134,8 @@ def main():
         run([{"type": "module", "name": "alias", "filename": "global-alias.wasm"},
              {"type": "assert_return", "action": {"type": "get", "module": "alias", "field": "alias"},
               "expected": [{"type": "i32", "value": "7"}]}], (2, 0, 0))
-        for name in ("memory-alias", "spectest-table"):
-            run([{"type": "module", "name": name, "filename": name + ".wasm"}], (1, 0, 0))
+        run([{"type": "module", "name": "spectest-table", "filename": "spectest-table.wasm"}], (1, 0, 0))
+        run([{"type": "module", "name": "memory-alias", "filename": "memory-alias.wasm"}], (0, 0, 1), [imported_memory.decode()])
         for name in modules:
             if name.startswith("missing-") or name == "wrong-signature":
                 run([{"type": "module", "filename": name + ".wasm"}], (0, 0, 1), ["UNSUPPORTED"])

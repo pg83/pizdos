@@ -14,7 +14,6 @@ import "encoding/binary"
 type MemoryMeta struct {
 	// min and max are in pages of 64 KiB.
 	min, max uint64
-	imported bool
 	tail     uint64 // accessible bytes beyond memory.size; zero for strict objects
 	tailEnd  uint32 // instance slot holding the accessible end
 	// profile is the instance slot of the tail profile's first counter and
@@ -173,7 +172,7 @@ func decodeNote(data []byte) *Meta {
 	m := &Meta{instanceSize: r.u32()}
 
 	if r.flag() {
-		m.memory = &MemoryMeta{min: r.u(), max: r.u(), imported: r.flag()}
+		m.memory = &MemoryMeta{min: r.u(), max: r.u()}
 	}
 
 	m.tables = make([]TableMeta, r.count())

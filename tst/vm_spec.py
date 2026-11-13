@@ -18,10 +18,11 @@ import tempfile
 from pathlib import Path
 
 # Failures of what vm does not implement, by file: table.grow, which
-# fails; modules of two memories, skipped, which were to fill memory or a
-# table that other modules read.
+# fails; modules of two memories or of an imported one, skipped, which were
+# to fill memory or a table that other modules read.
 KNOWN = {
     "linking0.wast": 1,
+    "linking3.wast": 2,
     "load1.wast": 5,
     "table_grow.wast": 30,
     "table_size.wast": 15,

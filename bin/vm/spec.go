@@ -72,8 +72,7 @@ type specRunner struct {
 	live                    map[*Instance]bool
 	passed, failed, skipped int
 	unsupported             map[string]bool
-	// the spectest module's memory, table and globals
-	testMemory  *LinearMemory
+	// the spectest module's table and globals
 	testTable   []uintptr
 	testHeader  *[2]uint64
 	testGlobals map[string]*uint64
@@ -120,10 +119,9 @@ func (r *specRunner) fail(line int, format string, args ...any) {
 }
 
 // spectest is the module the testsuite imports from: print functions that
-// do nothing, globals of 666, a memory of one to two pages, a table of 10 to
-// 20 elements.
+// do nothing, globals of 666, a table of 10 to 20 elements. Its memory is
+// not: no module imports a memory (aot.cpp).
 func (r *specRunner) spectest() {
-	r.testMemory = newMemory(1, 2, false)
 	r.testTable = make([]uintptr, 21)
 	r.testHeader = &[2]uint64{uint64(uintptr(unsafe.Pointer(&r.testTable[0]))), 10 | 20<<32}
 	cell := func(bits uint64) *uint64 {
@@ -220,20 +218,6 @@ func (r *specRunner) global(imp *ImportMeta) uintptr {
 	}
 
 	return globalAddr(src, e.index)
-}
-
-func (r *specRunner) memory(imp *ImportMeta) *LinearMemory {
-	if imp.module == "spectest" && imp.name == "memory" {
-		return r.testMemory
-	}
-
-	src := r.exporter(imp.module)
-
-	if src == nil || findExport(src, imp.name, externMemory) == nil {
-		return nil
-	}
-
-	return src.memory
 }
 
 func (r *specRunner) table(imp *ImportMeta) uintptr {

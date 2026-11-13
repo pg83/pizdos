@@ -54,10 +54,9 @@ func (h *fnv64) word(v uint32) {
 // standImports: the modules import nothing.
 type standImports struct{}
 
-func (standImports) function(*ImportMeta) any         { return nil }
-func (standImports) global(*ImportMeta) uintptr       { return 0 }
-func (standImports) memory(*ImportMeta) *LinearMemory { return nil }
-func (standImports) table(*ImportMeta) uintptr        { return 0 }
+func (standImports) function(*ImportMeta) any   { return nil }
+func (standImports) global(*ImportMeta) uintptr { return 0 }
+func (standImports) table(*ImportMeta) uintptr  { return 0 }
 
 // module is an instance and the exports the work calls.
 type module struct {
