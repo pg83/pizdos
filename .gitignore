@@ -55,4 +55,3 @@ __pycache__/
 /host_syscalls_filter
 /rootfs
 /rootfs_image
-/init_wasm

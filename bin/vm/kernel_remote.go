@@ -15,10 +15,10 @@ import (
 // reaches every file through it: an open file is one end of a seqpacket
 // pair (kernel_endpoint.go), the server holds the other and answers on
 // it. The kernel speaks the protocol here for the POSIX calls of a
-// process, as the libc of the process would; the servers speak it in
-// lib/nim/fs.nim. The kernel keeps nothing of a server's tree: a path goes
-// to the server whole, the name of an open directory is the path it was
-// opened by, and the working directory is a name.
+// process, as the libc of the process would; rootfs speaks it as the
+// servers (bin/rootfs/rootfs.nim). The kernel keeps nothing of a server's
+// tree: a path goes to the server whole, the name of an open directory is
+// the path it was opened by, and the working directory is a name.
 //
 // A packet is a header and a body; files ride with it.
 //
@@ -228,8 +228,8 @@ func (n *remoteNode) setFlags(fl int) error {
 }
 
 // The Socket role: an open file of a server is a connection to it, and a
-// program that knows the protocol speaks it there itself, as init does to
-// mount; the messages are the endpoint's.
+// program that knows the protocol may speak it there itself; the messages
+// are the endpoint's.
 
 func (n *remoteNode) sendmsg(p *Process, at, flags uint32) (int, error) {
 	return n.end.sendmsg(p, at, flags)

@@ -2,11 +2,11 @@
 """The image rootfs serves: a ustar archive of the programs of the system
 and the directories it expects.
 
-    image.py <rootfs.tar> --busybox <busybox.wasm> <busybox.links> --init <init.wasm> --python <python.wasm> <python314.zip>
+    image.py <rootfs.tar> --busybox <busybox.wasm> <busybox.links> --python <python.wasm> <python314.zip>
 
 The programs are modules, which the kernel compiles as they are executed:
-busybox is /bin/busybox and every path of busybox.links a link to it; init
-is /bin/init; python is /usr/bin/python3 with its standard library at
+busybox is /bin/busybox and every path of busybox.links a link to it;
+python is /usr/bin/python3 with its standard library at
 /usr/lib/python314.zip, where it looks. No times, no owners: the same
 inputs are the same archive.
 """
@@ -42,8 +42,6 @@ def main():
                 for link in Path(links).read_text().split():
                     link = link.lstrip("/")
                     symlinks[link] = os.path.relpath("bin/busybox", os.path.dirname(link))
-            case ["--init", init, *rest]:
-                files["bin/init"] = (Path(init).read_bytes(), 0o755)
             case ["--python", python, zipped, *rest]:
                 files["usr/bin/python3"] = (Path(python).read_bytes(), 0o755)
                 files["usr/lib/python314.zip"] = (Path(zipped).read_bytes(), 0o644)

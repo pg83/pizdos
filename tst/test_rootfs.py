@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """`vm run -- rootfs.wasm`: a system from one module and nothing of the
 host's file system. rootfs serves the image linked into it, the modules of
-busybox, python and init, which the kernel compiles as they are executed;
-init mounts its /dev and a /tmp in its memory and starts busybox's shell on
-the terminal, and the shell's status is vm's. Each server's files are on a
+busybox and python, which the kernel compiles as they are executed, and a
+/dev and a /tmp in its memory, and starts busybox's shell on the terminal;
+the shell's status is vm's. Each server's files are on a
 device of their own and belong to who made them, a directory keeps its
 mode, a directory removed while it is read is removed whole, mkdir -p
 finds what is there, and rename keeps a directory out of itself and off a

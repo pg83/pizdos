@@ -4,13 +4,13 @@ package main
 
 import "syscall"
 
-// A FIFO of a server is a node and nothing more (lib/nim/fs.nim): its pipe
-// is the kernel's, kept by the FIFO's device and inode while an end of it
-// is open, and an open of the FIFO joins it as a reader, a writer or, with
-// O_RDWR, both (kernel_pipe.go join). An open to read waits for a writer
-// and one to write for a reader, as POSIX has it, unless O_NONBLOCK: then
-// a reader goes on alone and a writer with no reader is ENXIO. A FIFO of a
-// host root is the host's (kernel_inbox.go).
+// A FIFO of a server is a node and nothing more (bin/rootfs/rootfs.nim):
+// its pipe is the kernel's, kept by the FIFO's device and inode while an
+// end of it is open, and an open of the FIFO joins it as a reader, a
+// writer or, with O_RDWR, both (kernel_pipe.go join). An open to read
+// waits for a writer and one to write for a reader, as POSIX has it,
+// unless O_NONBLOCK: then a reader goes on alone and a writer with no
+// reader is ENXIO. A FIFO of a host root is the host's (kernel_inbox.go).
 
 type fifoKey struct {
 	dev, ino uint64

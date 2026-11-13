@@ -31,7 +31,7 @@ LLVM_AR = tool("llvm-ar")
 LLVM_RANLIB = tool("llvm-ranlib")
 WASM_LD = tool("wasm-ld")
 GO = tool("go")
-# Nim builds rootfs and init (bin/rootfs, bin/init); without it they and
+# Nim builds rootfs (bin/rootfs); without it, it and
 # their test are left out.
 NIM = shutil.which("nim") or ""
 
@@ -452,31 +452,30 @@ python = command(
 )
 
 # A system from one module: rootfs, the first process, serves the image
-# linked into it, the modules of busybox with its links, python and init,
-# to what it starts, and the kernel compiles each as it is executed
-# (bin/rootfs, bin/init, lib/nim/fs.nim).
+# linked into it, the modules of busybox with its links and python, with
+# /dev and /tmp of its own, to the shell it starts, and the kernel compiles
+# each module as it is executed (bin/rootfs).
 def nim_program(name, source, output, deps=(), options=()):
     return command(
         name=name,
-        inputs=[source, "$(S)/lib/nim/fs.nim", "$(S)/dev/nim.py", "$(S)/dev/wasm.py", *LIBC_HEADERS],
+        inputs=[source, "$(S)/dev/nim.py", "$(S)/dev/wasm.py", *LIBC_HEADERS],
         outputs=[output],
         deps=[libc, *deps],
         cmd=["python3", "$(S)/dev/nim.py", NIM, CLANG, WASM_LD, "$(S)/lib/c/include", libc.outputs[0], source, output,
-             *options, "--path:$(S)/lib/nim"],
+             *options],
         descr="NI",
         color="cyan",
     )
 
 
 if NIM:
-    init_wasm = nim_program("init_wasm", "$(S)/bin/init/init.nim", "$(B)/bin/init/init.wasm")
     rootfs_image = command(
         name="rootfs_image",
         inputs=["$(S)/bin/rootfs/image.py"],
         outputs=["$(B)/bin/rootfs/rootfs.tar"],
-        deps=[busybox, init_wasm, python],
+        deps=[busybox, python],
         cmd=["python3", "$(S)/bin/rootfs/image.py", "$(B)/bin/rootfs/rootfs.tar",
-             "--busybox", *busybox.outputs, "--init", init_wasm.outputs[0], "--python", *python.outputs],
+             "--busybox", *busybox.outputs, "--python", *python.outputs],
         descr="IM",
         color="cyan",
     )
