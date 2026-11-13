@@ -805,17 +805,72 @@ func (d *remoteDir) statfsPath(p *Process, path string, st *syscall.Statfs_t) er
 	return decodeStatfs(pk.data, st)
 }
 
-// realpath is the path cleaned, when it names something: the server's
-// links stay as they are.
+// realpath is the path a path names with no ".", ".." or link in it:
+// each name is asked for in turn, a link's target takes the link's place,
+// from the root when it is absolute, and ".." is the parent of what is
+// resolved so far, a directory with no link in its path.
 func (d *remoteDir) realpath(p *Process, path string) (string, error) {
 	var st syscall.Stat_t
+	resolved := ""
+	rest := strings.Split(path, "/")
+	links := 0
 
-	if err := d.statPath(p, path, true, &st); err != nil {
-		return "", err
+	for len(rest) > 0 {
+		name := rest[0]
+		rest = rest[1:]
+
+		switch name {
+		case "", ".":
+			continue
+		case "..":
+			resolved = resolved[:max(strings.LastIndexByte(resolved, '/'), 0)]
+
+			continue
+		}
+
+		next := name
+
+		if resolved != "" {
+			next = resolved + "/" + name
+		}
+
+		if err := d.statPath(p, next, false, &st); err != nil {
+			return "", err
+		}
+
+		switch st.Mode & syscall.S_IFMT {
+		case syscall.S_IFLNK:
+			if links++; links > maxLinks {
+				return "", syscall.ELOOP
+			}
+
+			target, err := d.readlinkPath(p, next)
+
+			if err != nil {
+				return "", err
+			}
+
+			if strings.HasPrefix(target, "/") {
+				resolved = ""
+			}
+
+			rest = append(strings.Split(target, "/"), rest...)
+		case syscall.S_IFDIR:
+			resolved = next
+		default:
+			if len(rest) > 0 {
+				return "", syscall.ENOTDIR
+			}
+
+			resolved = next
+		}
 	}
 
-	return filepath.Clean("/" + path), nil
+	return "/" + resolved, nil
 }
+
+// maxLinks is how many links a path may go through, Linux's.
+const maxLinks = 40
 
 // readdir fills the entries after the last it gave, as many as fit, in
 // the guest's struct dirent layout: ino, off, reclen, type, name; an

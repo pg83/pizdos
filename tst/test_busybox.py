@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """busybox under `vm run`: the kernel of lib/c runs its applets inside a
 root made like the system's, /bin/busybox the module, each name of
-busybox.links a symbolic link to it in /bin and /usr/bin a link to /bin.
+busybox.links a symbolic link to it in /bin and /usr a link to /.
 The shell's errors, exit and SIGINT are longjmps, one of them out of a
 signal handler; its commands, pipes, substitutions and jobs are forks,
 which a terminal stops and continues; xargs, find -exec and awk's pipes
@@ -109,8 +109,7 @@ def make_root(root, module, links):
         if not path.exists():
             path.symlink_to("busybox")
 
-    (root / "usr").mkdir()
-    (root / "usr" / "bin").symlink_to("/bin")
+    (root / "usr").symlink_to("/")
 
     tmp = root / "tmp"
     tmp.mkdir()

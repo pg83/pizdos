@@ -29,7 +29,8 @@ ls /bin | grep -x -e ash -e cat -e sh
 ls -d /dev/null /dev/tty /dev/zero
 echo dropped > /dev/null
 head -c 4 /dev/zero | wc -c
-readlink /usr/bin && ls /usr && ls -d /sbin /lib 2>&1
+readlink /usr && ls /usr && ls /usr/usr/bin/sh && ls -d /sbin /lib 2>&1
+readlink -f /usr/bin && readlink -f /usr/bin/../etc/motd && cd /usr/bin && pwd -P && cd /tmp && ln -s .. up && readlink -f up/usr/bin && rm up && cd /
 printf '#!/usr/bin/env sh\\necho through env\\n' > /tmp/e.sh && chmod +x /tmp/e.sh && /tmp/e.sh && rm /tmp/e.sh
 readlink /bin/sh
 test -x /bin/busybox && echo executable
@@ -128,10 +129,20 @@ sh
 /dev/tty
 /dev/zero
 4
-/bin
+/
 bin
+dev
+etc
+tmp
+usr
+var
+/usr/usr/bin/sh
 ls: /sbin: No such file or directory
 ls: /lib: No such file or directory
+/bin
+/etc/motd
+/bin
+/bin
 through env
 busybox
 executable

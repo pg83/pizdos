@@ -10,8 +10,8 @@ busybox.links, wherever busybox would install it, a link to it in /bin;
 python is /bin/python3, its standard library in its own file. busybox is
 kept compressed by zstd, which the kernel unpacks before it compiles;
 python is not, as its standard library is read from its file. /usr is a
-link of its bin to /bin, for the scripts that name /usr/bin, and nothing
-else. No times, no owners: the same inputs are the same archive.
+link to the root, for what names /usr/bin and the like: /usr/bin is /bin.
+No times, no owners: the same inputs are the same archive.
 """
 import io
 import os
@@ -20,7 +20,7 @@ import tarfile
 from compression import zstd
 from pathlib import Path
 
-DIRS = {"bin", "dev", "etc", "tmp", "usr", "var"}
+DIRS = {"bin", "dev", "etc", "tmp", "var"}
 
 
 def entry(name, kind, size=0, mode=0o755, target=""):
@@ -43,7 +43,7 @@ def main():
     output = sys.argv[1]
     args = sys.argv[2:]
     files = {"etc/motd": (b"pizdos\n", 0o644), "etc/passwd": (b"root:x:0:0:root:/:/bin/sh\n", 0o644), "etc/group": (b"root:x:0:\n", 0o644)}
-    symlinks = {"usr/bin": "/bin"}
+    symlinks = {"usr": "/"}
     dirs = set(DIRS)
 
     while args:

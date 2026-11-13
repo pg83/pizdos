@@ -151,8 +151,7 @@ def make_root(root, python, tarball, busybox, links):
         if not path.exists():
             path.symlink_to("busybox")
 
-    (root / "usr").mkdir()
-    (root / "usr" / "bin").symlink_to("/bin")
+    (root / "usr").symlink_to("/")
     shutil.copy(python, root / "bin" / "python3")
     (root / "bin" / "python3").chmod(0o755)
     (root / "bin" / "python").symlink_to("python3")
