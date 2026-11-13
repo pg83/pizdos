@@ -115,30 +115,37 @@
 // table, by directory and name; a directory keeps its entries in the
 // order of their positions.
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <signal.h>
+#include <stdarg.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
+#include <sys/file.h>
+#include <sys/param.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/uio.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
-using u8 = __UINT8_TYPE__;
-using u32 = __UINT32_TYPE__;
-using u64 = __UINT64_TYPE__;
-using i32 = __INT32_TYPE__;
-using i64 = __INT64_TYPE__;
-using usize = __SIZE_TYPE__;
-using uptr = __UINTPTR_TYPE__;
+using u8 = uint8_t;
+using u32 = uint32_t;
+using u64 = uint64_t;
+using i64 = int64_t;
+using usize = size_t;
 
 // Placement new expressions are lowered directly by Clang; no runtime
 // call uses this overload. Its declaration supplies the freestanding ABI.
-void* operator new(usize, void*) noexcept;
+void* operator new(size_t, void*) noexcept;
 
 // The image: a ustar archive (bin/rootfs/image.py) linked in as data
 // (bin/rootfs/make.py).
@@ -146,64 +153,38 @@ extern "C" const u8 rootfs_image[];
 extern "C" const u32 rootfs_image_size;
 
 namespace {
-    static constexpr u32 atRemovedir = 0x200;
-    static constexpr u32 oCreat = 0100;
-    static constexpr u32 oExcl = 0200;
-    static constexpr u32 oTrunc = 01000;
-    static constexpr u32 oNofollow = 0400000;
-    static constexpr u32 oDirectory = 0200000;
-    static constexpr u32 oPath = 010000000;
-    static constexpr u32 whenAtimeNow = 2;
-    static constexpr u32 whenMtimeNow = 4;
-    static constexpr u32 whenAtimeKept = 8;
-    static constexpr u32 whenMtimeKept = 16;
-    static constexpr int msgCmsgCloexec = 0x40000000;
-    static constexpr usize maxFds = 4;
-    static constexpr usize maxPacket = 65536;
-    static constexpr u64 blockSize = 4096;
-    static constexpr u8 dtFifo = 1;
-    static constexpr u8 dtChr = 2;
-    static constexpr u8 dtDir = 4;
-    static constexpr u8 dtReg = 8;
-    static constexpr u8 dtLnk = 10;
-    static constexpr u32 sIfmt = 0170000;
-    static constexpr u32 sIfifo = 0010000;
-    static constexpr u32 sIfchr = 0020000;
-    static constexpr u32 sIfdir = 0040000;
-    static constexpr u32 sIfreg = 0100000;
-    static constexpr u32 sIflnk = 0120000;
-    static constexpr u32 sSticky = 01000;
-    static constexpr u32 lockSh = 1;
-    static constexpr u32 lockEx = 2;
-    static constexpr u32 lockNb = 4;
-    static constexpr u32 lockUn = 8;
-    static constexpr u32 fRdlck = 0;
-    static constexpr u32 fWrlck = 1;
-    static constexpr u32 fUnlck = 2;
-    static constexpr u32 stRdonly = 1;
-    static constexpr u32 noId = 0xffffffff;
-    static constexpr u64 past = ~u64(0);  // the stop of a lock to the end of a file and past it
-    static constexpr usize nameMax = 255;  // the longest name
-    static constexpr u32 maxLinks = 40;  // the symbolic links one path goes through, Linux's
-    static constexpr u64 offsetMax = 0x7fffffffffffffff;  // past it, an offset no file has
-    static constexpr u64 tmpCapacity = u64(1) << 30;
-    // RESOLVE's reply: where the walk ended, the kind of the last name and
-    // what goes with it.
-    static constexpr u32 stepDone = 0;  // at the directory of the last name
-    static constexpr u32 stepRoot = 1;  // the walk goes on from the root of the process
-    static constexpr u32 lastName = 0;
-    static constexpr u32 lastDot = 1;
-    static constexpr u32 lastDotdot = 2;
-    static constexpr u32 lastNone = 3;  // the path is "/" alone
-    static constexpr u32 stepSlash = 1;  // a slash ends the path
-    static constexpr u32 stepKept = 2;  // the reply's endpoint is the directory's from now on
-
+    // The protocol's, as bin/vm/kernel_remote.go speaks it.
     enum : u32 {
         opOpen = 1, opStat, opReadlink, opMkdir, opUnlink, opRename, opSymlink,
         opResolve, opRead, opWrite, opReaddir, opFstat, opChmod, opChown, opUtimes,
         opTruncate, opFchmod, opFchown, opFutimes, opFtruncate, opFsync,
         opMknod, opLink, opStatfs, opFstatfs, opFlock, opLock, opPath, opOk, opErr,
     };
+
+    constexpr usize maxFds = 4;
+    constexpr usize maxPacket = 65536;
+    constexpr u32 noId = 0xffffffff;  // a uid or gid kept
+    // UTIMES's when.
+    constexpr u32 whenAtimeNow = 2;
+    constexpr u32 whenMtimeNow = 4;
+    constexpr u32 whenAtimeKept = 8;
+    constexpr u32 whenMtimeKept = 16;
+    // RESOLVE's reply: where the walk ended, the kind of the last name and
+    // what goes with it.
+    constexpr u32 stepDone = 0;  // at the directory of the last name
+    constexpr u32 stepRoot = 1;  // the walk goes on from the root of the process
+    constexpr u32 lastName = 0;
+    constexpr u32 lastDot = 1;
+    constexpr u32 lastDotdot = 2;
+    constexpr u32 lastNone = 3;  // the path is "/" alone
+    constexpr u32 stepSlash = 1;  // a slash ends the path
+    constexpr u32 stepKept = 2;  // the reply's endpoint is the directory's from now on
+
+    // The servers'.
+    constexpr u64 blockSize = 4096;
+    constexpr u32 maxLinks = 40;  // the symbolic links one path goes through, Linux's
+    constexpr u64 past = UINT64_MAX;  // the stop of a lock to the end of a file and past it
+    constexpr u64 tmpCapacity = u64(1) << 30;
 
     struct Header {
         u32 op;
@@ -225,7 +206,7 @@ namespace {
         u64 ctime;
     };
 
-    struct __attribute__((packed)) Statfs {
+    struct [[gnu::packed]] Statfs {
         u64 blocks;
         u64 bfree;
         u64 files;
@@ -237,51 +218,27 @@ namespace {
     };
 
     static_assert(sizeof(Header) == 16);
-    static_assert(sizeof(Stat) == 64 && __builtin_offsetof(Stat, atime) == 40);
+    static_assert(sizeof(Stat) == 64 && offsetof(Stat, atime) == 40);
     static_assert(sizeof(Statfs) == 52);
 
-    static usize length(const char* text) {
-        usize n = 0;
-        while (text[n]) {
-            ++n;
-        }
-        return n;
-    }
-
-    static void say(const char* text) {
-        (void)write(2, text, length(text));
-    }
-
-    [[noreturn]] static void fatal(const char* why, const char* what = "") {
-        say(why);
-        say(what);
-        say("\n");
+    [[noreturn, gnu::format(printf, 1, 2)]] static void fatal(const char* format, ...) {
+        va_list args;
+        va_start(args, format);
+        vdprintf(STDERR_FILENO, format, args);
+        va_end(args);
+        dprintf(STDERR_FILENO, "\n");
         exit(1);
     }
 
-    static void sayNumber(int value) {
-        char digits[16];
-        usize at = sizeof digits;
-        u32 v = value < 0 ? 0u - u32(value) : u32(value);
-        do {
-            digits[--at] = char('0' + v % 10);
-            v /= 10;
-        } while (v);
-        if (value < 0) {
-            digits[--at] = '-';
-        }
-        (void)write(2, digits + at, sizeof digits - at);
-    }
-
     static usize checkedAdd(usize a, usize b) {
-        if (b > ~usize(0) - a) {
+        if (b > SIZE_MAX - a) {
             fatal("rootfs: size overflow");
         }
         return a + b;
     }
 
     static usize checkedMultiply(usize a, usize b) {
-        if (a != 0 && b > ~usize(0) / a) {
+        if (a != 0 && b > SIZE_MAX / a) {
             fatal("rootfs: size overflow");
         }
         return a * b;
@@ -303,14 +260,19 @@ namespace {
         return q;
     }
 
-    template <typename T>
-    static T least(T a, T b) {
-        return a < b ? a : b;
+    // ---- containers, bin/aot/aot.cpp's over malloc ------------------------------
+
+    constexpr usize objectAlignment = 16;
+
+    // An allocation's bytes: a power of two, from objectAlignment, as
+    // aot.cpp's.
+    static usize allocationBytes(usize size) {
+        usize bytes = objectAlignment;
+        while (bytes < size) {
+            bytes = checkedMultiply(bytes, 2);
+        }
+        return bytes;
     }
-
-    // ---- containers, after bin/aot/aot.cpp's ---------------------------------
-
-    static constexpr usize objectAlignment = 16;
 
     struct Buffer {
         struct alignas(objectAlignment) Header {
@@ -329,7 +291,6 @@ namespace {
         void reserve(usize size);
         void grow(usize size);
         void resize(usize size);
-        void resizeZeroed(usize size);
         void append(const void* data, usize size);
         void clear();
         void swap(Buffer& other);
@@ -372,33 +333,25 @@ usize Buffer::capacity() const {
     return header()->allocation == 0 ? 0 : header()->allocation - sizeof(Header);
 }
 
+// The capacity test stays small enough to be inlined where buffers grow
+// element by element; growth itself is out of line.
 inline void Buffer::reserve(usize size) {
     if (size > capacity()) {
         grow(size);
     }
 }
 
-// Growth is by half again of what there is, from 64 bytes: a file
-// written to its end in pieces is copied a few times, and holds at most
-// half of what it is more.
-__attribute__((noinline)) void Buffer::grow(usize size) {
+[[gnu::noinline]] void Buffer::grow(usize size) {
     auto* before = header();
-    u64 bytes = u64(checkedAdd(size, sizeof(Header)));
-    if (before != &emptyBuffer && bytes < u64(before->allocation) * 3 / 2) {
-        bytes = u64(before->allocation) * 3 / 2;
-    }
-    bytes = bytes < 64 ? 64 : (bytes + objectAlignment - 1) & ~u64(objectAlignment - 1);
-    if (bytes > ~usize(0)) {
-        fatal("rootfs: size overflow");
-    }
+    const usize bytes = allocationBytes(checkedAdd(size, sizeof(Header)));
     Header* next;
     if (before == &emptyBuffer) {
-        next = static_cast<Header*>(allocate(usize(bytes)));
+        next = static_cast<Header*>(allocate(bytes));
         next->used = 0;
     } else {
-        next = static_cast<Header*>(reallocate(before, usize(bytes)));
+        next = static_cast<Header*>(reallocate(before, bytes));
     }
-    next->allocation = usize(bytes);
+    next->allocation = bytes;
     storage = next + 1;
 }
 
@@ -409,31 +362,13 @@ inline void Buffer::resize(usize size) {
     }
 }
 
-// A size set, the bytes past what there was zeros; nothing holds no
-// memory.
-void Buffer::resizeZeroed(usize size) {
-    const usize before = this->size();
-    if (size == 0) {
-        clear();
-        return;
-    }
-    reserve(size);
-    if (size > before) {
-        memset(static_cast<u8*>(storage) + before, 0, size - before);
-    }
-    header()->used = size;
-}
-
 void Buffer::append(const void* data, usize size) {
-    if (size == 0) {
-        return;
-    }
     const usize before = this->size();
-    reserve(checkedAdd(before, size));
+    resize(checkedAdd(before, size));
     memcpy(static_cast<u8*>(storage) + before, data, size);
-    header()->used = before + size;
 }
 
+// Back to no bytes and no memory.
 void Buffer::clear() {
     if (header() != &emptyBuffer) {
         free(header());
@@ -468,10 +403,6 @@ namespace {
 
         usize size() const {
             return buffer.size() / sizeof(T);
-        }
-
-        bool empty() const {
-            return size() == 0;
         }
 
         T& operator[](usize index) {
@@ -527,12 +458,11 @@ namespace {
                 return nullptr;
             }
             for (u32 i = hash & mask;; i = (i + 1) & mask) {
-                const Slot& slot = slots[i];
-                if (!slot.item) {
+                if (!slots[i].item) {
                     return nullptr;
                 }
-                if (slot.hash == hash && same(slot.item)) {
-                    return slot.item;
+                if (slots[i].hash == hash && same(slots[i].item)) {
+                    return slots[i].item;
                 }
             }
         }
@@ -553,11 +483,9 @@ namespace {
                 }
                 i = (i + 1) & mask;
             }
-            for (u32 j = i;;) {
-                j = (j + 1) & mask;
-                if (!slots[j].item) {
-                    break;
-                }
+            // What follows moves back into the hole, unless that would put
+            // it before its home: its home is in (i, j], cyclically.
+            for (u32 j = (i + 1) & mask; slots[j].item; j = (j + 1) & mask) {
                 const u32 home = slots[j].hash & mask;
                 const bool stays = i <= j ? i < home && home <= j : i < home || home <= j;
                 if (!stays) {
@@ -581,9 +509,10 @@ namespace {
             Slot* old = slots;
             const usize before = old ? usize(mask) + 1 : 0;
             const usize capacity = old ? checkedMultiply(before, 2) : 16;
-            const usize bytes = checkedMultiply(capacity, sizeof(Slot));
-            slots = static_cast<Slot*>(allocate(bytes));
-            memset(slots, 0, bytes);
+            slots = static_cast<Slot*>(calloc(capacity, sizeof(Slot)));
+            if (!slots) {
+                fatal("rootfs: out of memory");
+            }
             mask = u32(capacity - 1);
             for (usize i = 0; i < before; ++i) {
                 if (old[i].item) {
@@ -598,6 +527,8 @@ namespace {
         u32 count = 0;
     };
 
+    // The bits of a 64-bit hash folded to 32, each output bit depending on
+    // all (murmur3's finalizer).
     static u32 finish(u64 h) {
         h ^= h >> 33;
         h *= 0xff51afd7ed558ccdull;
@@ -607,35 +538,28 @@ namespace {
         return u32(h);
     }
 
-    // ---- names and bodies ------------------------------------------------------
+    // ---- names and bodies ----------------------------------------------------------
 
     // Bytes of a packet, of the image or of a node, where they are.
     struct Name {
-        const u8* at = nullptr;
+        const char* at = nullptr;
         usize length = 0;
 
-        bool is(const char* text) const {
-            usize i = 0;
-            for (; text[i]; ++i) {
-                if (i >= length || at[i] != u8(text[i])) {
-                    return false;
-                }
-            }
-            return i == length;
+        bool empty() const {
+            return length == 0;
         }
 
-        bool has(u8 c) const {
-            for (usize i = 0; i < length; ++i) {
-                if (at[i] == c) {
-                    return true;
-                }
-            }
-            return false;
+        bool is(const char* text) const {
+            return length == strlen(text) && memcmp(at, text, length) == 0;
+        }
+
+        bool has(char c) const {
+            return length != 0 && memchr(at, c, length) != nullptr;
         }
     };
 
     static Name literal(const char* text) {
-        return {reinterpret_cast<const u8*>(text), length(text)};
+        return {text, strlen(text)};
     }
 
     // A request's body, read from its start.
@@ -647,47 +571,33 @@ namespace {
             return usize(end - at);
         }
 
-        u32 word() {
-            if (size() < 4) {
+        template <typename T>
+        T take() {
+            if (size() < sizeof(T)) {
                 fatal("a short packet");
             }
-            u32 v;
-            __builtin_memcpy(&v, at, 4);
-            at += 4;
-            return v;
-        }
-
-        u64 quad() {
-            if (size() < 8) {
-                fatal("a short packet");
-            }
-            u64 v;
-            __builtin_memcpy(&v, at, 8);
-            at += 8;
-            return v;
+            T value;
+            memcpy(&value, at, sizeof value);
+            at += sizeof value;
+            return value;
         }
 
         // A string up to its NUL, or the end, and past the NUL.
         Name string() {
-            const u8* start = at;
-            while (at < end && *at != 0) {
-                ++at;
-            }
-            const Name name{start, usize(at - start)};
-            if (at < end) {
-                ++at;
-            }
+            const auto* nul = static_cast<const u8*>(memchr(at, 0, size()));
+            const Name name{reinterpret_cast<const char*>(at), usize((nul ? nul : end) - at)};
+            at = nul ? nul + 1 : end;
             return name;
         }
 
         Name rest() {
-            const Name name{at, size()};
+            const Name name{reinterpret_cast<const char*>(at), size()};
             at = end;
             return name;
         }
     };
 
-    // ---- the tree ----------------------------------------------------------------
+    // ---- the tree --------------------------------------------------------------------
 
     struct Node;
     struct Server;
@@ -706,7 +616,7 @@ namespace {
     // A lock of fcntl: an endpoint's, on the bytes [start, stop), to read
     // or to write.
     struct Range {
-        i32 owner;
+        int owner;
         bool write;
         u64 start;
         u64 stop;
@@ -717,8 +627,7 @@ namespace {
         Node* dir;
         Node* node;
         u64 pos;  // where the name is among the directory's entries
-        const u8* name;
-        u32 length;
+        Name name;
         u32 hash;
     };
 
@@ -742,6 +651,10 @@ namespace {
         usize size() const {
             return view ? viewSize : own.size();
         }
+
+        Name name() const {
+            return {reinterpret_cast<const char*>(data()), size()};
+        }
     };
 
     struct Node {
@@ -757,9 +670,9 @@ namespace {
         u32 holds = 0;  // what else points at it: directories under it, files opened in it by name
         bool released = false;  // gone from its server, its memory kept for what holds it
         Kind kind = Kind::Dir;
-        i32 exclusive = -1;  // the endpoint that holds flock's exclusive lock, or -1
-        i32 fd = -1;  // an object's
-        SmallVec<i32> shared;  // the endpoints that hold flock's shared lock
+        int exclusive = -1;  // the endpoint that holds flock's exclusive lock, or -1
+        int fd = -1;  // an object's
+        SmallVec<int> shared;  // the endpoints that hold flock's shared lock
         SmallVec<Range> ranges;
         Content content;  // a file's, a link's
         // a directory's
@@ -790,24 +703,24 @@ namespace {
 
     // A node of one of this process's servers.
     struct Place {
-        Server* s;
-        Node* node;
+        Server* s = nullptr;
+        Node* node = nullptr;
     };
 
     struct Endpoint {
-        i32 fd;
+        int fd;
         bool reads;  // what its open lets it do
         bool writes;
-        u8 nameLength;
         Server* server;
         Node* node;  // what the endpoint is open on
         Node* dir;  // the directory a file was opened in, by name
         Endpoint* next;  // among the free ones
-        u8 name[nameMax];
+        u8 nameLength;
+        char name[NAME_MAX];
     };
 
     static u32 hashIno(u64 ino) {
-        return finish(ino * 0x9e3779b97f4a7c15ull);
+        return finish(ino);
     }
 
     Node* Server::find(u64 ino) const {
@@ -816,35 +729,32 @@ namespace {
         });
     }
 
-    static u32 hashName(const Node* dir, const u8* name, usize size) {
-        u64 h = 0x9e3779b97f4a7c15ull ^ (u64(uptr(dir)) << 20) ^ size;
-        usize i = 0;
-        for (; i + 8 <= size; i += 8) {
-            u64 word;
-            __builtin_memcpy(&word, name + i, 8);
-            h = (h ^ word) * 0xff51afd7ed558ccdull;
-            h ^= h >> 32;
+    // FNV-1a over the directory and the name.
+    static u32 hashName(const Node* dir, Name name) {
+        u64 h = 0xcbf29ce484222325ull ^ u64(uintptr_t(dir));
+        for (usize i = 0; i < name.length; ++i) {
+            h = (h ^ u8(name.at[i])) * 0x100000001b3ull;
         }
-        u64 tail = 0;
-        for (usize k = 0; i + k < size; ++k) {
-            tail |= u64(name[i + k]) << (8 * k);
-        }
-        return finish((h ^ tail) * 0xc4ceb9fe1a85ec53ull);
+        return finish(h);
     }
 
     // The names of all directories, by directory and name.
     OpenTable<Entry> names;
 
     static Entry* lookup(const Node* dir, Name name) {
-        return names.find(hashName(dir, name.at, name.length), [dir, name](const Entry* e) {
-            return e->dir == dir && e->length == name.length && (name.length == 0 || memcmp(e->name, name.at, name.length) == 0);
+        return names.find(hashName(dir, name), [dir, name](const Entry* e) {
+            return e->dir == dir && e->name.length == name.length && memcmp(e->name.at, name.at, name.length) == 0;
         });
     }
 
     static u64 now() {
         timespec ts;
         clock_gettime(CLOCK_REALTIME, &ts);
-        return u64(ts.tv_sec) * 1000000000ull + u64(ts.tv_nsec);
+        return u64(ts.tv_sec) * 1000000000 + u64(ts.tv_nsec);
+    }
+
+    static void touch(Node* n) {
+        n->mtime = n->ctime = now();
     }
 
     static bool dead(const Node* n) {
@@ -862,10 +772,6 @@ namespace {
         }
     }
 
-    static void hold(Node* n) {
-        ++n->holds;
-    }
-
     static void drop(Node* n) {
         if (--n->holds == 0 && dead(n)) {
             destroy(n);
@@ -873,24 +779,16 @@ namespace {
     }
 
     // Puts a name for a node in a directory, after every entry there: at
-    // the next position. copy: the name's bytes are kept with the entry,
-    // else they are the image's.
+    // the next position. copy: the name's bytes go with the entry, else
+    // they are the image's.
     static void place(Node* dir, Name name, Node* n, u64 t, bool copy = true) {
         auto* e = static_cast<Entry*>(allocate(checkedAdd(sizeof(Entry), copy ? name.length : 0)));
         if (copy) {
-            auto* bytes = reinterpret_cast<u8*>(e + 1);
-            if (name.length) {
-                memcpy(bytes, name.at, name.length);
-            }
-            e->name = bytes;
-        } else {
-            e->name = name.at;
+            char* bytes = reinterpret_cast<char*>(e + 1);
+            memcpy(bytes, name.at, name.length);
+            name.at = bytes;
         }
-        e->dir = dir;
-        e->node = n;
-        e->pos = ++dir->entries;
-        e->length = u32(name.length);
-        e->hash = hashName(dir, name.at, name.length);
+        *e = {dir, n, ++dir->entries, name, hashName(dir, name)};
         names.insert(e->hash, e);
         dir->order.pushBack({e->pos, e});
         ++dir->names;
@@ -899,16 +797,14 @@ namespace {
             ++dir->subdirs;
             n->entry = e;
             if (n->parent != dir) {
-                hold(dir);
+                ++dir->holds;
                 if (n->parent) {
                     drop(n->parent);
                 }
                 n->parent = dir;
             }
         }
-        dir->mtime = t;
-        dir->ctime = t;
-        n->ctime = t;
+        dir->mtime = dir->ctime = n->ctime = t;
     }
 
     // Takes a name out of a directory: the node it named, one link fewer.
@@ -944,9 +840,7 @@ namespace {
         }
         --n->links;
         free(e);
-        dir->mtime = t;
-        dir->ctime = t;
-        n->ctime = t;
+        dir->mtime = dir->ctime = n->ctime = t;
         return n;
     }
 
@@ -954,12 +848,9 @@ namespace {
     // pair in the kernel has, as it never gives a number twice.
     static u64 device() {
         int ends[2];
-        if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, ends) != 0) {
-            fatal("socketpair");
-        }
         struct stat st;
-        if (fstat(ends[0], &st) != 0) {
-            fatal("fstat");
+        if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, ends) != 0 || fstat(ends[0], &st) != 0) {
+            fatal("rootfs: a pair for a device: errno %d", errno);
         }
         close(ends[0]);
         close(ends[1]);
@@ -972,15 +863,12 @@ namespace {
         if (s.dev == 0) {
             s.dev = device();
         }
-        ++s.inodes;
         ++s.nodes;
         const u64 t = now();
         auto* n = new (allocate(sizeof(Node))) Node();
-        n->ino = s.inodes;
+        n->ino = ++s.inodes;
         n->kind = kind;
-        n->atime = t;
-        n->mtime = t;
-        n->ctime = t;
+        n->atime = n->mtime = n->ctime = t;
         switch (kind) {
         case Kind::Dir:
             n->perm = 0755;
@@ -1029,33 +917,24 @@ namespace {
         return s.capacity > 0 && s.nodes >= s.capacity / blockSize;
     }
 
-    // A file's size set, its bytes counted against the capacity: false
-    // when they do not fit, ENOSPC.
+    // A file's size set, its bytes counted against the capacity, those past
+    // what it had zeros: false when they do not fit, ENOSPC.
     static bool resize(Server& s, Node* n, u64 size) {
-        const u64 old = n->content.size();
-        if (size > old && s.capacity > 0 && s.used + (size - old) > s.capacity) {
+        Buffer& own = n->content.own;
+        const u64 old = own.size();
+        if ((size > old && s.capacity > 0 && s.used + (size - old) > s.capacity) || size > SIZE_MAX) {
             return false;
         }
-        if (size > ~usize(0)) {
-            return false;
-        }
-        n->content.own.resizeZeroed(usize(size));
-        if (size > old) {
-            s.used += size - old;
+        if (size == 0) {
+            own.clear();
         } else {
-            s.used -= old - size;
+            own.resize(usize(size));
+            if (size > old) {
+                memset(static_cast<u8*>(own.data()) + old, 0, usize(size - old));
+            }
         }
+        s.used = s.used + size - old;
         return true;
-    }
-
-    // A file's data, counted as the server's: the image's bytes, for the
-    // server that fills its tree from them.
-    static void fill(Server& s, Node* n, const u8* data, usize size) {
-        s.used -= n->content.size();
-        n->content.own.clear();
-        n->content.view = data;
-        n->content.viewSize = size;
-        s.used += size;
     }
 
     // Whether a server is mounted on the node.
@@ -1080,7 +959,37 @@ namespace {
     // Whether a sticky directory keeps a name from who asks: neither the
     // node it names nor the directory is theirs.
     static bool keeps(const Node* dir, const Node* n, const Header& h) {
-        return (dir->perm & sSticky) != 0 && !owns(n, h) && h.uid != dir->uid;
+        return (dir->perm & S_ISVTX) != 0 && !owns(n, h) && h.uid != dir->uid;
+    }
+
+    static u32 modeOf(const Node* n) {
+        switch (n->kind) {
+        case Kind::Dir:
+            return S_IFDIR | n->perm;
+        case Kind::File:
+            return S_IFREG | n->perm;
+        case Kind::Link:
+            return S_IFLNK | n->perm;
+        case Kind::Fifo:
+            return S_IFIFO | n->perm;
+        default:
+            return S_IFCHR | n->perm;
+        }
+    }
+
+    static u8 dtype(const Node* n) {
+        switch (n->kind) {
+        case Kind::Dir:
+            return DT_DIR;
+        case Kind::File:
+            return DT_REG;
+        case Kind::Link:
+            return DT_LNK;
+        case Kind::Fifo:
+            return DT_FIFO;
+        default:
+            return DT_CHR;
+        }
     }
 
     // ---- places ------------------------------------------------------------------
@@ -1106,12 +1015,12 @@ namespace {
                 return {s, s->find(ino)};
             }
         }
-        return {nullptr, nullptr};
+        return {};
     }
 
     // Where a name goes: the root of a server mounted on it, or its node.
     static Place down(Place p) {
-        while (p.node->kind == Kind::Dir && p.node->served) {
+        while (mountPoint(p.node)) {
             Server* s = p.node->served;
             p = {s, s->root};
         }
@@ -1135,12 +1044,12 @@ namespace {
     }
 
     // Why a name is none a call takes, 0 for one it does: "." and ".." and
-    // names with "/" are a walk's; a name past nameMax is too long.
+    // names with "/" are a walk's; a name past NAME_MAX is too long.
     static int badName(Name name) {
         if (name.is(".") || name.is("..") || name.has('/')) {
             return EINVAL;
         }
-        if (name.length > nameMax) {
+        if (name.length > NAME_MAX) {
             return ENAMETOOLONG;
         }
         return 0;
@@ -1148,24 +1057,27 @@ namespace {
 
     // What a name of a directory is to a call that looks at it: the
     // directory itself for "", else the name's node, or the root of a
-    // server mounted on it; e says why there is none.
-    static Place named(Server* s, Node* c, Name name, const Header& h, int& e) {
-        if (name.length == 0) {
-            return {s, c};
+    // server mounted on it; 0, or why there is none.
+    static int named(Server* s, Node* c, Name name, const Header& h, Place& out) {
+        if (name.empty()) {
+            out = {s, c};
+            return 0;
         }
-        e = badName(name);
-        Entry* entry = nullptr;
-        if (e == 0 && c->kind != Kind::Dir) {
-            e = ENOTDIR;
-        } else if (e == 0 && !may(c, h, 1)) {
-            e = EACCES;
-        } else if (e == 0 && !(entry = lookup(c, name))) {
-            e = ENOENT;
+        if (const int e = badName(name)) {
+            return e;
         }
-        if (e != 0) {
-            return {nullptr, nullptr};
+        if (c->kind != Kind::Dir) {
+            return ENOTDIR;
         }
-        return down({s, entry->node});
+        if (!may(c, h, 1)) {
+            return EACCES;
+        }
+        const Entry* entry = lookup(c, name);
+        if (!entry) {
+            return ENOENT;
+        }
+        out = down({s, entry->node});
+        return 0;
     }
 
     // Whether a directory was removed: it takes no name.
@@ -1204,47 +1116,13 @@ namespace {
         return 0;
     }
 
-    static u32 modeOf(const Node* n) {
-        switch (n->kind) {
-        case Kind::Dir:
-            return sIfdir | n->perm;
-        case Kind::File:
-            return sIfreg | n->perm;
-        case Kind::Link:
-            return sIflnk | n->perm;
-        case Kind::Fifo:
-            return sIfifo | n->perm;
-        default:
-            return sIfchr | n->perm;
-        }
-    }
-
-    static u8 dtype(const Node* n) {
-        switch (n->kind) {
-        case Kind::Dir:
-            return dtDir;
-        case Kind::File:
-            return dtReg;
-        case Kind::Link:
-            return dtLnk;
-        case Kind::Fifo:
-            return dtFifo;
-        default:
-            return dtChr;
-        }
-    }
-
-    // A directory's: its name, its ".", and the ".." of each directory in
-    // it; another's: its names.
-    static u32 nlink(const Node* n) {
-        return n->kind == Kind::Dir ? 2 + n->subdirs : n->links;
-    }
-
+    // A directory's links: its name, its ".", and the ".." of each
+    // directory in it; another's: its names.
     static Stat statOf(const Server& s, const Node* n) {
         Stat st{};
         st.ino = n->ino;
         st.mode = modeOf(n);
-        st.nlink = nlink(n);
+        st.nlink = n->kind == Kind::Dir ? 2 + n->subdirs : n->links;
         st.uid = n->uid;
         st.gid = n->gid;
         st.atime = n->atime;
@@ -1262,50 +1140,45 @@ namespace {
     static Statfs statfsOf(const Server& s) {
         Statfs st{};
         st.bsize = u32(blockSize);
-        st.namemax = u32(nameMax);
+        st.namemax = NAME_MAX;
         st.dev = s.dev;
         const u64 used = (s.used + blockSize - 1) / blockSize;
         if (s.writable && s.capacity > 0) {
-            st.blocks = s.capacity / blockSize;
-            st.bfree = st.blocks - least(used, u64(st.blocks));
-            st.files = s.capacity / blockSize;
-            st.ffree = st.files - least(s.nodes, u64(st.files));
+            st.blocks = st.files = s.capacity / blockSize;
+            st.bfree = st.blocks - MIN(used, st.blocks);
+            st.ffree = st.files - MIN(s.nodes, st.files);
         } else {
             st.blocks = used;
             st.files = s.nodes;
         }
         if (!s.writable) {
-            st.flags = stRdonly;
+            st.flags = ST_RDONLY;
         }
         return st;
     }
 
-    // ---- packets -----------------------------------------------------------------
+    // ---- packets ---------------------------------------------------------------------
 
     // The packet recv takes and the descriptors that come with it, the room
-    // for them, the room for the descriptors a reply sends, and the bytes a
-    // reply assembles: one of each for the process, whose loop takes a
-    // packet and is done with it before the next, and sends each reply
-    // whole. zeros is what /dev/zero reads, never written.
-    alignas(16) u8 packet[maxPacket];
-    alignas(cmsghdr) u8 packetControl[64];
-    i32 packetFds[maxFds];
+    // for them and for the descriptors a reply sends, and the bytes a reply
+    // assembles: one of each for the process, whose loop takes a packet and
+    // is done with it before the next, and sends each reply whole. zeros is
+    // what /dev/zero reads, never written.
+    alignas(Header) u8 packet[maxPacket];
+    alignas(cmsghdr) u8 packetControl[CMSG_SPACE(maxFds * sizeof(int))];
+    int packetFds[maxFds];
     usize packetFdCount;
-    alignas(cmsghdr) u8 sendControl[64];
-    alignas(16) u8 out[maxPacket - sizeof(Header)];
+    alignas(cmsghdr) u8 sendControl[CMSG_SPACE(maxFds * sizeof(int))];
+    u8 out[maxPacket - sizeof(Header)];
     u8 zeros[maxPacket - sizeof(Header)];
 
-    static_assert(CMSG_SPACE(maxFds * sizeof(i32)) <= sizeof packetControl);
-    static_assert(CMSG_SPACE(maxFds * sizeof(i32)) <= sizeof sendControl);
-
     // A reply: the header, then the parts where they are.
-    static void reply(i32 fd, u32 op, u32 arg, const iovec* parts, usize count, const i32* fds = nullptr, usize fdCount = 0) {
+    static void reply(int fd, u32 op, u32 arg, const iovec* parts, usize count, const int* fds = nullptr, usize fdCount = 0) {
         Header head{op, arg, 0, 0};
-        iovec iov[4];
-        if (count > 3 || fdCount > maxFds) {
-            fatal("rootfs: a reply of too many parts");
+        iovec iov[3] = {{&head, sizeof head}};
+        if (count > 2 || fdCount > maxFds) {
+            fatal("rootfs: a reply of %zu parts and %zu descriptors", count, fdCount);
         }
-        iov[0] = {&head, sizeof head};
         for (usize i = 0; i < count; ++i) {
             iov[1 + i] = parts[i];
         }
@@ -1315,53 +1188,50 @@ namespace {
         if (fdCount > 0) {
             memset(sendControl, 0, sizeof sendControl);
             m.msg_control = sendControl;
-            m.msg_controllen = socklen_t(CMSG_LEN(fdCount * sizeof(i32)));
+            m.msg_controllen = socklen_t(CMSG_LEN(fdCount * sizeof(int)));
             cmsghdr* c = CMSG_FIRSTHDR(&m);
             c->cmsg_level = SOL_SOCKET;
             c->cmsg_type = SCM_RIGHTS;
             c->cmsg_len = m.msg_controllen;
-            memcpy(CMSG_DATA(c), fds, fdCount * sizeof(i32));
+            memcpy(CMSG_DATA(c), fds, fdCount * sizeof(int));
         }
-        (void)sendmsg(fd, &m, 0);  // a gone reader is its own loss
+        sendmsg(fd, &m, 0);  // a gone reader is its own loss
     }
 
     static iovec part(const void* data, usize size) {
         return {const_cast<void*>(data), size};
     }
 
-    static void ok(i32 fd) {
-        reply(fd, opOk, 0, nullptr, 0);
-    }
-
-    static void ok(i32 fd, const void* data, usize size) {
+    static void ok(int fd, const void* data = nullptr, usize size = 0) {
         const iovec body = part(data, size);
         reply(fd, opOk, 0, &body, size ? 1 : 0);
     }
 
-    static void err(i32 fd, int e) {
+    // A reply of an error: the reply's endpoint is not kept.
+    static bool error(int fd, int e) {
         reply(fd, opErr, u32(e), nullptr, 0);
+        return false;
     }
 
     // The reply of a call that changes something: OK, or the error.
-    static void answer(i32 fd, int e) {
-        if (e == 0) {
-            ok(fd);
-        } else {
-            err(fd, e);
+    static bool answer(int fd, int e) {
+        if (e != 0) {
+            return error(fd, e);
         }
-        close(fd);
+        ok(fd);
+        return false;
     }
 
     // One packet into packet, its descriptors into packetFds: the length
     // of its body, after the header, or -1 at the end of the endpoint.
-    static i64 receive(i32 fd, Header& h) {
+    static i64 receive(int fd, Header& h) {
         iovec iov{packet, sizeof packet};
         msghdr m{};
         m.msg_iov = &iov;
         m.msg_iovlen = 1;
         m.msg_control = packetControl;
-        m.msg_controllen = socklen_t(CMSG_SPACE(maxFds * sizeof(i32)));
-        const ssize_t n = recvmsg(fd, &m, msgCmsgCloexec);
+        m.msg_controllen = sizeof packetControl;
+        const ssize_t n = recvmsg(fd, &m, MSG_CMSG_CLOEXEC);
         if (n <= 0) {
             return -1;
         }
@@ -1371,24 +1241,33 @@ namespace {
         memcpy(&h, packet, sizeof h);
         packetFdCount = 0;
         for (cmsghdr* c = CMSG_FIRSTHDR(&m); c; c = CMSG_NXTHDR(&m, c)) {
-            if (c->cmsg_level != SOL_SOCKET || c->cmsg_type != SCM_RIGHTS || c->cmsg_len < CMSG_LEN(0)) {
-                continue;
-            }
-            const usize count = (c->cmsg_len - CMSG_LEN(0)) / sizeof(i32);
-            for (usize i = 0; i < count && packetFdCount < maxFds; ++i) {
-                memcpy(&packetFds[packetFdCount++], CMSG_DATA(c) + i * sizeof(i32), sizeof(i32));
+            if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_RIGHTS && c->cmsg_len >= CMSG_LEN(0)) {
+                const usize count = MIN((c->cmsg_len - CMSG_LEN(0)) / sizeof(int), maxFds - packetFdCount);
+                memcpy(packetFds + packetFdCount, CMSG_DATA(c), count * sizeof(int));
+                packetFdCount += count;
             }
         }
         return i64(n) - i64(sizeof(Header));
     }
 
-    static void put32(u8* at, u32 v) {
-        __builtin_memcpy(at, &v, 4);
-    }
+    // What a reply assembles in out.
+    struct Assembly {
+        usize size = 0;
 
-    static void put64(u8* at, u64 v) {
-        __builtin_memcpy(at, &v, 8);
-    }
+        bool fits(usize n) const {
+            return n <= sizeof out - size;
+        }
+
+        void add(const void* data, usize n) {
+            memcpy(out + size, data, n);
+            size += n;
+        }
+
+        template <typename T>
+        void add(T value) {
+            add(&value, sizeof value);
+        }
+    };
 
     // ---- the loop's endpoints -------------------------------------------------------
     //
@@ -1413,7 +1292,7 @@ namespace {
     // read, to write or both; a file opened by a name of dir says it. Its
     // descriptor came with MSG_CMSG_CLOEXEC, or from a pair of ours, made
     // with SOCK_CLOEXEC.
-    static void listen(Server& s, i32 fd, Node* node, bool reads, bool writes, Node* dir, Name name) {
+    static void listen(Server& s, int fd, Node* node, bool reads, bool writes, Node* dir, Name name) {
         Node* n = node ? node : s.root;
         Endpoint* ep = freeEndpoints;
         if (ep) {
@@ -1421,47 +1300,34 @@ namespace {
         } else {
             ep = static_cast<Endpoint*>(allocate(sizeof(Endpoint)));
         }
-        if (name.length > nameMax) {
-            fatal("rootfs: a name too long for an endpoint");
+        if (name.length > NAME_MAX) {
+            fatal("rootfs: a name of %zu bytes for an endpoint", name.length);
         }
-        ++n->opens;
-        ep->fd = fd;
-        ep->reads = reads;
-        ep->writes = writes;
-        ep->server = &s;
-        ep->node = n;
-        ep->dir = dir;
-        ep->next = nullptr;
-        ep->nameLength = u8(name.length);
-        if (name.length) {
+        *ep = {fd, reads, writes, &s, n, dir, nullptr, u8(name.length), {}};
+        if (!name.empty()) {
             memcpy(ep->name, name.at, name.length);
         }
+        ++n->opens;
         if (dir) {
-            hold(dir);
+            ++dir->holds;
         }
         ++endpointCount;
-        if (watcher >= 0) {
-            epoll_event ev{};
-            ev.events = EPOLLIN;
-            ev.data.u64 = u64(uptr(ep));
-            if (epoll_ctl(watcher, EPOLL_CTL_ADD, fd, &ev) != 0) {
-                fatal("fs: epoll_ctl");
-            }
+        epoll_event ev{};
+        ev.events = EPOLLIN;
+        ev.data.ptr = ep;
+        if (epoll_ctl(watcher, EPOLL_CTL_ADD, fd, &ev) != 0) {
+            fatal("fs: epoll_ctl: errno %d", errno);
         }
-    }
-
-    static void removeShared(Node* n, i32 fd) {
-        n->shared.keepIf([fd](i32 holder) {
-            return holder != fd;
-        });
     }
 
     // An endpoint that closes: its locks go with it, and its node when no
     // name is left of it.
     static void forget(Endpoint* ep) {
         Node* n = ep->node;
-        const i32 fd = ep->fd;
-        removeShared(n, fd);
+        const int fd = ep->fd;
+        n->shared.keepIf([fd](int holder) {
+            return holder != fd;
+        });
         if (n->exclusive == fd) {
             n->exclusive = -1;
         }
@@ -1479,6 +1345,9 @@ namespace {
     }
 
     // ---- calls on paths and names ------------------------------------------------
+    //
+    // Each takes the reply's endpoint and says whether it is kept: an
+    // endpoint of the server now, which the loop does not close.
 
     // The names of a walk: the path's, and before them the targets of the
     // links it went through, the last on top.
@@ -1493,40 +1362,65 @@ namespace {
             stack[depth++] = n;
         }
 
+        static Name trimmed(Name n) {
+            while (n.length && *n.at == '/') {
+                ++n.at;
+                --n.length;
+            }
+            return n;
+        }
+
         // The next name, or false at the end.
         bool take(Name& name) {
-            while (depth > 0) {
+            for (; depth > 0; --depth) {
                 Name& top = stack[depth - 1];
-                while (top.length && *top.at == '/') {
-                    ++top.at;
-                    --top.length;
-                }
-                if (top.length) {
-                    const u8* start = top.at;
-                    while (top.length && *top.at != '/') {
-                        ++top.at;
-                        --top.length;
-                    }
-                    name = {start, usize(top.at - start)};
+                top = trimmed(top);
+                if (!top.empty()) {
+                    const auto* slash = static_cast<const char*>(memchr(top.at, '/', top.length));
+                    name = {top.at, slash ? usize(slash - top.at) : top.length};
+                    top.at += name.length;
+                    top.length -= name.length;
                     return true;
                 }
-                --depth;
             }
             return false;
         }
 
         // Whether a name is left.
         bool more() const {
-            for (u32 i = depth; i-- > 0;) {
-                for (usize k = 0; k < stack[i].length; ++k) {
-                    if (stack[i].at[k] != '/') {
-                        return true;
-                    }
+            for (u32 i = 0; i < depth; ++i) {
+                if (!trimmed(stack[i]).empty()) {
+                    return true;
                 }
             }
             return false;
         }
     };
+
+    // A walk to a root of no server of ours: the kernel goes on from the
+    // root of the process with the names left.
+    static bool fromRoot(int fd, u32 links, Walk& walk, bool slash) {
+        Assembly a;
+        a.add(stepRoot);
+        a.add(links);
+        a.add(lastNone);
+        a.add(u32(0));
+        Name left;
+        for (bool first = true; walk.take(left); first = false) {
+            if (!a.fits(left.length + 2)) {
+                return error(fd, ENAMETOOLONG);
+            }
+            if (!first) {
+                a.add("/", 1);
+            }
+            a.add(left.at, left.length);
+        }
+        if (slash) {
+            a.add("/", 1);
+        }
+        ok(fd, out, a.size);
+        return false;
+    }
 
     // A path walked from the endpoint's directory to the directory of its
     // last name, as Linux walks one: every name but the last must be a
@@ -1538,119 +1432,88 @@ namespace {
     // slash ends the path and whether the reply's endpoint is now the
     // directory's, its own; then the last name. A walk to a root of no
     // server of this process is the step stepRoot, with the path left.
-    static void resolve(Endpoint* ep, const Header& h, Body body, i32 fd) {
-        const u64 dev = body.quad();
-        const u64 ino = body.quad();
-        u32 links = body.word();
+    static bool resolve(Endpoint* ep, const Header& h, Body body, int fd) {
+        const u64 dev = body.take<u64>();
+        const u64 ino = body.take<u64>();
+        u32 links = body.take<u32>();
         const Name path = body.rest();
-        const bool slash = path.length > 0 && path.at[path.length - 1] == '/';
+        const bool slash = !path.empty() && path.at[path.length - 1] == '/';
         Walk walk;
         walk.push(path);
         Place here{ep->server, ep->node};
-        int e = 0;
         Name name;
         bool have = walk.take(name);
-        while (e == 0 && have && walk.more()) {
-            Entry* entry = nullptr;
+        for (; have && walk.more(); have = walk.take(name)) {
             if (here.node->kind != Kind::Dir) {
-                e = ENOTDIR;
-            } else if (!may(here.node, h, 1)) {
-                e = EACCES;
-            } else if (name.is(".")) {
-            } else if (name.is("..")) {
+                return error(fd, ENOTDIR);
+            }
+            if (!may(here.node, h, 1)) {
+                return error(fd, EACCES);
+            }
+            if (name.is(".")) {
+                continue;
+            }
+            if (name.is("..")) {
                 here = up(here, dev, ino);
-            } else if (name.length > nameMax) {
-                e = ENAMETOOLONG;
-            } else if (!(entry = lookup(here.node, name))) {
-                e = ENOENT;
-            } else {
-                const Place next = down({here.s, entry->node});
-                if (next.node->kind != Kind::Link) {
-                    here = next;
-                } else if (links >= maxLinks) {
-                    e = ELOOP;
-                } else if (next.node->content.size() == 0) {
-                    e = ENOENT;
-                } else {
-                    ++links;
-                    const Name target{next.node->content.data(), next.node->content.size()};
-                    walk.push(target);
-                    if (target.at[0] == '/') {
-                        here = found(dev, ino);
-                        if (!here.node) {
-                            put32(out, stepRoot);
-                            put32(out + 4, links);
-                            put32(out + 8, lastNone);
-                            put32(out + 12, 0);
-                            usize size = 16;
-                            Name left;
-                            bool first = true;
-                            while (e == 0 && walk.take(left)) {
-                                if (size + 1 + left.length + 1 > sizeof out) {
-                                    e = ENAMETOOLONG;
-                                    break;
-                                }
-                                if (!first) {
-                                    out[size++] = '/';
-                                }
-                                first = false;
-                                memcpy(out + size, left.at, left.length);
-                                size += left.length;
-                            }
-                            if (e == 0 && slash) {
-                                out[size++] = '/';
-                            }
-                            if (e == 0) {
-                                ok(fd, out, size);
-                            } else {
-                                err(fd, e);
-                            }
-                            close(fd);
-                            return;
-                        }
-                    }
+                continue;
+            }
+            if (name.length > NAME_MAX) {
+                return error(fd, ENAMETOOLONG);
+            }
+            const Entry* entry = lookup(here.node, name);
+            if (!entry) {
+                return error(fd, ENOENT);
+            }
+            const Place next = down({here.s, entry->node});
+            if (next.node->kind != Kind::Link) {
+                here = next;
+                continue;
+            }
+            if (links >= maxLinks) {
+                return error(fd, ELOOP);
+            }
+            const Name target = next.node->content.name();
+            if (target.empty()) {
+                return error(fd, ENOENT);
+            }
+            ++links;
+            walk.push(target);
+            if (target.at[0] == '/') {
+                here = found(dev, ino);
+                if (!here.node) {
+                    return fromRoot(fd, links, walk, slash);
                 }
             }
-            if (e == 0) {
-                have = walk.take(name);
-            }
         }
-        if (e == 0 && here.node->kind != Kind::Dir) {
-            e = ENOTDIR;
-        }
-        if (e == 0 && have && !may(here.node, h, 1)) {
-            e = EACCES;
+        if (here.node->kind != Kind::Dir) {
+            return error(fd, ENOTDIR);
         }
         u32 last = lastNone;
         Name final;
-        if (e == 0 && have) {
+        if (have) {
+            if (!may(here.node, h, 1)) {
+                return error(fd, EACCES);
+            }
             if (name.is(".")) {
                 last = lastDot;
             } else if (name.is("..")) {
                 last = lastDotdot;
                 here = up(here, dev, ino);
-            } else if (name.length > nameMax) {
-                e = ENAMETOOLONG;
+            } else if (name.length > NAME_MAX) {
+                return error(fd, ENAMETOOLONG);
             } else {
                 last = lastName;
                 final = name;
             }
         }
-        if (e != 0) {
-            err(fd, e);
-            close(fd);
-            return;
-        }
         const bool kept = here.s != ep->server || here.node != ep->node;
-        u32 head[4] = {stepDone, links, last, (slash && last == lastName ? stepSlash : 0) | (kept ? stepKept : 0)};
-        const iovec parts[2] = {part(head, sizeof head), part(final.at, final.length)};
+        const u32 head[4] = {stepDone, links, last, (slash && last == lastName ? stepSlash : 0) | (kept ? stepKept : 0)};
+        const iovec parts[] = {part(head, sizeof head), part(final.at, final.length)};
         if (kept) {
             listen(*here.s, fd, here.node, false, false, nullptr, {});
-            reply(fd, opOk, 0, parts, final.length ? 2 : 1);
-        } else {
-            reply(fd, opOk, 0, parts, final.length ? 2 : 1);
-            close(fd);
         }
+        reply(fd, opOk, 0, parts, final.empty() ? 1 : 2);
+        return kept;
     }
 
     // The path of an endpoint's directory from the root of the process,
@@ -1658,58 +1521,52 @@ namespace {
     // of a file, its directory's and the name it was opened by. A removed
     // directory has none, nor one the root is not above: ENOENT. The path
     // is made from its end, at the end of out.
-    static void pathOf(Endpoint* ep, Body body, i32 fd) {
-        const u64 dev = body.quad();
-        const u64 ino = body.quad();
+    static bool pathOf(Endpoint* ep, Body body, int fd) {
+        const u64 dev = body.take<u64>();
+        const u64 ino = body.take<u64>();
         Place here{ep->server, ep->node};
         usize start = sizeof out;
-        int e = 0;
-        auto prepend = [&](const u8* name, usize size) {
-            if (start < size + 1) {
-                e = ENAMETOOLONG;
-                return;
+        auto prepend = [&start](Name name) {
+            if (start < name.length + 1) {
+                return false;
             }
-            start -= size;
-            memcpy(out + start, name, size);
+            start -= name.length;
+            memcpy(out + start, name.at, name.length);
             out[--start] = '/';
+            return true;
         };
         if (here.node->kind != Kind::Dir) {
             if (!ep->dir) {
-                e = ENOENT;
-            } else {
-                prepend(ep->name, ep->nameLength);
-                here = {ep->server, ep->dir};
+                return error(fd, ENOENT);
             }
+            if (!prepend({ep->name, ep->nameLength})) {
+                return error(fd, ENAMETOOLONG);
+            }
+            here = {ep->server, ep->dir};
         }
-        while (e == 0 && !at(here, dev, ino)) {
+        while (!at(here, dev, ino)) {
             if (here.node == here.s->root) {
                 if (!here.s->above) {
-                    e = ENOENT;
-                } else {
-                    here = {here.s->aboveServer, here.s->above};
+                    return error(fd, ENOENT);
                 }
-                continue;
-            }
-            if (gone(here.s, here.node)) {
-                e = ENOENT;
+                here = {here.s->aboveServer, here.s->above};
                 continue;
             }
             const Entry* entry = here.node->entry;
-            if (!entry || entry->length == 0) {
-                e = ENOENT;
-                continue;
+            if (gone(here.s, here.node) || !entry || entry->name.empty()) {
+                return error(fd, ENOENT);
             }
-            prepend(entry->name, entry->length);
+            if (!prepend(entry->name)) {
+                return error(fd, ENAMETOOLONG);
+            }
             here = {here.s, here.node->parent};
         }
-        if (e != 0) {
-            err(fd, e);
-        } else if (start == sizeof out) {
+        if (start == sizeof out) {
             ok(fd, "/", 1);
         } else {
             ok(fd, out + start, sizeof out - start);
         }
-        close(fd);
+        return false;
     }
 
     // A name of the directory opened, or the directory itself for "": read
@@ -1718,187 +1575,186 @@ namespace {
     // O_PATH only held, for a working directory or a root. A symbolic link
     // is ELOOP, for the kernel to follow, or held itself with O_PATH and
     // O_NOFOLLOW.
-    static void open(Endpoint* ep, const Header& h, Body body, i32 fd) {
+    static bool openName(Endpoint* ep, const Header& h, Body body, int fd) {
         Server* s = ep->server;
         Node* c = ep->node;
-        const u32 mode = body.word();
+        const u32 mode = body.take<u32>();
         const Name name = body.string();
-        const bool opath = (h.arg & oPath) != 0;
-        const u32 access = h.arg & 3;
-        const bool reads = !opath && access != 1;
-        const bool writes = !opath && access != 0;
-        const bool truncates = !opath && (h.arg & oTrunc) != 0;
-        const bool creating = (h.arg & oCreat) != 0 && name.length > 0;
-        const bool there = name.length > 0 && c->kind == Kind::Dir && lookup(c, name);
-        int e = 0;
-        Place target{nullptr, nullptr};
+        const u32 flags = h.arg;
+        const bool opath = (flags & O_PATH) != 0;
+        const u32 access = flags & O_ACCMODE;
+        const bool reads = !opath && access != O_WRONLY;
+        const bool writes = !opath && access != O_RDONLY;
+        const bool truncates = !opath && (flags & O_TRUNC) != 0;
+        const bool creating = (flags & O_CREAT) != 0 && !name.empty();
+        const bool there = !name.empty() && c->kind == Kind::Dir && lookup(c, name);
+        Place target;
         bool made = false;
-        if (creating && there && (h.arg & oExcl) != 0) {
-            e = EEXIST;
-        } else if (creating && !there) {
-            e = creates(s, c, name, h);
-            if (e == 0) {
-                Node* n = makeNode(*s, c, name, Kind::File);
-                n->perm = mode & 07777;
-                n->uid = h.uid;
-                n->gid = h.gid;
-                target = {s, n};
-                made = true;
+        if (creating && there && (flags & O_EXCL) != 0) {
+            return error(fd, EEXIST);
+        }
+        if (creating && !there) {
+            if (const int e = creates(s, c, name, h)) {
+                return error(fd, e);
             }
-        } else {
-            target = named(s, c, name, h, e);
+            Node* n = makeNode(*s, c, name, Kind::File);
+            n->perm = mode & 07777;
+            n->uid = h.uid;
+            n->gid = h.gid;
+            target = {s, n};
+            made = true;
+        } else if (const int e = named(s, c, name, h, target)) {
+            return error(fd, e);
         }
-        if (e == 0 && target.node->kind == Kind::Link && !(opath && (h.arg & oNofollow) != 0)) {
-            e = ELOOP;
-        } else if (e == 0 && (h.arg & oDirectory) != 0 && target.node->kind != Kind::Dir) {
-            e = ENOTDIR;
-        } else if (e == 0 && !made && !opath) {
-            const u32 want = (reads ? 4 : 0) | (writes || truncates ? 2 : 0);
-            if (!may(target.node, h, want)) {
-                e = EACCES;
-            } else if (target.node->kind == Kind::Dir && (writes || (h.arg & oCreat) != 0)) {
-                e = EISDIR;
-            } else if ((writes || truncates) && target.node->kind == Kind::File && !target.s->writable) {
-                e = EROFS;
+        Node* n = target.node;
+        if (n->kind == Kind::Link && !(opath && (flags & O_NOFOLLOW) != 0)) {
+            return error(fd, ELOOP);
+        }
+        if ((flags & O_DIRECTORY) != 0 && n->kind != Kind::Dir) {
+            return error(fd, ENOTDIR);
+        }
+        if (!made && !opath) {
+            if (!may(n, h, (reads ? 4 : 0) | (writes || truncates ? 2 : 0))) {
+                return error(fd, EACCES);
+            }
+            if (n->kind == Kind::Dir && (writes || (flags & O_CREAT) != 0)) {
+                return error(fd, EISDIR);
+            }
+            if ((writes || truncates) && n->kind == Kind::File && !target.s->writable) {
+                return error(fd, EROFS);
             }
         }
-        if (e != 0) {
-            answer(fd, e);
-            return;
+        if (n->kind == Kind::Object && !opath) {
+            reply(fd, opOk, 0, nullptr, 0, &n->fd, 1);  // the object itself becomes the caller's
+            return false;
         }
-        if (target.node->kind == Kind::Object && !opath) {
-            reply(fd, opOk, 0, nullptr, 0, &target.node->fd, 1);  // the object itself becomes the caller's
-            close(fd);
-            return;
+        if (truncates && n->kind == Kind::File && n->content.size() > 0) {
+            resize(*target.s, n, 0);
+            touch(n);
         }
-        if (truncates && target.node->kind == Kind::File && target.node->content.size() > 0) {
-            resize(*target.s, target.node, 0);
-            const u64 t = now();
-            target.node->mtime = t;
-            target.node->ctime = t;
-        }
-        const Stat st = statOf(*target.s, target.node);
-        listen(*target.s, fd, target.node, reads, writes, name.length ? c : nullptr, name);
+        const Stat st = statOf(*target.s, n);
+        listen(*target.s, fd, n, reads, writes, name.empty() ? nullptr : c, name);
         ok(fd, &st, sizeof st);
+        return true;
     }
 
-    static void stat(Endpoint* ep, const Header& h, Body body, i32 fd) {
-        int e = 0;
-        const Place t = named(ep->server, ep->node, body.string(), h, e);
-        if (e != 0) {
-            answer(fd, e);
-            return;
+    static bool statName(Endpoint* ep, const Header& h, Body body, int fd) {
+        Place t;
+        if (const int e = named(ep->server, ep->node, body.string(), h, t)) {
+            return error(fd, e);
         }
         const Stat st = statOf(*t.s, t.node);
         ok(fd, &st, sizeof st);
-        close(fd);
+        return false;
     }
 
     // The file system of a name: the server's, or the one mounted there.
-    static void statfs(Endpoint* ep, const Header& h, Body body, i32 fd) {
-        int e = 0;
-        const Place t = named(ep->server, ep->node, body.string(), h, e);
-        if (e != 0) {
-            answer(fd, e);
-            return;
+    static bool statfsName(Endpoint* ep, const Header& h, Body body, int fd) {
+        Place t;
+        if (const int e = named(ep->server, ep->node, body.string(), h, t)) {
+            return error(fd, e);
         }
         const Statfs st = statfsOf(*t.s);
         ok(fd, &st, sizeof st);
-        close(fd);
+        return false;
     }
 
-    static void readlink(Endpoint* ep, const Header& h, Body body, i32 fd) {
-        int e = 0;
-        const Place t = named(ep->server, ep->node, body.string(), h, e);
-        if (e == 0 && t.node->kind != Kind::Link) {
-            e = EINVAL;
+    static bool readlinkName(Endpoint* ep, const Header& h, Body body, int fd) {
+        Place t;
+        if (const int e = named(ep->server, ep->node, body.string(), h, t)) {
+            return error(fd, e);
         }
-        if (e != 0) {
-            answer(fd, e);
-            return;
+        if (t.node->kind != Kind::Link) {
+            return error(fd, EINVAL);
         }
         ok(fd, t.node->content.data(), t.node->content.size());
-        close(fd);
+        return false;
     }
 
     // mkdir, mknod and symlink: a new name in the directory, who asks may
     // write, theirs, with the mode asked for. mknod makes FIFOs and regular
     // files; a device is EPERM.
-    static void create(Endpoint* ep, const Header& h, Body body, i32 fd) {
-        Server* s = ep->server;
-        Node* c = ep->node;
+    static bool create(Endpoint* ep, const Header& h, Body body, int fd) {
         const Name target = h.op == opSymlink ? body.string() : Name{};
         const Name name = body.string();
+        if (const int e = creates(ep->server, ep->node, name, h)) {
+            return error(fd, e);
+        }
         Kind kind = Kind::Dir;
-        int e = creates(s, c, name, h);
-        if (e == 0 && h.op == opSymlink) {
+        if (h.op == opSymlink) {
             kind = Kind::Link;
-        } else if (e == 0 && h.op == opMknod) {
-            switch (h.arg & sIfmt) {
-            case sIfifo:
+        } else if (h.op == opMknod) {
+            switch (h.arg & S_IFMT) {
+            case S_IFIFO:
                 kind = Kind::Fifo;
                 break;
             case 0:
-            case sIfreg:
+            case S_IFREG:
                 kind = Kind::File;
                 break;
             default:
-                e = EPERM;
+                return error(fd, EPERM);
             }
         }
-        if (e == 0) {
-            Node* n = makeNode(*s, c, name, kind);
-            n->uid = h.uid;
-            n->gid = h.gid;
-            if (kind == Kind::Link) {
-                n->content.own.append(target.at, target.length);
-            } else {
-                n->perm = h.arg & 07777;
-            }
+        Node* n = makeNode(*ep->server, ep->node, name, kind);
+        n->uid = h.uid;
+        n->gid = h.gid;
+        if (kind == Kind::Link) {
+            n->content.own.append(target.at, target.length);
+        } else {
+            n->perm = h.arg & 07777;
         }
-        answer(fd, e);
+        return answer(fd, 0);
     }
 
-    static void unlink(Endpoint* ep, const Header& h, Body body, i32 fd) {
-        Server* s = ep->server;
-        Node* c = ep->node;
-        const Name name = body.string();
-        const bool removeDir = (h.arg & atRemovedir) != 0;
-        int e = badName(name);
-        Entry* entry = nullptr;
-        if (e == 0 && c->kind != Kind::Dir) {
-            e = ENOTDIR;
-        } else if (e == 0 && !may(c, h, 1)) {
-            e = EACCES;
-        } else if (e == 0 && !s->writable) {
-            e = EROFS;
-        } else if (e == 0 && !(entry = lookup(c, name))) {
-            e = ENOENT;
-        } else if (e == 0) {
-            Node* n = entry->node;
-            if (removeDir && n->kind != Kind::Dir) {
-                e = ENOTDIR;
-            } else if (!removeDir && n->kind == Kind::Dir) {
-                e = EISDIR;
-            } else if (!may(c, h, 3)) {
-                e = EACCES;
-            } else if (keeps(c, n, h)) {
-                e = EPERM;
-            } else if (removeDir && mountPoint(n)) {
-                e = EBUSY;
-            } else if (removeDir && n->names > 0) {
-                e = ENOTEMPTY;
-            } else {
-                release(*s, unplace(c, entry, now()));
-            }
+    static int unlinkError(Server* s, Node* c, Name name, bool removeDir, const Header& h) {
+        if (const int e = badName(name)) {
+            return e;
         }
-        answer(fd, e);
+        if (c->kind != Kind::Dir) {
+            return ENOTDIR;
+        }
+        if (!may(c, h, 1)) {
+            return EACCES;
+        }
+        if (!s->writable) {
+            return EROFS;
+        }
+        Entry* entry = lookup(c, name);
+        if (!entry) {
+            return ENOENT;
+        }
+        const Node* n = entry->node;
+        if (removeDir && n->kind != Kind::Dir) {
+            return ENOTDIR;
+        }
+        if (!removeDir && n->kind == Kind::Dir) {
+            return EISDIR;
+        }
+        if (!may(c, h, 3)) {
+            return EACCES;
+        }
+        if (keeps(c, n, h)) {
+            return EPERM;
+        }
+        if (removeDir && mountPoint(n)) {
+            return EBUSY;
+        }
+        if (removeDir && n->names > 0) {
+            return ENOTEMPTY;
+        }
+        release(*s, unplace(c, entry, now()));
+        return 0;
+    }
+
+    static bool unlinkName(Endpoint* ep, const Header& h, Body body, int fd) {
+        return answer(fd, unlinkError(ep->server, ep->node, body.string(), (h.arg & AT_REMOVEDIR) != 0, h));
     }
 
     // Whether dir is n or under it.
     static bool within(const Node* n, const Node* dir) {
-        for (const Node* up = dir; up; up = up->parent) {
-            if (up == n) {
+        for (; dir; dir = dir->parent) {
+            if (dir == n) {
                 return true;
             }
         }
@@ -1907,20 +1763,15 @@ namespace {
 
     // The directory of a device and inode another name of a call is in:
     // EXDEV on another server, ENOENT when it is no directory there now.
-    static Node* directory(const Server* s, u64 dev, u64 ino, int& e) {
-        if (e != 0) {
-            return nullptr;
-        }
+    static int directory(const Server* s, u64 dev, u64 ino, Node*& dir) {
         if (dev != s->dev) {
-            e = EXDEV;
-            return nullptr;
+            return EXDEV;
         }
-        Node* n = s->find(ino);
-        if (!n || n->kind != Kind::Dir || gone(s, n)) {
-            e = ENOENT;
-            return nullptr;
+        dir = s->find(ino);
+        if (!dir || dir->kind != Kind::Dir || gone(s, dir)) {
+            return ENOENT;
         }
-        return n;
+        return 0;
     }
 
     // A name of the directory moved to a name of another of the server's,
@@ -1929,89 +1780,113 @@ namespace {
     // directory; a directory does not go under itself, nor a mount point
     // anywhere, and one that goes to another directory must be one who
     // asks may write, for its "..".
-    static void rename(Endpoint* ep, const Header& h, Body body, i32 fd) {
-        Server* s = ep->server;
-        Node* src = ep->node;
-        const u64 dev = body.quad();
-        const u64 ino = body.quad();
+    static int renameError(Server* s, Node* src, const Header& h, Body body) {
+        const u64 dev = body.take<u64>();
+        const u64 ino = body.take<u64>();
         const Name oldName = body.string();
         const Name newName = body.string();
-        int e = badName(oldName);
-        if (e == 0) {
-            e = badName(newName);
+        Node* dst = nullptr;
+        if (const int e = badName(oldName)) {
+            return e;
         }
-        Node* dst = directory(s, dev, ino, e);
-        Entry* entry = nullptr;
-        if (e == 0 && src->kind != Kind::Dir) {
-            e = ENOTDIR;
-        } else if (e == 0 && (!may(src, h, 1) || !may(dst, h, 1))) {
-            e = EACCES;
-        } else if (e == 0 && !s->writable) {
-            e = EROFS;
-        } else if (e == 0 && !(entry = lookup(src, oldName))) {
-            e = ENOENT;
-        } else if (e == 0) {
-            Node* n = entry->node;
-            Entry* replaced = lookup(dst, newName);
-            Node* old = replaced ? replaced->node : nullptr;
-            if (old == n) {
-            } else if (n->kind == Kind::Dir && within(n, dst)) {
-                e = EINVAL;
-            } else if (!may(src, h, 3) || !may(dst, h, 3)) {
-                e = EACCES;
-            } else if (keeps(src, n, h) || (old && keeps(dst, old, h))) {
-                e = EPERM;
-            } else if (n->kind == Kind::Dir && src != dst && !may(n, h, 2)) {
-                e = EACCES;
-            } else if (mountPoint(n) || (old && mountPoint(old))) {
-                e = EBUSY;
-            } else if (old && n->kind == Kind::Dir && old->kind != Kind::Dir) {
-                e = ENOTDIR;
-            } else if (old && n->kind != Kind::Dir && old->kind == Kind::Dir) {
-                e = EISDIR;
-            } else if (old && old->kind == Kind::Dir && old->names > 0) {
-                e = ENOTEMPTY;
-            } else {
-                const u64 t = now();
-                unplace(src, entry, t);
-                if (replaced) {
-                    release(*s, unplace(dst, replaced, t));
-                }
-                place(dst, newName, n, t);
-            }
+        if (const int e = badName(newName)) {
+            return e;
         }
-        answer(fd, e);
+        if (const int e = directory(s, dev, ino, dst)) {
+            return e;
+        }
+        if (src->kind != Kind::Dir) {
+            return ENOTDIR;
+        }
+        if (!may(src, h, 1) || !may(dst, h, 1)) {
+            return EACCES;
+        }
+        if (!s->writable) {
+            return EROFS;
+        }
+        Entry* entry = lookup(src, oldName);
+        if (!entry) {
+            return ENOENT;
+        }
+        Node* n = entry->node;
+        Entry* replaced = lookup(dst, newName);
+        const Node* old = replaced ? replaced->node : nullptr;
+        if (old == n) {
+            return 0;
+        }
+        if (n->kind == Kind::Dir && within(n, dst)) {
+            return EINVAL;
+        }
+        if (!may(src, h, 3) || !may(dst, h, 3)) {
+            return EACCES;
+        }
+        if (keeps(src, n, h) || (old && keeps(dst, old, h))) {
+            return EPERM;
+        }
+        if (n->kind == Kind::Dir && src != dst && !may(n, h, 2)) {
+            return EACCES;
+        }
+        if (mountPoint(n) || (old && mountPoint(old))) {
+            return EBUSY;
+        }
+        if (old && n->kind == Kind::Dir && old->kind != Kind::Dir) {
+            return ENOTDIR;
+        }
+        if (old && n->kind != Kind::Dir && old->kind == Kind::Dir) {
+            return EISDIR;
+        }
+        if (old && old->kind == Kind::Dir && old->names > 0) {
+            return ENOTEMPTY;
+        }
+        const u64 t = now();
+        unplace(src, entry, t);
+        if (replaced) {
+            release(*s, unplace(dst, replaced, t));
+        }
+        place(dst, newName, n, t);
+        return 0;
+    }
+
+    static bool renameName(Endpoint* ep, const Header& h, Body body, int fd) {
+        return answer(fd, renameError(ep->server, ep->node, h, body));
     }
 
     // A new name, in a directory of the server's of a device and inode, for
     // the node a name of this one is, which is no directory.
-    static void link(Endpoint* ep, const Header& h, Body body, i32 fd) {
-        Server* s = ep->server;
-        Node* src = ep->node;
-        const u64 dev = body.quad();
-        const u64 ino = body.quad();
+    static int linkError(Server* s, Node* src, const Header& h, Body body) {
+        const u64 dev = body.take<u64>();
+        const u64 ino = body.take<u64>();
         const Name oldName = body.string();
         const Name newName = body.string();
-        int e = badName(oldName);
-        Entry* entry = nullptr;
-        if (e == 0 && src->kind != Kind::Dir) {
-            e = ENOTDIR;
-        } else if (e == 0 && !may(src, h, 1)) {
-            e = EACCES;
-        } else if (e == 0 && !(entry = lookup(src, oldName))) {
-            e = ENOENT;
+        if (const int e = badName(oldName)) {
+            return e;
         }
-        Node* dst = directory(s, dev, ino, e);
-        if (e == 0) {
-            e = creates(s, dst, newName, h);
+        if (src->kind != Kind::Dir) {
+            return ENOTDIR;
         }
-        if (e == 0 && entry->node->kind == Kind::Dir) {
-            e = EPERM;
+        if (!may(src, h, 1)) {
+            return EACCES;
         }
-        if (e == 0) {
-            place(dst, newName, entry->node, now());
+        const Entry* entry = lookup(src, oldName);
+        if (!entry) {
+            return ENOENT;
         }
-        answer(fd, e);
+        Node* dst = nullptr;
+        if (const int e = directory(s, dev, ino, dst)) {
+            return e;
+        }
+        if (const int e = creates(s, dst, newName, h)) {
+            return e;
+        }
+        if (entry->node->kind == Kind::Dir) {
+            return EPERM;
+        }
+        place(dst, newName, entry->node, now());
+        return 0;
+    }
+
+    static bool linkName(Endpoint* ep, const Header& h, Body body, int fd) {
+        return answer(fd, linkError(ep->server, ep->node, h, body));
     }
 
     // The attributes of a node: set when the server is writable, by its owner
@@ -2032,15 +1907,15 @@ namespace {
             break;
         case opChown:
         case opFchown: {
-            const u32 uid = args.word();
-            const u32 gid = args.word();
+            const u32 uid = args.take<u32>();
+            const u32 gid = args.take<u32>();
             const u32 toUid = uid == noId ? node->uid : uid;
             const u32 toGid = gid == noId ? node->gid : gid;
             if (h.uid != 0 && (h.uid != node->uid || toUid != node->uid || (toGid != node->gid && toGid != h.gid))) {
                 return EPERM;
             }
             if ((toUid != node->uid || toGid != node->gid) && node->kind != Kind::Dir) {
-                node->perm &= ~u32(06000);
+                node->perm &= ~u32(S_ISUID | S_ISGID);
             }
             node->uid = toUid;
             node->gid = toGid;
@@ -2048,13 +1923,13 @@ namespace {
         }
         case opUtimes:
         case opFutimes: {
-            const u64 atime = args.quad();
-            const u64 mtime = args.quad();
-            const bool touch = (h.arg & whenAtimeNow) != 0 && (h.arg & whenMtimeNow) != 0;
-            if (touch && !owns(node, h) && !may(node, h, 2)) {
+            const u64 atime = args.take<u64>();
+            const u64 mtime = args.take<u64>();
+            const bool toNow = (h.arg & whenAtimeNow) != 0 && (h.arg & whenMtimeNow) != 0;
+            if (toNow && !owns(node, h) && !may(node, h, 2)) {
                 return EACCES;
             }
-            if (!touch && !owns(node, h)) {
+            if (!toNow && !owns(node, h)) {
                 return EPERM;
             }
             if ((h.arg & whenAtimeKept) == 0) {
@@ -2067,11 +1942,11 @@ namespace {
         }
         case opTruncate:
         case opFtruncate: {
-            const u64 size = args.quad();
+            const u64 size = args.take<u64>();
             if (node->kind == Kind::Dir) {
                 return op == opTruncate ? EISDIR : EINVAL;
             }
-            if (node->kind != Kind::File || size > u64(0x7fffffff) * 1024) {
+            if (node->kind != Kind::File || size > u64(INT32_MAX) * 1024) {
                 return EINVAL;
             }
             if (op == opTruncate && !may(node, h, 2)) {
@@ -2089,162 +1964,136 @@ namespace {
     }
 
     // chmod, chown, utimes and truncate of a name, or of the directory.
-    static void attr(Endpoint* ep, const Header& h, Body body, i32 fd) {
+    static bool attr(Endpoint* ep, const Header& h, Body body, int fd) {
         const usize ahead = h.op == opChown || h.op == opTruncate ? 8 : h.op == opUtimes ? 16 : 0;
         if (body.size() < ahead) {
             fatal("a short packet");
         }
         const Body args{body.at, body.at + ahead};
         Body rest{body.at + ahead, body.end};
-        int e = 0;
-        const Place t = named(ep->server, ep->node, rest.string(), h, e);
-        if (e == 0 && !t.s->writable) {
-            e = EROFS;
+        Place t;
+        if (const int e = named(ep->server, ep->node, rest.string(), h, t)) {
+            return error(fd, e);
         }
-        if (e == 0) {
-            e = change(*t.s, t.node, h.op, h, args);
+        if (!t.s->writable) {
+            return error(fd, EROFS);
         }
-        answer(fd, e);
+        return answer(fd, change(*t.s, t.node, h.op, h, args));
     }
 
     // fchmod, fchown, futimes, ftruncate and fsync of an open node; only an
     // endpoint open to write truncates.
-    static void fattr(Endpoint* ep, const Header& h, Body body, i32 fd) {
+    static bool fattr(Endpoint* ep, const Header& h, Body body, int fd) {
         if (h.op == opFsync) {
-            ok(fd);
-        } else if (!ep->server->writable) {
-            err(fd, EROFS);
-        } else if (h.op == opFtruncate && !ep->writes) {
-            err(fd, EINVAL);
-        } else if (const int e = change(*ep->server, ep->node, h.op, h, body)) {
-            err(fd, e);
-        } else {
-            ok(fd);
+            return answer(fd, 0);
         }
+        if (!ep->server->writable) {
+            return error(fd, EROFS);
+        }
+        if (h.op == opFtruncate && !ep->writes) {
+            return error(fd, EINVAL);
+        }
+        return answer(fd, change(*ep->server, ep->node, h.op, h, body));
     }
 
     // ---- calls on a node ---------------------------------------------------------
 
-    // A request's offset, or EINVAL answered for one no file has.
-    static bool offset(i32 fd, Body& body, u64& off) {
-        off = body.quad();
-        if (off > offsetMax) {
-            err(fd, EINVAL);
-            return false;
-        }
-        return true;
-    }
-
-    static void read(Endpoint* ep, const Header& h, Body body, i32 fd) {
-        u64 off;
-        if (!offset(fd, body, off)) {
-            return;
-        }
+    static bool readNode(Endpoint* ep, const Header& h, Body body, int fd) {
+        const u64 off = body.take<u64>();
         const Node* node = ep->node;
         const usize n = h.arg;
+        if (off > INT64_MAX) {
+            return error(fd, EINVAL);
+        }
         if (node->kind != Kind::Dir && !ep->reads) {
-            err(fd, EBADF);
-            return;
+            return error(fd, EBADF);
         }
         switch (node->kind) {
         case Kind::File: {
             const usize size = node->content.size();
-            const usize count = off >= size ? 0 : least(n, size - usize(off));
+            const usize count = off >= size ? 0 : MIN(n, size - usize(off));
             ok(fd, node->content.data() + (count ? usize(off) : 0), count);
-            break;
+            return false;
         }
         case Kind::Null:
             ok(fd);
-            break;
+            return false;
         case Kind::Zero:
-            ok(fd, zeros, least(n, sizeof zeros));
-            break;
+            ok(fd, zeros, MIN(n, sizeof zeros));
+            return false;
         case Kind::Random: {
-            const usize count = least(n, sizeof out);
+            const usize count = MIN(n, sizeof out);
             for (usize at = 0; at < count; at += 256) {
-                if (getentropy(out + at, least(usize(256), count - at)) != 0) {
-                    err(fd, EIO);
-                    return;
+                if (getentropy(out + at, MIN(usize(256), count - at)) != 0) {
+                    return error(fd, EIO);
                 }
             }
             ok(fd, out, count);
-            break;
+            return false;
         }
         default:
-            err(fd, EISDIR);
+            return error(fd, EISDIR);
         }
     }
 
     // The data at the offset, or at the end with append, as much as the
     // capacity takes: the count and where it went.
-    static void write(Endpoint* ep, const Header& h, Body body, i32 fd) {
-        u64 off;
-        if (!offset(fd, body, off)) {
-            return;
-        }
+    static bool writeNode(Endpoint* ep, const Header& h, Body body, int fd) {
+        u64 off = body.take<u64>();
         Server& s = *ep->server;
         Node* node = ep->node;
-        const u8* data = body.at;
         const usize length = body.size();
-        if (node->kind != Kind::Dir && !ep->writes) {
-            err(fd, EBADF);
-            return;
+        if (off > INT64_MAX) {
+            return error(fd, EINVAL);
         }
-        u8 result[12];
+        if (node->kind != Kind::Dir && !ep->writes) {
+            return error(fd, EBADF);
+        }
+        u64 count = length;
         switch (node->kind) {
         case Kind::Null:
         case Kind::Zero:
         case Kind::Random:
-            put32(result, u32(length));
-            put64(result + 4, off);
-            ok(fd, result, sizeof result);
             break;
         case Kind::File: {
             if (!s.writable) {
-                err(fd, EROFS);
-                return;
+                return error(fd, EROFS);
             }
             const u64 size = node->content.size();
             if ((h.arg & 1) != 0) {
                 off = size;
             }
-            u64 count = length;
             const u64 grows = off + count > size ? off + count - size : 0;
             if (s.capacity > 0 && grows > s.capacity - s.used) {
                 const u64 over = grows - (s.capacity - s.used);
                 count = count > over ? count - over : 0;
             }
             if (count == 0 && length > 0) {
-                err(fd, ENOSPC);
-                return;
+                return error(fd, ENOSPC);
             }
             if (size < off + count && !resize(s, node, off + count)) {
-                err(fd, ENOSPC);
-                return;
+                return error(fd, ENOSPC);
             }
-            if (count) {
-                memcpy(static_cast<u8*>(node->content.own.data()) + usize(off), data, usize(count));
-            }
-            const u64 t = now();
-            node->mtime = t;
-            node->ctime = t;
-            put32(result, u32(count));
-            put64(result + 4, off);
-            ok(fd, result, sizeof result);
+            memcpy(static_cast<u8*>(node->content.own.data()) + usize(off), body.at, usize(count));
+            touch(node);
             break;
         }
         default:
-            err(fd, EISDIR);
+            return error(fd, EISDIR);
         }
+        Assembly a;
+        a.add(u32(count));
+        a.add(off);
+        ok(fd, out, a.size);
+        return false;
     }
 
     // The entries after a position, in order, as many as one reply holds.
-    static void readdir(const Node* node, Body body, i32 fd) {
+    static bool readdirNode(const Node* node, Body body, int fd) {
         if (node->kind != Kind::Dir) {
-            err(fd, ENOTDIR);
-            return;
+            return error(fd, ENOTDIR);
         }
-        const u64 after = body.quad();
+        const u64 after = body.take<u64>();
         const Slot* slots = node->order.data();
         const usize count = node->order.size();
         usize lo = 0;
@@ -2257,112 +2106,111 @@ namespace {
                 hi = mid;
             }
         }
-        usize size = 0;
+        Assembly a;
         for (usize i = lo; i < count; ++i) {
             const Entry* e = slots[i].entry;
             if (!e) {
                 continue;
             }
-            if (size + 17 + e->length + 1 > sizeof out) {
+            if (!a.fits(17 + e->name.length + 1)) {
                 break;
             }
-            put64(out + size, e->node->ino);
-            put64(out + size + 8, e->pos);
-            out[size + 16] = dtype(e->node);
-            memcpy(out + size + 17, e->name, e->length);
-            out[size + 17 + e->length] = 0;
-            size += 17 + e->length + 1;
+            a.add(e->node->ino);
+            a.add(e->pos);
+            a.add(dtype(e->node));
+            a.add(e->name.at, e->name.length);
+            a.add(u8(0));
         }
-        ok(fd, out, size);
+        ok(fd, out, a.size);
+        return false;
     }
 
     // flock's lock of the endpoint's node: shared, which no other
     // endpoint's exclusive one is in the way of, exclusive, which no other
     // endpoint's lock is, or none.
-    static void flock(Endpoint* ep, const Header& h, i32 fd) {
+    static bool flockNode(Endpoint* ep, const Header& h, int fd) {
         Node* n = ep->node;
-        const i32 me = ep->fd;
+        const int me = ep->fd;
         const bool other = n->exclusive >= 0 && n->exclusive != me;
         usize others = 0;
         for (usize i = 0; i < n->shared.size(); ++i) {
             others += n->shared[i] != me;
         }
-        switch (h.arg & ~lockNb) {
-        case lockUn:
-            removeShared(n, me);
+        auto unshare = [n, me] {
+            n->shared.keepIf([me](int holder) {
+                return holder != me;
+            });
+        };
+        switch (h.arg & ~u32(LOCK_NB)) {
+        case LOCK_UN:
+            unshare();
             if (n->exclusive == me) {
                 n->exclusive = -1;
             }
             break;
-        case lockSh:
+        case LOCK_SH:
             if (other) {
-                err(fd, EAGAIN);
-                return;
+                return error(fd, EAGAIN);
             }
             n->exclusive = -1;
-            removeShared(n, me);
+            unshare();
             n->shared.pushBack(me);
             break;
-        case lockEx:
+        case LOCK_EX:
             if (other || others > 0) {
-                err(fd, EAGAIN);
-                return;
+                return error(fd, EAGAIN);
             }
-            removeShared(n, me);
+            unshare();
             n->exclusive = me;
             break;
         default:
-            err(fd, EINVAL);
-            return;
+            return error(fd, EINVAL);
         }
-        ok(fd);
+        return answer(fd, 0);
     }
 
     // The ranges a LOCK keeps, made here and swapped in: one of each for
     // the process.
-    [[clang::no_destroy]] SmallVec<Range> keptRanges;
+    SmallVec<Range> keptRanges;
 
     // fcntl's locks of the endpoint's node, on a range, to the end and past
     // with a length of 0. With get, the first lock of another endpoint in
     // the way of the one described, else F_UNLCK. Else that lock is set in
     // place of what the endpoint held of the range, unless another
     // endpoint's lock is in the way: EAGAIN; F_UNLCK lets the range go.
-    static void lock(Endpoint* ep, const Header& h, Body body, i32 fd) {
-        const u32 kind = body.word();
-        const u64 start = body.quad();
-        const u64 length = body.quad();
+    static bool lockNode(Endpoint* ep, const Header& h, Body body, int fd) {
+        const u32 type = body.take<u32>();
+        const u64 start = body.take<u64>();
+        const u64 length = body.take<u64>();
         const u64 stop = length == 0 || start > past - length ? past : start + length;
-        if (kind > fUnlck) {
-            err(fd, EINVAL);
-            return;
+        if (type > F_UNLCK) {
+            return error(fd, EINVAL);
         }
         Node* n = ep->node;
-        const i32 me = ep->fd;
+        const int me = ep->fd;
         const Range* way = nullptr;
-        for (usize i = 0; i < n->ranges.size(); ++i) {
+        for (usize i = 0; i < n->ranges.size() && !way; ++i) {
             const Range& l = n->ranges[i];
-            if (l.owner != me && l.start < stop && start < l.stop && (l.write || kind == fWrlck)) {
+            if (l.owner != me && l.start < stop && start < l.stop && (l.write || type == F_WRLCK)) {
                 way = &l;
-                break;
             }
         }
         if (h.arg == 1) {
-            u8 got[20];
+            Assembly a;
             if (way) {
-                put32(got, way->write ? fWrlck : fRdlck);
-                put64(got + 4, way->start);
-                put64(got + 12, way->stop == past ? 0 : way->stop - way->start);
+                a.add(u32(way->write ? F_WRLCK : F_RDLCK));
+                a.add(way->start);
+                a.add(way->stop == past ? 0 : way->stop - way->start);
             } else {
-                put32(got, fUnlck);
-                put64(got + 4, start);
-                put64(got + 12, length);
+                a.add(u32(F_UNLCK));
+                a.add(start);
+                a.add(length);
             }
-            ok(fd, got, sizeof got);
-            return;
+            ok(fd, out, a.size);
+            return false;
         }
-        if (kind != fUnlck && way) {
-            err(fd, EAGAIN);
-            return;
+        if (type != F_UNLCK && way) {
+            return error(fd, EAGAIN);
         }
         keptRanges.clear();
         for (usize i = 0; i < n->ranges.size(); ++i) {
@@ -2378,109 +2226,73 @@ namespace {
                 keptRanges.pushBack({l.owner, l.write, stop, l.stop});
             }
         }
-        if (kind != fUnlck) {
-            keptRanges.pushBack({me, kind == fWrlck, start, stop});
+        if (type != F_UNLCK) {
+            keptRanges.pushBack({me, type == F_WRLCK, start, stop});
         }
         n->ranges.buffer.swap(keptRanges.buffer);
-        ok(fd);
+        return answer(fd, 0);
     }
 
     // ---- the loop ---------------------------------------------------------------
 
-    // A request on an endpoint.
-    static void dispatch(Endpoint* ep, const Header& h, Body body) {
-        if (packetFdCount == 0) {
-            return;  // a request without its reply endpoint: nobody to answer
-        }
-        const i32 fd = packetFds[packetFdCount - 1];
+    // A request on an endpoint, answered on fd: whether fd is kept.
+    static bool dispatch(Endpoint* ep, const Header& h, Body body, int fd) {
         switch (h.op) {
         case opResolve:
-            resolve(ep, h, body, fd);
-            break;
+            return resolve(ep, h, body, fd);
         case opPath:
-            pathOf(ep, body, fd);
-            break;
+            return pathOf(ep, body, fd);
         case opOpen:
-            open(ep, h, body, fd);
-            break;
+            return openName(ep, h, body, fd);
         case opStat:
-            stat(ep, h, body, fd);
-            break;
+            return statName(ep, h, body, fd);
         case opStatfs:
-            statfs(ep, h, body, fd);
-            break;
+            return statfsName(ep, h, body, fd);
         case opReadlink:
-            readlink(ep, h, body, fd);
-            break;
+            return readlinkName(ep, h, body, fd);
         case opMkdir:
         case opMknod:
         case opSymlink:
-            create(ep, h, body, fd);
-            break;
+            return create(ep, h, body, fd);
         case opUnlink:
-            unlink(ep, h, body, fd);
-            break;
+            return unlinkName(ep, h, body, fd);
         case opRename:
-            rename(ep, h, body, fd);
-            break;
+            return renameName(ep, h, body, fd);
         case opLink:
-            link(ep, h, body, fd);
-            break;
+            return linkName(ep, h, body, fd);
         case opChmod:
         case opChown:
         case opUtimes:
         case opTruncate:
-            attr(ep, h, body, fd);
-            break;
+            return attr(ep, h, body, fd);
         case opFchmod:
         case opFchown:
         case opFutimes:
         case opFtruncate:
         case opFsync:
-            fattr(ep, h, body, fd);
-            close(fd);
-            break;
+            return fattr(ep, h, body, fd);
         case opRead:
-            read(ep, h, body, fd);
-            close(fd);
-            break;
+            return readNode(ep, h, body, fd);
         case opWrite:
-            write(ep, h, body, fd);
-            close(fd);
-            break;
+            return writeNode(ep, h, body, fd);
         case opReaddir:
-            readdir(ep->node, body, fd);
-            close(fd);
-            break;
+            return readdirNode(ep->node, body, fd);
         case opFstat: {
             const Stat st = statOf(*ep->server, ep->node);
             ok(fd, &st, sizeof st);
-            close(fd);
-            break;
+            return false;
         }
         case opFstatfs: {
             const Statfs st = statfsOf(*ep->server);
             ok(fd, &st, sizeof st);
-            close(fd);
-            break;
+            return false;
         }
         case opFlock:
-            flock(ep, h, fd);
-            close(fd);
-            break;
+            return flockNode(ep, h, fd);
         case opLock:
-            lock(ep, h, body, fd);
-            close(fd);
-            break;
-        case opOk:
-        case opErr:
-            for (usize i = 0; i < packetFdCount; ++i) {
-                close(packetFds[i]);
-            }
-            break;
+            return lockNode(ep, h, body, fd);
         default:
-            err(fd, ENOSYS);
-            close(fd);
+            return error(fd, ENOSYS);
         }
     }
 
@@ -2488,13 +2300,25 @@ namespace {
         Header h;
         const i64 n = receive(ep->fd, h);
         if (n < 0) {
-            const i32 fd = ep->fd;
+            const int fd = ep->fd;
             epoll_ctl(watcher, EPOLL_CTL_DEL, fd, nullptr);
             forget(ep);
             close(fd);  // the other end closed: the file is closed
             return;
         }
-        dispatch(ep, h, Body{packet + sizeof(Header), packet + sizeof(Header) + n});
+        if (packetFdCount == 0) {
+            return;  // a request without its reply endpoint: nobody to answer
+        }
+        if (h.op == opOk || h.op == opErr) {
+            for (usize i = 0; i < packetFdCount; ++i) {
+                close(packetFds[i]);
+            }
+            return;
+        }
+        const int fd = packetFds[packetFdCount - 1];
+        if (!dispatch(ep, h, Body{packet + sizeof(Header), packet + sizeof(Header) + n}, fd)) {
+            close(fd);
+        }
     }
 
     pid_t shellPid;
@@ -2507,36 +2331,30 @@ namespace {
             return true;
         }
         childEnded = 0;
-        for (;;) {
-            int status;
-            const pid_t pid = waitpid(-1, &status, WNOHANG);
-            if (pid <= 0) {
-                return shellStatus < 0;
-            }
+        int status;
+        for (pid_t pid; (pid = waitpid(-1, &status, WNOHANG)) > 0;) {
             if (pid == shellPid) {
                 shellStatus = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
             }
         }
+        return shellStatus < 0;
     }
 
     // Serves the servers until the last endpoint of them all closes: then
     // nobody can reach them; or until the shell ends.
     static void serve() {
         epoll_event events[64];
-        for (;;) {
-            if (endpointCount == 0) {
-                close(watcher);
-                watcher = -1;
-                return;
-            }
+        while (endpointCount > 0) {
             const int n = epoll_pwait(watcher, events, 64, -1, waitMasked ? &waitMask : nullptr);
             if (!reap()) {
                 return;
             }
             for (int i = 0; i < n; ++i) {
-                handle(reinterpret_cast<Endpoint*>(uptr(events[i].data.u64)));
+                handle(static_cast<Endpoint*>(events[i].data.ptr));
             }
         }
+        close(watcher);
+        watcher = -1;
     }
 
     // ---- the system ----------------------------------------------------------------
@@ -2548,16 +2366,15 @@ namespace {
         Node* n = s.root;
         Walk walk;
         walk.push(literal(path));
-        Name name;
-        while (walk.take(name)) {
+        for (Name name; walk.take(name);) {
             const Entry* entry = n->kind == Kind::Dir ? lookup(n, name) : nullptr;
             if (!entry) {
-                fatal("mount on ", path);
+                fatal("mount on %s", path);
             }
             n = entry->node;
         }
         if (n->kind != Kind::Dir) {
-            fatal("mount on ", path);
+            fatal("mount on %s", path);
         }
         n->served = &target;
         target.above = n;
@@ -2577,32 +2394,24 @@ namespace {
         sigaddset(&chld, SIGCHLD);
         signal(SIGCHLD, onChild);
         if (sigprocmask(SIG_BLOCK, &chld, &waitMask) != 0) {
-            fatal("rootfs: sigprocmask");
+            fatal("rootfs: sigprocmask: errno %d", errno);
         }
         waitMasked = true;
     }
 
-    // A field of a header block: its bytes without the NULs around them.
+    // A field of a ustar header: its bytes up to a NUL.
     static Name field(const u8* at, usize size) {
-        usize start = 0;
-        usize end = size;
-        while (start < end && at[start] == 0) {
-            ++start;
-        }
-        while (end > start && at[end - 1] == 0) {
-            --end;
-        }
-        return {at + start, end - start};
+        const char* text = reinterpret_cast<const char*>(at);
+        return {text, strnlen(text, size)};
     }
 
+    // A number field of a ustar header: octal.
     static u64 octal(const u8* at, usize size) {
-        u64 v = 0;
-        for (usize i = 0; i < size; ++i) {
-            if (at[i] >= '0' && at[i] <= '7') {
-                v = v * 8 + (at[i] - '0');
-            }
-        }
-        return v;
+        char text[16];
+        const Name digits = field(at, MIN(size, sizeof text - 1));
+        memcpy(text, digits.at, digits.length);
+        text[digits.length] = 0;
+        return strtoull(text, nullptr, 8);
     }
 
     // The directory of a path, made on the way.
@@ -2610,8 +2419,7 @@ namespace {
         Node* n = s.root;
         Walk walk;
         walk.push(path);
-        Name part;
-        while (walk.take(part)) {
+        for (Name part; walk.take(part);) {
             const Entry* entry = lookup(n, part);
             n = entry ? entry->node : makeNode(s, n, part, Kind::Dir, false);
         }
@@ -2629,48 +2437,44 @@ namespace {
     // data of a file in the blocks after it. Names, targets and data are
     // the image's bytes.
     static void load(Server& s) {
-        const u8* const archive = rootfs_image;
         const usize total = rootfs_image_size;
-        usize at = 0;
-        while (at + 512 <= total && archive[at] != 0) {
-            const u8* block = archive + at;
+        for (usize at = 0; at + 512 <= total && rootfs_image[at] != 0;) {
+            const u8* block = rootfs_image + at;
             Name path = field(block, 100);
             const u32 perm = u32(octal(block + 100, 8)) & 0777;
             const u64 size = octal(block + 124, 12);
-            const u8 kind = block[156];
+            const char kind = char(block[156]);
             const Name target = field(block + 157, 100);
             if (size > total - at - 512) {
                 fatal("rootfs: the image ends in an entry");
             }
-            while (path.length && path.at[path.length - 1] == '/') {
+            while (!path.empty() && path.at[path.length - 1] == '/') {
                 --path.length;
             }
-            usize slash = path.length;
-            while (slash > 0 && path.at[slash - 1] != '/') {
-                --slash;
-            }
-            Node* dir = dirOf(s, {path.at, slash ? slash - 1 : 0});
-            const Name base{path.at + slash, path.length - slash};
+            const char* slash = static_cast<const char*>(memrchr(path.at, '/', path.length));
+            Node* dir = dirOf(s, {path.at, slash ? usize(slash - path.at) : 0});
+            const Name base = slash ? Name{slash + 1, path.length - usize(slash + 1 - path.at)} : path;
             switch (kind) {
             case '5':
-                if (base.length) {
+                if (!base.empty()) {
                     const Entry* entry = lookup(dir, base);
-                    Node* n = entry ? entry->node : makeNode(s, dir, base, Kind::Dir, false);
-                    n->perm = perm;
+                    (entry ? entry->node : makeNode(s, dir, base, Kind::Dir, false))->perm = perm;
                 }
                 break;
             case '2': {
                 unname(s, dir, base);
                 Node* n = makeNode(s, dir, base, Kind::Link, false);
-                n->content.view = target.at;
+                n->content.view = reinterpret_cast<const u8*>(target.at);
                 n->content.viewSize = target.length;
                 break;
             }
             default: {
                 unname(s, dir, base);
-                Node* file = makeNode(s, dir, base, Kind::File, false);
-                fill(s, file, block + 512, usize(size));
-                file->perm = perm;
+                Node* n = makeNode(s, dir, base, Kind::File, false);
+                n->content.view = block + 512;
+                n->content.viewSize = usize(size);
+                n->perm = perm;
+                s.used += size;
             }
             }
             at += 512 + usize((size + 511) / 512 * 512);
@@ -2681,9 +2485,8 @@ namespace {
     // to whoever opens /dev/tty. urandom is the kernel's entropy, through
     // getentropy.
     static void devfs(Server& s) {
-        s.writable = false;
         s.root = makeNode(s, nullptr, {}, Kind::Dir);
-        makeNode(s, s.root, literal("tty"), Kind::Object, false)->fd = 0;
+        makeNode(s, s.root, literal("tty"), Kind::Object, false)->fd = STDIN_FILENO;
         makeNode(s, s.root, literal("null"), Kind::Null, false);
         makeNode(s, s.root, literal("zero"), Kind::Zero, false);
         makeNode(s, s.root, literal("urandom"), Kind::Random, false);
@@ -2695,34 +2498,26 @@ namespace {
     static pid_t spawn(const char* path, char* const* argv, char* const* env, int root) {
         const pid_t pid = fork();
         if (pid == 0) {
-            sigset_t blocked;
             if (waitMasked) {
-                sigprocmask(SIG_SETMASK, &waitMask, &blocked);
+                sigprocmask(SIG_SETMASK, &waitMask, nullptr);
             }
             if (fchdir(root) != 0 || chroot(".") != 0) {
-                say("rootfs: chroot: errno ");
-                sayNumber(errno);
-                say("\n");
+                dprintf(STDERR_FILENO, "rootfs: chroot: errno %d\n", errno);
                 _exit(127);
             }
             close(root);
             execve(path, argv, env);
-            say("rootfs: ");
-            say(path);
-            say(": errno ");
-            sayNumber(errno);
-            say("\n");
+            dprintf(STDERR_FILENO, "rootfs: %s: errno %d\n", path, errno);
             _exit(127);
         }
         if (pid < 0) {
-            fatal("rootfs: fork");
+            fatal("rootfs: fork: errno %d", errno);
         }
         return pid;
     }
 }
 
 int main() {
-    image.writable = false;
     image.root = makeNode(image, nullptr, {}, Kind::Dir);
     load(image);
     devfs(devices);
@@ -2734,7 +2529,7 @@ int main() {
     mountOn(image, "tmp", temporary);
     int ends[2];
     if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, ends) != 0) {
-        fatal("socketpair");
+        fatal("rootfs: socketpair: errno %d", errno);
     }
     // The shell's root is the far end of our own pair, never ours: a server
     // does not walk its own tree by path, and could not ask itself before
@@ -2750,9 +2545,9 @@ int main() {
     close(ends[1]);
     watcher = epoll_create1(EPOLL_CLOEXEC);
     if (watcher < 0) {
-        fatal("fs: epoll_create1");
+        fatal("fs: epoll_create1: errno %d", errno);
     }
     listen(image, ends[0], nullptr, true, false, nullptr, {});
     serve();
-    return shellStatus > 0 ? shellStatus : 0;
+    return MAX(shellStatus, 0);
 }
