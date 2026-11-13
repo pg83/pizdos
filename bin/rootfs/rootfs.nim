@@ -213,6 +213,8 @@ type
 # lib/c has these; Nim's posix does not declare them all.
 proc chroot(path: cstring): cint {.importc, header: "<unistd.h>".}
 proc c_signal(sig: cint, handler: proc(s: cint) {.noconv.}): pointer {.importc: "signal", header: "<signal.h>".}
+proc epoll_pwait(epfd: cint, events: ptr EpollEvent, maxevents: cint, timeout: cint,
+                 sigmask: ptr Sigset): cint {.importc, header: "<sys/epoll.h>".}
 proc getentropy(buf: pointer, n: csize_t): cint {.importc, header: "<unistd.h>".}
 
 # ---- packets --------------------------------------------------------------
@@ -1132,6 +1134,12 @@ const EPOLL_CLOEXEC = 0o2000000'i32
 
 var watcher = -1'i32
 
+# The signal mask of the wait, once reapOnChild blocked SIGCHLD everywhere
+# else: a child's end that comes while the loop works waits for the wait,
+# which it interrupts at once, instead of coming before it, unseen.
+var waitMask: Sigset
+var waitMasked = false
+
 proc watch(fd: cint) =
   if watcher >= 0:
     var ev: EpollEvent
@@ -1248,7 +1256,7 @@ proc serve(servers: openArray[ptr Server], idle: proc(): bool = nil) =
       discard close(watcher)
       watcher = -1
       return
-    let n = epoll_wait(watcher, events[0].addr, cint(events.len), -1)
+    let n = epoll_pwait(watcher, events[0].addr, cint(events.len), -1, if waitMasked: waitMask.addr else: nil)
     when defined(fsDebug):
       stderr.writeLine("fs: epoll_wait " & $n & " errno " & $errno & " eps " & $open)
     if idle != nil and not idle():
@@ -1283,8 +1291,16 @@ proc mountOn(s: var Server, path: string, target: ptr Server) =
   w.node.served = target
 
 proc reapOnChild(handler: proc(s: cint) {.noconv.}) =
-  ## Has a child's end interrupt the server's wait: idle then reaps.
+  ## Has a child's end interrupt the server's wait, and nothing else: idle
+  ## then reaps. SIGCHLD is blocked but in the wait, and the mask before is
+  ## the wait's and, through spawn, a child's.
+  var chld: Sigset
+  discard sigemptyset(chld)
+  discard sigaddset(chld, SIGCHLD)
   discard c_signal(SIGCHLD, handler)
+  if sigprocmask(SIG_BLOCK, chld, waitMask) != 0:
+    fatal("rootfs: sigprocmask")
+  waitMasked = true
 
 # The image is a ustar archive (bin/rootfs/image.py) linked in as data
 # (dev/nim.py --image).
@@ -1368,6 +1384,9 @@ proc devfs(): Server =
 proc spawn(path: string, argv, env: openArray[string]): Pid =
   result = fork()
   if result == 0:
+    var blocked: Sigset
+    if waitMasked:
+      discard sigprocmask(SIG_SETMASK, waitMask, blocked)
     discard execve(path.cstring, allocCStringArray(argv), allocCStringArray(env))
     stderr.writeLine("rootfs: " & path & ": errno " & $errno)
     quit(127)

@@ -135,7 +135,7 @@ ls: /lib: No such file or directory
 through env
 busybox
 executable
- 00 61 73 6d
+ 28 b5 2f fd
 read-only
 2
 600

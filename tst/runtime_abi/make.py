@@ -10,7 +10,7 @@ import tempfile
 
 
 def main():
-    go, source, mode, compiler, strings, output = sys.argv[1:]
+    go, source, mode, compiler, strings, modules, output = sys.argv[1:]
     source = Path(source).resolve()
     spec = importlib.util.spec_from_file_location("go_builder", source / "dev/go.py")
     builder = importlib.util.module_from_spec(spec)
@@ -37,7 +37,7 @@ def main():
         build = work / "build"
         build.mkdir()
         builder.build(go, str(source / "bin/vm"), output, "--cover", "--runtime", str(fork),
-                      "--embed", compiler, "--embed", strings, *flags, work=build)
+                      "--embed", compiler, "--embed", strings, "--modules", modules, *flags, work=build)
 
 
 if __name__ == "__main__":

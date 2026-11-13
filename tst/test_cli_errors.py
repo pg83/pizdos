@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Command usage, failed output transactions and bounded guest crash traces.
+"""Command usage, failed output transactions, bounded guest crash traces and
+modules compressed by zstd.
 
     test_cli_errors.py <vm> <native-aot>
 """
+from compression import zstd
 import os
 from pathlib import Path
 import re
+import struct
 import subprocess
 import sys
 import tempfile
@@ -48,6 +51,11 @@ def recursive_module(depth):
     module += section(10, b"\2" + b"".join(leb(len(body)) + body for body in bodies))
     names = b"\2\0" + text("entry") + b"\1" + text("recursive_guest")
     return module + section(0, text("name") + b"\1" + leb(len(names)) + names)
+
+
+def compressed(data):
+    options = {zstd.CompressionParameter.compression_level: 19, zstd.CompressionParameter.checksum_flag: 1}
+    return zstd.compress(data, options=options)
 
 
 def main():
@@ -111,7 +119,29 @@ def main():
                 assert frames[-1].startswith("    entry+0x"), frames
             result = run(["run", "--asan", "--", source])
             assert result.returncode == 1 and result.stderr == b"vm: --asan runs programs of the kernel\n", result
-    print("CLI errors: usage, failed output transactions, ASAN restrictions and bounded recursive traces passed")
+
+        # A module compressed by zstd runs as the module does; frames that
+        # do not unpack to one are refused, with why.
+        data = recursive_module(80)
+        source.write_bytes(data)
+        plain = run(["run", "--", source])
+        packed = work / "packed.wasm"
+        frame = compressed(data)
+        packed.write_bytes(frame)
+        result = run(["run", "--", packed])
+        assert (result.returncode, result.stdout, result.stderr) == (plain.returncode, plain.stdout, plain.stderr), result
+        assert result.returncode == 129, result
+        # A frame that declares more than vm unpacks, 1 GiB.
+        huge = b"\x28\xb5\x2f\xfd\xc0\x50" + struct.pack("<Q", 1 << 31) + b"\1\0\0"
+        for name, data, diagnostic in (("truncated", frame[:-9], b"zstd: "),
+                                       ("checksum", frame[:-1] + bytes([frame[-1] ^ 1]), b"zstd: "),
+                                       ("huge", huge, b"zstd: decompressed size exceeds configured limit"),
+                                       ("no module", compressed(b"previous successful output"), b"not a WebAssembly module")):
+            packed.write_bytes(data)
+            result = run(["run", "--", packed])
+            assert result.returncode == 1 and result.stdout == b"" and diagnostic in result.stderr, (name, result)
+            assert b"panic:" not in result.stderr, (name, result)
+    print("CLI errors: usage, failed output transactions, ASAN restrictions, bounded recursive traces and compressed modules passed")
 
 
 if __name__ == "__main__":

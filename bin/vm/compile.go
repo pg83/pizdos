@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 // The native bootstrap compiles aot.wasm to this object in build.py.
@@ -185,9 +187,45 @@ func programOptions(asan bool) CompileOptions {
 // wasmHeader begins a WebAssembly module, of version 1.
 var wasmHeader = []byte("\x00asm\x01\x00\x00\x00")
 
-// compileModule compiles a module to its object: ENOEXEC for what is no
-// module, or one the compiler refuses, with its diagnostic, or traps on.
+// zstdMagic begins a Zstandard frame (RFC 8878): a file of a module may be
+// the module compressed, as the image keeps its programs.
+var zstdMagic = []byte{0x28, 0xb5, 0x2f, 0xfd}
+
+// unpackLimit bounds what a compressed module unpacks to, 1 GiB, four
+// times llvm's module: a small file does not take the host's memory.
+const unpackLimit = 1 << 30
+
+// unpacker decodes whole frames, every call on the caller's goroutine.
+var unpacker = sync.OnceValue(func() *zstd.Decoder {
+	return throw2(zstd.NewReader(nil, zstd.WithDecoderMaxMemory(unpackLimit)))
+})
+
+// unpack is the module a file's data is: the data, or what its zstd
+// frames unpack to, skippable frames skipped; ENOEXEC, with why, when they
+// do not.
+func unpack(data []byte) ([]byte, error) {
+	if !bytes.HasPrefix(data, zstdMagic) {
+		return data, nil
+	}
+
+	module, err := unpacker().DecodeAll(data, nil)
+
+	if err != nil {
+		return nil, fmt.Errorf("zstd: %v: %w", err, syscall.ENOEXEC)
+	}
+
+	return module, nil
+}
+
+// compileModule compiles a module, or a file of one compressed by zstd, to
+// its object: ENOEXEC for what is no module, with why for frames that do
+// not unpack, or a module the compiler refuses, with its diagnostic, or
+// traps on.
 func compileModule(data []byte, options CompileOptions) (obj *Object, err error) {
+	if data, err = unpack(data); err != nil {
+		return nil, err
+	}
+
 	if !bytes.HasPrefix(data, wasmHeader) {
 		return nil, syscall.ENOEXEC
 	}

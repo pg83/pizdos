@@ -371,16 +371,29 @@ for chaos in (False, True):
     )
     wasm_coverage.append((reactor, embedded))
 
-WASM2O_SOURCES = [*build.glob("$(S)/bin/vm/*.go"), *build.glob("$(S)/bin/vm/*.s"), "$(S)/bin/vm/go.mod", "$(S)/dev/go.py"]
+WASM2O_SOURCES = [*build.glob("$(S)/bin/vm/*.go"), *build.glob("$(S)/bin/vm/*.s"), "$(S)/bin/vm/go.mod", "$(S)/bin/vm/go.sum", "$(S)/dev/go.py"]
 GO_RUNTIME = [*build.glob("$(S)/lib/goruntime/*.go"), "$(S)/lib/goruntime/edits.py"]
+
+# vm's modules (the zstd decoder of compressed modules), checked against
+# go.sum, are fetched once; its builds have no network.
+vm_modules = command(
+    name="vm_modules",
+    local=True,
+    inputs=["$(S)/dev/go.py", "$(S)/bin/vm/go.mod", "$(S)/bin/vm/go.sum"],
+    outputs=["$(B)/bin/vm/modules.tar"],
+    cmd=["python3", "$(S)/dev/go.py", "download", GO, "$(S)/bin/vm", "$(B)/bin/vm/modules.tar"],
+    descr="FE",
+    color="blue",
+)
+VM_MODULES = ["--modules", vm_modules.outputs[0]]
 
 vm = command(
     name="vm",
     inputs=[*WASM2O_SOURCES, *GO_RUNTIME],
     outputs=["$(B)/bin/vm/vm"],
-    deps=[aot_aot, libstr],
+    deps=[aot_aot, libstr, vm_modules],
     cmd=["python3", "$(S)/dev/go.py", "build", GO, "$(S)/bin/vm", "$(B)/bin/vm/vm", "--runtime", "$(S)/lib/goruntime", "--embed", aot_aot.outputs[0],
-         "--embed", libstr.outputs[0]],
+         "--embed", libstr.outputs[0], *VM_MODULES],
     descr="GO", color="light-blue",
 )
 
@@ -391,9 +404,9 @@ for mode in ("version", "layout"):
         name=f"vm_runtime_{mode}",
         inputs=[*WASM2O_SOURCES, *GO_RUNTIME, "$(S)/tst/runtime_abi/make.py"],
         outputs=[output],
-        deps=[aot_aot, libstr],
+        deps=[aot_aot, libstr, vm_modules],
         cmd=["python3", "$(S)/tst/runtime_abi/make.py", GO, "$(S)", mode,
-             aot_aot.outputs[0], libstr.outputs[0], output],
+             aot_aot.outputs[0], libstr.outputs[0], vm_modules.outputs[0], output],
         descr="GO", color="light-blue",
     ))
 
@@ -401,10 +414,10 @@ vm_coverage = command(
     name="vm_coverage",
     inputs=[*WASM2O_SOURCES, *GO_RUNTIME, "$(S)/dev/coverage_collect.go"],
     outputs=["$(B)/coverage/bin/vm"],
-    deps=[wasm_coverage[0][1], libstr],
+    deps=[wasm_coverage[0][1], libstr, vm_modules],
     cmd=["python3", "$(S)/dev/go.py", "build", GO, "$(S)/bin/vm", "$(B)/coverage/bin/vm",
          "--cover", "--tags", "pizdoscoverage", "--runtime", "$(S)/lib/goruntime",
-         "--embed", wasm_coverage[0][1].outputs[0], "--embed", libstr.outputs[0], "--embed", "$(S)/dev/coverage_collect.go"],
+         "--embed", wasm_coverage[0][1].outputs[0], "--embed", libstr.outputs[0], "--embed", "$(S)/dev/coverage_collect.go", *VM_MODULES],
     descr="GO", color="light-blue",
 )
 
@@ -412,9 +425,9 @@ vm_chaos = command(
     name="vm_chaos",
     inputs=[*WASM2O_SOURCES, *GO_RUNTIME],
     outputs=["$(B)/chaos/bin/vm"],
-    deps=[aot_chaos_aot, libstr],
+    deps=[aot_chaos_aot, libstr, vm_modules],
     cmd=["python3", "$(S)/dev/go.py", "build", GO, "$(S)/bin/vm", "$(B)/chaos/bin/vm", "--tags", "pizdoschaos",
-         "--runtime", "$(S)/lib/goruntime", "--embed", aot_chaos_aot.outputs[0], "--embed", libstr.outputs[0]],
+         "--runtime", "$(S)/lib/goruntime", "--embed", aot_chaos_aot.outputs[0], "--embed", libstr.outputs[0], *VM_MODULES],
     descr="GO", color="light-blue",
 )
 
@@ -422,10 +435,10 @@ vm_chaos_coverage = command(
     name="vm_chaos_coverage",
     inputs=[*WASM2O_SOURCES, *GO_RUNTIME, "$(S)/dev/coverage_collect.go"],
     outputs=["$(B)/coverage/chaos/vm"],
-    deps=[wasm_coverage[1][1], libstr],
+    deps=[wasm_coverage[1][1], libstr, vm_modules],
     cmd=["python3", "$(S)/dev/go.py", "build", GO, "$(S)/bin/vm", "$(B)/coverage/chaos/vm", "--cover", "--tags", "pizdoschaos,pizdoscoverage",
          "--runtime", "$(S)/lib/goruntime", "--embed", wasm_coverage[1][1].outputs[0], "--embed", libstr.outputs[0],
-         "--embed", "$(S)/dev/coverage_collect.go"],
+         "--embed", "$(S)/dev/coverage_collect.go", *VM_MODULES],
     descr="GO", color="light-blue",
 )
 

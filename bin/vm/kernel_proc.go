@@ -14,9 +14,9 @@ import (
 	"unsafe"
 )
 
-// Processes: identity, limits, the environment and exec. exec runs an
-// object of vm, which it links once per version of the file, or a
-// script through its #! interpreter.
+// Processes: identity, limits, the environment and exec. exec runs a
+// module, which the kernel compiles and links once per content of its
+// file, compressed or not, or a script through its #! interpreter.
 
 const (
 	rlimitCount  = 16
@@ -101,8 +101,9 @@ type codeEntry struct {
 	err  error
 }
 
-// codeOf is the code of a module, data: compiled with the kernel's options
-// and linked to it once in the kernel's life for a content, which every
+// codeOf is the code of a module, data, a file's content, the module or
+// its zstd frames: unpacked, compiled with the kernel's options and
+// linked to it once in the kernel's life for a content, which every
 // process that runs the module shares. obj is the module compiled
 // already, or nil. A failure is not kept: the next exec tries again.
 //
@@ -188,7 +189,7 @@ func (p *Process) execFrom(path string, f File, argv, envp []string) error {
 	return syscall.ELOOP
 }
 
-// loadProgram is exec's search: a wasm object, or the interpreter of a #!
+// loadProgram is exec's search: a module, or the interpreter of a #!
 // script, with argv rewritten for it; the image has no environment yet.
 func (p *Process) loadProgram(path string, argv []string) (*execImage, error) {
 	return p.loadFrom(path, nil, argv)
