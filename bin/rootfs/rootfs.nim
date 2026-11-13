@@ -252,15 +252,25 @@ proc fatal(why: string) =
   stderr.writeLine(why)
   quit(1)
 
+# The packet recv takes, the descriptors that come with it and the room
+# for them, and the room for the descriptors send sends: one of each for
+# the process, whose loop takes a packet and is done with it before the
+# next, and sends each reply whole. Nothing is made or cleared for a
+# packet: its body is a part of packet.
+var packet: array[maxPacket, byte]
+var packetFds: seq[cint]
+var packetControl: array[64, byte]
+var sendControl: array[64, byte]
+
 proc send(ep: cint, h: Header, body: openArray[byte] = [],
            fds: openArray[cint] = []) =
   var head = h
   var iov = [IOVec(iov_base: head.addr, iov_len: csize_t(sizeof(head))),
              IOVec(iov_base: if body.len > 0: body[0].unsafeAddr else: nil, iov_len: csize_t(body.len))]
-  var control = newSeq[byte](int(CMSG_SPACE(csize_t(maxFds * sizeof(cint)))))
   var m = Tmsghdr(msg_iov: iov[0].addr, msg_iovlen: 2)
   if fds.len > 0:
-    m.msg_control = control[0].addr
+    zeroMem(sendControl[0].addr, sendControl.len)
+    m.msg_control = sendControl[0].addr
     m.msg_controllen = CMSG_LEN(csize_t(fds.len * sizeof(cint)))
     let c = CMSG_FIRSTHDR(m.addr)
     c.cmsg_level = SOL_SOCKET
@@ -273,20 +283,18 @@ proc send(ep: cint, op: Op, arg: uint32, body: openArray[byte] = [],
            fds: openArray[cint] = []) =
   send(ep, Header(op: uint32(op), arg: arg), body, fds)
 
-proc recv(ep: cint, h: var Header, body: var seq[byte], fds: var seq[cint]): bool =
-  ## One packet, or false at the end of the endpoint.
-  var buf = newSeq[byte](maxPacket)
-  var iov = IOVec(iov_base: buf[0].addr, iov_len: csize_t(buf.len))
-  var control = newSeq[byte](int(CMSG_SPACE(csize_t(maxFds * sizeof(cint)))))
-  var m = Tmsghdr(msg_iov: iov.addr, msg_iovlen: 1, msg_control: control[0].addr,
-                  msg_controllen: csize_t(control.len))
+proc recv(ep: cint, h: var Header, fds: var seq[cint]): int =
+  ## One packet into packet, its descriptors into fds: the length of its
+  ## body, after the header, or -1 at the end of the endpoint.
+  var iov = IOVec(iov_base: packet[0].addr, iov_len: csize_t(packet.len))
+  var m = Tmsghdr(msg_iov: iov.addr, msg_iovlen: 1, msg_control: packetControl[0].addr,
+                  msg_controllen: CMSG_SPACE(csize_t(maxFds * sizeof(cint))))
   let n = recvmsg(SocketHandle(ep), m.addr, msgCmsgCloexec)
   if n <= 0:
-    return false
+    return -1
   if n < sizeof(Header):
     fatal("a packet without a header")
-  copyMem(h.addr, buf[0].addr, sizeof(Header))
-  body = buf[sizeof(Header) ..< n]
+  copyMem(h.addr, packet[0].addr, sizeof(Header))
   fds.setLen(0)
   var c = CMSG_FIRSTHDR(m.addr)
   while c != nil:
@@ -295,7 +303,7 @@ proc recv(ep: cint, h: var Header, body: var seq[byte], fds: var seq[cint]): boo
       for i in 0 ..< count:
         fds.add cast[ptr UncheckedArray[cint]](CMSG_DATA(c))[i]
     c = CMSG_NXTHDR(m.addr, c)
-  true
+  n - sizeof(Header)
 
 proc u32(body: openArray[byte], at: var int): uint32 =
   if at + 4 > body.len:
@@ -1394,15 +1402,14 @@ proc dispatch(s: var Server, ep: Endpoint, h: Header, body: openArray[byte], fds
 proc handle(s: var Server, fd: cint) =
   let ep = s.eps[fd]
   var h: Header
-  var body: seq[byte]
-  var fds: seq[cint]
-  if not recv(ep.fd, h, body, fds):
+  let n = recv(ep.fd, h, packetFds)
+  if n < 0:
     unwatch(ep.fd)
     s.forget(ep)
     discard close(ep.fd)  # the other end closed: the file is closed
     s.eps.del(fd)
     return
-  s.dispatch(ep, h, body, fds)
+  s.dispatch(ep, h, packet.toOpenArray(sizeof(Header), sizeof(Header) + n - 1), packetFds)
 
 proc serve(servers: openArray[ptr Server], idle: proc(): bool = nil) =
   ## Serves the servers, one process's, until the last endpoint of them
@@ -1586,6 +1593,8 @@ proc reap(): bool =
       shellStatus = (if WIFEXITED(status): WEXITSTATUS(status) else: 128 + WTERMSIG(status))
 
 proc main() =
+  if CMSG_SPACE(csize_t(maxFds * sizeof(cint))) > csize_t(packetControl.len):
+    fatal("rootfs: no room for the descriptors of a packet")
   server = Server(writable: false)
   server.root = server.node(nil, "", nkDir)
   server.load()
