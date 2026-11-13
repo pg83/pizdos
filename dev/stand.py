@@ -12,8 +12,8 @@ page count, and the report counts the files whose pixels match exactly:
 native pixels may differ with libm and floating-point arithmetic. CPython's
 workloads are the benchmarks of dev/stand/pybench.py, pure Python timed
 inside the interpreter, the native CPython and python.wasm, which the kernel
-compiles as it starts, each in a root with the same standard library zip;
-their digests of the results must be equal.
+compiles as it starts, each in a root with the same standard library, the
+zip in python.wasm; their digests of the results must be equal.
 The suite counts as one workload in the geometric mean, by its own.
 
 The original positional form is accepted for compiler workloads alone:
@@ -186,14 +186,22 @@ def decode_work(build, vm, kinds, runs, minimum, work, objects=None):
     return rows
 
 
-def python_root(root, interpreter, build):
-    """A root of the Python workload: the interpreter as /usr/bin/python3,
-    the standard library zip and the benchmark."""
-    (root / "usr/bin").mkdir(parents=True)
-    (root / "usr/lib/python3.14/lib-dynload").mkdir(parents=True)
-    shutil.copy(interpreter, root / "usr/bin/python3")
-    (root / "usr/bin/python3").chmod(0o755)
-    shutil.copy(build / "bin/python/python314.zip", root / "usr/lib/python314.zip")
+def python_root(root, interpreter, build, native=False):
+    """A root of the Python workload and the benchmark: ours is /bin/python3,
+    its standard library in its own file; the native CPython is
+    /usr/bin/python3 with the same library as its lib/python314.zip, which
+    is python.wasm itself, a zip to zipimport from its end."""
+    if native:
+        (root / "usr/bin").mkdir(parents=True)
+        (root / "usr/lib/python3.14/lib-dynload").mkdir(parents=True)
+        shutil.copy(interpreter, root / "usr/bin/python3")
+        (root / "usr/bin/python3").chmod(0o755)
+        shutil.copy(build / "bin/python/python.wasm", root / "usr/lib/python314.zip")
+    else:
+        (root / "bin").mkdir(parents=True)
+        shutil.copy(interpreter, root / "bin/python3")
+        (root / "bin/python3").chmod(0o755)
+
     shutil.copy(Path(__file__).resolve().parent / "stand" / "pybench.py", root / "pybench.py")
 
     return root
@@ -218,7 +226,7 @@ def python_run(command, repeat):
 def python_work(build, vm, runs, minimum, work, only=None):
     """Every benchmark of the suite: its repeat calibrated on native to the
     minimum time, A and C interleaved, their digests equal."""
-    native = python_root(work / "python-A", build / "stand/python/native", build)
+    native = python_root(work / "python-A", build / "stand/python/native", build, native=True)
     aot = python_root(work / "python-C", build / "bin/python/python.wasm", build)
     names = subprocess.run([str(native / "usr/bin/python3"), "-S", str(native / "pybench.py"), "--list"],
                            env={"PYTHONHASHSEED": "0"}, capture_output=True, text=True, check=True).stdout.split()
@@ -230,7 +238,7 @@ def python_work(build, vm, runs, minimum, work, only=None):
 
         commands = {
             "A": [str(native / "usr/bin/python3"), "-S", str(native / "pybench.py"), bench],
-            "C": [str(vm), "run", "--root", str(aot), "-a", "/usr/bin/python3", "--", str(aot / "usr/bin/python3"), "-S", "/pybench.py", bench],
+            "C": [str(vm), "run", "--root", str(aot), "-a", "/bin/python3", "--", str(aot / "bin/python3"), "-S", "/pybench.py", bench],
         }
         native_time, _ = python_run(commands["A"], 1)
         repeat = max(1, math.ceil(minimum / max(native_time, 0.000001)))

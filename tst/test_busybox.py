@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """busybox under `vm run`: the kernel of lib/c runs its applets inside a
-root made like the system's, /bin/busybox the module and every path of
-busybox.links a symbolic link to it. The shell's errors, exit and SIGINT
-are longjmps, one of them out of a signal handler; its commands, pipes,
-substitutions and jobs are forks, which a terminal stops and continues;
-xargs, find -exec and awk's pipes are vforks; a loop without system calls
-is interrupted for its signals.
+root made like the system's, /bin/busybox the module, each name of
+busybox.links a symbolic link to it in /bin and /usr/bin a link to /bin.
+The shell's errors, exit and SIGINT are longjmps, one of them out of a
+signal handler; its commands, pipes, substitutions and jobs are forks,
+which a terminal stops and continues; xargs, find -exec and awk's pipes
+are vforks; a loop without system calls is interrupted for its signals.
 
     test_busybox.py <vm> <busybox.wasm> <busybox.links>
 """
@@ -49,7 +49,7 @@ CASES = [
     (["basename", "/a/b/c.txt", ".txt"], "", "c\n", 0),
     (["dirname", "/a/b/c.txt"], "", "/a/b\n", 0),
     (["false"], "", "", 1),
-    # exec inside the root: env runs /usr/bin/env, a link to the module
+    # exec inside the root: env runs /bin/env, a link to the module
     (["env", "-i", "A=1", "env"], "", "A=1\n", 0),
     # a #! script runs its interpreter
     (["env", "/tmp/script.sh", "x"], "", "from /tmp/script.sh x\n", 0),
@@ -104,11 +104,13 @@ def make_root(root, module, links):
     (root / "bin" / "busybox").chmod(0o755)
 
     for link in links.split():
-        path = root / link.lstrip("/")
+        path = root / "bin" / Path(link).name
 
         if not path.exists():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.symlink_to("/bin/busybox")
+            path.symlink_to("busybox")
+
+    (root / "usr").mkdir()
+    (root / "usr" / "bin").symlink_to("/bin")
 
     tmp = root / "tmp"
     tmp.mkdir()
@@ -123,7 +125,7 @@ def make_root(root, module, links):
 
 def run(vm, root, argv, stdin, env=None):
     command = [vm, "run", "--root", str(root), "-a", argv[0], "--", str(root / "bin" / "busybox"), *argv[1:]]
-    environment = {"PATH": "/bin:/usr/bin", "TZ": "UTC", **(env or {})}
+    environment = {"PATH": "/bin", "TZ": "UTC", **(env or {})}
 
     return subprocess.run(command, input=stdin.encode(), capture_output=True, cwd=root / "tmp", env=environment, timeout=60)
 
@@ -151,7 +153,7 @@ def until(fd, marker, seconds):
 def interrupt(vm, root, first):
     command = [vm, "run", "--root", str(root), "-a", "sh", "--", str(root / "bin" / "busybox"), "-i"]
     p = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=root / "tmp",
-                         env={"PATH": "/bin:/usr/bin", "PS1": "$ "})
+                         env={"PATH": "/bin", "PS1": "$ "})
     prompt = until(p.stdout.fileno(), b"$ ", 60)
 
     if first:
@@ -181,7 +183,7 @@ def job_control(vm, root):
     if pid == 0:
         os.chdir(root / "tmp")
         os.execve(vm, [vm, "run", "--root", str(root), "-a", "sh", "--", str(root / "bin" / "busybox"), "-i"],
-                  {"PATH": "/bin:/usr/bin", "PS1": "$ ", "TERM": "dumb"})
+                  {"PATH": "/bin", "PS1": "$ ", "TERM": "dumb"})
 
     out = b""
 

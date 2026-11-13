@@ -430,11 +430,11 @@ vm_chaos_coverage = command(
 )
 
 # python.wasm, its modules frozen by the freezer running in the kernel, and
-# the standard library it imports from a zip.
+# the standard library it imports from a zip of its own module.
 python = command(
     name="python",
-    inputs=[*LIBC_HEADERS, "$(S)/bin/python/pyconfig.h", "$(S)/bin/python/make.py", "$(S)/dev/wasm.py"],
-    outputs=["$(B)/bin/python/python.wasm", "$(B)/bin/python/python314.zip"],
+    inputs=[*LIBC_HEADERS, "$(S)/bin/python/pyconfig.h", "$(S)/bin/python/make.py", "$(S)/bin/python/main.c", "$(S)/dev/wasm.py"],
+    outputs=["$(B)/bin/python/python.wasm"],
     deps=[python_tarball, libc, python_core, vm],
     cmd=[
         "python3", "$(S)/bin/python/make.py", "python",
@@ -445,7 +445,6 @@ python = command(
         libc.outputs[0],
         *python_core.outputs,
         "$(B)/bin/python/python.wasm",
-        "$(B)/bin/python/python314.zip",
     ],
     descr="PY",
     color="yellow",

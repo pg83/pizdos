@@ -2,21 +2,25 @@
 """Build CPython for pizdos from a release tarball, our pyconfig.h and lib/c.
 
     make.py core <cc> <ar> <wasm-ld> <tarball> <pyconfig.h> <libc-include> <libc.a> <libpython.a> <freeze.wasm>
-    make.py python <cc> <wasm-ld> <vm> <tarball> <pyconfig.h> <libc-include> <libc.a> <libpython.a> <freeze.wasm> <python.wasm> <python314.zip>
+    make.py python <cc> <wasm-ld> <vm> <tarball> <pyconfig.h> <libc-include> <libc.a> <libpython.a> <freeze.wasm> <python.wasm>
 
 core compiles the interpreter and its built-in modules into libpython.a,
 the objects the tarball's Makefile.pre.in names and the modules below, and
 links Programs/_freeze_module against it. python runs that freezer in
 the kernel, which compiles it, to freeze the modules the Makefile
-freezes, links python.wasm with them, and stores the standard library,
-without its tests, in a zip with the build's sysconfig data. Threads are
+freezes, and links python.wasm with them and main.c, its own main, which
+finds the standard library in the program's own file: the library,
+without its tests, with the build's sysconfig data, is a zip in the
+module's last custom section. The prefix is /, programs in /bin. Threads are
 CPython's stubs, there is no dynamic loading, every module is built in and
 none needs more than lib/c: no sockets, no compression. An undefined symbol
 is a link error, as for every program of lib/c.
 """
 import calendar
 import concurrent.futures
+import io
 import os
+import posixpath
 import pprint
 import re
 import shutil
@@ -33,7 +37,8 @@ sys.path.insert(0, str(HERE.parent.parent / "dev"))
 import wasm  # noqa: E402
 
 VERSION = "3.14"
-PREFIX = "/usr"
+PREFIX = "/"
+STDLIB = posixpath.join(PREFIX, "lib", f"python{VERSION}")
 PLATFORM = "pizdos"
 
 FLAGS = [
@@ -300,11 +305,11 @@ def sysconfigdata(pyconfig):
         "VERSION": VERSION,
         "prefix": PREFIX,
         "exec_prefix": PREFIX,
-        "BINDIR": f"{PREFIX}/bin",
-        "LIBDIR": f"{PREFIX}/lib",
-        "LIBDEST": f"{PREFIX}/lib/python{VERSION}",
-        "BINLIBDEST": f"{PREFIX}/lib/python{VERSION}",
-        "INCLUDEPY": f"{PREFIX}/include/python{VERSION}",
+        "BINDIR": posixpath.join(PREFIX, "bin"),
+        "LIBDIR": posixpath.join(PREFIX, "lib"),
+        "LIBDEST": STDLIB,
+        "BINLIBDEST": STDLIB,
+        "INCLUDEPY": posixpath.join(PREFIX, "include", f"python{VERSION}"),
         "CC": "clang --target=wasm32-unknown-unknown",
         "CFLAGS": " ".join(FLAGS),
         "PY_CFLAGS": " ".join(FLAGS),
@@ -329,9 +334,9 @@ def sysconfigdata(pyconfig):
     return "# The build of CPython for pizdos.\nbuild_time_vars = " + pprint.pformat(values, width=100) + "\n"
 
 
-def stdlib_zip(tree, pyconfig, output):
-    """Lib without LIB_EXCLUDED, stored (zipimport needs zlib to inflate),
-    its entries sorted and dated 1980."""
+def stdlib_zip(tree, pyconfig):
+    """Lib without LIB_EXCLUDED as a zip, stored (zipimport needs zlib to
+    inflate), its entries sorted and dated 1980."""
     files = {}
 
     for path in sorted((tree / "Lib").rglob("*")):
@@ -341,16 +346,38 @@ def stdlib_zip(tree, pyconfig, output):
             files[str(rel)] = path.read_bytes()
 
     files[f"_sysconfigdata__{PLATFORM}_.py"] = sysconfigdata(pyconfig).encode()
-    Path(output).parent.mkdir(parents=True, exist_ok=True)
+    out = io.BytesIO()
 
-    with zipfile.ZipFile(output, "w", zipfile.ZIP_STORED) as z:
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as z:
         for name in sorted(files):
             info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
             info.external_attr = 0o644 << 16
             z.writestr(info, files[name])
 
+    return out.getvalue()
 
-def python(cc, ld, vm, tarball, pyconfig, libc_include, libc, libpython, freeze, output, zipped):
+
+def leb(n):
+    out = bytearray()
+
+    while True:
+        byte, n = n & 127, n >> 7
+        out.append(byte | (128 if n else 0))
+
+        if not n:
+            return bytes(out)
+
+
+def embed(module, data):
+    """data as the module's last custom section, named stdlib: a zip there
+    ends where the file ends, where zipimport looks, and its offsets count
+    from the archive's start, which zipimport finds by the bytes before it."""
+    name = b"stdlib"
+    payload = leb(len(name)) + name + data
+    module.write_bytes(module.read_bytes() + b"\0" + leb(len(payload)) + payload)
+
+
+def python(cc, ld, vm, tarball, pyconfig, libc_include, libc, libpython, freeze, output):
     work = Path(os.environ.get("TMPDIR") or "/tmp") / "python"
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
@@ -385,14 +412,14 @@ def python(cc, ld, vm, tarball, pyconfig, libc_include, libc, libpython, freeze,
     getpath = [f'-DPYTHONPATH=""', f'-DPREFIX="{PREFIX}"', f'-DEXEC_PREFIX="{PREFIX}"', f'-DVERSION="{VERSION}"',
                '-DVPATH=""', '-DPLATLIBDIR="lib"', '-DPYTHONFRAMEWORK=""']
     units = [
-        (tree / "Programs" / "python.c", object_name(work, "Programs/python.c"), flags),
+        (HERE / "main.c", work / "obj" / "main.o", flags + [f'-DSTDLIB_DIR=L"{STDLIB}"']),
         (tree / "Python" / "frozen.c", object_name(work, "Python/frozen.c"), flags),
         (tree / "Modules" / "getpath.c", object_name(work, "Modules/getpath.c"), flags + getpath),
     ]
     wasm.compile_all(cc, units, cwd=tree)
     Path(output).parent.mkdir(parents=True, exist_ok=True)
     subprocess.run([ld, *LINK, "-o", output, *(str(obj) for _, obj, _ in units), libpython, libc], check=True)
-    stdlib_zip(tree, pyconfig, zipped)
+    embed(Path(output), stdlib_zip(tree, pyconfig))
 
 
 def main():

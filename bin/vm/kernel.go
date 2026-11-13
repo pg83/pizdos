@@ -275,8 +275,17 @@ func (k *Kernel) newProcess(parent *Process) (*Process, error) {
 }
 
 // programPath is the guest's path of a program's file, or empty when it
-// is outside the root or has no path.
+// is outside the root or has no path: a file of a server says the path it
+// was opened by, a file of the host is found under the root.
 func (p *Process) programPath(f File) string {
+	if named, ok := f.(Named); ok {
+		if name, err := named.name(p); err == nil {
+			return name
+		}
+
+		return ""
+	}
+
 	pathed, ok := f.(Pathed)
 
 	if !ok || p.rootPath == "" {

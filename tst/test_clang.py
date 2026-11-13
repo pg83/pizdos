@@ -81,11 +81,10 @@ def main():
             (root / "bin" / name).symlink_to("llvm")
 
         for link in Path(links).read_text().split():
-            path = root / link.lstrip("/")
+            path = root / "bin" / Path(link).name
 
             if not path.exists() and not path.is_symlink():
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.symlink_to("/bin/busybox")
+                path.symlink_to("busybox")
 
         for archive, at in ((resource, root), (libc_include, root / "usr"), (cxx_include, root / "usr")):
             with tarfile.open(archive) as t:

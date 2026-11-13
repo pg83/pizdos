@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""CPython under `vm run`: python.wasm is /usr/bin/python3 of a root whose
-standard library is /usr/lib/python314.zip and whose shell is busybox's.
+"""CPython under `vm run`: python.wasm is /bin/python3 of a root whose shell
+is busybox's, laid out as the system's, every program in /bin; its standard
+library is its own file's.
 A script prints what the interpreter computes and what it gets from the
 kernel: processes, pipes, a pseudoterminal, signals, timers, locks,
 mappings written back, the user database, locales and the tokenizer's
 positions. Then a set of CPython's own tests, from the release tarball's
 Lib/test, runs with its regrtest.
 
-    test_python.py <vm> <python.wasm> <python314.zip> <Python.tgz> <busybox.wasm> <busybox.links>
+    test_python.py <vm> <python.wasm> <Python.tgz> <busybox.wasm> <busybox.links>
 """
 import os
 import shutil
@@ -139,30 +140,32 @@ clock True True
 '''
 
 
-def make_root(root, python, zipped, tarball, busybox, links):
+def make_root(root, python, tarball, busybox, links):
     (root / "bin").mkdir(parents=True)
     shutil.copy(busybox, root / "bin" / "busybox")
     (root / "bin" / "busybox").chmod(0o755)
 
     for link in links.split():
-        path = root / link.lstrip("/")
+        path = root / "bin" / Path(link).name
 
         if not path.exists():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.symlink_to("/bin/busybox")
+            path.symlink_to("busybox")
 
-    lib = root / "usr" / "lib"
-    (lib / "python3.14" / "lib-dynload").mkdir(parents=True)
-    (root / "usr" / "bin").mkdir(parents=True, exist_ok=True)
-    shutil.copy(python, root / "usr" / "bin" / "python3")
-    (root / "usr" / "bin" / "python3").chmod(0o755)
-    shutil.copy(zipped, lib / "python314.zip")
+    (root / "usr").mkdir()
+    (root / "usr" / "bin").symlink_to("/bin")
+    shutil.copy(python, root / "bin" / "python3")
+    (root / "bin" / "python3").chmod(0o755)
+    (root / "bin" / "python").symlink_to("python3")
 
+    # CPython's own tests are in the standard library's directory, which
+    # python searches after its file.
     with tarfile.open(tarball) as archive:
         members = [m for m in archive.getmembers() if "/Lib/test/" in m.name]
         archive.extractall(root / "src", members=members, filter="data")
 
-    shutil.move(next((root / "src").glob("Python-*")) / "Lib" / "test", lib / "python3.14" / "test")
+    lib = root / "lib" / "python3.14"
+    lib.mkdir(parents=True)
+    shutil.move(next((root / "src").glob("Python-*")) / "Lib" / "test", lib / "test")
     shutil.rmtree(root / "src")
     (root / "etc").mkdir()
     (root / "etc" / "passwd").write_text(f"root:x:0:0:root:/root:/bin/sh\nuser:x:{os.getuid()}:{os.getgid()}:User:/tmp:/bin/sh\n")
@@ -171,19 +174,19 @@ def make_root(root, python, zipped, tarball, busybox, links):
 
 
 def python(vm, root, args, timeout):
-    command = [vm, "run", "--root", str(root), "-a", "/usr/bin/python3", "--", str(root / "usr" / "bin" / "python3"), *args]
-    environment = {"PATH": "/usr/bin:/bin", "HOME": "/tmp", "TZ": "UTC"}
+    command = [vm, "run", "--root", str(root), "-a", "/bin/python3", "--", str(root / "bin" / "python3"), *args]
+    environment = {"PATH": "/bin", "HOME": "/tmp", "TZ": "UTC"}
 
     return subprocess.run(command, capture_output=True, text=True, cwd=root / "tmp", env=environment, timeout=timeout)
 
 
 def main():
-    vm, interpreter, zipped, tarball, busybox, links = sys.argv[1:7]
+    vm, interpreter, tarball, busybox, links = sys.argv[1:6]
     failures = []
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / "root"
-        make_root(root, interpreter, zipped, tarball, busybox, Path(links).read_text())
+        make_root(root, interpreter, tarball, busybox, Path(links).read_text())
         (root / "tmp" / "check.py").write_text(SCRIPT)
         r = python(vm, root, ["/tmp/check.py"], 300)
 

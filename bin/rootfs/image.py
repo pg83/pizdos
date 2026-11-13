@@ -2,13 +2,14 @@
 """The image rootfs serves: a ustar archive of the programs of the system
 and the directories it expects.
 
-    image.py <rootfs.tar> --busybox <busybox.wasm> <busybox.links> --python <python.wasm> <python314.zip>
+    image.py <rootfs.tar> --busybox <busybox.wasm> <busybox.links> --python <python.wasm>
 
-The programs are modules, which the kernel compiles as they are executed:
-busybox is /bin/busybox and every path of busybox.links a link to it;
-python is /usr/bin/python3 with its standard library at
-/usr/lib/python314.zip, where it looks. No times, no owners: the same
-inputs are the same archive.
+The programs are modules, which the kernel compiles as they are executed,
+and every one is in /bin: busybox is /bin/busybox, and each name of
+busybox.links, wherever busybox would install it, a link to it in /bin;
+python is /bin/python3, its standard library in its own file. /usr is a
+link of its bin to /bin, for the scripts that name /usr/bin, and nothing
+else. No times, no owners: the same inputs are the same archive.
 """
 import io
 import os
@@ -16,7 +17,7 @@ import sys
 import tarfile
 from pathlib import Path
 
-DIRS = {"bin", "dev", "etc", "sbin", "tmp", "usr", "usr/bin", "usr/lib", "usr/sbin", "var"}
+DIRS = {"bin", "dev", "etc", "tmp", "usr", "var"}
 
 
 def entry(name, kind, size=0, mode=0o755, target=""):
@@ -31,7 +32,7 @@ def main():
     output = sys.argv[1]
     args = sys.argv[2:]
     files = {"etc/motd": (b"pizdos\n", 0o644), "etc/passwd": (b"root:x:0:0:root:/:/bin/sh\n", 0o644), "etc/group": (b"root:x:0:\n", 0o644)}
-    symlinks = {}
+    symlinks = {"usr/bin": "/bin"}
     dirs = set(DIRS)
 
     while args:
@@ -40,13 +41,10 @@ def main():
                 files["bin/busybox"] = (Path(busybox).read_bytes(), 0o755)
 
                 for link in Path(links).read_text().split():
-                    link = link.lstrip("/")
-                    symlinks[link] = os.path.relpath("bin/busybox", os.path.dirname(link))
-            case ["--python", python, zipped, *rest]:
-                files["usr/bin/python3"] = (Path(python).read_bytes(), 0o755)
-                files["usr/lib/python314.zip"] = (Path(zipped).read_bytes(), 0o644)
-                symlinks["usr/bin/python"] = "python3"
-                dirs.add("usr/lib/python3.14/lib-dynload")
+                    symlinks["bin/" + os.path.basename(link)] = "busybox"
+            case ["--python", python, *rest]:
+                files["bin/python3"] = (Path(python).read_bytes(), 0o755)
+                symlinks["bin/python"] = "python3"
             case _:
                 raise SystemExit(f"image.py: unknown arguments {args}")
 

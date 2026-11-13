@@ -593,8 +593,9 @@ func (n *remoteNode) recordLock(cmd int, lk *syscall.Flock_t) error {
 
 // The Dir role.
 
-func (d *remoteDir) name(p *Process) (string, error) {
-	return d.path, nil
+// name is the path the node was opened by, from the root.
+func (n *remoteNode) name(p *Process) (string, error) {
+	return n.path, nil
 }
 
 func (d *remoteDir) open(p *Process, path string, flags int, mode uint32) (File, error) {

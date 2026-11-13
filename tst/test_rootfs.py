@@ -23,12 +23,14 @@ from pathlib import Path
 
 SCRIPT = """\
 echo hello from $0
+for i in 1 2 3; do ls /tmp > /dev/null; done; echo fresh > /tmp/fresh && cat /tmp/fresh && rm /tmp/fresh
 cat /etc/motd
 ls /bin | grep -x -e ash -e cat -e sh
 ls -d /dev/null /dev/tty /dev/zero
 echo dropped > /dev/null
 head -c 4 /dev/zero | wc -c
-cd /usr/bin && pwd
+readlink /usr/bin && ls /usr && ls -d /sbin /lib 2>&1
+printf '#!/usr/bin/env sh\\necho through env\\n' > /tmp/e.sh && chmod +x /tmp/e.sh && /tmp/e.sh && rm /tmp/e.sh
 readlink /bin/sh
 test -x /bin/busybox && echo executable
 head -c 4 /bin/busybox | od -An -tx1
@@ -41,7 +43,7 @@ sh -c 'exit 5'; echo inner=$?
 seq 1 20000 | sort -rn | head -1
 head -c 8 /dev/urandom | wc -c
 printf ab | od -An -tx1
-python3 -c 'import os, sys; print(2 ** 100, sys.version_info[:2], len(os.urandom(5)), os.path.exists("/usr/lib/python314.zip"))'
+python3 -c 'import json, os, sys; print(2 ** 100, sys.version_info[:2], len(os.urandom(5)), json.__file__)'
 python3 -c 'import json, os; print(json.dumps(sorted(n for n in os.listdir("/usr/bin") if n.startswith("python"))))'
 python3 -c 'import tempfile; f = tempfile.NamedTemporaryFile("w+", dir="/tmp"); f.write("x" * 5000); f.seek(0); print(len(f.read()), f.name.startswith("/tmp/"))'
 ln -s target /tmp/sl && readlink /tmp/sl
@@ -117,6 +119,7 @@ ran
 
 WANT = """\
 hello from sh
+fresh
 pizdos
 ash
 cat
@@ -125,7 +128,11 @@ sh
 /dev/tty
 /dev/zero
 4
-/usr/bin
+/bin
+bin
+ls: /sbin: No such file or directory
+ls: /lib: No such file or directory
+through env
 busybox
 executable
  00 61 73 6d
@@ -140,7 +147,7 @@ inner=5
 20000
 8
  61 62
-1267650600228229401496703205376 (3, 14) 5 True
+1267650600228229401496703205376 (3, 14) 5 /bin/python3/json/__init__.py
 ["python", "python3"]
 5000 True
 target

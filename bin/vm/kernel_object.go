@@ -100,6 +100,13 @@ type Pathed interface {
 	hostPath() (string, error)
 }
 
+// A Named file knows the guest's path it was opened by: a file of a
+// server, whose tree the kernel does not keep; a Dir too.
+type Named interface {
+	File
+	name(p *Process) (string, error)
+}
+
 // An Attrs has the attributes a descriptor's calls set, and knows the file
 // system it is on: a file of the host and an open file of a server
 // (kernel_remote.go) both.

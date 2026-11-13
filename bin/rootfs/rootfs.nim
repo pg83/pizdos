@@ -363,8 +363,8 @@ proc unplace(dir: Node, name: string): Node =
 
 proc release(s: var Server, n: Node) =
   ## A node with no name and no endpoint is gone: what it held is the
-  ## server's again.
-  if n.links == 0 and n.opens == 0:
+  ## server's again. The root has no name, and stays.
+  if n.links == 0 and n.opens == 0 and n != s.root:
     if n.kind == nkFile:
       s.used -= uint64(n.data.len)
       n.data = ""
@@ -1401,7 +1401,7 @@ proc main() =
     fatal("rootfs: chroot")
   discard close(theirs)
   reapOnChild(proc(s: cint) {.noconv.} = discard)
-  shellPid = spawn("/bin/sh", ["sh"], ["PATH=/bin:/usr/bin:/sbin:/usr/sbin", "HOME=/", "TERM=vt100"])
+  shellPid = spawn("/bin/sh", ["sh"], ["PATH=/bin", "HOME=/", "TERM=vt100"])
   server.listen(ours)
   when defined(fsDebug):
     stderr.writeLine("rootfs: serving, shell " & $shellPid)
