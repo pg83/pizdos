@@ -65,6 +65,8 @@ proc load(s: var Server) =
     of '5':
       if base != "" and base notin dir.children:
         discard s.node(dir, base, nkDir)
+      if base != "":
+        dir.children[base].perm = perm
     of '2':
       s.node(dir, base, nkLink).target = target
     else:

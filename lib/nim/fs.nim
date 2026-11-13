@@ -11,7 +11,11 @@
 ##
 ## A packet is a Header and a body; descriptors ride with it (SCM_RIGHTS).
 ##
-##   Header { op u32, arg u32 }
+##   Header { op u32, arg u32, uid u32, gid u32 }
+##
+## uid and gid are who asks: the kernel puts its process's ids, a program
+## that speaks the protocol its own; a server makes what it creates
+## theirs. A reply's are zero.
 ##
 ##   on a directory's endpoint, the path relative to it, ".." staying in it:
 ##     OPEN      arg flags   mode u32 path OK stat; fds[0] an object: the file is it
@@ -31,7 +35,7 @@
 ##   on a node's endpoint:
 ##     READ      arg len     off u64       OK data
 ##     WRITE                 off u64 data  OK count u32
-##     READDIR   arg index                 OK (ino u64, type u8, name, 0)*
+##     READDIR               after u64     OK (ino u64, pos u64, type u8, name, 0)*
 ##     FSTAT                               OK stat
 ##     FCHMOD    arg mode
 ##     FCHOWN                uid u32 gid u32
@@ -40,7 +44,12 @@
 ##     FSYNC     arg data
 ##   replies: OK, ERR with arg the errno
 ##   stat { ino u64, size u64, mtime u64 nanoseconds, mode u32, nlink u32,
-##          uid u32, gid u32, atime u64 }
+##          uid u32, gid u32, atime u64, dev u64 }
+##
+## A directory's entries have positions, each after those before it: a
+## READDIR gives the entries after one, so a reading that removes what it
+## read misses nothing. dev is the server's: the number of the pair it
+## first answers on, which no other pair in the kernel has.
 
 import std/[tables, strutils, posix, epoll]
 
@@ -74,11 +83,12 @@ type
 
   Header* {.packed.} = object
     op*, arg*: uint32
+    uid*, gid*: uint32
 
   Stat* {.packed.} = object
     ino*, size*, mtime*: uint64
     mode*, nlink*, uid*, gid*: uint32
-    atime*: uint64
+    atime*, dev*: uint64
 
   NodeKind* = enum
     nkDir, nkFile, nkLink
@@ -91,12 +101,14 @@ type
     name*: string
     parent*: Node
     ino*: uint64
-    perm*: uint32  ## the permission bits of a file, 0 for the kind's own
+    pos*: uint64  ## where the node is among its directory's entries
+    perm*: uint32  ## the permission bits
     uid*, gid*: uint32
     atime*, mtime*: uint64  ## nanoseconds
     case kind*: NodeKind
     of nkDir:
-      children*: OrderedTable[string, Node]
+      children*: OrderedTable[string, Node]  ## in the order of their positions
+      entries*: uint64  ## the last position given out
       mount*: cint  ## the root endpoint of a server mounted here, or -1
     of nkFile: data*: string
     of nkLink: target*: string
@@ -112,6 +124,7 @@ type
     writable*: bool
     eps: Table[cint, Endpoint]  ## by descriptor
     inodes: uint64
+    dev: uint64  ## the device of the server's files
 
   Walk = object
     node: Node
@@ -130,10 +143,10 @@ proc fatal*(why: string) =
   stderr.writeLine(why)
   quit(1)
 
-proc send*(ep: cint, op: Op, arg: uint32, body: openArray[byte] = [],
+proc send*(ep: cint, h: Header, body: openArray[byte] = [],
            fds: openArray[cint] = []) =
-  var h = Header(op: uint32(op), arg: arg)
-  var iov = [IOVec(iov_base: h.addr, iov_len: csize_t(sizeof(h))),
+  var head = h
+  var iov = [IOVec(iov_base: head.addr, iov_len: csize_t(sizeof(head))),
              IOVec(iov_base: if body.len > 0: body[0].unsafeAddr else: nil, iov_len: csize_t(body.len))]
   var control = newSeq[byte](int(CMSG_SPACE(csize_t(maxFds * sizeof(cint)))))
   var m = Tmsghdr(msg_iov: iov[0].addr, msg_iovlen: 2)
@@ -147,8 +160,9 @@ proc send*(ep: cint, op: Op, arg: uint32, body: openArray[byte] = [],
     copyMem(CMSG_DATA(c), fds[0].unsafeAddr, fds.len * sizeof(cint))
   discard sendmsg(SocketHandle(ep), m.addr, 0)  # a gone reader is its own loss
 
-proc sendStr*(ep: cint, op: Op, arg: uint32, s: string, fds: openArray[cint] = []) =
-  send(ep, op, arg, s.toOpenArrayByte(0, s.high), fds)
+proc send*(ep: cint, op: Op, arg: uint32, body: openArray[byte] = [],
+           fds: openArray[cint] = []) =
+  send(ep, Header(op: uint32(op), arg: arg), body, fds)
 
 proc recv*(ep: cint, h: var Header, body: var seq[byte], fds: var seq[cint]): bool =
   ## One packet, or false at the end of the endpoint.
@@ -212,14 +226,28 @@ proc now(): uint64 =
   discard clock_gettime(CLOCK_REALTIME, ts)
   uint64(ts.tv_sec) * 1_000_000_000'u64 + uint64(ts.tv_nsec)
 
+proc place(dir, n: Node) =
+  ## Puts a node in a directory, after every entry there: at the next
+  ## position.
+  inc dir.entries
+  n.pos = dir.entries
+  n.parent = dir
+  dir.children[n.name] = n
+  dir.mtime = now()
+
 proc node*(s: var Server, parent: Node, name: string, kind: NodeKind): Node =
+  ## A new node, with the permissions of its kind until they are set.
   inc s.inodes
-  result = Node(name: name, parent: parent, ino: s.inodes, kind: kind, atime: now(), mtime: now())
+  result = Node(name: name, ino: s.inodes, kind: kind, atime: now(), mtime: now())
+  result.perm = case kind
+    of nkDir: 0o755'u32
+    of nkFile: 0o644'u32
+    of nkLink: 0o777'u32
+    of nkObject, nkNull, nkZero, nkRandom: 0o666'u32
   if kind == nkDir:
     result.mount = -1
   if parent != nil:
-    parent.children[name] = result
-    parent.mtime = result.mtime
+    parent.place(result)
 
 proc fail(e: cint): Walk = Walk(err: e)
 
@@ -272,11 +300,12 @@ proc parentOf(start: Node, path: string): (Walk, string) =
   (w, name)
 
 proc mode(n: Node): uint32 =
-  case n.kind
-  of nkDir: 0o040755
-  of nkFile: 0o100000'u32 or (if n.perm != 0: n.perm else: 0o644'u32)
-  of nkLink: 0o120777
-  of nkObject, nkNull, nkZero, nkRandom: 0o020666
+  let kind = case n.kind
+    of nkDir: 0o040000'u32
+    of nkFile: 0o100000'u32
+    of nkLink: 0o120000'u32
+    of nkObject, nkNull, nkZero, nkRandom: 0o020000'u32
+  kind or n.perm
 
 proc dtype(n: Node): uint8 =
   case n.kind
@@ -285,8 +314,8 @@ proc dtype(n: Node): uint8 =
   of nkLink: dtLnk
   of nkObject, nkNull, nkZero, nkRandom: dtChr
 
-proc statOf(n: Node): Stat =
-  result = Stat(ino: n.ino, mode: n.mode, nlink: 1, uid: n.uid, gid: n.gid, atime: n.atime, mtime: n.mtime)
+proc statOf(s: Server, n: Node): Stat =
+  result = Stat(ino: n.ino, mode: n.mode, nlink: 1, uid: n.uid, gid: n.gid, atime: n.atime, mtime: n.mtime, dev: s.dev)
   case n.kind
   of nkFile: result.size = uint64(n.data.len)
   of nkLink: result.size = uint64(n.target.len)
@@ -308,12 +337,13 @@ proc pathAt(op: Op, body: openArray[byte]): int =
   else: 0
 
 proc forwardAfter(w: Walk, h: Header, prefix: openArray[byte], fds: seq[cint]) =
-  ## The same call, what came before its path, the rest of the path, the
-  ## same endpoints: on to the server mounted where the walk ended.
+  ## The same call, who asks, what came before its path, the rest of the
+  ## path, the same endpoints: on to the server mounted where the walk
+  ## ended.
   var packet = newSeq[byte]()
   packet.add prefix
   packet.add w.rest.toOpenArrayByte(0, w.rest.high)
-  send(w.node.mount, Op(h.op), h.arg, packet, fds)
+  send(w.node.mount, h, packet, fds)
   for fd in fds:
     discard close(fd)
 
@@ -348,6 +378,8 @@ proc open(s: var Server, c: Node, h: Header, body: openArray[byte], fds: seq[cin
     if p.err == 0 and not p.forward and s.writable:
       w = Walk(node: s.node(p.node, name, nkFile))
       w.node.perm = mode and 0o7777
+      w.node.uid = h.uid
+      w.node.gid = h.gid
     elif p.err == 0 and not p.forward:
       w = fail(EROFS)
   let node = resolved(reply, w, h, body, fds)
@@ -363,7 +395,7 @@ proc open(s: var Server, c: Node, h: Header, body: openArray[byte], fds: seq[cin
         return
       node.data = ""
       node.mtime = now()
-    var st = node.statOf
+    var st = s.statOf(node)
     s.listen(reply, node)
     ok(reply, st.bytes)
 
@@ -371,7 +403,7 @@ proc stat(s: var Server, c: Node, h: Header, body: openArray[byte], fds: seq[cin
   let reply = fds[^1]
   var at = 0
   let node = resolved(reply, walk(c, c, str(body, at), (h.arg and atSymlinkNofollow) == 0), h, body, fds)
-  var st = node.statOf
+  var st = s.statOf(node)
   ok(reply, st.bytes)
   discard close(reply)
 
@@ -385,20 +417,39 @@ proc readlink(s: var Server, c: Node, h: Header, body: openArray[byte], fds: seq
     ok(reply, node.target.toOpenArrayByte(0, node.target.high))
   discard close(reply)
 
-proc create(s: var Server, c: Node, h: Header, body: openArray[byte], fds: seq[cint], kind: NodeKind, target = "") =
-  ## mkdir and symlink: a new name in a directory of ours.
+proc create(s: var Server, c: Node, h: Header, body: openArray[byte], fds: seq[cint], kind: NodeKind) =
+  ## mkdir and symlink: a new name in a directory of ours, the asker's,
+  ## a directory with mkdir's mode. A name that is there is EEXIST before
+  ## anything else, on a server that writes nothing too, and so is the
+  ## directory a path ends in: mkdir -p asks for "/" first.
   let reply = fds[^1]
   var at = 0
-  let (w, name) = parentOf(c, str(body, at))
+  let target = if kind == nkLink: str(body, at) else: ""
+  let path = str(body, at)
+  let there = walk(c, c, path, follow = false)
+  if there.err == 0 and there.forward:
+    forward(there, h, body, fds)
+    return
+  if there.err == 0:
+    err(reply, EEXIST)
+    discard close(reply)
+    return
+  if there.err != ENOENT:
+    err(reply, there.err)
+    discard close(reply)
+    return
+  let (w, name) = parentOf(c, path)
   let dir = resolved(reply, w, h, body, fds)
   if not s.writable:
     err(reply, EROFS)
-  elif name in dir.children:
-    err(reply, EEXIST)
   else:
     let n = s.node(dir, name, kind)
+    n.uid = h.uid
+    n.gid = h.gid
     if kind == nkLink:
       n.target = target
+    else:
+      n.perm = h.arg and 0o7777
     ok(reply)
   discard close(reply)
 
@@ -418,13 +469,28 @@ proc unlink(s: var Server, c: Node, h: Header, body: openArray[byte], fds: seq[c
     err(reply, EISDIR)
   elif removeDir and dir.children[name].children.len > 0:
     err(reply, ENOTEMPTY)
+  elif removeDir and dir.children[name].mount >= 0:
+    err(reply, EBUSY)
   else:
     dir.children.del(name)
+    dir.mtime = now()
     ok(reply)
   discard close(reply)
 
+proc within(n, dir: Node): bool =
+  ## Whether dir is n or under it.
+  var up = dir
+  while up != nil:
+    if up == n:
+      return true
+    up = up.parent
+  false
+
 proc rename(s: var Server, c: Node, h: Header, body: openArray[byte], fds: seq[cint]) =
-  ## Both names are ours, or the move crosses a server: EXDEV.
+  ## Both names are ours, or the move crosses a server: EXDEV. What the
+  ## new name names goes, when it is of the old one's kind, and empty if a
+  ## directory; a directory does not go under itself, nor a mount point
+  ## anywhere.
   let reply = fds[^1]
   var at = 0
   let (src, oldName) = parentOf(c, str(body, at))
@@ -446,11 +512,27 @@ proc rename(s: var Server, c: Node, h: Header, body: openArray[byte], fds: seq[c
     err(reply, ENOENT)
   else:
     let n = src.node.children[oldName]
-    src.node.children.del(oldName)
-    n.name = newName
-    n.parent = dst.node
-    dst.node.children[newName] = n
-    ok(reply)
+    let old = dst.node.children.getOrDefault(newName)
+    if old == n:
+      ok(reply)
+    elif n.kind == nkDir and within(n, dst.node):
+      err(reply, EINVAL)
+    elif n.kind == nkDir and n.mount >= 0 or old != nil and old.kind == nkDir and old.mount >= 0:
+      err(reply, EBUSY)
+    elif old != nil and n.kind == nkDir and old.kind != nkDir:
+      err(reply, ENOTDIR)
+    elif old != nil and n.kind != nkDir and old.kind == nkDir:
+      err(reply, EISDIR)
+    elif old != nil and old.kind == nkDir and old.children.len > 0:
+      err(reply, ENOTEMPTY)
+    else:
+      src.node.children.del(oldName)
+      src.node.mtime = now()
+      if old != nil:
+        dst.node.children.del(newName)
+      n.name = newName
+      dst.node.place(n)
+      ok(reply)
   discard close(reply)
 
 # The attributes of a node: set when the server is writable.
@@ -572,9 +654,9 @@ proc read(s: var Server, reply: cint, node: Node, h: Header, body: openArray[byt
   of nkNull:
     ok(reply)
   of nkZero:
-    ok(reply, newSeq[byte](min(n, maxPacket - 16)))
+    ok(reply, newSeq[byte](min(n, maxPacket - sizeof(Header))))
   of nkRandom:
-    var bytes = newSeq[byte](min(n, maxPacket - 16))
+    var bytes = newSeq[byte](min(n, maxPacket - sizeof(Header)))
     var at = 0
     while at < bytes.len:
       let chunk = min(256, bytes.len - at)
@@ -608,20 +690,26 @@ proc write(s: var Server, reply: cint, node: Node, h: Header, body: openArray[by
   else:
     err(reply, EISDIR)
 
-proc readdir(s: var Server, reply: cint, node: Node, h: Header) =
+proc readdir(s: var Server, reply: cint, node: Node, h: Header, body: openArray[byte]) =
+  ## The entries after a position, in order, as many as one reply holds.
   if node.kind != nkDir:
     err(reply, ENOTDIR)
     return
+  var at = 0
+  let after = u64(body, at)
   var entries: seq[byte]
-  var i = 0
   for name, child in node.children:
-    if i >= int(h.arg) and entries.len + 9 + name.len + 1 <= maxPacket - 16:
-      var ino = child.ino
-      entries.add ino.bytes
-      entries.add child.dtype
-      entries.add name.toOpenArrayByte(0, name.high)
-      entries.add 0
-    inc i
+    if child.pos <= after:
+      continue
+    if entries.len + 17 + name.len + 1 > maxPacket - sizeof(Header):
+      break
+    var ino = child.ino
+    var pos = child.pos
+    entries.add ino.bytes
+    entries.add pos.bytes
+    entries.add child.dtype
+    entries.add name.toOpenArrayByte(0, name.high)
+    entries.add 0
   ok(reply, entries)
 
 # ---- the loop ---------------------------------------------------------------
@@ -646,8 +734,14 @@ proc unwatch(fd: cint) =
     discard epoll_ctl(watcher, EPOLL_CTL_DEL, fd, nil)
 
 proc listen*(s: var Server, ep: cint, node: Node = nil) =
-  ## An endpoint the server answers on, open on node, or on the root.
+  ## An endpoint the server answers on, open on node, or on the root. The
+  ## first one's pair gives the server its device: its number, which is
+  ## the pair's alone in the kernel.
   discard fcntl(ep, F_SETFD, FD_CLOEXEC)
+  if s.dev == 0:
+    var st: posix.Stat
+    if fstat(ep, st) == 0:
+      s.dev = uint64(st.st_ino)
   s.eps[ep] = Endpoint(fd: ep, node: if node == nil: s.root else: node)
   watch(ep)
 
@@ -670,10 +764,7 @@ proc handle(s: var Server, fd: cint) =
   of opStat: s.stat(ep.node, h, body, fds)
   of opReadlink: s.readlink(ep.node, h, body, fds)
   of opMkdir: s.create(ep.node, h, body, fds, nkDir)
-  of opSymlink:
-    var at = 0
-    let target = str(body, at)
-    s.create(ep.node, h, body[at .. ^1], fds, nkLink, target)
+  of opSymlink: s.create(ep.node, h, body, fds, nkLink)
   of opUnlink: s.unlink(ep.node, h, body, fds)
   of opRename: s.rename(ep.node, h, body, fds)
   of opMount: s.mount(ep.node, h, body, fds)
@@ -688,10 +779,10 @@ proc handle(s: var Server, fd: cint) =
     s.write(fds[^1], ep.node, h, body)
     discard close(fds[^1])
   of opReaddir:
-    s.readdir(fds[^1], ep.node, h)
+    s.readdir(fds[^1], ep.node, h, body)
     discard close(fds[^1])
   of opFstat:
-    var st = ep.node.statOf
+    var st = s.statOf(ep.node)
     ok(fds[^1], st.bytes)
     discard close(fds[^1])
   of opOk, opErr:
@@ -745,11 +836,13 @@ proc pair*(): (cint, cint) =
 
 proc call*(dir: cint, op: Op, arg: uint32, path: string, fds: openArray[cint] = []): (Header, seq[byte], seq[cint]) =
   ## A call on a path through a directory's endpoint, with the reply
-  ## endpoint it needs: what the kernel does for every POSIX call on a path.
+  ## endpoint it needs, asked by the program itself: what the kernel does
+  ## for every POSIX call on a path.
   let (mine, theirs) = pair()
   var all = @fds
   all.add theirs
-  sendStr(dir, op, arg, path, all)
+  send(dir, Header(op: uint32(op), arg: arg, uid: uint32(getuid()), gid: uint32(getgid())),
+       path.toOpenArrayByte(0, path.high), all)
   discard close(theirs)
   var h: Header
   var body: seq[byte]

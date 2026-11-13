@@ -2,8 +2,12 @@
 """`vm run -- rootfs.wasm`: a system from one module and nothing of the
 host's file system. rootfs serves the image linked into it, the modules of
 busybox, python and init, which the kernel compiles as they are executed;
-init mounts its /dev and starts busybox's shell on the terminal, and the
-shell's status is vm's.
+init mounts its /dev and a /tmp in its memory and starts busybox's shell on
+the terminal, and the shell's status is vm's. Each server's files are on a
+device of their own and belong to who made them, a directory keeps its
+mode, a directory removed while it is read is removed whole, mkdir -p
+finds what is there, and rename keeps a directory out of itself and off a
+directory that is not empty.
 
     test_rootfs.py <vm> <rootfs.wasm>
 """
@@ -36,6 +40,16 @@ printf ab | od -An -tx1
 python3 -c 'import os, sys; print(2 ** 100, sys.version_info[:2], len(os.urandom(5)), os.path.exists("/usr/lib/python314.zip"))'
 python3 -c 'import json, os; print(json.dumps(sorted(n for n in os.listdir("/usr/bin") if n.startswith("python"))))'
 python3 -c 'import tempfile; f = tempfile.NamedTemporaryFile("w+", dir="/tmp"); f.write("x" * 5000); f.seek(0); print(len(f.read()), f.name.startswith("/tmp/"))'
+ln -s target /tmp/sl && readlink /tmp/sl
+ls -ld /tmp | cut -c1-10
+mkdir -m 700 /tmp/m && ls -ld /tmp/m | cut -c1-10 && chmod 750 /tmp/m && stat -c %a /tmp/m
+touch /tmp/o && test "$(stat -c %u /tmp/o)" = "$(id -u)" && echo owned
+stat -c %d / /dev /tmp | sort -u | wc -l
+mkdir -p /tmp/p/q /usr/bin && ls -d /tmp/p/q
+mkdir /usr /tmp 2>&1
+mkdir -p /tmp/r/s && mv /tmp/r /tmp/r/s/t 2>&1; ls -d /tmp/r/s
+mkdir /tmp/many && for i in $(seq 1 300); do : > /tmp/many/f$i; done && rm -r /tmp/many && ls /tmp/many 2>&1
+mkdir /tmp/u && touch /tmp/u/x /tmp/v && python3 -c 'import os; os.rename("/tmp/v", "/tmp/u")' 2>&1 | tail -1; ls /tmp/u
 exit 3
 """
 
@@ -67,6 +81,20 @@ inner=5
 1267650600228229401496703205376 (3, 14) 5 True
 ["python", "python3"]
 5000 True
+target
+drwxrwxrwt
+drwx------
+750
+owned
+3
+/tmp/p/q
+mkdir: can't create directory '/usr': File exists
+mkdir: can't create directory '/tmp': File exists
+mv: can't rename '/tmp/r': Invalid argument
+/tmp/r/s
+ls: /tmp/many: No such file or directory
+IsADirectoryError: [Errno 21] Is a directory: '/tmp/v' -> '/tmp/u'
+x
 """
 
 

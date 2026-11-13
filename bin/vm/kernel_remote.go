@@ -22,7 +22,10 @@ import (
 //
 // A packet is a header and a body; files ride with it.
 //
-//	header { op u32, arg u32 }
+//	header { op u32, arg u32, uid u32, gid u32 }
+//
+//	uid and gid are who asks: the process the kernel calls for, whose ids
+//	are vm's; a server makes what it creates theirs. A reply's are zero.
 //
 //	Every request brings a fresh endpoint, last among its files: the reply
 //	comes on it, and an OPEN's stays the open file's. The server answers
@@ -46,7 +49,7 @@ import (
 //	  TRUNCATE              size u64 path
 //	  READ      arg len     off u64       OK data
 //	  WRITE                 off u64 data  OK count u32
-//	  READDIR   arg index                 OK (ino u64, type u8, name, 0)*
+//	  READDIR               after u64     OK (ino u64, pos u64, type u8, name, 0)*
 //	  FSTAT                               OK stat
 //	  FCHMOD    arg mode
 //	  FCHOWN                uid u32 gid u32
@@ -55,7 +58,12 @@ import (
 //	  FSYNC     arg data
 //	replies: OK, ERR with arg the errno
 //	stat { ino u64, size u64, mtime u64 nanoseconds, mode u32, nlink u32,
-//	       uid u32, gid u32, atime u64 }
+//	       uid u32, gid u32, atime u64, dev u64 }
+//
+// A directory's entries have positions, each after those before it, and
+// a READDIR gives those after one: removing what was read moves nothing a
+// reading has to come to. dev is the server's own, the files of two
+// servers never share one.
 const (
 	rOpen uint32 = iota + 1
 	rStat
@@ -80,8 +88,8 @@ const (
 	rFsync
 	rOk
 	rErr
-	remoteHeader = 8
-	remoteStat   = 48
+	remoteHeader = 16
+	remoteStat   = 56
 	// The whens of UTIMES and FUTIMES.
 	whenFollow    = 1
 	whenAtimeNow  = 2
@@ -104,10 +112,10 @@ type remoteNode struct {
 	accmode  int
 	append   bool
 	nonblock atomic.Bool
-	// pos is the position of read, write and seek; index the next entry
-	// of readdir.
+	// pos is the position of read, write and seek; after the position of
+	// the last entry readdir gave.
 	pos   int64
-	index uint32
+	after uint64
 }
 
 type remoteFile struct {
@@ -244,6 +252,8 @@ func request(to *pairEnd, op, arg uint32, body []byte, files []File) error {
 	data := make([]byte, remoteHeader+len(body))
 	binary.LittleEndian.PutUint32(data, op)
 	binary.LittleEndian.PutUint32(data[4:], arg)
+	binary.LittleEndian.PutUint32(data[8:], uint32(syscall.Geteuid()))
+	binary.LittleEndian.PutUint32(data[12:], uint32(syscall.Getegid()))
 	copy(data[remoteHeader:], body)
 
 	return to.send(nil, data, files, ioMode{quiet: true})
@@ -340,6 +350,7 @@ func decodeStat(b []byte, st *syscall.Stat_t) error {
 	st.Mtim = syscall.NsecToTimespec(int64(le.Uint64(b[16:])))
 	st.Atim = syscall.NsecToTimespec(int64(le.Uint64(b[40:])))
 	st.Ctim = st.Mtim
+	st.Dev = le.Uint64(b[48:])
 
 	return nil
 }
@@ -647,10 +658,13 @@ func (d *remoteDir) realpath(p *Process, path string) (string, error) {
 	return filepath.Clean("/" + path), nil
 }
 
-// readdir fills the entries from the directory's index on, as many as
-// fit, in the guest's struct dirent layout: ino, off, reclen, type, name.
+// readdir fills the entries after the last it gave, as many as fit, in
+// the guest's struct dirent layout: ino, off, reclen, type, name; an
+// entry's off is its position.
 func (d *remoteDir) readdir(b []byte) (int, error) {
-	pk, err := d.on(rReaddir, d.index, nil)
+	var after [8]byte
+	binary.LittleEndian.PutUint64(after[:], d.after)
+	pk, err := d.on(rReaddir, 0, after[:])
 
 	if err != nil {
 		return 0, err
@@ -661,16 +675,16 @@ func (d *remoteDir) readdir(b []byte) (int, error) {
 	n := 0
 	le := binary.LittleEndian
 
-	for len(data) >= 9 {
-		ino := le.Uint64(data)
-		kind := data[8]
-		end := 9
+	for len(data) >= 17 {
+		ino, pos := le.Uint64(data), le.Uint64(data[8:])
+		kind := data[16]
+		end := 17
 
 		for end < len(data) && data[end] != 0 {
 			end++
 		}
 
-		name := data[9:end]
+		name := data[17:end]
 		reclen := (19 + len(name) + 1 + 7) &^ 7
 
 		if n+reclen > len(b) {
@@ -679,12 +693,12 @@ func (d *remoteDir) readdir(b []byte) (int, error) {
 
 		clear(b[n : n+reclen])
 		le.PutUint64(b[n:], ino)
-		le.PutUint64(b[n+8:], uint64(d.index+1))
+		le.PutUint64(b[n+8:], pos)
 		le.PutUint16(b[n+16:], uint16(reclen))
 		b[n+18] = kind
 		copy(b[n+19:], name)
 		n += reclen
-		d.index++
+		d.after = pos
 		data = data[min(end+1, len(data)):]
 	}
 
@@ -697,7 +711,7 @@ func (d *remoteDir) seek(off int64, whence int) (int64, error) {
 		return 0, syscall.EINVAL
 	}
 
-	d.index = 0
+	d.after = 0
 
 	return 0, nil
 }
