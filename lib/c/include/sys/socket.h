@@ -90,6 +90,7 @@ struct ucred {
 #define SO_OOBINLINE 10
 #define SO_LINGER 13
 #define SO_REUSEPORT 15
+#define SO_PASSCRED 16
 #define SO_PEERCRED 17
 #define SO_RCVLOWAT 18
 #define SO_SNDLOWAT 19
@@ -107,6 +108,7 @@ struct ucred {
 #define MSG_EOR 0x0080
 #define MSG_WAITALL 0x0100
 #define MSG_NOSIGNAL 0x4000
+#define MSG_CMSG_CLOEXEC 0x40000000
 
 #define SHUT_RD 0
 #define SHUT_WR 1

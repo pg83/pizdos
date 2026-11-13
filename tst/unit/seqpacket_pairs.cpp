@@ -9,10 +9,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
-
-#ifndef MSG_CMSG_CLOEXEC
-#define MSG_CMSG_CLOEXEC 0x40000000
-#endif
 #include <sys/stat.h>
 #include <sys/uio.h>
 #include <sys/wait.h>

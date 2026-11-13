@@ -12,13 +12,6 @@
 #include <sys/uio.h>
 #include <unistd.h>
 
-#ifndef MSG_CMSG_CLOEXEC
-#define MSG_CMSG_CLOEXEC 0x40000000
-#endif
-#ifndef SO_PASSCRED
-#define SO_PASSCRED 16
-#endif
-
 int main() {
     int pair[2];
     assert(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, pair) == 0);

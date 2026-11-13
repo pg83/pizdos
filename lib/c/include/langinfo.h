@@ -64,6 +64,9 @@ typedef int nl_item;
 #define YESEXPR 0x50000
 #define NOEXPR 0x50001
 
+/* The name of the locale a category has. */
+#define _NL_LOCALE_NAME(cat) (((cat) << 16) | 0xffff)
+
 char* nl_langinfo(nl_item);
 char* nl_langinfo_l(nl_item, locale_t);
 

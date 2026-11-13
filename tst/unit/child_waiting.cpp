@@ -66,8 +66,8 @@ int main() {
     assert(waitid(P_PGID, child, &info, WSTOPPED | WNOWAIT) == 0);
     assert(info.si_pid == child && info.si_signo == SIGCHLD && info.si_code == CLD_STOPPED && info.si_status == SIGSTOP);
     // Linux's clone selector excludes ordinary fork children; __WALL includes them.
-    assert(waitpid(child, &status, int(0x80000000U) | WNOHANG) == -1 && errno == ECHILD);
-    assert(waitpid(-child, &status, WUNTRACED | 0x40000000) == child && WIFSTOPPED(status) && WSTOPSIG(status) == SIGSTOP);
+    assert(waitpid(child, &status, __WCLONE | WNOHANG) == -1 && errno == ECHILD);
+    assert(waitpid(-child, &status, WUNTRACED | __WALL) == child && WIFSTOPPED(status) && WSTOPSIG(status) == SIGSTOP);
     assert(kill(child, SIGCONT) == 0);
     assert(waitid(P_PID, child, &info, WCONTINUED | WNOWAIT) == 0);
     assert(info.si_pid == child && info.si_code == CLD_CONTINUED && info.si_status == SIGCONT);

@@ -19,9 +19,7 @@ int main() {
     assert(unsetenv("LC_ALL") == 0 && unsetenv("LC_CTYPE") == 0);
     assert(setenv("LANG", "test.UTF-8", 1) == 0);
     assert(strcmp(setlocale(LC_CTYPE, ""), "test.UTF-8") == 0);
-    // GNU locale-name items encode their category and 0xffff index.
-    nl_item name = nl_item((LC_CTYPE << 16) | 0xffff);
-    assert(strcmp(nl_langinfo(name), "test.UTF-8") == 0);
+    assert(strcmp(nl_langinfo(_NL_LOCALE_NAME(LC_CTYPE)), "test.UTF-8") == 0);
     assert(strcmp(nl_langinfo(0x7fffffff), "") == 0);
     assert(setlocale(-1, "C") == nullptr && setlocale(LC_ALL + 1, nullptr) == nullptr);
     assert(strcmp(setlocale(LC_CTYPE, nullptr), "test.UTF-8") == 0);

@@ -17,6 +17,9 @@ typedef enum {
 #define WEXITED 4
 #define WCONTINUED 8
 #define WNOWAIT 0x1000000
+#define __WNOTHREAD 0x20000000
+#define __WALL 0x40000000
+#define __WCLONE (-0x7fffffff - 1)
 
 #define WEXITSTATUS(s) (((s) & 0xff00) >> 8)
 #define WTERMSIG(s) ((s) & 0x7f)
