@@ -11,15 +11,16 @@ import (
 )
 
 // A file of the host is a host descriptor of the kernel's, kept here and
-// in kernel_hostdir.go, kernel_socket.go and kernel_pty.go, nowhere else:
-// a hostFile is a regular file, a device, a terminal or a FIFO of the
-// root, a hostDir a directory, a hostSocket a socket. A pollable one can
-// block: a FIFO, a terminal, a socket, another character device. To a
-// wait it is a file of the kernel like any other: a queue, which the
-// host's readiness wakes through a goroutine sleeping in the host's poll
-// (tell). One the kernel opened itself is nonblocking on the host and a
-// guest's call blocks by waiting, unless the guest set O_NONBLOCK; one
-// inherited from the host keeps its host flags, and a call waits first.
+// in kernel_inbox.go, kernel_hostdir.go, kernel_socket.go and
+// kernel_pty.go, nowhere else: a hostFile is a regular file, a device, a
+// terminal or a FIFO of the root, a hostDir a directory, a hostSocket a
+// socket. A pollable one can block: a FIFO, a terminal, a socket. Its
+// input is a channel of the kernel's, the inbox (kernel_inbox.go), which
+// a read takes from and a wait selects on; its output goes to the host as
+// it is written, and a wait for room is woken by a goroutine sleeping in
+// the host's poll (tell). One the kernel opened itself is nonblocking on
+// the host and a guest's call blocks by waiting, unless the guest set
+// O_NONBLOCK; one inherited from the host keeps its host flags.
 type hostObject struct {
 	fd       int
 	refs     atomic.Int32
@@ -27,10 +28,15 @@ type hostObject struct {
 	owned    bool
 	// nonblock is the guest's O_NONBLOCK.
 	nonblock atomic.Bool
-	// changed wakes the waits on the object; telling says a goroutine is
-	// waiting on the host for input, and one for output.
+	// kind is what the object is to its inbox; slot holds the inbox, or
+	// term is the terminal whose inbox the object shares.
+	kind atomic.Int32
+	slot inboxSlot
+	term *terminal
+	// changed wakes the waits for output; telling says a goroutine is
+	// waiting on the host for it.
 	changed changed
-	telling [2]atomic.Bool
+	telling atomic.Bool
 }
 
 // hostStream is a host object that transfers: a file or a socket. A
@@ -75,39 +81,58 @@ func newHostObject(fd int, owned bool) File {
 	switch kind {
 	case syscall.S_IFDIR:
 		d := &hostDir{}
-		d.init(fd, owned, false)
+		d.init(fd, owned, inboxNone)
 
 		return d
 	case syscall.S_IFSOCK:
 		s := &hostSocket{}
-		s.init(fd, owned, true)
+		s.init(fd, owned, socketInboxKind(fd))
 
 		return s
 	}
 
 	f := &hostFile{}
-	f.init(fd, owned, kind == syscall.S_IFIFO || kind == syscall.S_IFCHR)
+	f.init(fd, owned, fileKind(fd, kind))
 
 	return f
+}
+
+// fileKind is what a file is to its inbox: a FIFO reads, a character
+// device that is a terminal reads as one, the other devices and regular
+// files do not block.
+func fileKind(fd int, mode uint32) inboxKind {
+	switch {
+	case mode == syscall.S_IFIFO:
+		return inboxFile
+	case mode == syscall.S_IFCHR && isTerminal(fd):
+		return inboxTerminal
+	}
+
+	return inboxNone
 }
 
 // newHostDir is the object of a host directory descriptor the kernel
 // resolves paths in: the root of a process.
 func newHostDir(fd int) *hostDir {
 	d := &hostDir{}
-	d.init(fd, true, false)
+	d.init(fd, true, inboxNone)
 
 	return d
 }
 
-func (o *hostObject) init(fd int, owned, pollable bool) {
-	o.fd, o.owned, o.pollable = fd, owned, pollable
+func (o *hostObject) init(fd int, owned bool, kind inboxKind) {
+	o.fd, o.owned, o.pollable = fd, owned, kind != inboxNone
+	o.kind.Store(int32(kind))
 	o.refs.Store(1)
 	fl, _ := fcntl(fd, syscall.F_GETFL, 0)
 	o.nonblock.Store(fl&syscall.O_NONBLOCK != 0)
 
-	if owned && pollable {
+	if owned && o.pollable {
 		fcntl(fd, syscall.F_SETFL, fl|syscall.O_NONBLOCK)
+	}
+
+	if kind == inboxTerminal {
+		o.term = joinTerminal(fd)
 	}
 }
 
@@ -115,10 +140,75 @@ func (o *hostObject) ref() {
 	o.refs.Add(1)
 }
 
+// unref on the last reference ends the inbox, so that nothing reads the
+// descriptor as it closes.
 func (o *hostObject) unref() {
-	if o.refs.Add(-1) == 0 {
-		syscall.Close(o.fd)
+	if o.refs.Add(-1) != 0 {
+		return
 	}
+
+	o.slot.close()
+
+	if o.term != nil {
+		o.term.leave()
+	}
+
+	syscall.Close(o.fd)
+}
+
+// inbox is the object's inbox, started when there is none: the
+// terminal's for a file of one.
+func (o *hostObject) inbox() (*inbox, error) {
+	slot := &o.slot
+
+	if o.term != nil {
+		slot = &o.term.slot
+	}
+
+	return slot.get(func() (*inbox, error) {
+		fd, own, err := o.inboxFd()
+
+		if err != nil {
+			return nil, err
+		}
+
+		return startInbox(fd, own, inboxKind(o.kind.Load()))
+	})
+}
+
+// inboxFd is the descriptor an inbox reads, nonblocking: the object's own
+// for a socket, which receives without waiting, and for a file the kernel
+// opened nonblocking; a description of the inbox's own for a terminal,
+// whose inbox outlives the file, and for a file inherited with the host's
+// flags, through its /proc path, or a duplicate when that cannot open, or
+// for the master of a pseudoterminal, whose path opens another.
+func (o *hostObject) inboxFd() (int, bool, error) {
+	kind := inboxKind(o.kind.Load())
+
+	if kind.socket() || kind == inboxFile && o.owned {
+		return o.fd, false, nil
+	}
+
+	if o.term == nil || !o.term.key.master {
+		fd, err := syscall.Open(procFd(o.fd), syscall.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOCTTY|syscall.O_CLOEXEC, 0)
+
+		if err == nil {
+			return fd, true, nil
+		}
+	}
+
+	fd, err := dupHigh(o.fd)
+
+	return fd, true, err
+}
+
+// current is the inbox there is, nil for none.
+func (o *hostObject) current() *inbox {
+	if o.term != nil {
+		return o.term.slot.current()
+	}
+
+	return o.slot.current()
 }
 
 // hostFdOf is the host descriptor of a file of the host, for a call the
@@ -137,43 +227,62 @@ func (o *hostObject) hostFd() int {
 	return o.fd
 }
 
-// changes tells the host of the wait and gives the change the host's
-// readiness bumps; an object that cannot block is ready whenever asked.
+// changes are the inbox's change for input, started for the wait, and
+// for output the change the host's readiness bumps; an object that cannot
+// block is ready whenever asked. Without an inbox, the host out of
+// descriptors for one, the input's wait is the host's poll too.
 func (o *hostObject) changes(events int16) []<-chan struct{} {
 	if !o.pollable {
 		return nil
 	}
 
-	ch := o.changed.wait()
-	o.tell(events)
+	var chans []<-chan struct{}
+	host := events & (pollOut | pollWrnorm | pollPri)
 
-	return []<-chan struct{}{ch}
+	if events&(pollIn|pollRdnorm) != 0 {
+		if b, err := o.inbox(); err == nil {
+			chans = append(chans, b.changed.wait())
+		} else {
+			host |= events & (pollIn | pollRdnorm)
+		}
+	}
+
+	if host != 0 {
+		chans = append(chans, o.changed.wait())
+		o.tell(host)
+	}
+
+	return chans
 }
 
-// tell has a goroutine sleep in the host's poll for the input or the
-// output asked, and bump the change once: one goroutine a direction at a
-// time, as a change wakes every wait. One that outlives the waits wakes
-// nobody.
+// tell has a goroutine sleep in the host's poll for events and bump the
+// change once: one goroutine at a time, as a change wakes every wait. One
+// that outlives the waits wakes nobody.
 func (o *hostObject) tell(events int16) {
-	for i, bits := range [2]int16{pollIn | pollPri | pollRdnorm, pollOut | pollWrnorm} {
-		if events&bits == 0 || !o.telling[i].CompareAndSwap(false, true) {
-			continue
-		}
-
-		go func() {
-			pollWait(o.fd, bits)
-			o.telling[i].Store(false)
-			o.changed.bump()
-		}()
+	if !o.telling.CompareAndSwap(false, true) {
+		return
 	}
+
+	go func() {
+		pollWait(o.fd, events)
+		o.telling.Store(false)
+		o.changed.bump()
+	}()
 }
 
 func (o *hostObject) stat(st *syscall.Stat_t) error {
 	return syscall.Fstat(o.fd, st)
 }
 
+// poll is what the host says now, and input when the inbox has a packet.
 func (o *hostObject) poll(events int16) int16 {
-	return pollNow(o.fd, events)
+	mask := pollNow(o.fd, events)
+
+	if b := o.current(); b != nil && b.ready() {
+		mask |= events & (pollIn | pollRdnorm)
+	}
+
+	return mask
 }
 
 type pollFd struct {
@@ -371,17 +480,57 @@ func (o *hostObject) fallocate(off, n int64) error {
 	}
 }
 
+// ioctl is the host's; FIONREAD counts the inbox in, and a flush of the
+// input, TCIFLUSH, TCIOFLUSH, TCSETSF, drops what the inbox holds too.
 func (o *hostObject) ioctl(req uintptr, arg unsafe.Pointer) error {
 	switch req {
 	case tcsbrk, tcxonc, tcflsh:
-		if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, uintptr(o.fd), req, uintptr(*(*int)(arg))); e != 0 {
+		queue := *(*int)(arg)
+
+		if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, uintptr(o.fd), req, uintptr(queue)); e != 0 {
 			return e
+		}
+
+		if req == tcflsh && queue != tcoflush {
+			o.flushInput()
+		}
+
+		return nil
+	case tcsetsf:
+		if err := ioctlPtr(o.fd, req, arg); err != nil {
+			return err
+		}
+
+		o.flushInput()
+
+		return nil
+	case fionread:
+		if err := ioctlPtr(o.fd, req, arg); err != nil {
+			return err
+		}
+
+		if b := o.current(); b != nil {
+			*(*int32)(arg) += int32(b.bytes.Load())
 		}
 
 		return nil
 	}
 
 	return ioctlPtr(o.fd, req, arg)
+}
+
+// tcoflush is the queue argument of TCFLSH that leaves the input alone;
+// tcsetsf is TCSETSF, which flushes it.
+const (
+	tcoflush = 1
+	tcsetsf  = tcsets + 2
+)
+
+// flushInput drops the input read ahead into the inbox.
+func (o *hostObject) flushInput() {
+	if b := o.current(); b != nil {
+		b.drain()
+	}
 }
 
 func ioctlPtr(fd int, req uintptr, arg unsafe.Pointer) error {
@@ -489,14 +638,115 @@ func (s *hostStream) transfer(p *Process, events int16, mode ioMode, op func() (
 	}
 }
 
+// read takes from the inbox of a stream that blocks, else reads the host;
+// so does a stream whose inbox cannot start.
 func (s *hostStream) read(p *Process, b []byte, mode ioMode) (int, error) {
 	if chaosFail("read") {
 		return 0, syscall.EIO
 	}
 
+	if s.pollable {
+		if _, err := s.inbox(); err == nil {
+			n, pk, err := s.receive(p, [][]byte{b}, 0, mode)
+			dropFiles(pk.files)
+
+			return n, err
+		}
+	}
+
 	return s.transfer(p, pollIn, mode, func() (int, error) {
 		return syscall.Read(s.fd, b)
 	})
+}
+
+// receive takes the next data of the stream from its inbox into bufs,
+// waiting as the stream blocks, for the receive timeout at most: with
+// MSG_PEEK it stays, with MSG_WAITALL a stream's read goes on until the
+// buffers are full or the data ends. It returns the bytes, and the packet
+// they came in: a message's whole, with its address, control messages and
+// files, which are the caller's to install or drop.
+func (s *hostStream) receive(p *Process, bufs [][]byte, flags uint32, mode ioMode) (int, packet, error) {
+	nonblock := mode.nonblock || s.nonblock.Load()
+	timeout := s.timeout(pollIn)
+	peek := flags&msgPeek != 0
+	room := 0
+
+	for _, buf := range bufs {
+		room += len(buf)
+	}
+
+	total := 0
+	var first packet
+
+	for {
+		b, err := s.inbox()
+
+		if err != nil {
+			return 0, packet{}, err
+		}
+
+		pk, n, ok := b.take(advance(bufs, total), peek, total == 0)
+
+		if ok {
+			if total == 0 {
+				first = pk
+			}
+
+			if pk.err != nil && total == 0 {
+				return 0, packet{}, pk.err
+			}
+
+			total += n
+
+			if pk.eof || pk.err != nil || peek || b.kind.message() || flags&msgWaitall == 0 || total >= room {
+				return total, first, nil
+			}
+
+			continue
+		}
+
+		if b.help() {
+			continue
+		}
+
+		if nonblock {
+			if total > 0 {
+				return total, first, nil
+			}
+
+			return 0, packet{}, syscall.EAGAIN
+		}
+
+		ready, err := p.waitObject(s, pollIn, timeout, timeout < 0)
+
+		if err != nil || ready == 0 {
+			if total > 0 {
+				return total, first, nil
+			}
+
+			if err == nil {
+				err = syscall.EAGAIN
+			}
+
+			return 0, packet{}, err
+		}
+	}
+}
+
+// advance is bufs without their first n bytes.
+func advance(bufs [][]byte, n int) [][]byte {
+	for len(bufs) > 0 && n >= len(bufs[0]) {
+		n -= len(bufs[0])
+		bufs = bufs[1:]
+	}
+
+	if n == 0 {
+		return bufs
+	}
+
+	out := append([][]byte{bufs[0][n:]}, bufs[1:]...)
+
+	return out
 }
 
 func (s *hostStream) write(p *Process, b []byte, mode ioMode) (int, error) {
@@ -509,19 +759,49 @@ func (s *hostStream) write(p *Process, b []byte, mode ioMode) (int, error) {
 	})
 }
 
+// A stream that blocks has no position: pread and pwrite are ESPIPE.
 func (s *hostStream) pread(p *Process, b []byte, off int64) (int, error) {
+	if s.pollable {
+		return 0, syscall.ESPIPE
+	}
+
 	return s.transfer(p, pollIn, ioMode{}, func() (int, error) {
 		return syscall.Pread(s.fd, b, off)
 	})
 }
 
 func (s *hostStream) pwrite(p *Process, b []byte, off int64) (int, error) {
+	if s.pollable {
+		return 0, syscall.ESPIPE
+	}
+
 	return s.transfer(p, pollOut, ioMode{}, func() (int, error) {
 		return syscall.Pwrite(s.fd, b, off)
 	})
 }
 
+// vectored is the host's call, but a read of a stream that blocks takes
+// from the inbox, scattered.
 func (s *hostStream) vectored(p *Process, call uintptr, iov []syscall.Iovec, off uint64, events int16) (int, error) {
+	if s.pollable && events == pollIn {
+		if call == syscall.SYS_PREADV {
+			return 0, syscall.ESPIPE
+		}
+
+		if _, err := s.inbox(); err == nil {
+			bufs := make([][]byte, len(iov))
+
+			for i, v := range iov {
+				bufs[i] = unsafe.Slice(v.Base, v.Len)
+			}
+
+			n, pk, err := s.receive(p, bufs, 0, ioMode{})
+			dropFiles(pk.files)
+
+			return n, err
+		}
+	}
+
 	return s.transfer(p, events, ioMode{}, func() (int, error) {
 		r, _, e := syscall.Syscall6(call, uintptr(s.fd), uintptr(unsafe.Pointer(&iov[0])), uintptr(len(iov)), uintptr(off), 0, 0)
 

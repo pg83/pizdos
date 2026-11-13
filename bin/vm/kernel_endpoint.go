@@ -37,9 +37,18 @@ const (
 	shutRdwr      = 2
 )
 
+// A packet is bytes and files; one of a host stream's inbox
+// (kernel_inbox.go) carries more: the sender's address and the control
+// messages of a socket's message as the host gives them, its flags, the
+// end of the data, eof, or an error the next read gets.
 type packet struct {
-	data  []byte
-	files []File
+	data    []byte
+	files   []File
+	addr    []byte
+	control []byte
+	flags   uint32
+	eof     bool
+	err     error
 }
 
 // A channel carries packets one way. done is closed with its reader, so

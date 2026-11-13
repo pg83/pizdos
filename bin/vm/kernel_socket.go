@@ -15,7 +15,9 @@ import (
 
 // Sockets are the host's: a socket a process makes is a host socket of the
 // kernel's, nonblocking on the host as every pollable file it owns
-// (kernel_host.go). The address structures of lib/c are Linux's, so most
+// (kernel_host.go); what it receives, messages or connections, comes
+// through its inbox (kernel_inbox.go), what it sends goes to the host as
+// it is sent. The address structures of lib/c are Linux's, so most
 // addresses go to the host as they are: AF_INET and AF_INET6 are the host's
 // network. An AF_UNIX path resolves inside the root, as every path does,
 // through the /proc/self/fd path of its directory, to bind, or of the
@@ -38,6 +40,8 @@ const (
 	solSocket      = 1
 	soRcvtimeo     = 20
 	soSndtimeo     = 21
+	soAcceptconn   = 30
+	sockStreamType = 1
 	scmRights      = 1
 	sunPathMax     = 108
 	sockaddrMax    = 128
@@ -61,10 +65,24 @@ var (
 // SOCK_NONBLOCK.
 func newSocket(host int, flags uint32) *hostSocket {
 	s := &hostSocket{}
-	s.init(host, true, true)
+	s.init(host, true, socketInboxKind(host))
 	s.nonblock.Store(flags&sockNonblock != 0)
 
 	return s
+}
+
+// socketInboxKind is what a host socket is to its inbox: one listening accepts,
+// a stream reads bytes, the others messages.
+func socketInboxKind(fd int) inboxKind {
+	if v, err := syscall.GetsockoptInt(fd, syscall.SOL_SOCKET, soAcceptconn); err == nil && v != 0 {
+		return inboxListen
+	}
+
+	if v, err := syscall.GetsockoptInt(fd, syscall.SOL_SOCKET, soType); err == nil && v != sockStreamType {
+		return inboxMessage
+	}
+
+	return inboxStream
 }
 
 func unixAddress(path []byte) []byte {
@@ -177,6 +195,10 @@ func (p *Process) putAddress(addr []byte, at, lenAt uint32) {
 	p.put32(lenAt, uint32(len(addr)))
 }
 
+// sockcall makes a socket call of the host; its arguments may be pointers,
+// which the directive keeps where they are for the call.
+//
+//go:uintptrescapes
 func sockcall(trap uintptr, a ...uintptr) (int, error) {
 	args := [6]uintptr{}
 	copy(args[:], a)
@@ -312,57 +334,58 @@ func configured(family int) bool {
 	return syscall.Connect(fd, &syscall.SockaddrInet6{Port: 65535, Addr: [16]byte{15: 1}}) == nil
 }
 
+// listen makes the socket's inbox accept from now on.
 func (s *hostSocket) listen(backlog int) error {
-	return syscall.Listen(s.fd, backlog)
+	if err := syscall.Listen(s.fd, backlog); err != nil {
+		return err
+	}
+
+	s.slot.close()
+	s.kind.Store(int32(inboxListen))
+
+	return nil
 }
 
-// accept returns the connection and the peer's guest address.
+// accept takes a connection from the inbox, and returns it with the
+// peer's guest address.
 func (s *hostSocket) accept(p *Process, flags uint32) (File, []byte, error) {
-	buf := make([]byte, sockaddrMax)
-	var length uint32
-	host, err := s.transfer(p, pollIn, ioMode{}, func() (int, error) {
-		length = sockaddrMax
+	if inboxKind(s.kind.Load()) != inboxListen {
+		return nil, nil, syscall.EINVAL
+	}
 
-		return sockcall(sysAccept4, uintptr(s.fd), bufferPointer(buf), uintptr(unsafe.Pointer(&length)), syscall.SOCK_CLOEXEC)
-	})
+	_, pk, err := s.receive(p, nil, 0, ioMode{})
 
 	if err != nil {
 		return nil, nil, err
 	}
 
-	return newSocket(host, flags), p.guestAddress(buf[:min(length, sockaddrMax)]), nil
+	if len(pk.files) == 0 {
+		return nil, nil, syscall.EINVAL
+	}
+
+	conn := pk.files[0].(*hostSocket)
+	conn.nonblock.Store(flags&sockNonblock != 0)
+
+	return conn, p.guestAddress(pk.addr), nil
 }
 
 // recvfrom receives into a guest buffer, with MSG_WAITALL until it is full
-// or the stream ends; the sender's address is the guest's.
+// or the stream ends; the sender's address is the guest's. With MSG_TRUNC
+// the count is a message's whole length.
 func (s *hostSocket) recvfrom(p *Process, buf, n, flags uint32) (int, []byte, error) {
-	mode := ioMode{nonblock: flags&msgDontwait != 0}
-	addr := make([]byte, sockaddrMax)
-	total := 0
+	got, pk, err := s.receive(p, [][]byte{p.span(buf, n)}, flags, ioMode{nonblock: flags&msgDontwait != 0})
 
-	for {
-		var length uint32
-		got, err := s.transfer(p, pollIn, mode, func() (int, error) {
-			length = sockaddrMax
-
-			return sockcall(syscall.SYS_RECVFROM, uintptr(s.fd), bufferPointer(p.span(buf+uint32(total), n-uint32(total))),
-				uintptr(n-uint32(total)), uintptr(flags&^msgWaitall), bufferPointer(addr), uintptr(unsafe.Pointer(&length)))
-		})
-
-		if err != nil {
-			if total > 0 {
-				return total, addr[:0], nil
-			}
-
-			return 0, nil, err
-		}
-
-		total += got
-
-		if flags&msgWaitall == 0 || mode.nonblock || got == 0 || uint32(total) >= n {
-			return total, p.guestAddress(addr[:min(length, sockaddrMax)]), nil
-		}
+	if err != nil {
+		return 0, nil, err
 	}
+
+	dropFiles(pk.files)
+
+	if flags&msgTrunc != 0 && inboxKind(s.kind.Load()).message() {
+		got = len(pk.data)
+	}
+
+	return got, p.guestAddress(pk.addr), nil
 }
 
 func (s *hostSocket) sendto(p *Process, buf, n, flags, addr, alen uint32) (int, error) {
@@ -455,58 +478,27 @@ func (p *Process) hostControl(at, n uint32) ([]byte, error) {
 	return out, nil
 }
 
-// guestControl writes the host's control messages to a guest's buffer:
-// received descriptors become the process's, those that do not fit are
-// closed and MSG_CTRUNC set. It returns the length written and the flag.
-func (p *Process) guestControl(host []byte, at, room uint32, cloexec bool) (uint32, uint32) {
-	off, flags := uint32(0), uint32(0)
+// putControl writes the host's control messages of a received message,
+// those that are not SCM_RIGHTS (splitControl), to a guest's buffer of
+// room bytes at at, in the guest's layout; one that does not fit sets
+// MSG_CTRUNC and ends them. It returns the length written and the flag.
+func (p *Process) putControl(host []byte, at, room uint32) (uint32, uint32) {
+	off := uint32(0)
 
 	for len(host) >= hostCmsgHeader {
 		length := int(binary.LittleEndian.Uint64(host))
-		// recvmsg is the sole caller. Linux's put_cmsg/scm_detach_fds
-		// produce a bounded cmsg_len even when control data is truncated;
-		// guest-supplied headers are validated separately by hostControl.
+
+		if length < hostCmsgHeader || length > len(host) {
+			break
+		}
+
 		level, kind := binary.LittleEndian.Uint32(host[8:]), binary.LittleEndian.Uint32(host[12:])
 		data := host[hostCmsgHeader:length]
 		host = host[min(hostAlign(length), len(host)):]
-
-		if level == solSocket && kind == scmRights {
-			var fds []byte
-
-			for i := 0; i+4 <= len(data); i += 4 {
-				fd := int(binary.LittleEndian.Uint32(data[i:]))
-
-				if off+guestCmsgHeader+uint32(len(fds))+4 > room {
-					syscall.Close(fd)
-					flags |= msgCtrunc
-
-					continue
-				}
-
-				guest, err := p.install(newHostObject(fd, true), 0, cloexec)
-
-				if err != nil {
-					flags |= msgCtrunc
-
-					continue
-				}
-
-				fds = binary.LittleEndian.AppendUint32(fds, uint32(guest))
-			}
-
-			if len(fds) == 0 {
-				continue
-			}
-
-			data = fds
-		}
-
 		size := guestCmsgHeader + uint32(len(data))
 
 		if off+size > room {
-			flags |= msgCtrunc
-
-			break
+			return off, msgCtrunc
 		}
 
 		p.put32(at+off, size)
@@ -516,7 +508,7 @@ func (p *Process) guestControl(host []byte, at, room uint32, cloexec bool) (uint
 		off += min(guestAlign(size), room-off)
 	}
 
-	return off, flags
+	return off, 0
 }
 
 // hostMsghdr is the host's struct msghdr.
@@ -574,40 +566,38 @@ func (s *hostSocket) sendmsg(p *Process, at, flags uint32) (int, error) {
 	return send(nil)
 }
 
+// recvmsg takes a message from the inbox into the guest's msghdr: the
+// iovecs scattered, the sender's address, the files of SCM_RIGHTS
+// installed and the other control messages written into its control
+// buffer, the flags into msg_flags.
 func (s *hostSocket) recvmsg(p *Process, at, flags uint32) (int, error) {
-	iov, err := p.iovecs(p.u32(at+8), p.u32(at+12))
+	spans, err := p.ioSpans(p.u32(at+8), p.u32(at+12))
 
 	if err != nil {
 		return 0, err
 	}
 
-	room := p.u32(at + 20)
-	control := make([]byte, 2*room+64)
-	addr := make([]byte, sockaddrMax)
-	var m hostMsghdr
-	n, err := s.transfer(p, pollIn, ioMode{nonblock: flags&msgDontwait != 0}, func() (int, error) {
-		m = hostMsghdr{name: bufferPointer(addr), namelen: sockaddrMax, control: bufferPointer(control), controllen: uint64(len(control))}
-
-		if len(iov) > 0 {
-			m.iov, m.iovlen = uintptr(unsafe.Pointer(&iov[0])), uint64(len(iov))
-		}
-
-		return sockcall(syscall.SYS_RECVMSG, uintptr(s.fd), uintptr(unsafe.Pointer(&m)), uintptr(flags|msgCmsgCloexec))
-	})
+	n, pk, err := s.receive(p, spans, flags, ioMode{nonblock: flags&msgDontwait != 0})
 
 	if err != nil {
 		return 0, err
 	}
 
 	if name := p.u32(at); name != 0 {
-		guest := p.guestAddress(addr[:min(m.namelen, sockaddrMax)])
+		guest := p.guestAddress(pk.addr)
 		copy(p.span(name, min(p.u32(at+4), uint32(len(guest)))), guest)
 		p.put32(at+4, uint32(len(guest)))
 	}
 
-	length, truncated := p.guestControl(control[:m.controllen], p.u32(at+16), room, flags&msgCmsgCloexec != 0)
-	p.put32(at+20, length)
-	p.put32(at+24, uint32(m.flags)&^msgCmsgCloexec|flags&msgCmsgCloexec|truncated)
+	control, room := p.u32(at+16), p.u32(at+20)
+	written, truncated := p.putRights(pk.files, control, room, flags&msgCmsgCloexec != 0)
+	more, cut := p.putControl(pk.control, control+written, room-written)
+	p.put32(at+20, written+more)
+	p.put32(at+24, pk.flags|flags&msgCmsgCloexec|truncated|cut)
+
+	if flags&msgTrunc != 0 && inboxKind(s.kind.Load()).message() {
+		n = len(pk.data)
+	}
 
 	return n, nil
 }
