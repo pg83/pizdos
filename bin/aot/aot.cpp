@@ -3510,9 +3510,11 @@ namespace {
         i32 sp{};
         Slice<SpEntry> sps{};
         // lines marks where the code of another wasm instruction begins,
-        // lastPos the instruction the code is of (asmMarkPos).
+        // lastPos the instruction the code is of (asmMarkPos). Only a module
+        // with DWARF lines keeps the marks, for its line table (keepLines).
         Slice<LineMark> lines{};
         u32 lastPos{};
+        bool keepLines{};
     };
 
     struct Anonymous93 {
@@ -11479,6 +11481,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             return;
         }
         a->lastPos = pos;
+        if (!a->keepLines) {
+            return;
+        }
         const i32 pc = asmPos(a);
         if (length(a->lines) && a->lines[length(a->lines) - 1].pc == pc) {
             a->lines[length(a->lines) - 1].pos = pos;
@@ -25431,6 +25436,7 @@ namespace {
         code->a.fixups = makeSlice<RipFixup>(0);
         code->a.sps = makeSlice<SpEntry>(0);
         code->a.lines = makeSlice<LineMark>(0);
+        code->a.keepLines = length(module->debugLine) != 0;
         code->funcAt = makeSlice<i32>(0);
         code->calls = makeSlice<CallFixup>(0);
         code->jumpAt = makeMap<i32, i32>();
