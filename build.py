@@ -508,7 +508,7 @@ def system_program(name):
     return executable(f"{name}_exe", module, f"$(B)/bin/rootfs/{name}")
 
 
-services = [system_program(name) for name in ("devices", "blk", "gpt")]
+services = [system_program(name) for name in ("devices", "blk", "gpt", "mount", "umount")]
 # A service of tst/test_devices.py, which hands it to the system it runs.
 devices_service = executable("devices_service_exe", command(
     name="devices_service_module",
@@ -868,6 +868,7 @@ APPLICATION_TESTED = {
     "rootfs": [vm, rootfs],
     "devices": [vm, rootfs, devices_service],
     "disks": [vm, rootfs],
+    "mounts": [vm, rootfs],
     "vfs": [vm, rootfs, python_exe],
     "busybox_abi": [busybox],
     "busybox": [vm, busybox_exe, busybox],

@@ -18,6 +18,11 @@
 // symbolic link. /dev and /tmp are servers of this process mounted on
 // names of the image (mountOn): a walk goes into the root of a server
 // mounted on a name, and by ".." out of that root to where it is mounted.
+// Another process's server is mounted on a directory by MOUNT: a walk into
+// the directory goes on to that server with the names left, a call on the
+// directory's name goes on to it as one on its root, and the server walks
+// out of its root by ".." through the endpoint of the mount point it gets
+// (MOUNTED).
 //
 // A server makes what it creates theirs who ask, and lets them do what
 // its modes let them: root everything but executing what nobody may, the
@@ -497,6 +502,7 @@ namespace {
 
     struct Node;
     struct Server;
+    struct Endpoint;
 
     enum class Kind : u8 {
         Dir,
@@ -507,6 +513,15 @@ namespace {
         Registry,  // /dev/init, where services register devices
         CharDevice,  // a service's device: the service serves its opens
         BlockDevice,
+        Service,  // a service's file system, a server to mount
+    };
+
+    // What an endpoint is to the loop.
+    enum class Role : u8 {
+        File,  // an open file or directory: requests come on it
+        Channel,  // a device's end of its service's pair: only its close comes
+        Mount,  // the end of the root of a server mounted on its node: only its close comes
+        Up,  // an endpoint of a mount point its server has, for its walks out
     };
 
     // A lock of fcntl: an endpoint's, on the bytes [start, stop), to read
@@ -575,6 +590,8 @@ namespace {
         Node* parent = nullptr;  // where ".." goes; none for the root
         Entry* entry = nullptr;  // its name in parent
         Server* served = nullptr;  // a server of this process mounted here
+        Endpoint* mount = nullptr;  // the root of another's mounted here
+        Endpoint* up = nullptr;  // the endpoint of it that other server has
         u64 entries = 0;  // the last position given out
         u32 names = 0;  // the names in it
         u32 subdirs = 0;  // the directories among them
@@ -607,7 +624,8 @@ namespace {
         int fd;
         bool reads;  // what its open lets it do
         bool writes;
-        bool channel;  // a device's end of its service's pair: nothing comes on it
+        Role role;
+        bool dead;  // closed, while a batch of events may still name it
         Server* server;
         Node* node;  // what the endpoint is open on
         Node* dir;  // the directory a file was opened in, by name
@@ -836,12 +854,12 @@ namespace {
 
     // Whether a node is a service's device.
     static bool isDevice(const Node* n) {
-        return n->kind == Kind::CharDevice || n->kind == Kind::BlockDevice;
+        return n->kind == Kind::CharDevice || n->kind == Kind::BlockDevice || n->kind == Kind::Service;
     }
 
     // Whether a server is mounted on the node.
     static bool mountPoint(const Node* n) {
-        return n->kind == Kind::Dir && n->served;
+        return n->kind == Kind::Dir && (n->served || n->mount);
     }
 
     // Whether who asks may read (4), write (2), and search or execute (1)
@@ -876,6 +894,8 @@ namespace {
             return S_IFIFO | n->perm;
         case Kind::BlockDevice:
             return S_IFBLK | n->perm;
+        case Kind::Service:
+            return S_IFSOCK | n->perm;
         default:
             return S_IFCHR | n->perm;
         }
@@ -893,6 +913,8 @@ namespace {
             return DT_FIFO;
         case Kind::BlockDevice:
             return DT_BLK;
+        case Kind::Service:
+            return DT_SOCK;
         default:
             return DT_CHR;
         }
@@ -926,7 +948,7 @@ namespace {
 
     // Where a name goes: the root of a server mounted on it, or its node.
     static Place down(Place p) {
-        while (mountPoint(p.node)) {
+        while (p.node->kind == Kind::Dir && p.node->served) {
             Server* s = p.node->served;
             p = {s, s->root};
         }
@@ -1172,6 +1194,7 @@ namespace {
 
     int watcher = -1;
     Endpoint* freeEndpoints;
+    Endpoint* buried;  // closed in this batch of events: free after it
     usize endpointCount;  // the endpoints of all servers
 
     // The signal mask of the wait, once reapOnChild blocked SIGCHLD
@@ -1188,7 +1211,7 @@ namespace {
     // channel is a device's end of its service's pair, by its name in dir.
     // Its descriptor came with MSG_CMSG_CLOEXEC, or from a pair of ours,
     // made with SOCK_CLOEXEC.
-    static void listen(Server& s, int fd, Node* node, bool reads, bool writes, Node* dir, Name name, bool channel = false) {
+    static Endpoint* listen(Server& s, int fd, Node* node, bool reads, bool writes, Node* dir, Name name, Role role = Role::File) {
         Node* n = node ? node : s.root;
         Endpoint* ep = freeEndpoints;
         if (ep) {
@@ -1199,7 +1222,7 @@ namespace {
         if (name.length > NAME_MAX) {
             fatal("rootfs: a name of %zu bytes for an endpoint", name.length);
         }
-        *ep = {fd, reads, writes, channel, &s, n, dir, nullptr, u8(name.length), {}};
+        *ep = {fd, reads, writes, role, false, &s, n, dir, nullptr, u8(name.length), {}};
         if (!name.empty()) {
             memcpy(ep->name, name.at, name.length);
         }
@@ -1213,6 +1236,27 @@ namespace {
         ev.data.ptr = ep;
         if (epoll_ctl(watcher, EPOLL_CTL_ADD, fd, &ev) != 0) {
             fatal("fs: epoll_ctl: errno %d", errno);
+        }
+        return ep;
+    }
+
+    static void forget(Endpoint* ep);
+
+    // The other end of an endpoint closed, or it is let go of: the file is
+    // closed.
+    static void closed(Endpoint* ep) {
+        const int fd = ep->fd;
+        epoll_ctl(watcher, EPOLL_CTL_DEL, fd, nullptr);
+        forget(ep);
+        close(fd);
+    }
+
+    // The endpoints closed in a batch of events are free once it is done.
+    static void bury() {
+        while (Endpoint* ep = buried) {
+            buried = ep->next;
+            ep->next = freeEndpoints;
+            freeEndpoints = ep;
         }
     }
 
@@ -1232,8 +1276,24 @@ namespace {
     static void forget(Endpoint* ep) {
         Node* n = ep->node;
         const int fd = ep->fd;
-        if (ep->channel) {
+        ep->dead = true;
+        switch (ep->role) {
+        case Role::Channel:
             unregister(ep);
+            break;
+        case Role::Mount:
+            // The server mounted here is gone, or let go of: its endpoint
+            // of the mount point goes too.
+            n->mount = nullptr;
+            if (n->up) {
+                closed(n->up);
+            }
+            break;
+        case Role::Up:
+            n->up = nullptr;
+            break;
+        case Role::File:
+            break;
         }
         n->shared.keepIf([fd](int holder) {
             return holder != fd;
@@ -1249,8 +1309,8 @@ namespace {
         if (ep->dir) {
             drop(ep->dir);
         }
-        ep->next = freeEndpoints;
-        freeEndpoints = ep;
+        ep->next = buried;
+        buried = ep;
         --endpointCount;
     }
 
@@ -1306,6 +1366,42 @@ namespace {
             return false;
         }
     };
+
+    // Hands a request on to the server mounted on n, the request's
+    // descriptors with it, its body the one given: that server answers it.
+    static bool toMounted(const Node* n, const Header& h, const void* body, usize size, int fd) {
+        Header head = h;
+        const iovec parts[] = {part(&head, sizeof head), part(body, size)};
+        if (sendPacket(n->mount->fd, parts, 2, packetFds, packetFdCount, MSG_DONTWAIT) < 0) {
+            return error(fd, errno == EAGAIN ? EAGAIN : EIO);
+        }
+        return false;
+    }
+
+    // A walk into a directory another server is mounted on goes on to that
+    // server, from its root, with the names left.
+    static bool intoMounted(const Node* n, const Header& h, u64 dev, u64 ino, u32 links, Walk& walk, bool slash, int fd) {
+        Assembly a;
+        a.add(dev);
+        a.add(ino);
+        a.add(links);
+        Name left;
+        for (bool first = true; walk.take(left); first = false) {
+            if (!a.fits(left.length + 2)) {
+                return error(fd, ENAMETOOLONG);
+            }
+            if (!first) {
+                a.add("/", 1);
+            }
+            a.add(left.at, left.length);
+        }
+        if (slash) {
+            a.add("/", 1);
+        }
+        Header handed = h;
+        handed.arg |= resolveHanded;
+        return toMounted(n, handed, out, a.size, fd);
+    }
 
     // A walk to a root of no server of ours: the kernel goes on from the
     // root of the process with the names left.
@@ -1375,6 +1471,9 @@ namespace {
                 return error(fd, ENOENT);
             }
             const Place next = down({here.s, entry->node});
+            if (next.node->mount) {
+                return intoMounted(next.node, h, dev, ino, links, walk, slash, fd);
+            }
             if (next.node->kind != Kind::Link) {
                 here = next;
                 continue;
@@ -1416,7 +1515,9 @@ namespace {
                 final = name;
             }
         }
-        const bool kept = here.s != ep->server || here.node != ep->node;
+        // The kernel asked another server for a walk handed on here: what
+        // it gets back is the directory it goes on from, always.
+        const bool kept = here.s != ep->server || here.node != ep->node || (h.arg & resolveHanded) != 0;
         const u32 head[4] = {stepDone, links, last, (slash && last == lastName ? stepSlash : 0) | (kept ? stepKept : 0)};
         const iovec parts[] = {part(head, sizeof head), part(final.at, final.length)};
         if (kept) {
@@ -1532,7 +1633,7 @@ namespace {
         if (n->kind == Kind::Link && !(opath && (flags & O_NOFOLLOW) != 0)) {
             return error(fd, ELOOP);
         }
-        if ((flags & O_DIRECTORY) != 0 && n->kind != Kind::Dir) {
+        if ((flags & O_DIRECTORY) != 0 && n->kind != Kind::Dir && n->kind != Kind::Service) {
             return error(fd, ENOTDIR);
         }
         if (!made && !opath) {
@@ -2154,10 +2255,10 @@ namespace {
 
     // ---- devices ----------------------------------------------------------------
 
-    // A service's device: a name in /dev of the mode asked for, S_IFCHR or
-    // S_IFBLK, whose opens go on to the end of a pair the request brings,
-    // the service's the other; its stat is the reply. Only on an endpoint
-    // of /dev/init open to write.
+    // A service's device: a name in /dev of the mode asked for, S_IFCHR,
+    // S_IFBLK, or S_IFSOCK for a file system to mount, whose opens go on to
+    // the end of a pair the request brings, the service's the other; its
+    // stat is the reply. Only on an endpoint of /dev/init open to write.
     static bool registerName(Endpoint* ep, const Header& h, Body body, int fd) {
         const Name name = body.string();
         const u32 type = h.arg & S_IFMT;
@@ -2165,7 +2266,7 @@ namespace {
         if (ep->node->kind != Kind::Registry || !ep->writes) {
             return error(fd, EBADF);
         }
-        if (packetFdCount != 2 || (type != S_IFCHR && type != S_IFBLK) || name.empty()) {
+        if (packetFdCount != 2 || (type != S_IFCHR && type != S_IFBLK && type != S_IFSOCK) || name.empty()) {
             return error(fd, EINVAL);
         }
         if (const int e = badName(name)) {
@@ -2174,22 +2275,127 @@ namespace {
         if (lookup(s.root, name)) {
             return error(fd, EEXIST);
         }
-        Node* n = makeNode(s, s.root, name, type == S_IFBLK ? Kind::BlockDevice : Kind::CharDevice);
+        Node* n = makeNode(s, s.root, name, type == S_IFBLK ? Kind::BlockDevice : type == S_IFSOCK ? Kind::Service : Kind::CharDevice);
         n->perm = h.arg & 07777;
         n->uid = h.uid;
         n->gid = h.gid;
         n->fd = packetFds[0];
         packetFds[0] = -1;  // the device's now: handle leaves it open
-        listen(s, n->fd, n, false, false, s.root, name, true);
+        listen(s, n->fd, n, false, false, s.root, name, Role::Channel);
         const Stat st = statOf(s, n);
         ok(fd, &st, sizeof st);
         return false;
+    }
+
+    // ---- mounts -------------------------------------------------------------------
+
+    // A directory of another server, the end of an open of it the request
+    // brings, mounted on a directory of a name here: a walk into the name,
+    // and a call on it, go on to that server from then on. The server gets
+    // an endpoint of the mount point (MOUNTED), for its walks out of its
+    // root by ".." and the paths it is asked. When the end closes, the
+    // server is gone, unmounted.
+    static bool mountName(Endpoint* ep, const Header& h, Body body, int fd) {
+        const Name name = body.string();
+        Place t;
+        if (packetFdCount != 2 || name.empty()) {
+            return error(fd, EINVAL);
+        }
+        if (const int e = named(ep->server, ep->node, name, h, t)) {
+            return error(fd, e);
+        }
+        Node* n = t.node;
+        if (n->kind != Kind::Dir) {
+            return error(fd, ENOTDIR);
+        }
+        if (mountPoint(n) || n == t.s->root) {
+            return error(fd, EBUSY);
+        }
+        int ends[2];
+        if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, ends) != 0) {
+            return error(fd, errno);
+        }
+        n->mount = listen(*t.s, packetFds[0], n, false, false, nullptr, {}, Role::Mount);
+        packetFds[0] = -1;  // the mount's now
+        n->up = listen(*t.s, ends[0], n, false, false, nullptr, {}, Role::Up);
+        Header mounted{opMounted, 0, 0, 0};
+        const iovec parts[] = {part(&mounted, sizeof mounted)};
+        sendPacket(n->mount->fd, parts, 1, &ends[1], 1, MSG_DONTWAIT);
+        close(ends[1]);
+        return answer(fd, 0);
+    }
+
+    // The server mounted on a name of the directory let go of.
+    static bool unmountName(Endpoint* ep, const Header& h, Body body, int fd) {
+        const Name name = body.string();
+        if (ep->node->kind != Kind::Dir) {
+            return error(fd, ENOTDIR);
+        }
+        if (!may(ep->node, h, 1)) {
+            return error(fd, EACCES);
+        }
+        const Entry* entry = name.empty() ? nullptr : lookup(ep->node, name);
+        if (!entry) {
+            return error(fd, name.empty() ? EINVAL : ENOENT);
+        }
+        if (!entry->node->mount) {
+            return error(fd, EINVAL);
+        }
+        closed(entry->node->mount);
+        return answer(fd, 0);
+    }
+
+    // A call on a name of the directory another server is mounted on is a
+    // call on that server's root: it goes on to the server without the
+    // name, what comes before the name in the body kept. handled says it
+    // was such a call.
+    static bool onMounted(Endpoint* ep, const Header& h, Body body, int fd, bool& handled) {
+        usize ahead = 0;
+        handled = false;
+        switch (h.op) {
+        case opOpen:
+            ahead = 4;
+            break;
+        case opChown:
+        case opTruncate:
+            ahead = 8;
+            break;
+        case opUtimes:
+            ahead = 16;
+            break;
+        case opStat:
+        case opReadlink:
+        case opStatfs:
+        case opChmod:
+            break;
+        default:
+            return false;
+        }
+        if (body.size() < ahead || ep->node->kind != Kind::Dir) {
+            return false;
+        }
+        Body rest{body.at + ahead, body.end};
+        const Name name = rest.string();
+        const Entry* entry = name.empty() ? nullptr : lookup(ep->node, name);
+        if (!entry || !entry->node->mount) {
+            return false;
+        }
+        handled = true;
+        if (!may(ep->node, h, 1)) {
+            return error(fd, EACCES);
+        }
+        return toMounted(entry->node, h, body.at, ahead, fd);
     }
 
     // ---- the loop ---------------------------------------------------------------
 
     // A request on an endpoint, answered on fd: whether fd is kept.
     static bool dispatch(Endpoint* ep, const Header& h, Body body, int fd) {
+        bool handled;
+        const bool kept = onMounted(ep, h, body, fd, handled);
+        if (handled) {
+            return kept;
+        }
         switch (h.op) {
         case opResolve:
             return resolve(ep, h, body, fd);
@@ -2246,23 +2452,22 @@ namespace {
             return lockNode(ep, h, body, fd);
         case opRegister:
             return registerName(ep, h, body, fd);
+        case opMount:
+            return mountName(ep, h, body, fd);
+        case opUnmount:
+            return unmountName(ep, h, body, fd);
         default:
             return error(fd, ENOSYS);
         }
     }
 
-    // The other end of an endpoint closed: the file is closed.
-    static void closed(Endpoint* ep) {
-        const int fd = ep->fd;
-        epoll_ctl(watcher, EPOLL_CTL_DEL, fd, nullptr);
-        forget(ep);
-        close(fd);
-    }
-
     static void handle(Endpoint* ep) {
-        if (ep->channel) {
-            // Nothing comes on a device's end of its service's pair but its
-            // close; what else does is dropped.
+        if (ep->dead) {
+            return;
+        }
+        if (ep->role == Role::Channel || ep->role == Role::Mount) {
+            // Nothing comes on a device's end of its service's pair, or on
+            // a mounted root's, but its close; what else does is dropped.
             const ssize_t got = receivePacket(ep->fd, packet, sizeof packet, packetFds, packetFdCount);
             for (usize i = 0; i < packetFdCount; ++i) {
                 close(packetFds[i]);
@@ -2319,14 +2524,15 @@ namespace {
         return shellStatus < 0;
     }
 
-    int upEnd = -1;  // ours of the pair the services close once they are up
-    Endpoint upMarker;  // what the events of upEnd carry
+    int bootEnd = -1;  // ours of the pair the services close once they are up
+    Endpoint bootMarker;  // what the events of bootEnd carry
 
-    static void up();
+    static void booted();
 
     // Serves the servers until the last endpoint of them all closes: then
-    // nobody can reach them; or until the shell ends. The end of upEnd, no
-    // packet on it, is the services' being up.
+    // nobody can reach them; or until the shell ends. The end of bootEnd,
+    // no packet on it, is the services' being up. An endpoint closed while
+    // a batch of events is handled stays dead to the rest of the batch.
     static void serve() {
         epoll_event events[64];
         while (endpointCount > 0) {
@@ -2335,14 +2541,15 @@ namespace {
                 return;
             }
             for (int i = 0; i < n; ++i) {
-                if (events[i].data.ptr == &upMarker) {
-                    if (recv(upEnd, packet, sizeof packet, MSG_DONTWAIT) == 0) {
-                        up();
+                if (events[i].data.ptr == &bootMarker) {
+                    if (recv(bootEnd, packet, sizeof packet, MSG_DONTWAIT) == 0) {
+                        booted();
                     }
                     continue;
                 }
                 handle(static_cast<Endpoint*>(events[i].data.ptr));
             }
+            bury();
         }
         close(watcher);
         watcher = -1;
@@ -2530,7 +2737,7 @@ namespace {
     // Starts the services of the system with the far end of a pair of ours
     // as their descriptor 3: they close it once they are up, after the
     // services they start have it. When the last one has, the shell starts
-    // (up). /bin/devices is the devices every system has; /bin/blk serves
+    // (booted). /bin/devices is the devices every system has; /bin/blk serves
     // each disk vm gave us, our descriptors after 2, in order, named by
     // DISKS: the disk is its descriptor 4, and it starts the services of
     // the disk's partitions.
@@ -2564,20 +2771,20 @@ namespace {
             close(3 + i);
         }
         close(ends[1]);
-        upEnd = ends[0];
+        bootEnd = ends[0];
         epoll_event ev{};
         ev.events = EPOLLIN;
-        ev.data.ptr = &upMarker;
-        if (epoll_ctl(watcher, EPOLL_CTL_ADD, upEnd, &ev) != 0) {
+        ev.data.ptr = &bootMarker;
+        if (epoll_ctl(watcher, EPOLL_CTL_ADD, bootEnd, &ev) != 0) {
             fatal("rootfs: epoll_ctl: errno %d", errno);
         }
     }
 
     // The services are up: the shell starts on the terminal.
-    static void up() {
-        epoll_ctl(watcher, EPOLL_CTL_DEL, upEnd, nullptr);
-        close(upEnd);
-        upEnd = -1;
+    static void booted() {
+        epoll_ctl(watcher, EPOLL_CTL_DEL, bootEnd, nullptr);
+        close(bootEnd);
+        bootEnd = -1;
         char sh[] = "sh";
         char* const argv[] = {sh, nullptr};
         shellPid = spawn("/bin/sh", argv, environment, rootEnd);

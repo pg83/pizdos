@@ -19,9 +19,11 @@
 //   is the directory itself; a name is no "." or "..", has no "/" and is
 //   never followed: a symbolic link is itself, and to the calls that look
 //   at a name the root of a server mounted on it is what it is:
-//     RESOLVE               root dev u64, root ino u64, links u32, path
+//     RESOLVE   arg handed  root dev u64, root ino u64, links u32, path
 //                                         OK step u32, links u32, last u32,
-//                                         flags u32, name (resolve)
+//                                         flags u32, name (resolve); handed
+//                                         1: a server handed the walk on,
+//                                         the reply's endpoint is kept
 //     OPEN      arg flags   mode u32 name OK stat; fds[0] an object: the file is it
 //     STAT                  name          OK stat
 //     READLINK              name          OK target
@@ -39,6 +41,11 @@
 //                                         16 mtime kept
 //     TRUNCATE              size u64 name
 //     STATFS                name          OK statfs
+//     MOUNT                 name          fds[0] the end of an open of a
+//                                         directory of another server: a
+//                                         walk into the name, and a call on
+//                                         it, go on to that server
+//     UNMOUNT               name
 //   on a node's endpoint:
 //     READ      arg len     off u64 woff u32
 //                                         OK count u32; fds[0] a memfd of
@@ -69,12 +76,20 @@
 //                                         by the name it was opened by
 //   on the endpoint of rootfs's /dev/init:
 //     REGISTER  arg mode    name          OK stat: a device, S_IFCHR or
-//                                         S_IFBLK, of that name in /dev.
+//                                         S_IFBLK, or a file system to
+//                                         mount, S_IFSOCK, of that name in
+//                                         /dev.
 //                                         fds[0] is the end of a pair whose
 //                                         other end the service keeps:
 //                                         rootfs hands every OPEN of the
 //                                         name on to it, and the name goes
 //                                         when the end closes
+//   on the root's endpoint of a server rootfs mounts, with no reply:
+//     MOUNTED                             fds[0] an endpoint of the mount
+//                                         point: a walk out of the server's
+//                                         root by ".." goes on there as
+//                                         "../" and the names left, and a
+//                                         PATH there is where it is mounted
 //   replies: OK, ERR with arg the errno
 //   stat { ino u64, size u64, mtime u64 nanoseconds, mode u32, nlink u32,
 //          uid u32, gid u32, atime u64, dev u64, ctime u64 }
@@ -95,7 +110,7 @@ enum : uint32_t {
     opResolve, opRead, opWrite, opReaddir, opFstat, opChmod, opChown, opUtimes,
     opTruncate, opFchmod, opFchown, opFutimes, opFtruncate, opFsync,
     opMknod, opLink, opStatfs, opFstatfs, opFlock, opLock, opPath, opOk, opErr,
-    opRegister,
+    opRegister, opMount, opUnmount, opMounted,
 };
 
 // The most descriptors a packet brings: a READ's or WRITE's memfd and its
@@ -117,6 +132,7 @@ constexpr uint32_t lastDotdot = 2;
 constexpr uint32_t lastNone = 3;  // the path is "/" alone
 constexpr uint32_t stepSlash = 1;  // a slash ends the path
 constexpr uint32_t stepKept = 2;  // the reply's endpoint is the directory's from now on
+constexpr uint32_t resolveHanded = 1;  // RESOLVE's arg: a server handed the walk on
 
 struct Header {
     uint32_t op;

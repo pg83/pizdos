@@ -44,6 +44,7 @@
 #include <sys/file.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/mount.h>
 #include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/select.h>
@@ -577,6 +578,9 @@ KERNEL(char*, get_current_dir_name, (void), ())
 KERNEL(int, unlink, (const char* a), (a))
 KERNEL(int, unlinkat, (int a, const char* b, int c), (a, b, c))
 KERNEL(int, rmdir, (const char* a), (a))
+KERNEL(int, mount, (const char* a, const char* b, const char* c, unsigned long d, const void* e), (a, b, c, d, e))
+KERNEL(int, umount, (const char* a), (a))
+KERNEL(int, umount2, (const char* a, int b), (a, b))
 KERNEL(int, link, (const char* a, const char* b), (a, b))
 KERNEL(int, linkat, (int a, const char* b, int c, const char* d, int e), (a, b, c, d, e))
 KERNEL(int, symlink, (const char* a, const char* b), (a, b))

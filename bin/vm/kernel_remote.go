@@ -42,8 +42,10 @@ import (
 //	is never followed: a symbolic link is itself, and to the calls that
 //	look at a name the root of a server mounted on it is what it is. On
 //	the endpoint of a node a node call is the node's.
-//	  RESOLVE             root dev u64, root ino u64, links u32, path
-//	                      OK step u32, links u32, last u32, flags u32, name
+//	  RESOLVE   arg handed root dev u64, root ino u64, links u32, path
+//	                      OK step u32, links u32, last u32, flags u32, name;
+//	                      handed 1: a server handed the walk on, which keeps
+//	                      the reply's endpoint
 //	  OPEN      arg flags mode u32 name   OK stat; a file among the
 //	                      reply's files is the file itself
 //	  STAT                name             OK stat
@@ -80,6 +82,10 @@ import (
 //	  PATH                root dev u64, root ino u64   OK the path from the
 //	                      root of the process: a directory's, a file's by
 //	                      the name it was opened by in its directory
+//	  MOUNT               name             fds[0] the end of an open
+//	                      directory of a server: walks into the name, and
+//	                      the calls on it, go on to that server
+//	  UNMOUNT             name
 //	replies: OK, ERR with arg the errno
 //	stat { ino u64, size u64, mtime u64 nanoseconds, mode u32, nlink u32,
 //	       uid u32, gid u32, atime u64, dev u64, ctime u64 }
@@ -131,6 +137,9 @@ const (
 	rPath
 	rOk
 	rErr
+	rRegister // rootfs's, never the kernel's
+	rMount
+	rUnmount
 	remoteHeader = 16
 	remoteStat   = 64
 	remoteStatfs = 52
@@ -796,6 +805,20 @@ func (d *remoteDir) openName(p *Process, name string, flags int, mode uint32) (F
 	}
 
 	return &remoteFile{node}, nil
+}
+
+// mount mounts what end is the end of an open of, a directory of a
+// server, on a name of the directory.
+func (d *remoteDir) mount(name string, end *pairEnd) error {
+	pk, mine, err := d.call(rMount, 0, []byte(name), []File{end})
+
+	if err != nil {
+		return err
+	}
+
+	done(pk, mine)
+
+	return nil
 }
 
 func (d *remoteDir) mkdir(p *Process, name string, mode uint32) error {

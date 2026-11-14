@@ -83,6 +83,9 @@ func (k *Kernel) functionTable() map[string]any {
 		"rmdir":                  libcRmdir,
 		"unlink":                 libcUnlink,
 		"unlinkat":               libcUnlinkat,
+		"mount":                  libcMount,
+		"umount":                 libcUmount,
+		"umount2":                libcUmount2,
 		"remove":                 libcRemove,
 		"rename":                 libcRename,
 		"renameat":               libcRenameat,
@@ -886,6 +889,18 @@ func libcUnlink(ctx uintptr, path uint32) uint32 {
 
 func libcUnlinkat(ctx uintptr, dirfd, path, flags uint32) uint32 {
 	return proc(ctx).libcUnlinkat(dirfd, path, flags)
+}
+
+func libcMount(ctx uintptr, source, target, fstype, flags, data uint32) uint32 {
+	return proc(ctx).libcMount(source, target, fstype, flags, data)
+}
+
+func libcUmount(ctx uintptr, target uint32) uint32 {
+	return proc(ctx).libcUmount(target)
+}
+
+func libcUmount2(ctx uintptr, target, flags uint32) uint32 {
+	return proc(ctx).libcUmount2(target, flags)
 }
 
 func libcRemove(ctx uintptr, path uint32) uint32 {
