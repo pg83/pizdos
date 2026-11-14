@@ -8,6 +8,7 @@ import (
 	"math"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"unsafe"
 )
@@ -84,7 +85,10 @@ type Instance struct {
 	obj  *Object
 	code *Code
 	// region is the instance's mapping (newRegion): block is its start.
+	// holds counts the instance itself and the memfds of its memory: the
+	// last to go unmaps the region (unhold).
 	region []byte
+	holds  atomic.Int32
 	block  []byte
 	memory *LinearMemory
 	tables [][]uintptr
@@ -524,6 +528,7 @@ func newInstance(c *Code, imports Imports, stack uint64) *Instance {
 	meta := c.obj.meta
 	region := newRegion(meta.memory)
 	i := &Instance{name: c.name, obj: c.obj, code: c, region: region, block: region[:max(meta.instanceSize, headerSize)]}
+	i.holds.Store(1)
 	initialized := false
 
 	defer func() {
@@ -643,8 +648,9 @@ func (i *Instance) clone(imports *Kernel, stack uint64, from, to uint64) *Instan
 	return c
 }
 
-// release unmaps the instance's region, its block and memory, and the
-// memory's shadow map; the instance is not used again.
+// release unmaps the memory's shadow map and drops the instance's hold on
+// its region, its block and memory, which a memfd of the memory keeps
+// mapped; the instance is not used again.
 func (i *Instance) release() {
 	compilerCoverage(i)
 	i.writeTailProfile()
@@ -653,8 +659,16 @@ func (i *Instance) release() {
 		throw(syscall.Munmap(i.memory.shadow))
 	}
 
-	throw(syscall.Munmap(i.region))
-	i.region, i.block, i.memory, i.tables = nil, nil, nil, nil
+	i.block, i.memory, i.tables = nil, nil, nil
+	i.unhold()
+}
+
+// unhold drops a hold on the instance's region, the instance's own or a
+// memfd's: the last unmaps it.
+func (i *Instance) unhold() {
+	if i.holds.Add(-1) == 0 {
+		throw(syscall.Munmap(i.region))
+	}
 }
 
 // nativeFunc is a Go function value of type typ whose code is at code.

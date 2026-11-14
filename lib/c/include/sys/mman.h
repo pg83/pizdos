@@ -44,4 +44,14 @@ int munlock(const void*, size_t);
 int mlockall(int);
 int munlockall(void);
 
+/*
+ * memfd_create makes a file of the length bytes of the caller's memory at
+ * addr, open in the access mode of flags (O_RDONLY, O_WRONLY, O_RDWR, and
+ * O_CLOEXEC): a descriptor of it, passed to another process, lets that
+ * process read or write that memory, a read straight into its own memory
+ * and a write straight from it. The file keeps the memory while it is
+ * open, past the creator's end.
+ */
+int memfd_create(void*, size_t, int);
+
 __END_DECLS

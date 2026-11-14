@@ -137,6 +137,7 @@ func (k *Kernel) functionTable() map[string]any {
 		"mallopt":                libcMallopt,
 		"getpagesize":            libcGetpagesize,
 		"mmap":                   libcMmap,
+		"memfd_create":           libcMemfd_create,
 		"munmap":                 libcMunmap,
 		"msync":                  libcMsync,
 		"madvise":                libcMadvise,
@@ -1131,6 +1132,10 @@ func libcGetpagesize(ctx uintptr) uint32 {
 
 func libcMmap(ctx uintptr, addr, n, prot, flags, fd uint32, off uint64) uint32 {
 	return proc(ctx).libcMmap(addr, n, prot, flags, fd, off)
+}
+
+func libcMemfd_create(ctx uintptr, addr, n, flags uint32) uint32 {
+	return proc(ctx).libcMemfd_create(addr, n, flags)
 }
 
 func libcMunmap(ctx uintptr, addr, n uint32) uint32 {
