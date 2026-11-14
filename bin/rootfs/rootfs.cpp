@@ -1,92 +1,39 @@
 // rootfs: the system, the first process. It serves three file systems
 // from one loop: the image linked into it, read-only, at the root; /dev,
-// the terminal the kernel gave vm as descriptor 0, null, zero, urandom and
-// random; and /tmp, a tree in its memory of at most tmpCapacity bytes, a
-// quarter of what a memory of wasm32 holds. It makes itself the root of
-// everything else with what POSIX has: one seqpacket pair, chroot to one
-// end in the shell's process. It starts the shell on the terminal with a
-// clean environment, reaps what ends under it, and ends with the shell's
+// the terminal the kernel gave vm as descriptor 0, /dev/init, and the
+// devices the services of the system register there; and /tmp, a tree in
+// its memory of at most tmpCapacity bytes, a quarter of what a memory of
+// wasm32 holds. It makes itself the root of everything else with what
+// POSIX has: one seqpacket pair, chroot to one end in each process it
+// starts. It starts the services of the system, /bin/devices first, and
+// the shell on the terminal once they are up, each with a clean
+// environment, reaps what ends under it, and ends with the shell's
 // status, as a system does.
 //
-// A file server is a tree of nodes behind endpoints. An open file is one
-// end of a seqpacket pair; the server holds the other and answers on it.
-// Every request brings a fresh endpoint, last among its descriptors: the
-// reply goes on it, and an OPEN's stays the open file's. The kernel
-// speaks this protocol for the POSIX calls of a process
-// (bin/vm/kernel_remote.go) and walks a path as Linux does: RESOLVE walks
-// it here to the directory of its last name, and the call is one on that
-// name, which the kernel follows itself when it is a symbolic link. /dev
-// and /tmp are servers of this process mounted on names of the image
-// (mountOn): a walk goes into the root of a server mounted on a name, and
-// by ".." out of that root to where it is mounted.
+// A file server is a tree of nodes behind endpoints, which speaks the
+// protocol of protocol.h. The kernel speaks it for the POSIX calls of a
+// process (bin/vm/kernel_remote.go) and walks a path as Linux does:
+// RESOLVE walks it here to the directory of its last name, and the call
+// is one on that name, which the kernel follows itself when it is a
+// symbolic link. /dev and /tmp are servers of this process mounted on
+// names of the image (mountOn): a walk goes into the root of a server
+// mounted on a name, and by ".." out of that root to where it is mounted.
 //
-// A packet is a Header and a body; descriptors ride with it (SCM_RIGHTS).
+// A server makes what it creates theirs who ask, and lets them do what
+// its modes let them: root everything but executing what nobody may, the
+// owner what the owner's bits say, the group of gid the group's, everyone
+// else the others'. A path is searched through directories who asks may
+// search, a name is made or removed in a directory they may write, and in
+// a sticky one removed only by the owner of the name's node or of the
+// directory.
 //
-//   Header { op u32, arg u32, uid u32, gid u32 }
-//
-// uid and gid are who asks: the kernel puts its process's ids, a program
-// that speaks the protocol its own. A server makes what it creates
-// theirs and lets them do what its modes let them: root everything but
-// executing what nobody may, the owner what the owner's bits say, the
-// group of gid the group's, everyone else the others'. A path is searched
-// through directories who asks may search, a name is made or removed in a
-// directory they may write, and in a sticky one removed only by the
-// owner of the name's node or of the directory. A reply's ids are zero.
-//
-//   on a directory's endpoint, about the directory or one name in it: ""
-//   is the directory itself; a name is no "." or "..", has no "/" and is
-//   never followed: a symbolic link is itself, and to the calls that look
-//   at a name the root of a server mounted on it is what it is:
-//     RESOLVE               root dev u64, root ino u64, links u32, path
-//                                         OK step u32, links u32, last u32,
-//                                         flags u32, name (resolve)
-//     OPEN      arg flags   mode u32 name OK stat; fds[0] an object: the file is it
-//     STAT                  name          OK stat
-//     READLINK              name          OK target
-//     MKDIR     arg mode    name
-//     MKNOD     arg mode    name          a FIFO or a regular file
-//     UNLINK    arg flags   name          AT_REMOVEDIR
-//     RENAME                dev u64 ino u64 old 0 new   new a name of the
-//                                         directory of device dev, inode ino
-//     LINK                  dev u64 ino u64 old 0 new
-//     SYMLINK               target 0 name
-//     CHMOD     arg mode    name
-//     CHOWN                 uid u32 gid u32 name
-//     UTIMES    arg when    atime u64 mtime u64 name   when: 2 atime now,
-//                                         4 mtime now, 8 atime kept,
-//                                         16 mtime kept
-//     TRUNCATE              size u64 name
-//     STATFS                name          OK statfs
-//   on a node's endpoint:
-//     READ      arg len     off u64       OK count u32; fds[0] a memfd of
-//                                         the reader's memory, the bytes
-//                                         go there
-//     WRITE     arg append  off u64 len u32
-//                                         OK count u32 at u64; fds[0] a
-//                                         memfd of the writer's memory,
-//                                         the bytes come from there
-//     READDIR               after u64     OK (ino u64, pos u64, type u8, name, 0)*
-//     FSTAT                               OK stat
-//     FCHMOD    arg mode
-//     FCHOWN                uid u32 gid u32
-//     FUTIMES   arg when    atime u64 mtime u64
-//     FTRUNCATE             size u64
-//     FSYNC     arg data
-//     FSTATFS                             OK statfs
-//     FLOCK     arg op                    LOCK_SH, LOCK_EX, LOCK_UN
-//     LOCK      arg get     type u32 start u64 len u64
-//                                         OK; with get, the lock in the
-//                                         way, F_UNLCK for none: type u32
-//                                         start u64 len u64
-//     PATH                  root dev u64, root ino u64
-//                                         OK the path from the root of the
-//                                         process: a directory's, a file's
-//                                         by the name it was opened by
-//   replies: OK, ERR with arg the errno
-//   stat { ino u64, size u64, mtime u64 nanoseconds, mode u32, nlink u32,
-//          uid u32, gid u32, atime u64, dev u64, ctime u64 }
-//   statfs { blocks u64, bfree u64, files u64, ffree u64, dev u64,
-//            bsize u32, namemax u32, flags u32 }  flags: 1 read-only
+// A device of /dev is a service's, which registered it at /dev/init: an
+// OPEN of it goes on to the service as it came, its endpoint with it, and
+// the service serves that open file from then on. rootfs keeps the name,
+// its mode and its owner, and lets the name go when the service's end of
+// the pair closes. The services rootfs starts get an end they close once
+// their devices are there, and hand on to the services they start: when
+// the last of them has closed it, the system is up.
 //
 // The root of the process that asks is a device and an inode: ".." stays
 // there, and an absolute link goes on from there. A node of this
@@ -115,13 +62,12 @@
 // of it a READ or WRITE brings: one copy. A reply is sent from where its
 // parts are: a header on the stack, a stat built there, a name of the
 // request, a link's target. What a reply assembles, the entries of a
-// directory, a path, goes into one buffer of its own, out, which random
-// bytes pass through too. Nothing is allocated to
-// answer a request; what a request makes is: a node, its name, a file's
-// bytes, an endpoint. The image's files and names are its own bytes,
-// never copied. The names of every directory are one open-addressing
-// table, by directory and name; a directory keeps its entries in the
-// order of their positions.
+// directory, a path, goes into one buffer of its own, out. Nothing is
+// allocated to answer a request; what a request makes is: a node, its
+// name, a file's bytes, an endpoint. The image's files and names are its
+// own bytes, never copied. The names of every directory are one
+// open-addressing table, by directory and name; a directory keeps its
+// entries in the order of their positions.
 
 #include <dirent.h>
 #include <errno.h>
@@ -145,6 +91,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "protocol.h"
+
 using u8 = uint8_t;
 using u32 = uint32_t;
 using u64 = uint64_t;
@@ -161,73 +109,13 @@ extern "C" const u8 rootfs_image[];
 extern "C" const u32 rootfs_image_size;
 
 namespace {
-    // The protocol's, as bin/vm/kernel_remote.go speaks it.
-    enum : u32 {
-        opOpen = 1, opStat, opReadlink, opMkdir, opUnlink, opRename, opSymlink,
-        opResolve, opRead, opWrite, opReaddir, opFstat, opChmod, opChown, opUtimes,
-        opTruncate, opFchmod, opFchown, opFutimes, opFtruncate, opFsync,
-        opMknod, opLink, opStatfs, opFstatfs, opFlock, opLock, opPath, opOk, opErr,
-    };
-
-    constexpr usize maxFds = 4;
     constexpr usize maxPacket = 65536;
-    constexpr u32 noId = 0xffffffff;  // a uid or gid kept
-    // UTIMES's when.
-    constexpr u32 whenAtimeNow = 2;
-    constexpr u32 whenMtimeNow = 4;
-    constexpr u32 whenAtimeKept = 8;
-    constexpr u32 whenMtimeKept = 16;
-    // RESOLVE's reply: where the walk ended, the kind of the last name and
-    // what goes with it.
-    constexpr u32 stepDone = 0;  // at the directory of the last name
-    constexpr u32 stepRoot = 1;  // the walk goes on from the root of the process
-    constexpr u32 lastName = 0;
-    constexpr u32 lastDot = 1;
-    constexpr u32 lastDotdot = 2;
-    constexpr u32 lastNone = 3;  // the path is "/" alone
-    constexpr u32 stepSlash = 1;  // a slash ends the path
-    constexpr u32 stepKept = 2;  // the reply's endpoint is the directory's from now on
 
     // The servers'.
     constexpr u64 blockSize = 4096;
     constexpr u32 maxLinks = 40;  // the symbolic links one path goes through, Linux's
     constexpr u64 past = UINT64_MAX;  // the stop of a lock to the end of a file and past it
     constexpr u64 tmpCapacity = u64(1) << 30;
-
-    struct Header {
-        u32 op;
-        u32 arg;
-        u32 uid;
-        u32 gid;
-    };
-
-    struct Stat {
-        u64 ino;
-        u64 size;
-        u64 mtime;
-        u32 mode;
-        u32 nlink;
-        u32 uid;
-        u32 gid;
-        u64 atime;
-        u64 dev;
-        u64 ctime;
-    };
-
-    struct [[gnu::packed]] Statfs {
-        u64 blocks;
-        u64 bfree;
-        u64 files;
-        u64 ffree;
-        u64 dev;
-        u32 bsize;
-        u32 namemax;
-        u32 flags;
-    };
-
-    static_assert(sizeof(Header) == 16);
-    static_assert(sizeof(Stat) == 64 && offsetof(Stat, atime) == 40);
-    static_assert(sizeof(Statfs) == 52);
 
     [[noreturn, gnu::format(printf, 1, 2)]] static void fatal(const char* format, ...) {
         va_list args;
@@ -615,10 +503,10 @@ namespace {
         File,
         Link,
         Fifo,  // a named pipe: the kernel makes the pipe
-        Object,  // an object of the kernel the server hands out: a tty, a disk
-        Null,  // reads nothing, takes everything
-        Zero,  // reads zeros
-        Random,  // reads the kernel's random bytes
+        Object,  // an object of the kernel the server hands out: a tty
+        Registry,  // /dev/init, where services register devices
+        CharDevice,  // a service's device: the service serves its opens
+        BlockDevice,
     };
 
     // A lock of fcntl: an endpoint's, on the bytes [start, stop), to read
@@ -679,7 +567,7 @@ namespace {
         bool released = false;  // gone from its server, its memory kept for what holds it
         Kind kind = Kind::Dir;
         int exclusive = -1;  // the endpoint that holds flock's exclusive lock, or -1
-        int fd = -1;  // an object's
+        int fd = -1;  // an object's; a device's end of its service's pair
         SmallVec<int> shared;  // the endpoints that hold flock's shared lock
         SmallVec<Range> ranges;
         Content content;  // a file's, a link's
@@ -719,6 +607,7 @@ namespace {
         int fd;
         bool reads;  // what its open lets it do
         bool writes;
+        bool channel;  // a device's end of its service's pair: nothing comes on it
         Server* server;
         Node* node;  // what the endpoint is open on
         Node* dir;  // the directory a file was opened in, by name
@@ -945,6 +834,11 @@ namespace {
         return true;
     }
 
+    // Whether a node is a service's device.
+    static bool isDevice(const Node* n) {
+        return n->kind == Kind::CharDevice || n->kind == Kind::BlockDevice;
+    }
+
     // Whether a server is mounted on the node.
     static bool mountPoint(const Node* n) {
         return n->kind == Kind::Dir && n->served;
@@ -980,6 +874,8 @@ namespace {
             return S_IFLNK | n->perm;
         case Kind::Fifo:
             return S_IFIFO | n->perm;
+        case Kind::BlockDevice:
+            return S_IFBLK | n->perm;
         default:
             return S_IFCHR | n->perm;
         }
@@ -995,6 +891,8 @@ namespace {
             return DT_LNK;
         case Kind::Fifo:
             return DT_FIFO;
+        case Kind::BlockDevice:
+            return DT_BLK;
         default:
             return DT_CHR;
         }
@@ -1167,18 +1065,14 @@ namespace {
 
     // ---- packets ---------------------------------------------------------------------
 
-    // The packet recv takes and the descriptors that come with it, the room
-    // for them and for the descriptors a reply sends, and the bytes a reply
-    // assembles: one of each for the process, whose loop takes a packet and
-    // is done with it before the next, and sends each reply whole. zeros is
-    // what /dev/zero reads, never written.
+    // The packet recv takes and the descriptors that come with it, and the
+    // bytes a reply assembles: one of each for the process, whose loop
+    // takes a packet and is done with it before the next, and sends each
+    // reply whole.
     alignas(Header) u8 packet[maxPacket];
-    alignas(cmsghdr) u8 packetControl[CMSG_SPACE(maxFds * sizeof(int))];
     int packetFds[maxFds];
     usize packetFdCount;
-    alignas(cmsghdr) u8 sendControl[CMSG_SPACE(maxFds * sizeof(int))];
     u8 out[maxPacket - sizeof(Header)];
-    u8 zeros[maxPacket - sizeof(Header)];
 
     // A reply: the header, then the parts where they are.
     static void reply(int fd, u32 op, u32 arg, const iovec* parts, usize count, const int* fds = nullptr, usize fdCount = 0) {
@@ -1190,20 +1084,7 @@ namespace {
         for (usize i = 0; i < count; ++i) {
             iov[1 + i] = parts[i];
         }
-        msghdr m{};
-        m.msg_iov = iov;
-        m.msg_iovlen = int(1 + count);
-        if (fdCount > 0) {
-            memset(sendControl, 0, sizeof sendControl);
-            m.msg_control = sendControl;
-            m.msg_controllen = socklen_t(CMSG_LEN(fdCount * sizeof(int)));
-            cmsghdr* c = CMSG_FIRSTHDR(&m);
-            c->cmsg_level = SOL_SOCKET;
-            c->cmsg_type = SCM_RIGHTS;
-            c->cmsg_len = m.msg_controllen;
-            memcpy(CMSG_DATA(c), fds, fdCount * sizeof(int));
-        }
-        sendmsg(fd, &m, 0);  // a gone reader is its own loss
+        sendPacket(fd, iov, 1 + count, fds, fdCount);  // a gone reader is its own loss
     }
 
     static iovec part(const void* data, usize size) {
@@ -1253,13 +1134,7 @@ namespace {
     // One packet into packet, its descriptors into packetFds: the length
     // of its body, after the header, or -1 at the end of the endpoint.
     static i64 receive(int fd, Header& h) {
-        iovec iov{packet, sizeof packet};
-        msghdr m{};
-        m.msg_iov = &iov;
-        m.msg_iovlen = 1;
-        m.msg_control = packetControl;
-        m.msg_controllen = sizeof packetControl;
-        const ssize_t n = recvmsg(fd, &m, MSG_CMSG_CLOEXEC);
+        const ssize_t n = receivePacket(fd, packet, sizeof packet, packetFds, packetFdCount);
         if (n <= 0) {
             return -1;
         }
@@ -1267,14 +1142,6 @@ namespace {
             fatal("a packet without a header");
         }
         memcpy(&h, packet, sizeof h);
-        packetFdCount = 0;
-        for (cmsghdr* c = CMSG_FIRSTHDR(&m); c; c = CMSG_NXTHDR(&m, c)) {
-            if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_RIGHTS && c->cmsg_len >= CMSG_LEN(0)) {
-                const usize count = MIN((c->cmsg_len - CMSG_LEN(0)) / sizeof(int), maxFds - packetFdCount);
-                memcpy(packetFds + packetFdCount, CMSG_DATA(c), count * sizeof(int));
-                packetFdCount += count;
-            }
-        }
         return i64(n) - i64(sizeof(Header));
     }
 
@@ -1317,10 +1184,11 @@ namespace {
     volatile sig_atomic_t childEnded = 1;
 
     // An endpoint the server answers on, open on node, or on the root, to
-    // read, to write or both; a file opened by a name of dir says it. Its
-    // descriptor came with MSG_CMSG_CLOEXEC, or from a pair of ours, made
-    // with SOCK_CLOEXEC.
-    static void listen(Server& s, int fd, Node* node, bool reads, bool writes, Node* dir, Name name) {
+    // read, to write or both; a file opened by a name of dir says it. A
+    // channel is a device's end of its service's pair, by its name in dir.
+    // Its descriptor came with MSG_CMSG_CLOEXEC, or from a pair of ours,
+    // made with SOCK_CLOEXEC.
+    static void listen(Server& s, int fd, Node* node, bool reads, bool writes, Node* dir, Name name, bool channel = false) {
         Node* n = node ? node : s.root;
         Endpoint* ep = freeEndpoints;
         if (ep) {
@@ -1331,7 +1199,7 @@ namespace {
         if (name.length > NAME_MAX) {
             fatal("rootfs: a name of %zu bytes for an endpoint", name.length);
         }
-        *ep = {fd, reads, writes, &s, n, dir, nullptr, u8(name.length), {}};
+        *ep = {fd, reads, writes, channel, &s, n, dir, nullptr, u8(name.length), {}};
         if (!name.empty()) {
             memcpy(ep->name, name.at, name.length);
         }
@@ -1348,11 +1216,25 @@ namespace {
         }
     }
 
+    // A device's end of its service's pair closed: the service is gone,
+    // and the device's name with it. What is open of the device stays the
+    // service's, gone too.
+    static void unregister(Endpoint* ep) {
+        Node* n = ep->node;
+        if (Entry* entry = lookup(ep->dir, {ep->name, ep->nameLength}); entry && entry->node == n) {
+            unplace(ep->dir, entry, now());
+        }
+        n->fd = -1;
+    }
+
     // An endpoint that closes: its locks go with it, and its node when no
     // name is left of it.
     static void forget(Endpoint* ep) {
         Node* n = ep->node;
         const int fd = ep->fd;
+        if (ep->channel) {
+            unregister(ep);
+        }
         n->shared.keepIf([fd](int holder) {
             return holder != fd;
         });
@@ -1597,6 +1479,18 @@ namespace {
         return false;
     }
 
+    // An OPEN of a device goes on to the service that registered it as it
+    // came, its endpoint with it: the service answers on the endpoint and
+    // serves the open file from then on. ENXIO when the service is gone,
+    // EAGAIN when it does not keep up with its opens.
+    static bool forward(const Node* n, Body body, int fd) {
+        const iovec all = part(packet, usize(body.end - packet));
+        if (n->fd < 0 || sendPacket(n->fd, &all, 1, &fd, 1, MSG_DONTWAIT) < 0) {
+            return error(fd, n->fd >= 0 && errno == EAGAIN ? EAGAIN : ENXIO);
+        }
+        return false;
+    }
+
     // A name of the directory opened, or the directory itself for "": read
     // or written as its access mode says and who asks may, made when
     // O_CREAT asks and it is not there, emptied when O_TRUNC asks; with
@@ -1655,6 +1549,9 @@ namespace {
         if (n->kind == Kind::Object && !opath) {
             reply(fd, opOk, 0, nullptr, 0, &n->fd, 1);  // the object itself becomes the caller's
             return false;
+        }
+        if (isDevice(n) && !opath) {
+            return forward(n, body, fd);
         }
         if (truncates && n->kind == Kind::File && n->content.size() > 0) {
             resize(*target.s, n, 0);
@@ -2049,30 +1946,8 @@ namespace {
             }
             return readCount(fd, count);
         }
-        case Kind::Null:
-            return readCount(fd, 0);
-        case Kind::Zero:
-            for (usize at = 0; at < n; at += sizeof zeros) {
-                if (!put(w, zeros, MIN(sizeof zeros, n - at), at)) {
-                    return error(fd, EIO);
-                }
-            }
-            return readCount(fd, n);
-        case Kind::Random:
-            for (usize at = 0; at < n; at += sizeof out) {
-                const usize count = MIN(sizeof out, n - at);
-                for (usize k = 0; k < count; k += 256) {
-                    if (getentropy(out + k, MIN(usize(256), count - k)) != 0) {
-                        return error(fd, EIO);
-                    }
-                }
-                if (!put(w, out, count, at)) {
-                    return error(fd, EIO);
-                }
-            }
-            return readCount(fd, n);
         default:
-            return error(fd, EISDIR);
+            return error(fd, node->kind == Kind::Dir ? EISDIR : EINVAL);
         }
     }
 
@@ -2095,10 +1970,6 @@ namespace {
         }
         u64 count = length;
         switch (node->kind) {
-        case Kind::Null:
-        case Kind::Zero:
-        case Kind::Random:
-            break;
         case Kind::File: {
             if (!s.writable) {
                 return error(fd, EROFS);
@@ -2125,7 +1996,7 @@ namespace {
             break;
         }
         default:
-            return error(fd, EISDIR);
+            return error(fd, node->kind == Kind::Dir ? EISDIR : EINVAL);
         }
         Assembly a;
         a.add(u32(count));
@@ -2279,6 +2150,40 @@ namespace {
         return answer(fd, 0);
     }
 
+    // ---- devices ----------------------------------------------------------------
+
+    // A service's device: a name in /dev of the mode asked for, S_IFCHR or
+    // S_IFBLK, whose opens go on to the end of a pair the request brings,
+    // the service's the other; its stat is the reply. Only on an endpoint
+    // of /dev/init open to write.
+    static bool registerName(Endpoint* ep, const Header& h, Body body, int fd) {
+        const Name name = body.string();
+        const u32 type = h.arg & S_IFMT;
+        Server& s = devices;
+        if (ep->node->kind != Kind::Registry || !ep->writes) {
+            return error(fd, EBADF);
+        }
+        if (packetFdCount != 2 || (type != S_IFCHR && type != S_IFBLK) || name.empty()) {
+            return error(fd, EINVAL);
+        }
+        if (const int e = badName(name)) {
+            return error(fd, e);
+        }
+        if (lookup(s.root, name)) {
+            return error(fd, EEXIST);
+        }
+        Node* n = makeNode(s, s.root, name, type == S_IFBLK ? Kind::BlockDevice : Kind::CharDevice);
+        n->perm = h.arg & 07777;
+        n->uid = h.uid;
+        n->gid = h.gid;
+        n->fd = packetFds[0];
+        packetFds[0] = -1;  // the device's now: handle leaves it open
+        listen(s, n->fd, n, false, false, s.root, name, true);
+        const Stat st = statOf(s, n);
+        ok(fd, &st, sizeof st);
+        return false;
+    }
+
     // ---- the loop ---------------------------------------------------------------
 
     // A request on an endpoint, answered on fd: whether fd is kept.
@@ -2337,19 +2242,38 @@ namespace {
             return flockNode(ep, h, fd);
         case opLock:
             return lockNode(ep, h, body, fd);
+        case opRegister:
+            return registerName(ep, h, body, fd);
         default:
             return error(fd, ENOSYS);
         }
     }
 
+    // The other end of an endpoint closed: the file is closed.
+    static void closed(Endpoint* ep) {
+        const int fd = ep->fd;
+        epoll_ctl(watcher, EPOLL_CTL_DEL, fd, nullptr);
+        forget(ep);
+        close(fd);
+    }
+
     static void handle(Endpoint* ep) {
+        if (ep->channel) {
+            // Nothing comes on a device's end of its service's pair but its
+            // close; what else does is dropped.
+            const ssize_t got = receivePacket(ep->fd, packet, sizeof packet, packetFds, packetFdCount);
+            for (usize i = 0; i < packetFdCount; ++i) {
+                close(packetFds[i]);
+            }
+            if (got <= 0) {
+                closed(ep);
+            }
+            return;
+        }
         Header h;
         const i64 n = receive(ep->fd, h);
         if (n < 0) {
-            const int fd = ep->fd;
-            epoll_ctl(watcher, EPOLL_CTL_DEL, fd, nullptr);
-            forget(ep);
-            close(fd);  // the other end closed: the file is closed
+            closed(ep);
             return;
         }
         if (packetFdCount == 0) {
@@ -2366,9 +2290,11 @@ namespace {
             close(fd);
         }
         // The request's other descriptors, a READ's or WRITE's window, are
-        // done with once it is answered.
+        // done with once it is answered; one a call kept is -1.
         for (usize i = 0; i + 1 < packetFdCount; ++i) {
-            close(packetFds[i]);
+            if (packetFds[i] >= 0) {
+                close(packetFds[i]);
+            }
         }
     }
 
@@ -2391,8 +2317,14 @@ namespace {
         return shellStatus < 0;
     }
 
+    int upEnd = -1;  // ours of the pair the services close once they are up
+    Endpoint upMarker;  // what the events of upEnd carry
+
+    static void up();
+
     // Serves the servers until the last endpoint of them all closes: then
-    // nobody can reach them; or until the shell ends.
+    // nobody can reach them; or until the shell ends. The end of upEnd, no
+    // packet on it, is the services' being up.
     static void serve() {
         epoll_event events[64];
         while (endpointCount > 0) {
@@ -2401,6 +2333,12 @@ namespace {
                 return;
             }
             for (int i = 0; i < n; ++i) {
+                if (events[i].data.ptr == &upMarker) {
+                    if (recv(upEnd, packet, sizeof packet, MSG_DONTWAIT) == 0) {
+                        up();
+                    }
+                    continue;
+                }
                 handle(static_cast<Endpoint*>(events[i].data.ptr));
             }
         }
@@ -2533,20 +2471,21 @@ namespace {
     }
 
     // The terminal is descriptor 0, from the kernel: the object itself goes
-    // to whoever opens /dev/tty. urandom is the kernel's entropy, through
-    // getentropy.
+    // to whoever opens /dev/tty. /dev/init takes the devices of services,
+    // from the system's user.
     static void devfs(Server& s) {
         s.root = makeNode(s, nullptr, {}, Kind::Dir);
         makeNode(s, s.root, literal("tty"), Kind::Object, false)->fd = STDIN_FILENO;
-        makeNode(s, s.root, literal("null"), Kind::Null, false);
-        makeNode(s, s.root, literal("zero"), Kind::Zero, false);
-        makeNode(s, s.root, literal("urandom"), Kind::Random, false);
-        makeNode(s, s.root, literal("random"), Kind::Random, false);
+        Node* init = makeNode(s, s.root, literal("init"), Kind::Registry, false);
+        init->perm = 0600;
+        init->uid = geteuid();
+        init->gid = getegid();
     }
 
     // A program run in a child whose root and working directory are root,
     // an end of a pair of ours: the child asks us, who serve when it does.
-    static pid_t spawn(const char* path, char* const* argv, char* const* env, int root) {
+    // ready, when there is one, is the child's descriptor 3.
+    static pid_t spawn(const char* path, char* const* argv, char* const* env, int root, int ready = -1) {
         const pid_t pid = fork();
         if (pid == 0) {
             if (waitMasked) {
@@ -2557,6 +2496,10 @@ namespace {
                 _exit(127);
             }
             close(root);
+            if (ready >= 0 && (ready == 3 ? fcntl(3, F_SETFD, 0) : dup2(ready, 3)) < 0) {
+                dprintf(STDERR_FILENO, "rootfs: descriptor 3: errno %d\n", errno);
+                _exit(127);
+            }
             execve(path, argv, env);
             dprintf(STDERR_FILENO, "rootfs: %s: errno %d\n", path, errno);
             _exit(127);
@@ -2565,6 +2508,51 @@ namespace {
             fatal("rootfs: fork: errno %d", errno);
         }
         return pid;
+    }
+
+    // What rootfs starts runs with a clean environment, its root the far
+    // end of our own pair, never ours: a server does not walk its own tree
+    // by path, and could not ask itself before it serves.
+    char pathVariable[] = "PATH=/bin";
+    char homeVariable[] = "HOME=/";
+    char termVariable[] = "TERM=vt100";
+    char* const environment[] = {pathVariable, homeVariable, termVariable, nullptr};
+    int rootEnd = -1;
+
+    // Starts the services of the system, /bin/devices, with the far end of
+    // a pair of ours as their descriptor 3: they close it once they are up,
+    // after the services they start have it. When the last one has, the
+    // shell starts (up).
+    static void boot() {
+        int ends[2];
+        if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, ends) != 0) {
+            fatal("rootfs: socketpair: errno %d", errno);
+        }
+        char name[] = "devices";
+        char option[] = "-r";
+        char three[] = "3";
+        char* const argv[] = {name, option, three, nullptr};
+        spawn("/bin/devices", argv, environment, rootEnd, ends[1]);
+        close(ends[1]);
+        upEnd = ends[0];
+        epoll_event ev{};
+        ev.events = EPOLLIN;
+        ev.data.ptr = &upMarker;
+        if (epoll_ctl(watcher, EPOLL_CTL_ADD, upEnd, &ev) != 0) {
+            fatal("rootfs: epoll_ctl: errno %d", errno);
+        }
+    }
+
+    // The services are up: the shell starts on the terminal.
+    static void up() {
+        epoll_ctl(watcher, EPOLL_CTL_DEL, upEnd, nullptr);
+        close(upEnd);
+        upEnd = -1;
+        char sh[] = "sh";
+        char* const argv[] = {sh, nullptr};
+        shellPid = spawn("/bin/sh", argv, environment, rootEnd);
+        close(rootEnd);
+        rootEnd = -1;
     }
 }
 
@@ -2582,23 +2570,14 @@ int main() {
     if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, ends) != 0) {
         fatal("rootfs: socketpair: errno %d", errno);
     }
-    // The shell's root is the far end of our own pair, never ours: a server
-    // does not walk its own tree by path, and could not ask itself before
-    // it serves.
     reapOnChild();
-    char sh[] = "sh";
-    char path[] = "PATH=/bin";
-    char home[] = "HOME=/";
-    char term[] = "TERM=vt100";
-    char* const argv[] = {sh, nullptr};
-    char* const env[] = {path, home, term, nullptr};
-    shellPid = spawn("/bin/sh", argv, env, ends[1]);
-    close(ends[1]);
     watcher = epoll_create1(EPOLL_CLOEXEC);
     if (watcher < 0) {
         fatal("fs: epoll_create1: errno %d", errno);
     }
     listen(image, ends[0], nullptr, true, false, nullptr, {});
+    rootEnd = ends[1];
+    boot();
     serve();
     return MAX(shellStatus, 0);
 }

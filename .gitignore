@@ -61,6 +61,10 @@ __pycache__/
 /doom_exe
 /python_exe
 /rootfs_module
+/devices_module
+/devices_exe
+/devices_service_module
+/devices_service_exe
 /llvm_exe
 /pzd
 /pzd_module

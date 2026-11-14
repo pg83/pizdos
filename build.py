@@ -484,26 +484,59 @@ python = command(
 python_exe = executable("python_exe", python, "$(B)/bin/python/python3", tail=python.outputs[1])
 
 # A system from one executable: rootfs, the first process, serves the image
-# linked into it, the executables of busybox with its links and python,
-# with /dev and /tmp of its own, to the shell it starts, and the kernel
-# compiles each module as it is executed (bin/rootfs).
+# linked into it, the executables of busybox with its links and python and
+# the services of the system, with /dev and /tmp of its own, to the shell
+# it starts, and the kernel compiles each module as it is executed
+# (bin/rootfs). A service is a program of bin/rootfs, /bin/<name> in the
+# image.
+SYSTEM_PROGRAM_INPUTS = ["$(S)/bin/rootfs/protocol.h", "$(S)/bin/rootfs/make.py", "$(S)/dev/wasm.py", *LIBC_HEADERS]
+
+
+def system_program(name):
+    module = command(
+        name=f"{name}_module",
+        inputs=[f"$(S)/bin/rootfs/{name}.cpp", *SYSTEM_PROGRAM_INPUTS],
+        outputs=[f"$(B)/bin/rootfs/{name}.wasm"],
+        deps=[libc],
+        cmd=["python3", "$(S)/bin/rootfs/make.py", CLANG, WASM_LD, f"$(S)/bin/rootfs/{name}.cpp", "$(S)/lib/c/include",
+             libc.outputs[0], f"$(B)/bin/rootfs/{name}.wasm"],
+        descr="CC",
+        color="cyan",
+    )
+
+    return executable(f"{name}_exe", module, f"$(B)/bin/rootfs/{name}")
+
+
+services = [system_program(name) for name in ("devices",)]
+# A service of tst/test_devices.py, which hands it to the system it runs.
+devices_service = executable("devices_service_exe", command(
+    name="devices_service_module",
+    inputs=["$(S)/tst/devices_service.cpp", *SYSTEM_PROGRAM_INPUTS],
+    outputs=["$(B)/tst/devices_service.wasm"],
+    deps=[libc],
+    cmd=["python3", "$(S)/bin/rootfs/make.py", CLANG, WASM_LD, "$(S)/tst/devices_service.cpp", "$(S)/lib/c/include",
+         libc.outputs[0], "$(B)/tst/devices_service.wasm"],
+    descr="CC",
+    color="cyan",
+), "$(B)/tst/devices_service")
 rootfs_image = command(
     name="rootfs_image",
     inputs=["$(S)/bin/rootfs/image.py"],
     outputs=["$(B)/bin/rootfs/rootfs.tar"],
-    deps=[busybox, busybox_exe, python_exe],
+    deps=[busybox, busybox_exe, python_exe, *services],
     cmd=["python3", "$(S)/bin/rootfs/image.py", "$(B)/bin/rootfs/rootfs.tar",
-         "--busybox", busybox_exe.outputs[0], busybox.outputs[1], "--python", python_exe.outputs[0]],
+         "--busybox", busybox_exe.outputs[0], busybox.outputs[1], "--python", python_exe.outputs[0],
+         *(arg for service in services for arg in ("--program", service.outputs[0].rsplit("/", 1)[-1], service.outputs[0]))],
     descr="IM",
     color="cyan",
 )
 rootfs_module = command(
     name="rootfs_module",
-    inputs=["$(S)/bin/rootfs/rootfs.cpp", "$(S)/bin/rootfs/make.py", "$(S)/dev/wasm.py", *LIBC_HEADERS],
+    inputs=["$(S)/bin/rootfs/rootfs.cpp", *SYSTEM_PROGRAM_INPUTS],
     outputs=["$(B)/bin/rootfs/rootfs.wasm"],
     deps=[libc, rootfs_image],
     cmd=["python3", "$(S)/bin/rootfs/make.py", CLANG, WASM_LD, "$(S)/bin/rootfs/rootfs.cpp", "$(S)/lib/c/include",
-         libc.outputs[0], rootfs_image.outputs[0], "$(B)/bin/rootfs/rootfs.wasm"],
+         libc.outputs[0], "$(B)/bin/rootfs/rootfs.wasm", rootfs_image.outputs[0]],
     descr="CC",
     color="cyan",
 )
@@ -832,6 +865,7 @@ E2E_TESTED = {
 }
 APPLICATION_TESTED = {
     "rootfs": [vm, rootfs],
+    "devices": [vm, rootfs, devices_service],
     "vfs": [vm, rootfs, python_exe],
     "busybox_abi": [busybox],
     "busybox": [vm, busybox_exe, busybox],
