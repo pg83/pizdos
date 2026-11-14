@@ -4330,6 +4330,10 @@ namespace {
 
     static constexpr Int offMemBound = 16;
 
+    // instanceDistance is how far below the memory's base the instance lies:
+    // the code reaches the instance's words through memReg (instanceAt).
+    static constexpr Int instanceDistance = Int(1) << 30;
+
     static constexpr Int offStackLimit = 24;
 
     static constexpr Int offHost = 32;
@@ -4795,7 +4799,11 @@ namespace {
 
     static constexpr VReg firstVirtual = VReg(32LL);
 
-    static constexpr VReg ctxReg = VReg(13LL);
+    // boundReg holds the memory's bound, the instance's word at offMemBound,
+    // wherever the module's functions run: what enters them loads it, and
+    // what returns into them from Go, which may have grown the memory, loads
+    // it again.
+    static constexpr VReg boundReg = VReg(13LL);
 
     static constexpr VReg memReg = VReg(15LL);
 
@@ -5993,6 +6001,14 @@ namespace {
 
     static Amem baseAt(VReg base, i32 disp);
 
+    static Amem instanceAt(i32 off);
+
+    static Amem instanceIndexed(VReg index);
+
+    static Mem instanceMem(i32 off);
+
+    static void objCodeReloadAfterGo(ObjCode* oc);
+
 
     template <typename Data>
     static void breakPatterns_func(Data data, Int a, Int b);
@@ -6410,8 +6426,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static void initializeCompilerTables() {
         // The internal convention: arguments and results in the six
-        // caller-saved registers, five callee-saved; R13 is the instance,
-        // R15 the memory base, R14 g and RBP the frame pointer.
+        // caller-saved registers, five callee-saved; R13 is the memory's
+        // bound, R15 its base, with the instance instanceDistance below,
+        // R14 g and RBP the frame pointer.
         allocGPRs = sliceOf<VReg>({RAX, RCX, RDX, RSI, RDI, R8, RBX, R9, R10, R11, R12});
 
         allocXMMs = xmmRange(15);
@@ -6427,7 +6444,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         callerSaved = appendSlice(callerSavedGprs, callerSavedXmms);
 
         // A call of Go writes every register the code allocates; R13 and R15
-        // come back from g and the instance.
+        // come back from the instance, which g holds.
         goClobberGprs = sliceOf<VReg>({RAX, RBX, RCX, RDX, RSI, RDI, R8, R9, R10, R11, R12});
         goClobberXmms = xmmRange(15);
         goClobbers = appendSlice(goClobberGprs, goClobberXmms);
@@ -13389,9 +13406,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     // check emits the bounds check of an access ending at most imm bytes past
-    // the address: the common case compares with size - boundSlack, the slow
-    // path the exact limit. A check the tail profile counts has the counter
-    // in mem.
+    // the address: the common case compares with the bound, in boundReg, the
+    // slow path the exact limit. A check the tail profile counts has the
+    // counter in mem.
     static void funcEmitterCheck(FuncEmitter* e, MInst* in) {
         Asm* a = e->a;
         if (in->mem.base != noReg) {
@@ -13403,11 +13420,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             // The accessible tail reaches boundSlack past the logical size, so
             // a base within the logical size covers the access; a base past it
             // traps, even where its access would still end inside the tail.
-            asmAluRM(a, aluCmp, 8, src, baseAt(ctxReg, offMemBound));
+            asmAluRR(a, aluCmp, 8, src, boundReg);
             funcEmitterTrapJcc(e, ccG, trapMemoryOOB);
             return;
         }
-        asmAluRM(a, aluCmp, 8, src, baseAt(ctxReg, offMemBound));
+        asmAluRR(a, aluCmp, 8, src, boundReg);
         i32 at = asmJccRel(a, ccG);
         i32 resume = asmPos(a);
         e->late = appendValues(e->late, [=]() mutable -> void {
@@ -13424,7 +13441,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void funcEmitterShadow(FuncEmitter* e, MInst* in) {
         Asm* a = e->a;
         VReg t = mInstTemps(in)[0];
-        asmLoad(a, 8, 8, false, t, baseAt(ctxReg, e->oc->lay->shadow));
+        asmLoad(a, 8, 8, false, t, instanceAt(e->oc->lay->shadow));
         const i32 disp = convert<i32>(in->imm);
         Mem m = in->src == noReg ? memAt(t, disp) : memIndexed(t, in->src, disp);
         asmAluMI(a, aluCmp, in->size, funcEmitterMem(e, m), shadowOK);
@@ -13460,7 +13477,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             s = RCX;
         }
         asmPush(a, s);
-        asmLoad(a, 8, 8, false, s, baseAt(ctxReg, e->oc->lay->memoryEnd));
+        asmLoad(a, 8, 8, false, s, instanceAt(e->oc->lay->memoryEnd));
         asmAluRI(a, aluSub, 8, s, end);
         asmAluRR(a, aluCmp, 8, src, s);
         asmPop(a, s);
@@ -13969,18 +13986,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     }
 
     // goCall calls the function of extern symbol index as Go calls one, with
-    // the instance in RAX. Go keeps none of the registers the code uses: the
-    // instance comes back from g, where the entry thunk put it, the memory
-    // base from the instance. While the instance's interrupt word is set,
-    // the interrupt stub runs on the way out, as Go's runtime would inject a
-    // call of it there.
+    // the instance in RAX. Go keeps none of the registers the code uses: they
+    // come back from the instance (objCodeReloadAfterGo). While the
+    // instance's interrupt word is set, the interrupt stub runs on the way
+    // out, as Go's runtime would inject a call of it there.
     static void funcEmitterGoCall(FuncEmitter* e, i32 index) {
         Asm* a = e->a;
-        asmMovRR(a, 8, RAX, ctxReg);
+        asmLea(a, 8, RAX, instanceAt(0));
         asmCallMem(a, Amem{-1, -1, {}, {}, index, labelGot});
-        asmLoad(a, 8, 8, false, ctxReg, baseAt(R14, gInstance));
-        asmLoad(a, 8, 8, false, memReg, baseAt(ctxReg, offMem));
-        asmAluMI(a, aluCmp, 4, baseAt(ctxReg, offInterrupt), 0);
+        objCodeReloadAfterGo(e->oc);
+        asmAluMI(a, aluCmp, 4, instanceAt(offInterrupt), 0);
         i32 at = asmJccRel(a, ccNE);
         i32 resume = asmPos(a);
         e->late = appendValues(e->late, [=]() mutable -> void {
@@ -14577,7 +14592,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         lowererEmit(l, add);
         MInst c = inst(mCmpMem);
         c.src = t;
-        c.mem = memAt(ctxReg, l->lay->memoryEnd);
+        c.mem = instanceMem(l->lay->memoryEnd);
         c.size = 8;
         lowererEmit(l, c);
         lowererTrapIf(l, ccA, trapMemoryOOB);
@@ -14644,7 +14659,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         VReg h = mFuncNewReg(l->mf, classGPR);
         MInst ld = inst(mLoad);
         ld.dst = h;
-        ld.mem = memAt(ctxReg, l->lay->shadow);
+        ld.mem = instanceMem(l->lay->shadow);
         ld.size = 8;
         ld.dsize = 8;
         lowererEmit(l, ld);
@@ -14906,11 +14921,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         VReg re = lowererUse(l, elem);
         MInst c = inst(mCmpMem);
         c.src = re;
-        c.mem = memAt(ctxReg, tb + tableSize);
+        c.mem = instanceMem(tb + tableSize);
         c.size = 4;
         lowererEmit(l, c);
         lowererTrapIf(l, ccAE, trapUndefinedElem);
-        VReg entries = lowererLoad64(l, memAt(ctxReg, tb + tableEntries));
+        VReg entries = lowererLoad64(l, instanceMem(tb + tableEntries));
         VReg desc = lowererLoad64(l, Mem{entries, re, u8(8LL), {}, -1});
         MInst tst = inst(mTest);
         tst.src = desc;
@@ -15734,13 +15749,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             VReg p = mFuncNewReg(l->mf, classGPR);
             MInst in = inst(mLoad);
             in.dst = p;
-            in.mem = memAt(ctxReg, l->lay->globals[index]);
+            in.mem = instanceMem(l->lay->globals[index]);
             in.size = 8;
             in.dsize = 8;
             lowererEmit(l, in);
             return memAt(p, 0);
         }
-        return memAt(ctxReg, l->lay->globals[index]);
+        return instanceMem(l->lay->globals[index]);
     }
 
     static void lowererGlobalGet(Lowerer* l, i32 v, Int index) {
@@ -16213,7 +16228,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             case OpMemSize: {
                 MInst in = inst(mLoad);
                 in.dst = lowererDef(l, v);
-                in.mem = memAt(ctxReg, offMemSize);
+                in.mem = instanceMem(offMemSize);
                 in.size = 8;
                 in.dsize = 8;
                 lowererEmit(l, in);
@@ -16263,7 +16278,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             }
             case OpDataDrop: {
                 MInst in = inst(mStoreImm);
-                in.mem = memAt(ctxReg, layoutDataDropped(l->lay, convert<i64>(val->aux)));
+                in.mem = instanceMem(layoutDataDropped(l->lay, convert<i64>(val->aux)));
                 in.size = 1;
                 in.imm = 1;
                 lowererEmit(l, in);
@@ -16298,7 +16313,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 }
                 MInst in = inst(mLea);
                 in.dst = lowererDef(l, v);
-                in.mem = memAt(ctxReg, layoutDesc(l->lay, convert<i64>(val->aux)));
+                in.mem = instanceMem(layoutDesc(l->lay, convert<i64>(val->aux)));
                 in.size = 8;
                 lowererEmit(l, in);
                 break;
@@ -16327,7 +16342,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             case OpTableSize: {
                 MInst in = inst(mLoad);
                 in.dst = lowererDef(l, v);
-                in.mem = memAt(ctxReg, l->lay->tables[val->aux] + tableSize);
+                in.mem = instanceMem(l->lay->tables[val->aux] + tableSize);
                 in.size = 4;
                 in.dsize = 4;
                 lowererEmit(l, in);
@@ -16871,8 +16886,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         VReg d = lowererUse(l, args[0]);
         VReg s = lowererUse(l, args[1]);
         VReg n = lowererUse(l, args[2]);
-        lowererCheckRange(l, d, n, memAt(ctxReg, l->lay->memoryEnd), trapMemoryOOB);
-        lowererCheckRange(l, s, n, memAt(ctxReg, l->lay->memoryEnd), trapMemoryOOB);
+        lowererCheckRange(l, d, n, instanceMem(l->lay->memoryEnd), trapMemoryOOB);
+        lowererCheckRange(l, s, n, instanceMem(l->lay->memoryEnd), trapMemoryOOB);
         if (l->m->asan) {
             lowererAsanRange(l, d, n);
             lowererAsanRange(l, s, n);
@@ -16891,7 +16906,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         VReg d = lowererUse(l, args[0]);
         VReg val = lowererUse(l, args[1]);
         VReg n = lowererUse(l, args[2]);
-        lowererCheckRange(l, d, n, memAt(ctxReg, l->lay->memoryEnd), trapMemoryOOB);
+        lowererCheckRange(l, d, n, instanceMem(l->lay->memoryEnd), trapMemoryOOB);
         if (l->m->asan) {
             lowererAsanRange(l, d, n);
         }
@@ -17008,7 +17023,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         }
         MInst c = inst(mCmpMem);
         c.src = t;
-        c.mem = memAt(ctxReg, l->lay->memoryEnd);
+        c.mem = instanceMem(l->lay->memoryEnd);
         c.size = 8;
         lowererEmit(l, c);
         lowererTrapIf(l, cc, trapMemoryOOB);
@@ -17045,7 +17060,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         VReg a = lowererUse(l, args[0]);
         VReg b = lowererUse(l, args[1]);
         VReg n = lowererUse(l, args[2]);
-        const Mem end = memAt(ctxReg, l->lay->memoryEnd);
+        const Mem end = instanceMem(l->lay->memoryEnd);
         lowererCheckRange(l, a, n, end, trapMemoryOOB);
         lowererCheckRange(l, b, n, end, trapMemoryOOB);
         if (l->m->asan) {
@@ -17097,7 +17112,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         VReg room = mFuncNewReg(l->mf, classGPR);
         MInst ld = inst(mLoad);
         ld.dst = room;
-        ld.mem = memAt(ctxReg, l->lay->memoryEnd);
+        ld.mem = instanceMem(l->lay->memoryEnd);
         ld.size = 8;
         ld.dsize = 8;
         lowererEmit(l, ld);
@@ -17256,7 +17271,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         VReg flag = mFuncNewReg(l->mf, classGPR);
         MInst ld = inst(mLoad);
         ld.dst = flag;
-        ld.mem = memAt(ctxReg, layoutDataDropped(l->lay, seg));
+        ld.mem = instanceMem(layoutDataDropped(l->lay, seg));
         ld.size = 1;
         ld.dsize = 4;
         lowererEmit(l, ld);
@@ -17285,7 +17300,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         c.size = 8;
         lowererEmit(l, c);
         lowererTrapIf(l, ccA, trapMemoryOOB);
-        lowererCheckRange(l, d, n, memAt(ctxReg, l->lay->memoryEnd), trapMemoryOOB);
+        lowererCheckRange(l, d, n, instanceMem(l->lay->memoryEnd), trapMemoryOOB);
         if (l->m->asan) {
             lowererAsanRange(l, d, n);
         }
@@ -17725,14 +17740,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         VReg ri = lowererUse(l, index);
         MInst c = inst(mCmpMem);
         c.src = ri;
-        c.mem = memAt(ctxReg, tb + tableSize);
+        c.mem = instanceMem(tb + tableSize);
         c.size = 4;
         lowererEmit(l, c);
         lowererTrapIf(l, ccAE, trapTableOOB);
         VReg entries = mFuncNewReg(l->mf, classGPR);
         MInst ld = inst(mLoad);
         ld.dst = entries;
-        ld.mem = memAt(ctxReg, tb + tableEntries);
+        ld.mem = instanceMem(tb + tableEntries);
         ld.size = 8;
         ld.dsize = 8;
         lowererEmit(l, ld);
@@ -17750,14 +17765,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         VReg rv = lowererUse(l, value);
         MInst c = inst(mCmpMem);
         c.src = ri;
-        c.mem = memAt(ctxReg, tb + tableSize);
+        c.mem = instanceMem(tb + tableSize);
         c.size = 4;
         lowererEmit(l, c);
         lowererTrapIf(l, ccAE, trapTableOOB);
         VReg entries = mFuncNewReg(l->mf, classGPR);
         MInst ld = inst(mLoad);
         ld.dst = entries;
-        ld.mem = memAt(ctxReg, tb + tableEntries);
+        ld.mem = instanceMem(tb + tableEntries);
         ld.size = 8;
         ld.dsize = 8;
         lowererEmit(l, ld);
@@ -17783,7 +17798,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         const i32 slot = l->lay->tailProfile + convert<i32>(length(oc->sites)) * 8;
         const u32 offset = pos ? convert<u32>(l->m->codeOffset) + pos : 0;
         oc->sites = appendValues(oc->sites, ProfileSite{convert<u32>(l->f->index), offset, kind});
-        return memAt(ctxReg, slot);
+        return instanceMem(slot);
     }
 
     // check emits the bounds check of the address in src for an access ending
@@ -18271,7 +18286,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         }
                         MInst cmp = inst(mCmpMem);
                         auto temporary950 = group->src;
-                        auto temporary951 = memAt(ctxReg, offMemSize);
+                        auto temporary951 = instanceMem(offMemSize);
                         auto temporary952 = 8;
                         cmp.src = temporary950;
                         cmp.mem = temporary951;
@@ -18984,7 +18999,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         auto temporary1035 = internalLocs(results, resultGPRs, resultXMMs, nslots);
         Slice<VReg> rregs = temporary1035.v0;
         Slice<Int> rslots = temporary1035.v1;
-        Slice<VReg> saved = appendValues(appendSlice(Slice<VReg>{}, calleeSaved), ctxReg);
+        // The bound's register is saved for the frame's shape only: it comes
+        // back from the instance.
+        Slice<VReg> saved = appendValues(appendSlice(Slice<VReg>{}, calleeSaved), boundReg);
         i32 total = 8 + 8 * convert<i32>(length(saved)) + g.size;
         i32 start = objCodeBeginRegion(oc, name);
         asmPush(a, RBP);
@@ -19005,7 +19022,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             // The caller's callee-saved registers, still in theirs, go into
             // the frame before recordFrame uses two of them.
             for (Int k = 0; k < length(calleeSaved); ++k) {
-                asmStore(a, 8, calleeSaved[k], baseAt(ctxReg, offJump + 8 * (jumpRegs + convert<i32>(k))));
+                asmStore(a, 8, calleeSaved[k], instanceAt(offJump + 8 * (jumpRegs + convert<i32>(k))));
             }
             objCodeRecordFrame(oc);
         }
@@ -19031,7 +19048,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 asmLoad(a, 8, 8, false, dst.reg, rspAt(incoming + convert<i32>(8 * pslots[i])));
             }
         }
-        asmMovRR(a, 8, RAX, ctxReg);
+        asmLea(a, 8, RAX, instanceAt(0));
         objCodeCallGo(oc, sym);
         // The results move back the same way; Go leaves the upper half of a
         // 32-bit result alone.
@@ -19059,8 +19076,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         for (; i >= 0; i--) {
             asmPop(a, saved[i]);
         }
-        asmLoad(a, 8, 8, false, memReg, baseAt(ctxReg, offMem));
-        asmAluMI(a, aluCmp, 4, baseAt(ctxReg, offInterrupt), 0);
+        objCodeReloadAfterGo(oc);
+        asmAluMI(a, aluCmp, 4, instanceAt(offInterrupt), 0);
         i32 interrupt = asmJcc8(a, ccNE);
         i32 framed = a->sp;
         asmPop(a, RBP);
@@ -19189,7 +19206,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         asmAluRR(a, aluAdd, 8, RSI, R8);
         asmBytes(a, {0xf3, 0xa4});
         asmLoad(a, 4, 4, false, RAX, baseAt(R8, 12));
-        asmStoreImm(a, 1, indexed(ctxReg, RAX), 1);
+        asmStoreImm(a, 1, instanceIndexed(RAX), 1);
         asmAluRI(a, aluAdd, 8, R8, 16);
         asmAluRI(a, aluSub, 4, R9, 1);
         asmPatch32(a, asmJccRel(a, ccNE), loop);
@@ -19214,9 +19231,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 asmBytes(a, {u8(u8(72LL)), u8(u8(141LL)), u8(u8(5LL))});
                 a->fixups = appendValues(a->fixups, RipFixup{asmPos(a), asmPos(a) + 4, convert<i32>(i), labelFunc});
                 asmU32(a, 0);
-                asmStore(a, 8, RAX, baseAt(ctxReg, d));
+                asmStore(a, 8, RAX, instanceAt(d));
                 asmMovImm(a, 8, RAX, convert<i64>(typeID(moduleFuncType(m, convert<u32>(i)))));
-                asmStore(a, 8, RAX, baseAt(ctxReg, d + 8));
+                asmStore(a, 8, RAX, instanceAt(d + 8));
             }
             auto range1055 = m->elems;
             for (Int index1056 = 0, rangeEnd1057 = length(range1055); index1056 < rangeEnd1057; ++index1056) {
@@ -19242,7 +19259,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         }
                         arr = littleAppendUint32(arr, convert<u32>(d));
                     }
-                    asmLoad(a, 4, 4, false, RAX, baseAt(ctxReg, tb + tableSize));
+                    asmLoad(a, 4, 4, false, RAX, instanceAt(tb + tableSize));
                     asmMovImm(a, 8, RCX, off + n);
                     asmAluRR(a, aluCmp, 8, RAX, RCX);
                     i32 fits = asmJcc8(a, ccAE);
@@ -19251,7 +19268,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     if (n > 0) {
                         i32 label = objCodeAddBlob(oc, arr, 4);
                         asmLea(a, 8, RSI, Amem{-1, -1, {}, {}, label, labelModule});
-                        asmLoad(a, 8, 8, false, RDI, baseAt(ctxReg, tb + tableEntries));
+                        asmLoad(a, 8, 8, false, RDI, instanceAt(tb + tableEntries));
                         asmMovImm(a, 8, RAX, 8 * off);
                         asmAluRR(a, aluAdd, 8, RDI, RAX);
                         asmMovImm(a, 4, RCX, n);
@@ -19259,7 +19276,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         asmOpRM(a, true, Span<const u8>({u8(99LL)}), 0, baseAt(RSI, 0), 0, false);
                         asmTest(a, 8, RAX, RAX);
                         i32 null = asmJcc8(a, ccE);
-                        asmAluRR(a, aluAdd, 8, RAX, ctxReg);
+                        // A descriptor's offset in the instance becomes its
+                        // address.
+                        asmLea(a, 8, RAX, Amem{RAX, memReg, u8(1LL), i32(-instanceDistance), -1, {}});
                         asmHere8(a, null);
                         asmStore(a, 8, RAX, baseAt(RDI, 0));
                         asmAluRI(a, aluAdd, 8, RSI, 4);
@@ -19269,7 +19288,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                     }
                 }
                 if (e.mode != segmentPassive) {
-                    asmStoreImm(a, 1, baseAt(ctxReg, layoutElemDropped(lay, m, i)), 1);
+                    asmStoreImm(a, 1, instanceAt(layoutElemDropped(lay, m, i)), 1);
                 }
             }
             objCodeCallFunc(oc, oc->initFn);
@@ -19317,26 +19336,26 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     static void objCodeRecordFrame(ObjCode* oc) {
         Asm* a = &oc->a;
         auto word = [&](i32 k) mutable -> Amem {
-            return baseAt(ctxReg, offJump + 8 * k);
+            return instanceAt(offJump + 8 * k);
         };
         asmLoad(a, 8, 8, false, R12, baseAt(RBP, 8));
         asmStore(a, 8, R12, word(jumpPC));
         asmLoad(a, 8, 8, false, R12, baseAt(R14, gStackHi));
-        asmAluRM(a, aluSub, 8, R12, baseAt(ctxReg, offBase));
+        asmAluRM(a, aluSub, 8, R12, instanceAt(offBase));
         asmAluRR(a, aluSub, 8, R12, RBP);
         asmAluRI(a, aluSub, 8, R12, 16);
         asmStore(a, 8, R12, word(jumpSP));
         asmLoad(a, 8, 8, false, R11, baseAt(RBP, 0));
         asmLoad(a, 8, 8, false, R12, baseAt(R14, gStackHi));
-        asmAluRM(a, aluSub, 8, R12, baseAt(ctxReg, offBase));
+        asmAluRM(a, aluSub, 8, R12, instanceAt(offBase));
         asmAluRR(a, aluSub, 8, R12, R11);
         asmStore(a, 8, R12, word(jumpBP));
         asmLoad(a, 8, 8, false, R12, baseAt(R11, -8));
         asmTest(a, 8, R12, R12);
         i32 have = asmJcc8(a, ccNE);
-        asmLoad(a, 8, 8, false, R12, baseAt(ctxReg, offTokens));
+        asmLoad(a, 8, 8, false, R12, instanceAt(offTokens));
         asmAluRI(a, aluAdd, 8, R12, 1);
-        asmStore(a, 8, R12, baseAt(ctxReg, offTokens));
+        asmStore(a, 8, R12, instanceAt(offTokens));
         asmStore(a, 8, R12, baseAt(R11, -8));
         asmHere8(a, have);
         asmStore(a, 8, R12, word(jumpToken));
@@ -19559,15 +19578,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         i32 frame = saved + 8;
         i32 total = 8 + frame;
         i32 start = objCodeBeginRegion(oc, name);
-        asmMovRR(a, 8, ctxReg, RAX);
+        // The instance comes in RAX; the memory's base goes first, as the
+        // morestack stub finds the instance below it.
+        asmLoad(a, 8, 8, false, memReg, baseAt(RAX, offMem));
         i32 slow = objCodeStackCheck(oc, total, R12);
         asmPush(a, RBP);
         asmMovRR(a, 8, RBP, RSP);
         asmAluRI(a, aluSub, 8, RSP, convert<i64>(frame));
         asmLoad(a, 8, 8, false, RDX, baseAt(R14, gInstance));
         asmStore(a, 8, RDX, rspAt(saved));
-        asmStore(a, 8, ctxReg, baseAt(R14, gInstance));
-        asmLoad(a, 8, 8, false, memReg, baseAt(ctxReg, offMem));
+        asmStore(a, 8, RAX, baseAt(R14, gInstance));
+        asmLoad(a, 8, 8, false, boundReg, baseAt(RAX, offMemBound));
         i32 goArgs = total + 8;
         // The parameters move from Go's convention to the internal one, as
         // the adapter moves the other way (goCall), R12 the scratch; a
@@ -19630,7 +19651,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         Asm* a = &oc->a;
         i32 sp = a->sp;
         asmAluRI(a, aluSub, 8, RSP, convert<i64>(goAssign(sliceOf<ValType>({I32}), {}).size));
-        asmMovRR(a, 8, RAX, ctxReg);
+        asmLea(a, 8, RAX, instanceAt(0));
         asmMovImm(a, 4, RBX, code);
         objCodeCallGo(oc, symTrap);
         asmUd2(a);
@@ -19650,7 +19671,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         } else {
             asmLea(a, 8, RCX, baseAt(t.reg, t.disp));
         }
-        asmMovRR(a, 8, RAX, ctxReg);
+        asmLea(a, 8, RAX, instanceAt(0));
         asmMovImm(a, 4, RBX, t.code);
         asmMovImm(a, 4, RDI, convert<i64>(t.width) | convert<i64>(t.kind) << 8);
         objCodeCallGo(oc, symTrapAt);
@@ -21898,7 +21919,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     // allocatable reports registers the allocator may hand out.
     static bool allocatable(VReg r) {
-        return r != RSP && r != RBP && r != R14 && r != ctxReg && r != memReg && r != VReg(31LL);
+        return r != RSP && r != RBP && r != R14 && r != boundReg && r != memReg && r != VReg(31LL);
     }
 
     static Allocator* allocate(MFunc* mf) {
@@ -21994,6 +22015,32 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     static Amem baseAt(VReg base, i32 disp) {
         return Amem{base, -1, u8(1LL), disp, -1, {}};
+    }
+
+    // instanceAt is the operand of the instance's word at off.
+    static Amem instanceAt(i32 off) {
+        return baseAt(memReg, off - i32(instanceDistance));
+    }
+
+    // instanceIndexed is the operand of the instance's byte at index.
+    static Amem instanceIndexed(VReg index) {
+        return Amem{memReg, index, u8(1LL), i32(-instanceDistance), -1, {}};
+    }
+
+    // instanceMem is the machine operand of the instance's word at off.
+    static Mem instanceMem(i32 off) {
+        return memAt(memReg, off - i32(instanceDistance));
+    }
+
+    // reloadAfterGo loads what the code keeps in registers again after a
+    // call of Go, which keeps none of them: the instance from g, where the
+    // entry thunk put it, then the memory's bound, which the call may have
+    // moved by growing the memory, and base.
+    static void objCodeReloadAfterGo(ObjCode* oc) {
+        Asm* a = &oc->a;
+        asmLoad(a, 8, 8, false, memReg, baseAt(R14, gInstance));
+        asmLoad(a, 8, 8, false, boundReg, baseAt(memReg, offMemBound));
+        asmLoad(a, 8, 8, false, memReg, baseAt(memReg, offMem));
     }
 
     // breakPatterns_func scatters some elements around in an attempt to break some patterns
@@ -25477,6 +25524,10 @@ namespace {
         }
         if (module->tailProfile) {
             code->lay->size = (code->lay->tailProfile + convert<i32>(length(code->sites)) * 8 + 15) & ~15;
+        }
+        if (code->lay->size > instanceDistance - boundSlack) {
+            // The instance ends below the boundSlack bytes before the memory.
+            compilerError(String("unsupported: an instance larger than 1 GiB"));
         }
         objCodeExportThunks(code);
         objCodeInitThunk(code);

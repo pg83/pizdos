@@ -7,7 +7,7 @@ package main
 const (
 	offMem        = 0  // base of linear memory
 	offMemSize    = 8  // size of linear memory in bytes
-	offMemBound   = 16 // accessible memory end - boundSlack: see mCheck
+	offMemBound   = 16 // accessible memory end - boundSlack: the code keeps it in R13 (mCheck)
 	offStackLimit = 24 // the most bytes of goroutine stack the code may use; beyond, it traps
 	offHost       = 32 // free for the loader
 	offTokens     = 40 // the last invocation token handed out: see jumpFrame
@@ -16,6 +16,11 @@ const (
 	offInterrupt  = offBase + 8 // non-zero: a return from an import calls the interrupt stub (goabi.go)
 	headerSize    = offInterrupt + 8
 )
+
+// instanceDistance is how far past the instance's block its memory lies,
+// in one mapping (newRegion): the code keeps the memory's base in R15 and
+// reaches the instance that far below it.
+const instanceDistance = 1 << 30
 
 // gInstance is the offset in g of the instance the goroutine runs, a field
 // our runtime adds (lib/goruntime): the code reads it after a call of Go,

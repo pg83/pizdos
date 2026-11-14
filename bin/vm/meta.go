@@ -171,6 +171,10 @@ func decodeNote(data []byte) *Meta {
 	r := &metaReader{data: data}
 	m := &Meta{instanceSize: r.u32()}
 
+	if uint64(m.instanceSize) > instanceDistance-boundSlack {
+		throwFmt("instance of %d bytes", m.instanceSize)
+	}
+
 	if r.flag() {
 		m.memory = &MemoryMeta{min: r.u(), max: r.u()}
 	}

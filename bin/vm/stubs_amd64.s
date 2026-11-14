@@ -2,14 +2,16 @@
 #include "funcdata.h"
 
 // The stubs the code calls (symbols.go). Their arguments come in registers
-// as Go's ABIInternal places them, and the code keeps the instance in R13
-// and the memory base in R15 across them; R14 is g. Go never preempts
-// assembly. Offsets: g.stack.hi 8, g.stackguard0 16, g.instance 472
-// (lib/goruntime); the instance's memory 0, stack limit 24, jump frame 48,
-// base 120 (abi.go). The stack moves by PUSH, POP and ADJSP, which the
-// assembler puts in the stack pointer table: Go unwinds through these
-// frames when it grows the stack. A function that writes the stack pointer
-// cannot be unwound through, so none of these calls anything after that.
+// as Go's ABIInternal places them, and the code keeps the memory's bound
+// in R13 and its base in R15 across them; the instance lies 1<<30 below the
+// base (instanceDistance, abi.go), and g.instance holds it too; R14 is g.
+// Go never preempts assembly. Offsets: g.stack.hi 8, g.stackguard0 16,
+// g.instance 472 (lib/goruntime); the instance's memory 0, bound 16, stack
+// limit 24, jump frame 48, base 120 (abi.go). The stack moves by PUSH, POP
+// and ADJSP, which the assembler puts in the stack pointer table: Go
+// unwinds through these frames when it grows the stack. A function that
+// writes the stack pointer cannot be unwound through, so none of these
+// calls anything after that.
 
 // w2oMorestack is called by a stack check that failed, with what the check
 // compared pushed. The preemption the check may have seen can be done by
@@ -54,13 +56,14 @@ TEXT ·w2oMorestack(SB), NOSPLIT|NOFRAME, $0-0
 	JA	fits
 	MOVQ	8(R14), AX
 	SUBQ	SP, AX
-	CMPQ	AX, 24(R13)
+	LEAQ	-1073741824(R15), BX
+	CMPQ	AX, 24(BX)
 	JBE	grow
 	// Past the limit: the trap. The assembler's stack pointer table follows
 	// the text, so this comes before the registers come back, and the
 	// adjustment after the trap, never run, keeps the table right.
 	ADJSP	$16
-	MOVQ	R13, 0(SP)
+	MOVQ	BX, 0(SP)
 	MOVL	$9, 8(SP)
 	CALL	·helperTrap(SB)
 	UD2
@@ -104,7 +107,7 @@ fits:
 // code (lib/goruntime), and the call a return from an import makes while
 // the instance's interrupt word is set. It calls helperInterrupt with the
 // instance and comes back with every register and flag as it was, but the
-// memory base, read again.
+// memory's base and bound, read again: a handler may have grown it.
 TEXT ·w2oInterruptCall(SB), NOSPLIT|NOFRAME, $0-0
 	NO_LOCAL_POINTERS
 	PUSHQ	BP
@@ -138,7 +141,8 @@ TEXT ·w2oInterruptCall(SB), NOSPLIT|NOFRAME, $0-0
 	MOVSD	X12, 112(SP)
 	MOVSD	X13, 120(SP)
 	MOVSD	X14, 128(SP)
-	MOVQ	R13, 0(SP)
+	LEAQ	-1073741824(R15), AX
+	MOVQ	AX, 0(SP)
 	CALL	·helperInterrupt(SB)
 	MOVSD	16(SP), X0
 	MOVSD	24(SP), X1
@@ -168,7 +172,9 @@ TEXT ·w2oInterruptCall(SB), NOSPLIT|NOFRAME, $0-0
 	POPQ	CX
 	POPQ	BX
 	POPQ	AX
-	MOVQ	(R13), R15
+	MOVQ	472(R14), R15
+	MOVQ	16(R15), R13
+	MOVQ	(R15), R15
 	POPFQ
 	POPQ	BP
 	RET
@@ -207,9 +213,9 @@ found:
 	MOVQ	-8(SI), R8
 	CMPQ	R8, 64(AX)
 	JNE	fail
-	MOVQ	CX, R13
-	MOVQ	R13, 472(R14)
-	MOVQ	(R13), R15
+	MOVQ	CX, 472(R14)
+	MOVQ	16(CX), R13
+	MOVQ	(CX), R15
 	MOVQ	R9, R8
 	SUBQ	8(AX), R8
 	SUBQ	$8, R8
@@ -318,6 +324,7 @@ TEXT ·w2oResume(SB), NOSPLIT|NOFRAME, $0-0
 start:
 	MOVQ	0(AX), R13
 	MOVQ	R13, 472(R14)
+	MOVQ	(R13), R15
 	LEAQ	-512(SP), DX
 	SUBQ	16(AX), DX
 	CMPQ	DX, 16(R14)
@@ -360,7 +367,7 @@ last:
 	SUBQ	DX, DI
 	SUBQ	40(AX), DI
 	MOVQ	DI, 120(R13)
-	MOVQ	(R13), R15
+	MOVQ	16(R13), R13
 	MOVQ	56(AX), BX
 	MOVQ	64(AX), R9
 	MOVQ	72(AX), R10

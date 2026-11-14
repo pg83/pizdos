@@ -80,9 +80,11 @@ func bindContext(code, ctx uintptr) uintptr {
 }
 
 type Instance struct {
-	name   string
-	obj    *Object
-	code   *Code
+	name string
+	obj  *Object
+	code *Code
+	// region is the instance's mapping (newRegion): block is its start.
+	region []byte
 	block  []byte
 	memory *LinearMemory
 	tables [][]uintptr
@@ -102,8 +104,8 @@ func (i *Instance) attach(host any) {
 
 // LinearMemory is reserved at its maximum: it grows in place.
 type LinearMemory struct {
-	// mapping holds boundSlack bytes, then data.
-	mapping  []byte
+	// data is in its instance's region: boundSlack bytes before it are
+	// accessible, and past the maximum boundSlack bytes and a zero byte.
 	data     []byte
 	pages    uint64
 	max      uint64
@@ -187,20 +189,35 @@ func mmap(size int, prot int) []byte {
 	return throw2(syscall.Mmap(-1, 0, size, prot, syscall.MAP_PRIVATE|syscall.MAP_ANON|syscall.MAP_NORESERVE))
 }
 
-func newMemory(least, most uint64, shadow bool) *LinearMemory {
-	if most > 65536 || least > most {
-		throwFmt("memory of %d..%d pages", least, most)
+// newRegion maps an instance and its memory, of at most most pages, if
+// it has one: the instance's block at the start, the memory
+// instanceDistance past it. The code keeps the memory's base in a register
+// and finds the instance that far below it (aot.cpp instanceAt).
+//
+// The boundSlack bytes before the memory are accessible, and so are
+// boundSlack bytes past its maximum: an access derived from a checked
+// address reaches at most that far either way (aot.cpp lowererAddress).
+// Then a byte that stays zero: past the accessible end the memory is zero
+// at every size, as nothing writes there and growth clears the old tail,
+// and lib/str's strlen, which the code calls before it checks where a
+// string ended (lowererStrLength), stops there at the latest.
+func newRegion(memory *MemoryMeta) []byte {
+	size := uint64(instanceDistance)
+
+	if memory != nil {
+		if memory.max > 65536 || memory.min > memory.max {
+			throwFmt("memory of %d..%d pages", memory.min, memory.max)
+		}
+
+		size += memory.max*pageSize + boundSlack + 1
 	}
 
-	// boundSlack accessible bytes before the memory and past its maximum: an
-	// access derived from a checked address reaches at most that far either
-	// way (aot.cpp lowererAddress). Then a byte that stays zero: past the
-	// accessible end the memory is zero at every size, as nothing writes
-	// there and growth clears the old tail, and lib/str's strlen, which the
-	// code calls before it checks where a string ended (lowererStrLength),
-	// stops there at the latest.
-	mapping := mmap(int(boundSlack+most*pageSize+boundSlack+1), syscall.PROT_READ|syscall.PROT_WRITE)
-	m := &LinearMemory{mapping: mapping, data: mapping[boundSlack:], pages: least, max: most}
+	return mmap(int(size), syscall.PROT_READ|syscall.PROT_WRITE)
+}
+
+// newMemory is the memory of data, reserved to most pages, with least.
+func newMemory(data []byte, least, most uint64, shadow bool) *LinearMemory {
+	m := &LinearMemory{data: data, pages: least, max: most}
 
 	if shadow {
 		// Zero, inaccessible everywhere, until the kernel marks what the
@@ -246,7 +263,6 @@ func (i *Instance) put64(at uint32, v uint64) {
 func (i *Instance) setMemory() {
 	size := i.memory.pages * pageSize
 	i.mem = i.memory.data[:size+i.obj.meta.memory.tail]
-	i.put64(offMem, uint64(uintptr(unsafe.Pointer(unsafe.SliceData(i.memory.data)))))
 	i.put64(offMemSize, size)
 	i.put64(offMemBound, uint64(int64(size+i.obj.meta.memory.tail)-boundSlack))
 
@@ -506,7 +522,8 @@ func instantiate(name string, obj *Object, imports Imports, stack uint64) *Insta
 // functions come from imports.
 func newInstance(c *Code, imports Imports, stack uint64) *Instance {
 	meta := c.obj.meta
-	i := &Instance{name: c.name, obj: c.obj, code: c, block: mmap(int(max(meta.instanceSize, headerSize)), syscall.PROT_READ|syscall.PROT_WRITE)}
+	region := newRegion(meta.memory)
+	i := &Instance{name: c.name, obj: c.obj, code: c, region: region, block: region[:max(meta.instanceSize, headerSize)]}
 	initialized := false
 
 	defer func() {
@@ -515,6 +532,7 @@ func newInstance(c *Code, imports Imports, stack uint64) *Instance {
 		}
 	}()
 
+	i.put64(offMem, uint64(i.ctx())+instanceDistance)
 	i.put64(offHost, uint64(uintptr(unsafe.Pointer(i))))
 	i.put64(offStackLimit, stack)
 
@@ -542,7 +560,7 @@ func newInstance(c *Code, imports Imports, stack uint64) *Instance {
 	}
 
 	if meta.memory != nil {
-		i.memory = newMemory(meta.memory.min, meta.memory.max, meta.memory.shadow != 0)
+		i.memory = newMemory(region[instanceDistance:], meta.memory.min, meta.memory.max, meta.memory.shadow != 0)
 
 		if meta.memory.tail != 0 {
 			i.memory.tailUsed = true
@@ -625,22 +643,18 @@ func (i *Instance) clone(imports *Kernel, stack uint64, from, to uint64) *Instan
 	return c
 }
 
-// release unmaps the instance block and its memory; the instance is not
-// used again.
+// release unmaps the instance's region, its block and memory, and the
+// memory's shadow map; the instance is not used again.
 func (i *Instance) release() {
 	compilerCoverage(i)
 	i.writeTailProfile()
 
-	if i.memory != nil {
-		throw(syscall.Munmap(i.memory.mapping))
-
-		if i.memory.shadow != nil {
-			throw(syscall.Munmap(i.memory.shadow))
-		}
+	if i.memory != nil && i.memory.shadow != nil {
+		throw(syscall.Munmap(i.memory.shadow))
 	}
 
-	throw(syscall.Munmap(i.block))
-	i.block, i.memory, i.tables = nil, nil, nil
+	throw(syscall.Munmap(i.region))
+	i.region, i.block, i.memory, i.tables = nil, nil, nil, nil
 }
 
 // nativeFunc is a Go function value of type typ whose code is at code.
