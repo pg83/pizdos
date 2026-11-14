@@ -63,6 +63,10 @@ __pycache__/
 /rootfs_module
 /devices_module
 /devices_exe
+/blk_module
+/blk_exe
+/gpt_module
+/gpt_exe
 /devices_service_module
 /devices_service_exe
 /llvm_exe

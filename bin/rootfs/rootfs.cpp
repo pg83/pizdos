@@ -2486,8 +2486,8 @@ namespace {
 
     // A program run in a child whose root and working directory are root,
     // an end of a pair of ours: the child asks us, who serve when it does.
-    // ready, when there is one, is the child's descriptor 3.
-    static pid_t spawn(const char* path, char* const* argv, char* const* env, int root, int ready = -1) {
+    // The descriptors kept are the child's 3 and on, in order.
+    static pid_t spawn(const char* path, char* const* argv, char* const* env, int root, const int* kept = nullptr, int count = 0) {
         const pid_t pid = fork();
         if (pid == 0) {
             if (waitMasked) {
@@ -2498,9 +2498,15 @@ namespace {
                 _exit(127);
             }
             close(root);
-            if (ready >= 0 && (ready == 3 ? fcntl(3, F_SETFD, 0) : dup2(ready, 3)) < 0) {
-                dprintf(STDERR_FILENO, "rootfs: descriptor 3: errno %d\n", errno);
-                _exit(127);
+            int high[4];
+            for (int i = 0; i < count; ++i) {
+                high[i] = fcntl(kept[i], F_DUPFD_CLOEXEC, 64);
+            }
+            for (int i = 0; i < count; ++i) {
+                if (high[i] < 0 || dup2(high[i], 3 + i) < 0) {
+                    dprintf(STDERR_FILENO, "rootfs: descriptor %d: errno %d\n", 3 + i, errno);
+                    _exit(127);
+                }
             }
             execve(path, argv, env);
             dprintf(STDERR_FILENO, "rootfs: %s: errno %d\n", path, errno);
@@ -2521,20 +2527,42 @@ namespace {
     char* const environment[] = {pathVariable, homeVariable, termVariable, nullptr};
     int rootEnd = -1;
 
-    // Starts the services of the system, /bin/devices, with the far end of
-    // a pair of ours as their descriptor 3: they close it once they are up,
-    // after the services they start have it. When the last one has, the
-    // shell starts (up).
+    // Starts the services of the system with the far end of a pair of ours
+    // as their descriptor 3: they close it once they are up, after the
+    // services they start have it. When the last one has, the shell starts
+    // (up). /bin/devices is the devices every system has; /bin/blk serves
+    // each disk vm gave us, our descriptors after 2, in order, named by
+    // DISKS: the disk is its descriptor 4, and it starts the services of
+    // the disk's partitions.
     static void boot() {
         int ends[2];
         if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, ends) != 0) {
             fatal("rootfs: socketpair: errno %d", errno);
         }
-        char name[] = "devices";
+        // The disks are no one's but their services'.
+        char disks[256] = {};
+        if (const char* given = getenv("DISKS")) {
+            strncpy(disks, given, sizeof disks - 1);
+        }
+        char* names[32];
+        int count = 0;
+        for (char* name = strtok(disks, " "); name && count < 32; name = strtok(nullptr, " ")) {
+            fcntl(3 + count, F_SETFD, FD_CLOEXEC);
+            names[count++] = name;
+        }
+        char devicesName[] = "devices";
+        char blkName[] = "blk";
         char option[] = "-r";
         char three[] = "3";
-        char* const argv[] = {name, option, three, nullptr};
-        spawn("/bin/devices", argv, environment, rootEnd, ends[1]);
+        char four[] = "4";
+        char* const devicesArgv[] = {devicesName, option, three, nullptr};
+        spawn("/bin/devices", devicesArgv, environment, rootEnd, &ends[1], 1);
+        for (int i = 0; i < count; ++i) {
+            char* const argv[] = {blkName, option, three, names[i], four, nullptr};
+            const int kept[] = {ends[1], 3 + i};
+            spawn("/bin/blk", argv, environment, rootEnd, kept, 2);
+            close(3 + i);
+        }
         close(ends[1]);
         upEnd = ends[0];
         epoll_event ev{};

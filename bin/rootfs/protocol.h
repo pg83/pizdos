@@ -45,10 +45,11 @@
 //                                         the reader's memory, the bytes
 //                                         go there from its byte woff on
 //     WRITE     arg append  off u64 len u32 woff u32
-//                                         OK count u32 at u64; fds[0] a
-//                                         memfd of the writer's memory,
-//                                         the bytes come from there from
-//                                         its byte woff on
+//                                         OK count u32 at u64, where an
+//                                         append went; fds[0] a memfd of
+//                                         the writer's memory, the bytes
+//                                         come from there from its byte
+//                                         woff on
 //     READDIR               after u64     OK (ino u64, pos u64, type u8, name, 0)*
 //     FSTAT                               OK stat
 //     FCHMOD    arg mode

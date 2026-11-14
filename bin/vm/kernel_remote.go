@@ -63,7 +63,8 @@ import (
 //	  STATFS              name             OK statfs
 //	  READ      arg len   off u64 woff u32 OK count u32
 //	  WRITE     arg append off u64 len u32 woff u32
-//	                                       OK count u32 at u64
+//	                                       OK count u32 at u64, where an
+//	                                       append went
 //	  READDIR             after u64        OK (ino u64, pos u64, type u8, name, 0)*
 //	  FSTAT                                OK stat
 //	  FCHMOD    arg mode
@@ -1112,15 +1113,22 @@ func (f *remoteFile) read(p *Process, b []byte, mode ioMode) (int, error) {
 }
 
 // write writes at the position, or with O_APPEND at the end, which the
-// server finds as it writes; the position is after what was written.
+// server finds as it writes and says; the position is after what was
+// written. Only an append's place is the server's to say: a server that
+// handed the WRITE on, moved, answers with where it went on its device.
 func (f *remoteFile) write(p *Process, b []byte, mode ioMode) (int, error) {
 	if chaosFail("write") {
 		return 0, syscall.EIO
 	}
 
-	n, at, err := f.put(p, b, atomic.LoadInt64(&f.pos), f.append)
+	off := atomic.LoadInt64(&f.pos)
+	n, at, err := f.put(p, b, off, f.append)
 
 	if err == nil {
+		if !f.append {
+			at = off
+		}
+
 		atomic.StoreInt64(&f.pos, at+int64(n))
 	}
 
