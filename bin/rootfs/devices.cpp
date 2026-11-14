@@ -121,13 +121,15 @@ namespace {
 
     // As many bytes as asked go into the reader's memory: zeros, or the
     // kernel's random bytes; none of null.
-    void readDevice(const Watch& w, const Header& h, int window, int fd) {
+    void readDevice(const Watch& w, const Header& h, const unsigned char* body, size_t size, int window, int fd) {
         if (!w.reads) {
             return fail(fd, EBADF);
         }
-        if (window < 0) {
+        if (window < 0 || size < 12) {
             return fail(fd, EINVAL);
         }
+        uint32_t woff;
+        memcpy(&woff, body + 8, sizeof woff);
         const size_t n = w.device->kind == Kind::Null ? 0 : h.arg;
         for (size_t at = 0; at < n; at += sizeof zeros) {
             const size_t count = MIN(sizeof zeros, n - at);
@@ -140,7 +142,7 @@ namespace {
                 }
                 bytes = entropy;
             }
-            if (pwrite(window, bytes, count, off_t(at)) != ssize_t(count)) {
+            if (pwrite(window, bytes, count, off_t(woff) + off_t(at)) != ssize_t(count)) {
                 return fail(fd, EIO);
             }
         }
@@ -153,7 +155,7 @@ namespace {
         if (!w.writes) {
             return fail(fd, EBADF);
         }
-        if (size < 12) {
+        if (size < 16) {
             return fail(fd, EINVAL);
         }
         unsigned char taken[12];
@@ -202,7 +204,7 @@ namespace {
         } else {
             switch (h.op) {
             case opRead:
-                readDevice(*w, h, window, fd);
+                readDevice(*w, h, body, size, window, fd);
                 break;
             case opWrite:
                 writeDevice(*w, body, size, fd);

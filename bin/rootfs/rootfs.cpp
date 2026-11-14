@@ -1925,6 +1925,7 @@ namespace {
 
     static bool readNode(Endpoint* ep, const Header& h, Body body, int fd) {
         const u64 off = body.take<u64>();
+        const u32 woff = body.take<u32>();
         const Node* node = ep->node;
         const usize n = h.arg;
         if (off > INT64_MAX) {
@@ -1941,7 +1942,7 @@ namespace {
         case Kind::File: {
             const usize size = node->content.size();
             const usize count = off >= size ? 0 : MIN(n, size - usize(off));
-            if (!put(w, node->content.data() + (count ? usize(off) : 0), count, 0)) {
+            if (!put(w, node->content.data() + (count ? usize(off) : 0), count, woff)) {
                 return error(fd, EIO);
             }
             return readCount(fd, count);
@@ -1956,6 +1957,7 @@ namespace {
     static bool writeNode(Endpoint* ep, const Header& h, Body body, int fd) {
         u64 off = body.take<u64>();
         const usize length = body.take<u32>();
+        const u32 woff = body.take<u32>();
         Server& s = *ep->server;
         Node* node = ep->node;
         const int w = window();
@@ -1989,7 +1991,7 @@ namespace {
             if (size < off + count && !resize(s, node, off + count)) {
                 return error(fd, ENOSPC);
             }
-            if (count && pread(w, static_cast<u8*>(node->content.own.data()) + usize(off), usize(count), 0) != ssize_t(count)) {
+            if (count && pread(w, static_cast<u8*>(node->content.own.data()) + usize(off), usize(count), woff) != ssize_t(count)) {
                 return error(fd, EIO);
             }
             touch(node);

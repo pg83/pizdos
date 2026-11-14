@@ -5,7 +5,14 @@
 // memfd a READ brings. ro registers on an endpoint of /dev/init open to
 // read only.
 //
+// copy reads n bytes of a device at off into a memfd of 16 bytes of its
+// memory, at woff, with copy_file_range, and prints the count, the offsets
+// after it and the bytes; put writes a text from a memfd of its memory to
+// a device with copy_file_range and prints the count.
+//
 //     devices_service <name> <mode> <text> [ro]
+//     devices_service copy <device> <off> <woff> <n>
+//     devices_service put <device> <text>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -13,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
+#include <sys/mman.h>
 #include <sys/param.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -45,6 +53,23 @@ namespace {
 }
 
 int main(int argc, char** argv) {
+    if (argc == 6 && strcmp(argv[1], "copy") == 0) {
+        char bytes[16];
+        memset(bytes, '.', sizeof bytes);
+        const int device = open(argv[2], O_RDONLY);
+        const int window = memfd_create(bytes, sizeof bytes, O_RDWR);
+        off_t from = atoll(argv[3]);
+        off_t to = atoll(argv[4]);
+        const ssize_t n = copy_file_range(device, &from, window, &to, size_t(atoll(argv[5])), 0);
+        printf("%zd %lld %lld %.16s\n", n, (long long)from, (long long)to, bytes);
+        return 0;
+    }
+    if (argc == 4 && strcmp(argv[1], "put") == 0) {
+        const int device = open(argv[2], O_WRONLY);
+        const int window = memfd_create(argv[3], strlen(argv[3]), O_RDONLY);
+        printf("%zd\n", copy_file_range(window, nullptr, device, nullptr, strlen(argv[3]), 0));
+        return 0;
+    }
     if (argc < 4) {
         dprintf(STDERR_FILENO, "usage: devices_service <name> <mode> <text> [ro]\n");
         return 2;
@@ -123,9 +148,11 @@ int main(int argc, char** argv) {
             answer(fd, opErr, EBADF);
         } else if (q.op == opRead && count == 2) {
             uint64_t off;
+            uint32_t woff;
             memcpy(&off, packet + sizeof q, sizeof off);
+            memcpy(&woff, packet + sizeof q + sizeof off, sizeof woff);
             const size_t part = off < length ? MIN(size_t(q.arg), length - size_t(off)) : 0;
-            pwrite(in[0], text + MIN(off, uint64_t(length)), part, 0);
+            pwrite(in[0], text + MIN(off, uint64_t(length)), part, woff);
             const uint32_t done = uint32_t(part);
             answer(fd, opOk, 0, &done, sizeof done);
         } else if (q.op == opFstat) {

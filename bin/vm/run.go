@@ -14,7 +14,7 @@ import (
 // process, inside root, or a WASI command, an executable or a module, on
 // this goroutine, whose code is proc_exit's, or 128 and the trap code
 // after a trap. A module is all vm runs: no object of vm's.
-func runModule(path, root string, argv []string, asan bool) (code int) {
+func runModule(path, root string, argv []string, asan bool, disks []disk) (code int) {
 	f := throw2(openHostFile(path))
 	data, exe, err := programData(nil, f, true)
 
@@ -44,13 +44,17 @@ func runModule(path, root string, argv []string, asan bool) (code int) {
 			throwFmt("%s: a program of the kernel, not in an executable of PZD1", path)
 		}
 
-		return runKernel(f, path, root, argv, options, data, obj)
+		return runKernel(f, path, root, argv, options, data, obj, disks)
 	}
 
 	f.unref()
 
 	if asan {
 		throwFmt("--asan runs programs of the kernel")
+	}
+
+	if len(disks) > 0 {
+		throwFmt("--disk runs programs of the kernel")
 	}
 
 	w := newWASI(argv)

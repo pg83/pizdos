@@ -7,11 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/pprof"
+	"strings"
 	"time"
 )
 
 func usage() {
-	throwFmt("usage: vm [-v] [--asan] -o output.o input.wasm\n       vm run [--root dir] [-a argv0] [--asan] -- module.wasm [arg...]\n       vm spec test.json\n       vm stand [--repeat N] im|pdf|djvu|svg|magic object.o file...")
+	throwFmt("usage: vm [-v] [--asan] -o output.o input.wasm\n       vm run [--root dir] [-a argv0] [--asan] [--disk name=file]... -- module.wasm [arg...]\n       vm spec test.json\n       vm stand [--repeat N] im|pdf|djvu|svg|magic object.o file...")
 }
 
 func main() {
@@ -116,9 +117,11 @@ func compileCommand(args []string) {
 // or nothing without it: a server of its own files, or a program that
 // needs none, runs so. argv0 is by default the module's path. --asan
 // compiles the programs with the checks of the kernel's address sanitizer
-// (kernel_asan.go).
+// (kernel_asan.go). Each --disk gives a program of the kernel a file of
+// the host as a disk (runKernel).
 func runCommand(args []string) int {
 	root, argv0, asan := "", "", false
+	var disks []disk
 
 	for len(args) > 0 && args[0] != "--" {
 		switch {
@@ -130,6 +133,15 @@ func runCommand(args []string) int {
 			args = args[2:]
 		case len(args) > 1 && args[0] == "-a":
 			argv0 = args[1]
+			args = args[2:]
+		case len(args) > 1 && args[0] == "--disk":
+			name, path, ok := strings.Cut(args[1], "=")
+
+			if !ok || name == "" || path == "" || strings.ContainsAny(name, "/ ") {
+				usage()
+			}
+
+			disks = append(disks, disk{name, path})
 			args = args[2:]
 		default:
 			usage()
@@ -148,5 +160,5 @@ func runCommand(args []string) int {
 
 	argv := append([]string{argv0}, args[1:]...)
 
-	return runModule(args[0], root, argv, asan)
+	return runModule(args[0], root, argv, asan, disks)
 }

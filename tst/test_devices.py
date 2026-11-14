@@ -2,7 +2,8 @@
 """The devices of /dev are services': rootfs's /dev/init takes a name, a
 mode and the end of a pair (REGISTER, bin/rootfs/protocol.h), and every
 open of /dev/<name> goes on to the service that registered it, which
-serves the open file from then on. The system's own, null, zero, random
+serves the open file from then on. copy_file_range between such a file and
+a memfd brings the memfd itself in the READ or WRITE, at its offset. The system's own, null, zero, random
 and urandom, are /bin/devices', there before the shell starts. A service
 here is a program the test brings: it registers a device whose bytes
 are a text and serves its opens (tst/devices_service.cpp, which the test
@@ -42,6 +43,8 @@ import os
 try: os.read(os.open("/dev/hello", os.O_WRONLY), 1)
 except OSError as e: print(e.strerror)
 '
+/tmp/service copy /dev/hello 7 3 5
+/tmp/service put /dev/null hello
 /tmp/service hello 020644 again
 /tmp/service a/b 020644 bad
 /tmp/service fifo 010644 bad
@@ -82,6 +85,8 @@ hello, world
 character special file 644
 b'world' True
 Bad file descriptor
+5 12 8 ...world........
+5
 register hello: File exists
 register a/b: Invalid argument
 register fifo: Invalid argument
@@ -90,7 +95,7 @@ registered disk
 block special file 640
 the
 False
-Broken pipe
+Input/output error
 ls: /dev/hello: No such file or directory
 registered hello
 hello again

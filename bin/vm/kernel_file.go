@@ -317,19 +317,29 @@ func (p *Process) libcPwrite(fd, buf, n uint32, off uint64) uint32 {
 	return p.result(t.pwrite(p, p.span(buf, n), int64(off)))
 }
 
-// copy_file_range copies between two nodes; an offset given is read from
-// the guest's memory and written back.
+// copy_file_range copies between two files of the host, which the host
+// copies, or between a memfd and another file (copyWindow); an offset
+// given is read from the guest's memory and written back.
 func (p *Process) libcCopy_file_range(in, offIn, out, offOut, n, flags uint32) uint32 {
-	src, err := p.nodeAt(in)
+	src, err := p.fd(in)
 
 	if err != nil {
 		return p.result(0, err)
 	}
 
-	dst, err := p.nodeAt(out)
+	dst, err := p.fd(out)
 
 	if err != nil {
 		return p.result(0, err)
+	}
+
+	_, fromWindow := src.(*memfdFile)
+	_, toWindow := dst.(*memfdFile)
+	srcNode, srcIsNode := src.(Node)
+	dstNode, dstIsNode := dst.(Node)
+
+	if !fromWindow && !toWindow && !(srcIsNode && dstIsNode) || (fromWindow || toWindow) && flags != 0 {
+		return p.result(0, syscall.EINVAL)
 	}
 
 	var from, to *int64
@@ -344,7 +354,13 @@ func (p *Process) libcCopy_file_range(in, offIn, out, offOut, n, flags uint32) u
 		*to = int64(p.u64(offOut))
 	}
 
-	r, err := src.copyRange(dst, from, to, int(n), int(flags))
+	var r int
+
+	if fromWindow || toWindow {
+		r, err = copyWindow(src, dst, from, to, int(n))
+	} else {
+		r, err = srcNode.copyRange(dstNode, from, to, int(n), int(flags))
+	}
 
 	if err != nil {
 		return p.result(0, err)

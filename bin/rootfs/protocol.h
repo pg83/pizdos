@@ -4,9 +4,9 @@
 // seqpacket pair; its server holds the other and answers on it. Every
 // request brings a fresh endpoint, last among its descriptors: the reply
 // goes on it, and an OPEN's stays the open file's. A server may hand a
-// request on as it came, its endpoint with it, to another server, which
-// answers on that endpoint and keeps it: the one that handed it on is out
-// of the way from then on.
+// request on, its descriptors with it, to another server, which answers
+// on that endpoint and keeps it: the one that handed it on is out of the
+// way from then on. A server that is gone is EIO to the kernel.
 //
 // A packet is a Header and a body; descriptors ride with it (SCM_RIGHTS).
 //
@@ -40,13 +40,15 @@
 //     TRUNCATE              size u64 name
 //     STATFS                name          OK statfs
 //   on a node's endpoint:
-//     READ      arg len     off u64       OK count u32; fds[0] a memfd of
+//     READ      arg len     off u64 woff u32
+//                                         OK count u32; fds[0] a memfd of
 //                                         the reader's memory, the bytes
-//                                         go there
-//     WRITE     arg append  off u64 len u32
+//                                         go there from its byte woff on
+//     WRITE     arg append  off u64 len u32 woff u32
 //                                         OK count u32 at u64; fds[0] a
 //                                         memfd of the writer's memory,
-//                                         the bytes come from there
+//                                         the bytes come from there from
+//                                         its byte woff on
 //     READDIR               after u64     OK (ino u64, pos u64, type u8, name, 0)*
 //     FSTAT                               OK stat
 //     FCHMOD    arg mode

@@ -33,8 +33,10 @@ import (
 //	comes on it, and an OPEN's stays the open file's. A READ or a WRITE
 //	brings before it a memfd of the memory the process reads into or
 //	writes from (kernel_memfd.go): the server writes the bytes there or
-//	reads them from there itself, one copy, as many as asked, and closes
-//	it as it answers. On the endpoint of a
+//	reads them from there itself, from the memfd's byte woff on, one
+//	copy, as many as asked, and closes it as it answers. A server may hand
+//	a request on to another, its files with it, which then answers it. A
+//	server that is gone is EIO. On the endpoint of a
 //	directory a call is about the directory or about one name in it, ""
 //	being the directory itself; a name is no "." or "..", has no "/" and
 //	is never followed: a symbolic link is itself, and to the calls that
@@ -59,8 +61,9 @@ import (
 //	                      4 mtime now, 8 atime kept, 16 mtime kept
 //	  TRUNCATE            size u64 name
 //	  STATFS              name             OK statfs
-//	  READ      arg len   off u64          OK count u32
-//	  WRITE     arg append off u64 len u32 OK count u32 at u64
+//	  READ      arg len   off u64 woff u32 OK count u32
+//	  WRITE     arg append off u64 len u32 woff u32
+//	                                       OK count u32 at u64
 //	  READDIR             after u64        OK (ino u64, pos u64, type u8, name, 0)*
 //	  FSTAT                                OK stat
 //	  FCHMOD    arg mode
@@ -337,6 +340,10 @@ func (n *remoteNode) call(op, arg uint32, body []byte, files []File) (packet, *p
 	mine, theirs := newPair(false)
 	err := request(n.end, op, arg, body, append(files, theirs))
 	theirs.unref()
+
+	if err == syscall.EPIPE {
+		err = syscall.EIO // the server is gone
+	}
 
 	if err != nil {
 		mine.unref()
@@ -991,20 +998,36 @@ func (d *remoteDir) seek(off int64, whence int) (int64, error) {
 
 // The Transfer role, of a file.
 
+// readAt reads into b, the process's memory, at off: the READ brings a
+// memfd of b.
 func (f *remoteFile) readAt(p *Process, b []byte, off int64) (int, error) {
+	if off < 0 || len(b) == 0 {
+		return f.readInto(nil, 0, 0, off)
+	}
+
+	w := window(p, b, syscall.O_WRONLY)
+	n, err := f.readInto(w, 0, len(b), off)
+	w.unref()
+
+	return n, err
+}
+
+// readInto reads n bytes at off into the memfd w, from its byte woff on:
+// the READ brings w, and the server writes the bytes there itself. A
+// count past n is the server's lie: EIO.
+func (f *remoteFile) readInto(w *memfdFile, woff uint32, n int, off int64) (int, error) {
 	if off < 0 {
 		return 0, syscall.EINVAL
 	}
 
-	if len(b) == 0 {
+	if n == 0 {
 		return 0, nil
 	}
 
-	var body [8]byte
+	var body [12]byte
 	binary.LittleEndian.PutUint64(body[:], uint64(off))
-	w := window(p, b, syscall.O_WRONLY)
-	pk, mine, err := f.call(rRead, uint32(len(b)), body[:], []File{w})
-	w.unref()
+	binary.LittleEndian.PutUint32(body[8:], woff)
+	pk, mine, err := f.call(rRead, uint32(n), body[:], []File{w})
 
 	if err != nil {
 		return 0, err
@@ -1012,7 +1035,7 @@ func (f *remoteFile) readAt(p *Process, b []byte, off int64) (int, error) {
 
 	mine.unref()
 
-	if len(pk.data) < 4 {
+	if len(pk.data) < 4 || int(binary.LittleEndian.Uint32(pk.data)) > n {
 		return 0, syscall.EIO
 	}
 
@@ -1025,14 +1048,30 @@ func (f *remoteFile) writeAt(p *Process, b []byte, off int64) (int, error) {
 	return n, err
 }
 
-// put writes b at off, or atEnd at the end the file has when the server
-// takes the write: the count and where it went.
+// put writes b, the process's memory, at off, or atEnd at the end the
+// file has when the server takes the write: the WRITE brings a memfd of b.
 func (f *remoteFile) put(p *Process, b []byte, off int64, atEnd bool) (int, int64, error) {
+	if off < 0 || len(b) == 0 {
+		return f.writeFrom(nil, 0, 0, off, atEnd)
+	}
+
+	w := window(p, b, syscall.O_RDONLY)
+	n, at, err := f.writeFrom(w, 0, len(b), off, atEnd)
+	w.unref()
+
+	return n, at, err
+}
+
+// writeFrom writes n bytes of the memfd w, from its byte woff on, at off,
+// or atEnd at the end the file has when the server takes the write: the
+// WRITE brings w, and the server reads the bytes from there itself. The
+// count and where they went; a count past n is the server's lie: EIO.
+func (f *remoteFile) writeFrom(w *memfdFile, woff uint32, n int, off int64, atEnd bool) (int, int64, error) {
 	if off < 0 {
 		return 0, 0, syscall.EINVAL
 	}
 
-	if len(b) == 0 {
+	if n == 0 {
 		return 0, off, nil
 	}
 
@@ -1042,12 +1081,11 @@ func (f *remoteFile) put(p *Process, b []byte, off int64, atEnd bool) (int, int6
 		arg = 1
 	}
 
-	var body [12]byte
+	var body [16]byte
 	binary.LittleEndian.PutUint64(body[:], uint64(off))
-	binary.LittleEndian.PutUint32(body[8:], uint32(len(b)))
-	w := window(p, b, syscall.O_RDONLY)
+	binary.LittleEndian.PutUint32(body[8:], uint32(n))
+	binary.LittleEndian.PutUint32(body[12:], woff)
 	pk, mine, err := f.call(rWrite, arg, body[:], []File{w})
-	w.unref()
 
 	if err != nil {
 		return 0, 0, err
@@ -1055,7 +1093,7 @@ func (f *remoteFile) put(p *Process, b []byte, off int64, atEnd bool) (int, int6
 
 	mine.unref()
 
-	if len(pk.data) < 12 {
+	if len(pk.data) < 12 || int(binary.LittleEndian.Uint32(pk.data)) > n {
 		return 0, 0, syscall.EIO
 	}
 

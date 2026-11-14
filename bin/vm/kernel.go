@@ -210,7 +210,16 @@ func importsKernel(obj *Object) bool {
 // runKernel runs a program of the kernel as the first process, from the
 // module f at path, data, which compiled to obj with options, and returns
 // the exit code of vm: the process's, or 128 and the signal that ended it.
-func runKernel(f File, path, root string, argv []string, options CompileOptions, data []byte, obj *Object) int {
+// A disk is a file of the host the first process gets as a descriptor:
+// read and written as it is, its name the first process's to give.
+type disk struct {
+	name, path string
+}
+
+// runKernel runs the first process of the kernel. Its descriptors 0, 1
+// and 2 are vm's, the disks those after them, in order, read and written,
+// and DISKS in its environment their names, by spaces.
+func runKernel(f File, path, root string, argv []string, options CompileOptions, data []byte, obj *Object, disks []disk) int {
 	k := newKernel(root, options)
 	p := throw2(k.newProcess(nil))
 	code, err := k.codeOf(data, path, obj)
@@ -233,6 +242,23 @@ func runKernel(f File, path, root string, argv []string, options CompileOptions,
 		} else {
 			p.files = append(p.files, &Descriptor{obj: f})
 		}
+	}
+
+	if len(disks) > 0 {
+		names := make([]string, len(disks))
+
+		for i, d := range disks {
+			fd, err := syscall.Open(d.path, syscall.O_RDWR|syscall.O_CLOEXEC, 0)
+
+			if err != nil {
+				throwFmt("--disk %s: %v", d.path, err)
+			}
+
+			p.files = append(p.files, &Descriptor{obj: newHostObject(fd, true)})
+			names[i] = d.name
+		}
+
+		env = append(env, "DISKS="+strings.Join(names, " "))
 	}
 
 	k.first = p

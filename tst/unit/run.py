@@ -9,7 +9,8 @@ Directives use trustme's //@ spelling. stdout/stderr are JSON strings;
 compile-flags, aot-flags, run-flags and args use shell quoting. host: false
 disables the native reference for programs that depend on this kernel.
 $ROOT in an env directive names the reference's working directory or the
-VM's isolated root, so host services can read files the guest creates.
+VM's isolated root, so host services can read files the guest creates; in
+run-flags, the VM's root, where bin/check is the program's executable.
 """
 import json
 import os
@@ -140,7 +141,8 @@ def run(source, prefix, tools):
             executable.chmod(0o755)
             run_args = [argument.replace("$ROOT", str(root)) for argument in args]
             run_env = dict(env, **{name: value.replace("$ROOT", str(root)) for name, value in case.get("env", {}).items()})
-            result = invoke([tools["vm"], "run", "--root", root, "-a", "check", *run_flags,
+            flags = [flag.replace("$ROOT", str(root)) for flag in run_flags]
+            result = invoke([tools["vm"], "run", "--root", root, "-a", "check", *flags,
                              "--", executable, *run_args], env=run_env, timeout=timeout)
             check(result, case, "kernel")
 
