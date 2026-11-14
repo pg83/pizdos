@@ -30,7 +30,11 @@ import (
 //	its modes say, gid their group (permits). A reply's are zero.
 //
 //	Every request brings a fresh endpoint, last among its files: the reply
-//	comes on it, and an OPEN's stays the open file's. On the endpoint of a
+//	comes on it, and an OPEN's stays the open file's. A READ or a WRITE
+//	brings before it a memfd of the memory the process reads into or
+//	writes from (kernel_memfd.go): the server writes the bytes there or
+//	reads them from there itself, one copy, as many as asked, and closes
+//	it as it answers. On the endpoint of a
 //	directory a call is about the directory or about one name in it, ""
 //	being the directory itself; a name is no "." or "..", has no "/" and
 //	is never followed: a symbolic link is itself, and to the calls that
@@ -55,8 +59,8 @@ import (
 //	                      4 mtime now, 8 atime kept, 16 mtime kept
 //	  TRUNCATE            size u64 name
 //	  STATFS              name             OK statfs
-//	  READ      arg len   off u64          OK data
-//	  WRITE     arg append off u64 data    OK count u32 at u64
+//	  READ      arg len   off u64          OK count u32
+//	  WRITE     arg append off u64 len u32 OK count u32 at u64
 //	  READDIR             after u64        OK (ino u64, pos u64, type u8, name, 0)*
 //	  FSTAT                                OK stat
 //	  FCHMOD    arg mode
@@ -133,8 +137,6 @@ const (
 	whenMtimeKept = 16
 	utimeNow      = 1<<30 - 1
 	utimeOmit     = 1<<30 - 2
-	// remoteData is the most a read asks or a write sends in one packet.
-	remoteData = packetMax - remoteHeader - 8
 	// RESOLVE's steps and flags.
 	stepDone  = 0
 	stepRoot  = 1
@@ -327,12 +329,16 @@ func reply(on *pairEnd) (packet, error) {
 
 // call is a call on the node: a fresh pair, its one end with the
 // request, the reply on the other. The reply's packet and that end come
-// back; the caller keeps the end for an open file or drops it.
+// back; the caller keeps the end for an open file or drops it. files go
+// with the request and stay the caller's. Only an OPEN's reply brings a
+// file, the file itself, which the packet keeps; the files of any other
+// reply, or the rest of an OPEN's, go here.
 func (n *remoteNode) call(op, arg uint32, body []byte, files []File) (packet, *pairEnd, error) {
 	mine, theirs := newPair(false)
+	err := request(n.end, op, arg, body, append(files, theirs))
+	theirs.unref()
 
-	if err := request(n.end, op, arg, body, append(files, theirs)); err != nil {
-		theirs.unref()
+	if err != nil {
 		mine.unref()
 
 		return packet{}, nil, err
@@ -344,6 +350,14 @@ func (n *remoteNode) call(op, arg uint32, body []byte, files []File) (packet, *p
 		mine.unref()
 
 		return packet{}, nil, err
+	}
+
+	if op == rOpen && len(pk.files) > 0 {
+		dropFiles(pk.files[1:])
+		pk.files = pk.files[:1]
+	} else {
+		dropFiles(pk.files)
+		pk.files = nil
 	}
 
 	return pk, mine, nil
@@ -454,15 +468,9 @@ func whens(ts []syscall.Timespec) (uint32, []byte) {
 // The Attrs role, of a file or a directory of a server.
 
 func (n *remoteNode) simple(op, arg uint32, body []byte) error {
-	pk, err := n.on(op, arg, body)
+	_, err := n.on(op, arg, body)
 
-	if err != nil {
-		return err
-	}
-
-	dropFiles(pk.files)
-
-	return nil
+	return err
 }
 
 func (n *remoteNode) truncate(size int64) error {
@@ -507,8 +515,6 @@ func (n *remoteNode) stat(st *syscall.Stat_t) error {
 		return err
 	}
 
-	dropFiles(pk.files)
-
 	return decodeStat(pk.data, st)
 }
 
@@ -518,8 +524,6 @@ func (n *remoteNode) statfs(st *syscall.Statfs_t) error {
 	if err != nil {
 		return err
 	}
-
-	dropFiles(pk.files)
 
 	return decodeStatfs(pk.data, st)
 }
@@ -575,8 +579,6 @@ func (n *remoteNode) recordLock(cmd int, lk *syscall.Flock_t) error {
 		return err
 	}
 
-	dropFiles(pk.files)
-
 	if len(pk.data) < 20 {
 		return syscall.EIO
 	}
@@ -607,8 +609,6 @@ func (n *remoteNode) pathFrom(root Dir) (string, error) {
 	if err != nil {
 		return "", err
 	}
-
-	dropFiles(pk.files)
 
 	return string(pk.data), nil
 }
@@ -663,8 +663,6 @@ func (d *remoteDir) resolve(p *Process, path string, w *walk) (step, error) {
 		return step{}, err
 	}
 
-	dropFiles(pk.files)
-
 	if len(pk.data) < 16 {
 		mine.unref()
 
@@ -699,7 +697,6 @@ func (d *remoteDir) path(p *Process) (string, error) {
 // done drops the reply's endpoint and files of a call that opened
 // nothing.
 func done(pk packet, mine *pairEnd) {
-	dropFiles(pk.files)
 	mine.unref()
 }
 
@@ -756,7 +753,6 @@ func (d *remoteDir) openName(p *Process, name string, flags int, mode uint32) (F
 	if len(pk.files) > 0 {
 		// The file itself: an object of the kernel the server hands out.
 		mine.unref()
-		dropFiles(pk.files[1:])
 
 		return pk.files[0], nil
 	}
@@ -933,8 +929,6 @@ func (d *remoteDir) statfsName(p *Process, name string, st *syscall.Statfs_t) er
 		return err
 	}
 
-	dropFiles(pk.files)
-
 	return decodeStatfs(pk.data, st)
 }
 
@@ -950,7 +944,6 @@ func (d *remoteDir) readdir(b []byte) (int, error) {
 		return 0, err
 	}
 
-	dropFiles(pk.files)
 	data := pk.data
 	n := 0
 	le := binary.LittleEndian
@@ -1009,26 +1002,32 @@ func (f *remoteFile) readAt(p *Process, b []byte, off int64) (int, error) {
 
 	var body [8]byte
 	binary.LittleEndian.PutUint64(body[:], uint64(off))
-	pk, err := f.on(rRead, uint32(min(len(b), remoteData)), body[:])
+	w := window(p, b, syscall.O_WRONLY)
+	pk, mine, err := f.call(rRead, uint32(len(b)), body[:], []File{w})
+	w.unref()
 
 	if err != nil {
 		return 0, err
 	}
 
-	dropFiles(pk.files)
+	mine.unref()
 
-	return copy(b, pk.data), nil
+	if len(pk.data) < 4 {
+		return 0, syscall.EIO
+	}
+
+	return int(binary.LittleEndian.Uint32(pk.data)), nil
 }
 
 func (f *remoteFile) writeAt(p *Process, b []byte, off int64) (int, error) {
-	n, _, err := f.put(b, off, false)
+	n, _, err := f.put(p, b, off, false)
 
 	return n, err
 }
 
 // put writes b at off, or atEnd at the end the file has when the server
 // takes the write: the count and where it went.
-func (f *remoteFile) put(b []byte, off int64, atEnd bool) (int, int64, error) {
+func (f *remoteFile) put(p *Process, b []byte, off int64, atEnd bool) (int, int64, error) {
 	if off < 0 {
 		return 0, 0, syscall.EINVAL
 	}
@@ -1043,16 +1042,18 @@ func (f *remoteFile) put(b []byte, off int64, atEnd bool) (int, int64, error) {
 		arg = 1
 	}
 
-	body := make([]byte, 8, 8+min(len(b), remoteData))
-	binary.LittleEndian.PutUint64(body, uint64(off))
-	body = append(body, b[:min(len(b), remoteData)]...)
-	pk, err := f.on(rWrite, arg, body)
+	var body [12]byte
+	binary.LittleEndian.PutUint64(body[:], uint64(off))
+	binary.LittleEndian.PutUint32(body[8:], uint32(len(b)))
+	w := window(p, b, syscall.O_RDONLY)
+	pk, mine, err := f.call(rWrite, arg, body[:], []File{w})
+	w.unref()
 
 	if err != nil {
 		return 0, 0, err
 	}
 
-	dropFiles(pk.files)
+	mine.unref()
 
 	if len(pk.data) < 12 {
 		return 0, 0, syscall.EIO
@@ -1079,7 +1080,7 @@ func (f *remoteFile) write(p *Process, b []byte, mode ioMode) (int, error) {
 		return 0, syscall.EIO
 	}
 
-	n, at, err := f.put(b, atomic.LoadInt64(&f.pos), f.append)
+	n, at, err := f.put(p, b, atomic.LoadInt64(&f.pos), f.append)
 
 	if err == nil {
 		atomic.StoreInt64(&f.pos, at+int64(n))

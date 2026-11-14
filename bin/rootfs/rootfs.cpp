@@ -58,8 +58,13 @@
 //     TRUNCATE              size u64 name
 //     STATFS                name          OK statfs
 //   on a node's endpoint:
-//     READ      arg len     off u64       OK data
-//     WRITE     arg append  off u64 data  OK count u32 at u64
+//     READ      arg len     off u64       OK count u32; fds[0] a memfd of
+//                                         the reader's memory, the bytes
+//                                         go there
+//     WRITE     arg append  off u64 len u32
+//                                         OK count u32 at u64; fds[0] a
+//                                         memfd of the writer's memory,
+//                                         the bytes come from there
 //     READDIR               after u64     OK (ino u64, pos u64, type u8, name, 0)*
 //     FSTAT                               OK stat
 //     FCHMOD    arg mode
@@ -104,11 +109,14 @@
 // bytes and in nodes, a node a block's worth: past that, ENOSPC.
 //
 // Memory. A request is received into one buffer, packet, and answered
-// before the next: its names and data are read where they are in it. A
-// reply is sent from where its parts are: a header on the stack, a stat
-// built there, a name of the request, a file's bytes, a link's target.
-// What a reply assembles, the entries of a directory, a path, random
-// bytes, goes into one buffer of its own, out. Nothing is allocated to
+// before the next: its names are read where they are in it. A file's bytes
+// go straight to the memory of the process that reads them, or come
+// straight from the memory of the one that writes them, through the memfd
+// of it a READ or WRITE brings: one copy. A reply is sent from where its
+// parts are: a header on the stack, a stat built there, a name of the
+// request, a link's target. What a reply assembles, the entries of a
+// directory, a path, goes into one buffer of its own, out, which random
+// bytes pass through too. Nothing is allocated to
 // answer a request; what a request makes is: a node, its name, a file's
 // bytes, an endpoint. The image's files and names are its own bytes,
 // never copied. The names of every directory are one open-addressing
@@ -1213,6 +1221,26 @@ namespace {
         return false;
     }
 
+    // The memfd of the memory a READ fills or a WRITE takes from: the
+    // first of the request's descriptors, before its reply endpoint; -1
+    // when it brought none.
+    static int window() {
+        return packetFdCount >= 2 ? packetFds[0] : -1;
+    }
+
+    // Puts count bytes into a READ's window at at: false when they do not
+    // all go.
+    static bool put(int w, const void* from, usize count, usize at) {
+        return count == 0 || pwrite(w, from, count, off_t(at)) == ssize_t(count);
+    }
+
+    // The reply of a READ: how many bytes went into its window.
+    static bool readCount(int fd, usize count) {
+        const u32 n = u32(count);
+        ok(fd, &n, sizeof n);
+        return false;
+    }
+
     // The reply of a call that changes something: OK, or the error.
     static bool answer(int fd, int e) {
         if (e != 0) {
@@ -2008,29 +2036,41 @@ namespace {
         if (node->kind != Kind::Dir && !ep->reads) {
             return error(fd, EBADF);
         }
+        const int w = window();
+        if (w < 0 && node->kind != Kind::Dir) {
+            return error(fd, EINVAL);
+        }
         switch (node->kind) {
         case Kind::File: {
             const usize size = node->content.size();
             const usize count = off >= size ? 0 : MIN(n, size - usize(off));
-            ok(fd, node->content.data() + (count ? usize(off) : 0), count);
-            return false;
+            if (!put(w, node->content.data() + (count ? usize(off) : 0), count, 0)) {
+                return error(fd, EIO);
+            }
+            return readCount(fd, count);
         }
         case Kind::Null:
-            ok(fd);
-            return false;
+            return readCount(fd, 0);
         case Kind::Zero:
-            ok(fd, zeros, MIN(n, sizeof zeros));
-            return false;
-        case Kind::Random: {
-            const usize count = MIN(n, sizeof out);
-            for (usize at = 0; at < count; at += 256) {
-                if (getentropy(out + at, MIN(usize(256), count - at)) != 0) {
+            for (usize at = 0; at < n; at += sizeof zeros) {
+                if (!put(w, zeros, MIN(sizeof zeros, n - at), at)) {
                     return error(fd, EIO);
                 }
             }
-            ok(fd, out, count);
-            return false;
-        }
+            return readCount(fd, n);
+        case Kind::Random:
+            for (usize at = 0; at < n; at += sizeof out) {
+                const usize count = MIN(sizeof out, n - at);
+                for (usize k = 0; k < count; k += 256) {
+                    if (getentropy(out + k, MIN(usize(256), count - k)) != 0) {
+                        return error(fd, EIO);
+                    }
+                }
+                if (!put(w, out, count, at)) {
+                    return error(fd, EIO);
+                }
+            }
+            return readCount(fd, n);
         default:
             return error(fd, EISDIR);
         }
@@ -2040,14 +2080,18 @@ namespace {
     // capacity takes: the count and where it went.
     static bool writeNode(Endpoint* ep, const Header& h, Body body, int fd) {
         u64 off = body.take<u64>();
+        const usize length = body.take<u32>();
         Server& s = *ep->server;
         Node* node = ep->node;
-        const usize length = body.size();
+        const int w = window();
         if (off > INT64_MAX) {
             return error(fd, EINVAL);
         }
         if (node->kind != Kind::Dir && !ep->writes) {
             return error(fd, EBADF);
+        }
+        if (w < 0 && node->kind != Kind::Dir) {
+            return error(fd, EINVAL);
         }
         u64 count = length;
         switch (node->kind) {
@@ -2074,7 +2118,9 @@ namespace {
             if (size < off + count && !resize(s, node, off + count)) {
                 return error(fd, ENOSPC);
             }
-            memcpy(static_cast<u8*>(node->content.own.data()) + usize(off), body.at, usize(count));
+            if (count && pread(w, static_cast<u8*>(node->content.own.data()) + usize(off), usize(count), 0) != ssize_t(count)) {
+                return error(fd, EIO);
+            }
             touch(node);
             break;
         }
@@ -2318,6 +2364,11 @@ namespace {
         const int fd = packetFds[packetFdCount - 1];
         if (!dispatch(ep, h, Body{packet + sizeof(Header), packet + sizeof(Header) + n}, fd)) {
             close(fd);
+        }
+        // The request's other descriptors, a READ's or WRITE's window, are
+        // done with once it is answered.
+        for (usize i = 0; i + 1 < packetFdCount; ++i) {
+            close(packetFds[i]);
         }
     }
 

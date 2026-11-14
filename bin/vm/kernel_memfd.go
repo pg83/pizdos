@@ -49,9 +49,7 @@ func (p *Process) libcMemfd_create(at, n, flags uint32) uint32 {
 		return p.result(0, syscall.EFAULT)
 	}
 
-	f := &memfdFile{inst: i, mem: i.memory.data[at : at+n : at+n], mode: mode, ino: memfdInodes.Add(1), made: time.Now()}
-	f.refs.Store(1)
-	i.holds.Add(1)
+	f := newMemfd(i, i.memory.data[at:at+n:at+n], mode)
 	fd, err := p.install(f, 0, flags&syscall.O_CLOEXEC != 0)
 
 	if err != nil {
@@ -63,12 +61,38 @@ func (p *Process) libcMemfd_create(at, n, flags uint32) uint32 {
 	return p.result(fd, nil)
 }
 
+// newMemfd is the memfd of mem in the access mode mode: of a range of
+// inst's memory, which it holds, or with inst nil of the kernel's.
+func newMemfd(inst *Instance, mem []byte, mode int) *memfdFile {
+	f := &memfdFile{inst: inst, mem: mem, mode: mode, ino: memfdInodes.Add(1), made: time.Now()}
+	f.refs.Store(1)
+
+	if inst != nil {
+		inst.holds.Add(1)
+	}
+
+	return f
+}
+
+// window is the memfd a READ or WRITE of the file protocol brings
+// (kernel_remote.go): b, where the process's read puts the bytes or its
+// write takes them, for the server to write or read itself.
+func window(p *Process, b []byte, mode int) *memfdFile {
+	var inst *Instance
+
+	if p != nil {
+		inst = p.inst
+	}
+
+	return newMemfd(inst, b, mode)
+}
+
 func (f *memfdFile) ref() {
 	f.refs.Add(1)
 }
 
 func (f *memfdFile) unref() {
-	if f.refs.Add(-1) == 0 {
+	if f.refs.Add(-1) == 0 && f.inst != nil {
 		f.inst.unhold()
 	}
 }

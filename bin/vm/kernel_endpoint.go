@@ -249,15 +249,29 @@ func (e *pairEnd) setFlags(fl int) error {
 }
 
 // send queues a packet for the other end, blocking for room unless
-// nonblock; the files are the packet's references. Without a process the
-// wait is the kernel's own, on the channel. EPIPE comes without SIGPIPE,
-// as Linux has it for these.
+// nonblock. The packet takes references of its own to the files before
+// the other end can see it, and gives them back when it does not go; the
+// sender keeps its own. Without a process the wait is the kernel's own,
+// on the channel. EPIPE comes without SIGPIPE, as Linux has it for these.
 func (e *pairEnd) send(p *Process, data []byte, files []File, mode ioMode) error {
 	if len(data) > packetMax {
 		return syscall.EMSGSIZE
 	}
 
-	pk := packet{data: append([]byte(nil), data...), files: files}
+	for _, f := range files {
+		f.ref()
+	}
+
+	err := e.queue(p, packet{data: append([]byte(nil), data...), files: files}, mode)
+
+	if err != nil {
+		dropFiles(files)
+	}
+
+	return err
+}
+
+func (e *pairEnd) queue(p *Process, pk packet, mode ioMode) error {
 	nonblock := mode.nonblock || e.nonblock.Load()
 
 	for {
@@ -583,8 +597,6 @@ func (e *pairEnd) sendmsg(p *Process, at, flags uint32) (int, error) {
 	mode := ioMode{nonblock: flags&msgDontwait != 0, quiet: flags&msgNosignal != 0}
 
 	if err := e.send(p, data, files, mode); err != nil {
-		dropFiles(files)
-
 		return 0, err
 	}
 
@@ -618,8 +630,9 @@ func (e *pairEnd) recvmsg(p *Process, at, flags uint32) (int, error) {
 	return n, nil
 }
 
-// rights is the files of the SCM_RIGHTS of a guest's control buffer, each
-// with a reference for the packet; no other control message is known.
+// rights is the files of the SCM_RIGHTS of a guest's control buffer, the
+// process's own, which send takes references to; no other control message
+// is known.
 func (p *Process) rights(at, n uint32) ([]File, error) {
 	var files []File
 
@@ -642,12 +655,9 @@ func (p *Process) rights(at, n uint32) ([]File, error) {
 			f, err := p.fd(binary.LittleEndian.Uint32(data[i:]))
 
 			if err != nil {
-				dropFiles(files)
-
 				return nil, err
 			}
 
-			f.ref()
 			files = append(files, f)
 		}
 

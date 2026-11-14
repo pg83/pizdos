@@ -47,6 +47,7 @@ printf ab | od -An -tx1
 python3 -c 'import json, os, sys; print(2 ** 100, sys.version_info[:2], len(os.urandom(5)), json.__file__)'
 python3 -c 'import json, os; print(json.dumps(sorted(n for n in os.listdir("/usr/bin") if n.startswith("python"))))'
 python3 -c 'import tempfile; f = tempfile.NamedTemporaryFile("w+", dir="/tmp"); f.write("x" * 5000); f.seek(0); print(len(f.read()), f.name.startswith("/tmp/"))'
+python3 -c 'import os; d = os.urandom(3 << 20); f = os.open("/tmp/big", os.O_CREAT | os.O_RDWR); print(os.write(f, d), os.pread(f, 4 << 20, 0) == d, len(os.read(os.open("/dev/zero", os.O_RDONLY), 1 << 20)), len(os.read(os.open("/dev/urandom", os.O_RDONLY), 300000)))'; rm /tmp/big
 ln -s target /tmp/sl && readlink /tmp/sl
 ls -ld /tmp | cut -c1-10
 mkdir -m 700 /tmp/m && ls -ld /tmp/m | cut -c1-10 && chmod 750 /tmp/m && stat -c %a /tmp/m
@@ -161,6 +162,7 @@ inner=5
 1267650600228229401496703205376 (3, 14) 5 /bin/python3/json/__init__.py
 ["python", "python3"]
 5000 True
+3145728 True 1048576 300000
 target
 drwxrwxrwt
 drwx------
