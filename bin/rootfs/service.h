@@ -164,8 +164,9 @@ namespace service {
     // goes to handle, its descriptors closed after it but for those it set
     // to -1. An OPEN on a channel, which rootfs handed on, keeps its
     // endpoint when handle says so, true, what it lets do from its flags.
-    template <typename Handle>
-    [[noreturn]] void serve(int epoll, Handle handle) {
+    // An endpoint whose other end closed goes to gone, then is closed.
+    template <typename Handle, typename Gone>
+    [[noreturn]] void serve(int epoll, Handle handle, Gone gone) {
         alignas(Header) static unsigned char packet[65536];
         for (;;) {
             epoll_event events[16];
@@ -181,6 +182,7 @@ namespace service {
                     if (e->channel) {
                         exit(0);
                     }
+                    gone(*e);
                     epoll_ctl(epoll, EPOLL_CTL_DEL, e->fd, nullptr);
                     close(e->fd);
                     free(e);
@@ -213,5 +215,10 @@ namespace service {
                 }
             }
         }
+    }
+
+    template <typename Handle>
+    [[noreturn]] void serve(int epoll, Handle handle) {
+        serve(epoll, handle, [](Endpoint&) {});
     }
 }

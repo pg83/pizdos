@@ -67,6 +67,8 @@ __pycache__/
 /blk_exe
 /gpt_module
 /gpt_exe
+/ext4_module
+/ext4_exe
 /mount_module
 /mount_exe
 /umount_module

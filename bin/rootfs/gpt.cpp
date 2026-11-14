@@ -5,11 +5,15 @@
 // its reply's endpoint with it: the device's service puts the bytes into
 // the memory of who reads, or takes them from who writes, and answers them
 // itself. This process never has the bytes, nor waits for the device.
+// A partition with an ext2, ext3 or ext4 file system gets /bin/ext4 for
+// it, <name>fs.
 //
 //     gpt [-r fd] <device> <name> <first> <length>
 //
-// -r: a descriptor to close once the partition is there.
+// -r: a descriptor to close once the partition is there, which the file
+// system's service gets too.
 
+#include <signal.h>
 #include <sys/param.h>
 #include <sys/stat.h>
 
@@ -91,6 +95,31 @@ namespace {
         forward(r, opWrite, 0, body, sizeof body);
     }
 
+    // Starts /bin/ext4 for the partition when it has an ext2 file system:
+    // its superblock's magic, 1024 bytes in, at 56.
+    void probe(const char* name, int ready) {
+        unsigned char magic[2];
+        if (pread(device, magic, sizeof magic, off_t(first + 1024 + 56)) != ssize_t(sizeof magic) || magic[0] != 0x53 || magic[1] != 0xEF) {
+            return;
+        }
+        char path[64];
+        char fsName[64];
+        char fd[12];
+        snprintf(path, sizeof path, "/dev/%s", name);
+        snprintf(fsName, sizeof fsName, "%sfs", name);
+        snprintf(fd, sizeof fd, "%d", ready);
+        char ext4[] = "ext4";
+        char option[] = "-r";
+        char* const withReady[] = {ext4, option, fd, path, fsName, nullptr};
+        char* const without[] = {ext4, path, fsName, nullptr};
+        const pid_t pid = fork();
+        if (pid == 0) {
+            execv("/bin/ext4", ready >= 0 ? withReady : without);
+            dprintf(STDERR_FILENO, "gpt: /bin/ext4: %s\n", strerror(errno));
+            _exit(127);
+        }
+    }
+
     bool handle(service::Endpoint& e, service::Request& r) {
         const Stat st = stat();
         if (e.channel) {
@@ -142,6 +171,8 @@ int main(int argc, char** argv) {
     }
     partition = service::enroll("gpt", name, S_IFBLK | 0660);
     service::watch(epoll, {partition.end, true, false, false, nullptr});
+    signal(SIGCHLD, SIG_IGN);
+    probe(name, ready);
     if (ready >= 0) {
         close(ready);
     }

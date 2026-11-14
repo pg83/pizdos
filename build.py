@@ -489,8 +489,8 @@ python_exe = executable("python_exe", python, "$(B)/bin/python/python3", tail=py
 # it starts, and the kernel compiles each module as it is executed
 # (bin/rootfs). A service is a program of bin/rootfs, /bin/<name> in the
 # image.
-SYSTEM_PROGRAM_INPUTS = ["$(S)/bin/rootfs/protocol.h", "$(S)/bin/rootfs/service.h", "$(S)/bin/rootfs/make.py", "$(S)/dev/wasm.py",
-                         *LIBC_HEADERS]
+SYSTEM_PROGRAM_INPUTS = ["$(S)/bin/rootfs/protocol.h", "$(S)/bin/rootfs/service.h", "$(S)/bin/rootfs/fs.h", "$(S)/bin/rootfs/make.py",
+                         "$(S)/dev/wasm.py", *LIBC_HEADERS]
 
 
 def system_program(name):
@@ -508,7 +508,7 @@ def system_program(name):
     return executable(f"{name}_exe", module, f"$(B)/bin/rootfs/{name}")
 
 
-services = [system_program(name) for name in ("devices", "blk", "gpt", "mount", "umount")]
+services = [system_program(name) for name in ("devices", "blk", "gpt", "ext4", "mount", "umount")]
 # A service of tst/test_devices.py, which hands it to the system it runs.
 devices_service = executable("devices_service_exe", command(
     name="devices_service_module",
